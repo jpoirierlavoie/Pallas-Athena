@@ -223,10 +223,16 @@ def test_initialize_shape(client):
     assert "never records a payment" in instructions
     assert "DELETED" in instructions
     assert "trust accounting" in instructions
-    # The repair path must be stated: voiding the invoice in the application
-    # releases every source. Saying nothing would leave the model believing
-    # an import is irreversible.
-    assert "void the invoice IN THE APPLICATION" in instructions
+    # The repair path must be stated: voiding the invoice releases every
+    # source. Saying nothing would leave the model believing an import is
+    # irreversible. Rewritten deliberately (lot 3b): the connector voids too
+    # (update_invoice), and the promises that replaced « never changes an
+    # invoice's status » / « never allocates an invoice number » are stated.
+    assert "void the invoice (`update_invoice`, status annulée" in instructions
+    assert "It never SENDS an invoice to anyone" in instructions
+    assert "It never marks an invoice payée" in instructions
+    assert "never changes an invoice's status" not in instructions
+    assert "It never allocates an invoice number" not in instructions
     # Lot 0a (disclosure step): the text is ASSEMBLED from mcp/disclosure,
     # and three things it used to say were false. Voiding does NOT free the
     # number; complete_task does not reopen; the family count is derived.

@@ -150,13 +150,16 @@ FAMILIES: tuple[Family, ...] = (
         consent_template="mcp/families/_correct.html",
         checkbox_summary_fr=(
             "corriger un contact, un dossier, une entrée de temps ou un "
-            "déboursé non facturés&nbsp;; clore une tâche"
+            "déboursé non facturés — ou les déplacer vers un autre "
+            "dossier&nbsp;; clore une tâche"
         ),
         instructions_en=(
             "these REPLACE the values you name, and a field you omit is "
             "left alone: `update_partie`, `update_dossier`, "
             "`update_time_entry` and `update_expense` (the last two only "
-            "while the entry is not yet invoiced). `complete_task` closes a "
+            "while the entry is not yet invoiced; their `dossier_id` MOVES "
+            "the entry to another dossier, its amount and phase kept — both "
+            "dossiers' budget actuals change). `complete_task` closes a "
             "task (terminée, annulée) or puts an open one en_cours; it never "
             "reopens a closed one — that is `reopen_task` (AGENDA). One "
             "indirect effect to know: completing a task that a protocol step "
@@ -299,10 +302,49 @@ FAMILIES: tuple[Family, ...] = (
             "items can only come from real uninvoiced time entries and "
             "disbursements of that dossier, and the invoice lands in "
             "brouillon. Billing an entry freezes everything about it EXCEPT "
-            "its litigation phase. To undo an import: void the invoice IN "
-            "THE APPLICATION — that releases every time entry and "
-            "disbursement it billed; the number stays on the voided invoice "
-            "until the lawyer deletes that invoice in the application."
+            "its litigation phase. To undo an import: void the invoice "
+            "(`update_invoice`, status annulée — see BILL — or in the "
+            "application); that releases every time entry and disbursement "
+            "it billed, and the number stays on the voided invoice until the "
+            "lawyer deletes that invoice in the application."
+        ),
+    ),
+    Family(
+        key="billing",
+        label="BILL",
+        scope=SCOPE_WRITE,
+        tools=("create_invoice", "update_invoice", "create_budget_version"),
+        consent_template="mcp/families/_billing.html",
+        checkbox_summary_fr=(
+            "émettre une nouvelle facture au brouillon (elle consomme "
+            "définitivement le prochain numéro de l'année), corriger un "
+            "brouillon, marquer une facture envoyée ou en retard — ce qui "
+            "n'envoie rien —, annuler une facture qui ne porte aucun "
+            "paiement, et enregistrer une nouvelle version du budget d'un "
+            "dossier"
+        ),
+        instructions_en=(
+            "`preview_invoice` (a read) shows what an invoice would be — the "
+            "SAME computation as the write: run it first. `create_invoice` "
+            "then issues it, always in brouillon, from real billable UNBILLED "
+            "sources of one dossier, with the preview's total as "
+            "expected_total_cents (any difference refuses) and an "
+            "idempotency_key (required). It CONSUMES the year's next "
+            "number (AAAA-F###) for ever: a void never gives it back. "
+            "`update_invoice` makes ONE change a call against the invoice's "
+            "etag (`get_invoice`): correct a brouillon's notes, payment "
+            "terms, due date or billing address; set a status — brouillon → "
+            "envoyée, envoyée ↔ en_retard (only past its due date) — which "
+            "SENDS NOTHING to anyone, a promotion being undone only by a "
+            "void; or void it (status annulée, with a void_reason), which "
+            "releases every source it billed and is REFUSED while a payment "
+            "stands. The Word note "
+            "d'honoraires is `create_document` with source invoice_note "
+            "(FILES). Budgets: `get_budget` (a read) gives the version in "
+            "force and its base_version; `create_budget_version` records a "
+            "NEW version — replace or merge — refused when a newer one was "
+            "saved since; it becomes the reference budget, whose estimate "
+            "is a client document, and every earlier version is kept."
         ),
     ),
     Family(
@@ -344,7 +386,8 @@ FAMILIES: tuple[Family, ...] = (
             "classement, catégorie présumée), organiser les dossiers de "
             "classement (jamais les dossiers système), produire de "
             "nouveaux projets Word — depuis un gabarit, depuis un texte "
-            "rédigé par Claude, par copie d'un .docx du même dossier —, "
+            "rédigé par Claude, par copie d'un .docx du même dossier, la "
+            "note d'honoraires d'une facture —, "
             "téléverser un fichier par un lien de dépôt en écriture seule, "
             "comme nouveau document ou comme gabarit"
         ),
@@ -378,7 +421,11 @@ FAMILIES: tuple[Family, ...] = (
             "level, presumed, and its category, presumed unless the lawyer "
             "had set it — into « Projets » unless you give "
             "folder_id. Reuse across dossiers goes through a gabarit, never "
-            "a copy. To bring an OUTSIDE file in, `begin_upload` opens a "
+            "a copy; with source invoice_note it files an invoice's Word "
+            "note d'honoraires, on the note-d'honoraires template the lawyer "
+            "designated active, into « Projets » — a note identical to what "
+            "it would print is returned rather than filed twice. To bring an "
+            "OUTSIDE file in, `begin_upload` opens a "
             "one-hour write-only ticket — its `upload_url`, the one link any "
             "result carries, is for a single PUT from your code sandbox, "
             "never to be shown to the user; the PUT needs the sandbox to "
@@ -509,44 +556,63 @@ NEVERS: tuple[Never, ...] = (
         forbidden_modules=("services.encaissements",),
         summary_fr="de paiement",
     ),
+    # Lot 3b (BILL) falsified two promises and DELETED them: « it never
+    # changes an invoice's status — voiding included » (update_invoice sets
+    # envoyée / en_retard and voids) and « it never allocates an invoice
+    # number » (create_invoice draws the year's next one). What stays true
+    # is narrower, and each piece is its own promise below.
     Never(
-        key="invoice_status",
-        fr="envoyer une facture, changer son statut ou l'annuler",
-        en=(
-            "It never sends an invoice and never changes an invoice's "
-            "status — voiding included."
+        key="invoice_send",
+        fr=(
+            "<strong>envoyer</strong> une facture à qui que ce soit — la "
+            "marquer «&nbsp;envoyée&nbsp;» n'envoie rien"
         ),
-        # void_invoice_report is void_invoice's own body since 2026-09-26
-        # (void_invoice is its thin wrapper): the sweep matches names
-        # exactly, so both must be named.
-        forbidden=("update_status", "void_invoice", "void_invoice_report"),
+        en=(
+            "It never SENDS an invoice to anyone: marking one envoyée "
+            "sends nothing."
+        ),
         # Sending an invoice is an email: the connector never imports the
-        # email module. (Its ONE outbound effect since lot 1b, a refused
-        # Bookings request's Outlook cancellation, goes through Graph's
-        # calendar /cancel — never utils.courriel; see client_message.)
+        # email module (the client_message promise forbids it too — both
+        # stay, each for the claim it backs).
         forbidden_modules=("utils.courriel",),
     ),
     Never(
-        key="invoice_number",
+        key="invoice_paid",
         fr=(
-            "<strong>émettre un nouveau numéro de facture</strong>&nbsp;: "
-            "le compteur annuel de l'application n'est jamais touché"
+            "marquer une facture <strong>payée</strong> — seul un "
+            "encaissement inscrit dans l'application le fait"
         ),
         en=(
-            "It never allocates an invoice number: the application's year "
-            "counter is never read or advanced."
+            "It never marks an invoice payée: only a payment recorded in the "
+            "application does."
         ),
-        # The allocation moved INSIDE create_invoice's transaction
-        # (2026-09-26): the standalone _generate_invoice_number is gone, and
-        # these are the helpers that read or seed the year counter now.
-        forbidden=(
-            "_invoice_counter_ref", "_counter_seed", "_next_invoice_number",
-            "_scan_max_invoice_seq",
+        # A payload promise: update_invoice's status enum has no « payée »,
+        # and the model's transitions never offer it (only record_payment's
+        # automatic flip writes it — forbidden by « payment »).
+        behavioural_test=(
+            "tests/test_mcp_billing_writes.py::"
+            "test_update_invoice_can_never_mark_an_invoice_paid"
         ),
-        # create_invoice allocates from the counter whenever no number is
-        # given — so every connector call must give one.
-        required_keywords=(("create_invoice", "invoice_number"),),
-        summary_fr="un nouveau numéro de facture",
+    ),
+    Never(
+        key="invoice_sources",
+        fr=(
+            "écarter <strong>en silence</strong> une entrée de temps ou un "
+            "déboursé nommé pour une facture — une seule source inutilisable "
+            "fait refuser la facture entière"
+        ),
+        en=(
+            "It never drops a named time entry or disbursement from an "
+            "invoice silently: one unusable source refuses the whole "
+            "invoice, and nothing is written."
+        ),
+        # create_invoice SKIPS an unusable source in silence unless told
+        # otherwise — so every connector call must say so.
+        required_keywords=(("create_invoice", "require_all_sources"),),
+        behavioural_test=(
+            "tests/test_mcp_billing_writes.py::"
+            "test_every_connector_invoice_creation_requires_all_sources"
+        ),
     ),
     Never(
         key="dossier_status",
@@ -946,9 +1012,9 @@ def build_instructions(
             "in the application, on the phone or through another call — the "
             "write is REFUSED and nothing is written: re-read, then retry. "
             "Omitted — where the tool allows it (replacing a note's text, "
-            "editing the théorie de la cause or deciding a Bookings request "
-            "does not) — the tool still refuses a change landing between "
-            "its own read and its commit."
+            "editing the théorie de la cause, deciding a Bookings request or "
+            "changing an invoice does not) — the tool still refuses a change "
+            "landing between its own read and its commit."
         )
     # The writes that take no etag but rewrite what they READ (a note plus
     # the appended block, a task's status and description, a dossier's

@@ -1,17 +1,18 @@
 {# Family IMPORT (mcp/disclosure.FAMILIES, key "import") — import_invoice,
-   with the freeze it causes and the ONE way back, both stated here. The
+   with the freeze it causes and the way back, both stated here. The
    number is NOT freed by voiding: it stays on the voided invoice until that
-   invoice is deleted in the application (models/invoice.void_invoice). #}
+   invoice is deleted in the application (models/invoice.void_invoice).
+   Since lot 3b the connector can void it too (BILL — update_invoice). #}
 <p class="mt-3">
   <strong>Reprendre des factures</strong> de votre ancien système&nbsp;: des
   <strong>factures reprises</strong>, toujours à l'état
   <strong>brouillon</strong>, sous leur <strong>numéro et leur date
   d'origine</strong>, et composées uniquement d'entrées de temps et de
   déboursés déjà enregistrés. Porter des entrées de temps ou des déboursés à
-  une facture reprise les <strong>fige</strong>&nbsp;: plus rien ici ne
-  pourra les modifier, <strong>sauf leur phase du litige</strong>. Pour
-  défaire une reprise&nbsp;: <strong>annulez la facture dans
-  l'application</strong> — ses entrées et ses déboursés redeviennent
-  modifiables&nbsp;; son numéro reste attaché à la facture annulée tant que
-  vous ne la supprimez pas dans l'application.
+  une facture les <strong>fige</strong>&nbsp;: plus rien ne les modifie,
+  <strong>sauf leur phase du litige</strong>, jusqu'à l'annulation de la
+  facture. Pour défaire une reprise&nbsp;: <strong>annulez la
+  facture</strong> — ici ou dans l'application — et ses entrées et ses
+  déboursés redeviennent modifiables&nbsp;; son numéro reste attaché à la
+  facture annulée tant que vous ne la supprimez pas dans l'application.
 </p>

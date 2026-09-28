@@ -492,6 +492,14 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "every future letter prints from it; the previous version is kept "
         "(lot 2A, T9; review of lot 2)"
     ),
+    "create_invoice": (
+        "consumes the year's next invoice number FOR EVER (no void gives it "
+        "back) and flips its sources to « facturée » (lot 3b)"
+    ),
+    "create_budget_version": (
+        "supersedes the dossier's reference budget — the version whose "
+        "« Estimation » is the client quote; earlier ones are kept (lot 3b)"
+    ),
 }
 
 

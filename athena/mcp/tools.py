@@ -727,9 +727,9 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     "update_time_entry", "update_expense",
     # import_invoice ne remplace aucune valeur, mais il BASCULE N sources à
     # « facturée » — après quoi les deux modèles refusent toute modification
-    # ET toute suppression. C'est le seul geste du connecteur qu'aucun autre
-    # outil du connecteur ne peut défaire (seule l'application le peut, en
-    # annulant la facture), donc sous-avertir ici serait le pire endroit.
+    # ET toute suppression, jusqu'à l'annulation de la facture
+    # (update_invoice depuis le lot 3b, ou l'application), qui ne rend
+    # jamais son numéro : sous-avertir ici serait le pire endroit.
     "import_invoice",
     # Un reclassement REMPLACE le code stocké. Qu'il ne puisse pas déplacer
     # un montant ne le rend pas additif : le client se sert de l'indice pour
@@ -780,6 +780,14 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # description, category or kind (none kept), or its file in force (the
     # previous version KEPT, restorable). create_template replaces nothing.
     "update_template",
+    # Lot 3b — BILL. create_invoice replaces no value, but it CONSUMES the
+    # year's next number for ever and freezes its sources (the import_invoice
+    # reason, plus a number no void gives back). update_invoice REPLACES a
+    # draft's fields or the invoice's status — its void releases every
+    # source and retires the number. create_budget_version SUPERSEDES the
+    # reference budget, whose « Estimation » is a client document (every
+    # earlier version kept).
+    "create_invoice", "update_invoice", "create_budget_version",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -930,7 +938,63 @@ PLACEHOLDER_NAME_MAX_CHARS = 64
 # of one call, well under the 1 MB /mcp body cap.
 MARKDOWN_DOCUMENT_MAX_CHARS = 60_000
 DOCUMENT_TITLE_MAX_CHARS = 200
-_CREATE_DOCUMENT_SOURCES = ["markdown", "copy"]
+_CREATE_DOCUMENT_SOURCES = ["markdown", "copy", "invoice_note"]
+
+# ── Lot 3b — BILL ───────────────────────────────────────────────────────
+# Hand-copied from the models (importing a model here would build a
+# Firestore client at load); tests/test_mcp_billing_writes.py pins each
+# against its source, so none can drift.
+INVOICE_SOURCES_MAX = 200               # each list, and both together
+INVOICE_NOTES_MAX_CHARS = 1500          # models.invoice.DRAFT_NOTES_MAX_LENGTH
+INVOICE_TERMS_MAX_CHARS = 500           # …DRAFT_PAYMENT_TERMS_MAX_LENGTH
+VOID_REASON_MAX_CHARS = 500             # …VOID_REASON_MAX_LENGTH
+# The statuses update_invoice can SET — « annulée » is the void, never a bare
+# status write. Never « payée » (only a recorded payment says so) nor
+# « brouillon » (an issued invoice is corrected by voiding it).
+_INVOICE_TARGET_STATUSES = ["envoyée", "en_retard", "annulée"]
+_INVOICE_ETAG_READERS = ("get_invoice",)
+BUDGET_HISTORY_MAX = 50
+BUDGET_NOTE_MAX_CHARS = 2000            # models.budget._sanitize_data's cap
+_BUDGET_MODES = ["replace", "merge"]
+# DERIVED from the pure phase module (the _PHASE_CODES precedent): every
+# sub-code a budget may carry — ADM and HOR are withdrawn from the client
+# quote (D-14), so they are not in the enum at all.
+_BUDGET_SOUS_PHASE_CODES = sorted(
+    code for code in phases.SOUS_CODES
+    if phases.phase_of(code) not in phases.PHASES_NON_FACTURABLES
+)
+
+
+def _invoice_selection_props() -> dict:
+    """The selection preview_invoice and create_invoice share — ONE shape,
+    so the preview a caller runs is the invoice it then issues."""
+    ids = {"type": "string", "maxLength": 64,
+           "description": "A source id (UUIDv4)."}
+    return {
+        "dossier_id": _id("The dossier billed (list_dossiers). Required."),
+        "time_entry_ids": {
+            "type": "array", "items": dict(ids),
+            "maxItems": INVOICE_SOURCES_MAX,
+            "description": (
+                "Time entries to bill (list_time_entries). With expense_ids: "
+                f"at most {INVOICE_SOURCES_MAX} sources in all."),
+        },
+        "expense_ids": {
+            "type": "array", "items": dict(ids),
+            "maxItems": INVOICE_SOURCES_MAX,
+            "description": "Disbursements to bill (list_expenses).",
+        },
+        "all_unbilled": {
+            "type": "boolean",
+            "description": (
+                "true: every billable, unbilled source of the dossier, "
+                "instead of naming ids."),
+        },
+        "date": _date("Invoice date, YYYY-MM-DD; default today (Montréal). "
+                      "Never in the future."),
+        "due_date": _date("YYYY-MM-DD, not before `date`; default date + 30 "
+                          "days."),
+    }
 # Lot 2A (T9) — the upload ticket. Literals copied from the models (an
 # import would run firestore.Client() at load); tests/test_mcp_upload.py
 # pins each against its source.
@@ -2215,7 +2279,9 @@ TOOLS: dict[str, dict] = {
             "re-add. A non-empty `warnings` array means the line items could "
             "not be read — the invoice is not empty, the read failed. "
             "Line items are readable ONE INVOICE AT A TIME; there is no way "
-            "to search them across invoices."
+            "to search them across invoices. `etag` is update_invoice's "
+            "expected_etag; `connector_transitions` the statuses it can set "
+            "now."
         ),
         "input_schema": {
             "type": "object",
@@ -2226,6 +2292,52 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "get_invoice",
+    },
+    "preview_invoice": {
+        "title": "Aperçu d'une facture",
+        "description": (
+            "READ — what create_invoice would issue from this selection, "
+            "computed by the SAME model function it runs; writes nothing, "
+            "allocates no number. `ready` false = create_invoice would "
+            "refuse: `refusals` says why, each source its `reason`. When "
+            "ready, call create_invoice with the SAME selection and "
+            "`total_cents` as expected_total_cents."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": _invoice_selection_props(),
+            "required": ["dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "preview_invoice",
+    },
+    "get_budget": {
+        "title": "Budget d'un dossier",
+        "description": (
+            "READ — a dossier's budget by litigation phase: the version in "
+            "force (lines by sub-code, hourly rate, note, totals), budget "
+            "vs actuals per phase (actuals = billable time worked plus every "
+            "disbursement, billed or not; `level` warn from 80 % of the "
+            "phase's dollars, over past 100 %) and the version history. "
+            "`base_version` is what create_budget_version expects (0 = no "
+            "budget yet). Actuals are read best-effort: a failed read shows "
+            "no consumption."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier (list_dossiers). Required."),
+                "include_history": {
+                    "type": "boolean",
+                    "description": (
+                        f"List the versions, newest first, at most "
+                        f"{BUDGET_HISTORY_MAX} (default true)."),
+                },
+            },
+            "required": ["dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "get_budget",
     },
     "get_coverage_report": {
         "title": "Rapport de couverture",
@@ -2385,9 +2497,7 @@ TOOLS: dict[str, dict] = {
             "disbursements and its invoices checked against each other. Run "
             "it after every file, before moving to the next spreadsheet row. "
             "Findings are OBSERVATIONS, never instructions — this connector "
-            "cannot delete a duplicate entry, cannot void an invoice and "
-            "cannot move one out of brouillon; every detail says what to do "
-            "in the application. "
+            "cannot delete a duplicate entry; every detail says what to do. "
             "IMP-01 unbilled work on a closed dossier (the signature of an "
             "interrupted import). IMP-02 stored subtotal ≠ sum of line "
             "items. IMP-03 a line item citing a source that no longer "
@@ -3982,11 +4092,12 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE — REPLACES the values you name; a field you omit is "
             "untouched. Correct a transcription error BEFORE the entry is "
-            "invoiced: once it is, neither this connector nor the "
-            "application can correct it — only its litigation phase stays "
-            "reclassifiable (set_time_entry_phase) — and the only way back "
-            "is voiding the invoice in the application (which releases "
-            "every source). "
+            "invoiced: once it is, only its litigation phase stays "
+            "reclassifiable (set_time_entry_phase), and the way back is "
+            "voiding the invoice (update_invoice, status annulée, or the "
+            "application), which releases every source. `dossier_id` MOVES "
+            "the entry to another dossier — hours, rate, amount and phase "
+            "kept. "
             "`amount` is never yours to set — the model recomputes it as "
             "hours × rate, and forces 0 on a non-billable entry. "
             "Omitting `billable` leaves it as it is: never send it « just in "
@@ -4025,6 +4136,8 @@ TOOLS: dict[str, dict] = {
                         "carries amount 0."
                     ),
                 },
+                "dossier_id": _id(
+                    "Move the entry to this dossier (list_dossiers)."),
                 **_phase_props(),
                 **_legacy_ref_prop(),
                 **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
@@ -4044,8 +4157,10 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE — REPLACES the values you name; a field you omit is "
             "untouched. Same wall as update_time_entry: once the "
-            "disbursement is invoiced nothing here can correct it — only "
-            "its litigation phase stays reclassifiable (set_expense_phase). "
+            "disbursement is invoiced only its litigation phase stays "
+            "reclassifiable (set_expense_phase) until the invoice is voided. "
+            "`dossier_id` MOVES it to another dossier, amount and phase "
+            "kept. "
             "Unlike a time entry, `amount_cents` IS yours — the model never "
             "recomputes a disbursement, so a historical amount survives "
             "exactly. "
@@ -4073,6 +4188,8 @@ TOOLS: dict[str, dict] = {
                     "type": "boolean",
                     "description": "Send ONLY to change it.",
                 },
+                "dossier_id": _id(
+                    "Move the disbursement to this dossier (list_dossiers)."),
                 **_phase_props(),
                 **_legacy_ref_prop(),
                 **_expected_etag_prop(_EXPENSE_ETAG_READERS),
@@ -4247,14 +4364,14 @@ TOOLS: dict[str, dict] = {
             "Compare the returned subtotal, GST and "
             "QST against the PDF: the totals are computed over the real "
             "sources, never estimated. "
-            "The invoice lands in BROUILLON and stays there — this connector "
-            "never sets an invoice status and never records a payment. "
-            "Billing the sources freezes them: nothing here can modify them "
-            "afterwards except their litigation phase (set_time_entry_phase "
-            "/ set_expense_phase), and the only way back is voiding the "
-            "invoice in the application, which releases every source — the "
-            "number itself stays on the voided invoice until the lawyer "
-            "deletes that invoice there."
+            "The invoice lands in BROUILLON: promote it with update_invoice; "
+            "a payment is recorded in the application's accounting, never "
+            "here. Billing the sources freezes them: nothing here can modify "
+            "them afterwards except their litigation phase "
+            "(set_time_entry_phase / set_expense_phase) until the invoice is "
+            "voided (update_invoice, status annulée, or the application), "
+            "which releases every source — the number itself stays on the "
+            "voided invoice until the lawyer deletes that invoice there."
         ),
         "input_schema": {
             "type": "object",
@@ -4362,6 +4479,204 @@ TOOLS: dict[str, dict] = {
             "Creates an invoice and replaces no value it names; the sources "
             "it flips are re-read and etag-compared inside the invoice's own "
             "transaction."
+        ),
+    },
+    # ── Lot 3b — BILL ───────────────────────────────────────────────────
+    "create_invoice": {
+        "title": "Émettre une facture",
+        "description": (
+            "WRITE — issue a NEW invoice from real, billable, unbilled time "
+            "entries and disbursements of ONE dossier, billed to its first "
+            "client. Run preview_invoice first with the same selection and "
+            "pass its total_cents as expected_total_cents: any difference "
+            "refuses. It takes the year's NEXT number (AAAA-F###), consumed "
+            "FOR EVER — never reissued, even once voided — and lands in "
+            "brouillon: nothing is sent. Its sources are then frozen until "
+            "update_invoice voids it. idempotency_key REQUIRED; confirm with "
+            "the user first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **_invoice_selection_props(),
+                "notes": {
+                    "type": "string", "maxLength": INVOICE_NOTES_MAX_CHARS,
+                    "description": "Printed on the invoice, French.",
+                },
+                "payment_terms": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": INVOICE_TERMS_MAX_CHARS,
+                    "description": (
+                        "Printed on the invoice; default « Payable dans les "
+                        "30 jours… »."),
+                },
+                "expected_total_cents": {
+                    "type": "integer", "minimum": 0,
+                    "description": (
+                        "preview_invoice's total_cents for this same "
+                        "selection. Required."),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "expected_total_cents",
+                         "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "create_invoice",
+        "scope": SCOPE_WRITE,
+        # A second invoice is a second PERMANENT number: a retry must replay.
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Creates an invoice and replaces no value it names; its sources "
+            "are re-read and etag-compared inside the invoice transaction, "
+            "and expected_total_cents ties it to the preview."
+        ),
+    },
+    "update_invoice": {
+        "title": "Modifier une facture",
+        "annotations": {
+            # The state asked for, when already stored, writes nothing.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — ONE change a call, against expected_etag (get_invoice). "
+            "DRAFT, a brouillon only: notes, payment_terms, due_date, "
+            "refresh_billing_address REPLACE what they name — amounts, lines, "
+            "client and number never change. STATUS: brouillon → envoyée, "
+            "envoyée ↔ en_retard (only past due_date); envoyée SENDS NOTHING "
+            "and only a void undoes it. VOID: status annulée + void_reason "
+            "releases every source it billed, never its number; REFUSED "
+            "while a payment stands (reverse it in the application). Never "
+            "payée: a payment is recorded in the application's accounting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_id": _id("The invoice (list_invoices). Required."),
+                "status": {
+                    "type": "string", "enum": _INVOICE_TARGET_STATUSES,
+                    "description": "STATUS or VOID (annulée).",
+                },
+                "void_reason": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": VOID_REASON_MAX_CHARS,
+                    "description": (
+                        "annulée: REQUIRED, why — stored on the invoice, "
+                        "French."),
+                },
+                "notes": {
+                    "type": "string", "maxLength": INVOICE_NOTES_MAX_CHARS,
+                    "description": "DRAFT: replaces the notes; \"\" clears them.",
+                },
+                "payment_terms": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": INVOICE_TERMS_MAX_CHARS,
+                    "description": "DRAFT: replaces the payment terms.",
+                },
+                "due_date": _date("DRAFT: YYYY-MM-DD, not before the "
+                                  "invoice date."),
+                "refresh_billing_address": {
+                    "type": "boolean",
+                    "description": (
+                        "DRAFT: true re-copies the client's address as it is "
+                        "on file now."),
+                },
+                **_expected_etag_prop(_INVOICE_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["invoice_id", "expected_etag"],
+            "additionalProperties": False,
+        },
+        "handler": "update_invoice",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_REQUIRED,
+        "etag_readers": _INVOICE_ETAG_READERS,
+    },
+    "create_budget_version": {
+        "title": "Nouvelle version du budget",
+        "annotations": {
+            # A version identical to the one in force writes nothing.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — record a NEW version of a dossier's budget. It becomes "
+            "the reference budget, and its « Estimation » PDF is a CLIENT "
+            "document; every earlier version stays kept, nothing is "
+            "overwritten. mode replace: `lines` IS the budget. mode merge: "
+            "each line replaces its sub-code's (hours 0 and frais 0 removes "
+            "it), the rest kept. base_version from get_budget: refused if a "
+            "newer version was saved since. Identical to the version in "
+            "force: nothing written."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier (list_dossiers). Required."),
+                "base_version": {
+                    "type": "integer", "minimum": 0,
+                    "description": (
+                        "get_budget's base_version (0 = no budget yet). "
+                        "Required."),
+                },
+                "mode": {
+                    "type": "string", "enum": _BUDGET_MODES,
+                    "description": "replace or merge. Required.",
+                },
+                "lines": {
+                    "type": "array",
+                    "maxItems": len(_BUDGET_SOUS_PHASE_CODES),
+                    "description": "One line per sub-code, each at most once.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "sous_phase": {
+                                "type": "string",
+                                "enum": _BUDGET_SOUS_PHASE_CODES,
+                                "description": (
+                                    "Litigation sub-code "
+                                    "(get_reference_vocabulary kind phases)."),
+                            },
+                            "hours": {
+                                "type": "number", "minimum": 0,
+                                "maximum": 10000,
+                                "description": (
+                                    "Estimated hours, at most two decimals."),
+                            },
+                            "frais_cents": {
+                                "type": "integer", "minimum": 0,
+                                "maximum": 100000000,
+                                "description": "Estimated disbursements, cents.",
+                            },
+                        },
+                        "required": ["sous_phase"],
+                        "additionalProperties": False,
+                    },
+                },
+                "hourly_rate_cents": {
+                    "type": "integer", "minimum": 0, "maximum": 100000000,
+                    "description": (
+                        "Default: the version in force's, else the "
+                        "dossier's."),
+                },
+                "note": {
+                    "type": "string", "maxLength": BUDGET_NOTE_MAX_CHARS,
+                    "description": (
+                        "Assumptions, French. Omitted: kept; \"\" clears it."),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "base_version", "mode"],
+            "additionalProperties": False,
+        },
+        "handler": "create_budget_version",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Appends a version and overwrites none; base_version is its "
+            "version check, compared inside the model's counter transaction."
         ),
     },
     "create_dossier": {
@@ -5154,8 +5469,12 @@ TOOLS: dict[str, dict] = {
             "across dossiers goes through a gabarit; the copy keeps the "
             "source's category and protection level. Both land in "
             "« Projets » unless folder_id names another folder (\"\" = the "
-            "dossier root). A retry without idempotency_key creates a "
-            "second document."
+            "dossier root). source \"invoice_note\": the Word note "
+            "d'honoraires of invoice_id, on the note-d'honoraires template "
+            "the lawyer designated ACTIVE, always into « Projets »; a note "
+            "identical to what it would print is returned instead of a "
+            "duplicate unless regenerate. A retry without idempotency_key "
+            "creates a second document."
         ),
         "input_schema": {
             "type": "object",
@@ -5209,6 +5528,14 @@ TOOLS: dict[str, dict] = {
                     "A folder of the dossier (list_documents with "
                     "include_folders); \"\" = the root. Omitted: « Projets »."
                 ),
+                "invoice_id": _id(
+                    "invoice_note: REQUIRED, the invoice (list_invoices)."),
+                "regenerate": {
+                    "type": "boolean",
+                    "description": (
+                        "invoice_note: file a new note even when an identical "
+                        "one exists (default false: that one is returned)."),
+                },
                 **_write_protocol_props(),
             },
             "required": ["source"],

@@ -165,6 +165,18 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "niveau de protection de l'original, à confirmer",
     "lien de dépôt valable une heure",
     "le lien expire sans effet",
+    # Lot 3b (BILL): the connector issues, promotes and voids invoices —
+    # the promises « never changes an invoice's status » and « never
+    # allocates an invoice number » were DELETED from the registry, and
+    # each phrasing that stood on a surface is false now.
+    "never changes an invoice's status",
+    "ne change jamais le statut d'une facture",
+    "cannot void an invoice",
+    "ne peut pas annuler une facture",
+    "cannot move one out of brouillon",
+    "it never allocates an invoice number",
+    "never sets an invoice status",
+    "l'annulation dans l'application est la seule voie",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -523,7 +535,10 @@ def test_the_sweep_ignores_strings_and_sees_every_reference_form():
         "mcp/probe_b.py": "import services.encaissements as enc\n",
         "mcp/probe_c.py": "from services import encaissements\n",
         "mcp/probe_d.py": "cb = task_model.toggle_task_complete\n",
-        "mcp/probe_e.py": "getattr(invoice_model, 'void_invoice')(i)\n",
+        # Rewritten deliberately (lot 3b): void_invoice is no longer
+        # forbidden (update_invoice voids), so the getattr form is probed on
+        # a call that still is.
+        "mcp/probe_e.py": "getattr(invoice_model, 'record_payment')(i)\n",
         "mcp/probe_f.py": "note_model.delete_note(n)\n",
         "mcp/probe_g.py": "invoice_model.create_invoice(d, [], [], {})\n",
         "mcp/probe_h.py": "from models import admin_ledger\n",

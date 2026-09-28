@@ -565,11 +565,19 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     # And what stays impossible must be said as plainly.
     assert "<strong>Rien ne peut être supprimé</strong>" in flat
     assert "<strong>paiement</strong>" in flat
-    assert "émettre un nouveau numéro de facture" in flat
     assert "<strong>fidéicommis</strong>" in flat
-    # The repair path exists and must be named: void_invoice releases every
+    # Lot 3b rewrote these deliberately: issuing a NEW invoice number left
+    # the « jamais » list for the BILL family — where the screen says the
+    # number is consumed for ever — and the connector voids (update_invoice),
+    # so the repair path is named without « dans l'application » alone.
+    assert "émettre un nouveau numéro de facture" not in flat
+    assert "consomme définitivement le prochain numéro" in flat
+    assert "marquer envoyée n'envoie rien au client" in flat
+    assert "marquer une facture <strong>payée</strong>" in flat
+    assert "<strong>envoyer</strong> une facture à qui que ce soit" in flat
+    # The repair path exists and must be named: voiding releases every
     # source. The old copy called the freeze permanent, which was false.
-    assert "annulez la facture dans l'application" in flat
+    assert "<strong>annulez la facture</strong> — ici ou dans l'application" in flat
     # Lot 0a (disclosure step) — three sentences of this screen were false.
     # Voiding does NOT free the number; only the notes, tasks and events the
     # connector CREATES carry a dated mention (every write is journaled and

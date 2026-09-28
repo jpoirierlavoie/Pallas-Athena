@@ -1,0 +1,36 @@
+{# Family BILL (mcp/disclosure.FAMILIES, key "billing") — lot 3b:
+   create_invoice, update_invoice, create_budget_version. The two
+   consequences the lawyer consents to are stated HERE, beside the
+   capability: a created invoice CONSUMES the year's next number for ever
+   (models/invoice — allocated inside the invoice transaction, never given
+   back by a void), and marking an invoice « envoyée » sends nothing. The
+   payment stays out of reach (NEVER « payment », « invoice_paid »). #}
+<p class="mt-3">
+  <strong>Facturer</strong>&nbsp;: émettre une <strong>nouvelle
+  facture</strong>, toujours au <strong>brouillon</strong>, composée
+  uniquement d'entrées de temps et de déboursés <strong>facturables et non
+  facturés</strong> d'un dossier, adressée à son premier client — après un
+  aperçu dont le total doit correspondre exactement. Chaque facture
+  émise <strong>consomme définitivement le prochain numéro de
+  l'année</strong> (AAAA-F###)&nbsp;: il ne sera jamais réattribué, même si
+  la facture est annulée.
+</p>
+<p class="mt-2">
+  <strong>Tenir une facture</strong>&nbsp;: corriger les notes, les
+  conditions de paiement, l'échéance ou l'adresse de facturation d'un
+  <strong>brouillon</strong> (jamais ses montants, ses lignes, son client
+  ni son numéro)&nbsp;; la marquer <strong>envoyée</strong>, ou en retard
+  une fois son échéance passée — <strong>marquer envoyée n'envoie rien au
+  client</strong> et ne se défait qu'en annulant la facture&nbsp;;
+  l'<strong>annuler</strong> avec un motif, ce qui libère ses entrées de
+  temps et ses déboursés — refusé tant qu'un paiement y est inscrit. Toute
+  modification d'une facture s'engage contre la version lue&nbsp;: si elle a
+  changé entre-temps, rien n'est écrit.
+</p>
+<p class="mt-2">
+  <strong>Budgets</strong>&nbsp;: enregistrer une <strong>nouvelle
+  version</strong> du budget d'un dossier, refusée si une version plus
+  récente a été enregistrée entre-temps. Elle devient le budget de
+  référence, dont l'estimation est un document remis au client&nbsp;;
+  chaque version antérieure reste conservée et consultable.
+</p>

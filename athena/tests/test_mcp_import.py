@@ -907,8 +907,12 @@ def test_un_couple_de_phase_contradictoire_est_refuse(billing):
                                     "sous_phase": "CTS-02"})
 
 
-@pytest.mark.parametrize("forbidden", ["dossier_id", "invoiced", "invoice_id",
-                                       "amount", "id"])
+# Réécrit délibérément (lot 3b) : « dossier_id » a quitté cette liste — le
+# plan (lot 3) en fait le DÉPLACEMENT d'une entrée non facturée, par la
+# règle unique de models/billing_move (tests/test_mcp_billing_writes.py le
+# prouve sur le vrai magasin). Les quatre autres restent hors d'atteinte.
+@pytest.mark.parametrize("forbidden", ["invoiced", "invoice_id", "amount",
+                                       "id"])
 def test_les_champs_derives_ou_d_imputation_ne_sont_pas_adressables(forbidden):
     for name in ("update_time_entry", "update_expense"):
         props = tools.TOOLS[name]["input_schema"]["properties"]
@@ -1148,10 +1152,16 @@ def test_la_provision_est_transmise(facture):
 
 
 def test_le_gel_des_sources_et_le_brouillon_sont_annonces(facture):
+    # Réécrit délibérément (lot 3b) : l'annulation et la promotion se font
+    # aussi par le connecteur (update_invoice) — l'ancien texte, « le
+    # connecteur ne change jamais le statut d'une facture », est devenu faux.
     payload = handlers.import_invoice(_imp())
     joined = " ".join(payload["warnings"])
-    assert "annulez la facture dans l'application" in joined
+    assert "annulez la facture (update_invoice" in joined
+    assert "ou dans l'application" in joined
+    assert "ne change jamais le statut" not in joined
     assert "BROUILLON" in joined
+    assert "n'inscrit aucun paiement" in joined
     assert "Journal des honoraires" in joined
 
 

@@ -16,8 +16,9 @@ Same two closed French vocabularies as the coverage report:
 * ``signalement`` — worth a look, not a breach.
 
 **A finding is an observation, never an instruction.** The connector cannot
-delete a duplicate entry, cannot void an invoice and cannot move one out of
-brouillon; every ``detail`` says what to do IN THE APPLICATION.
+delete a duplicate entry; every ``detail`` says what to do. (Since lot 3b it
+can promote and void an invoice — ``update_invoice`` — so IMP-07 names that
+path beside the application's.)
 
 **A failed read must never become a manquement.** When the handler could not
 read a dossier's sources completely, the checks that compare an invoice's line
@@ -217,13 +218,12 @@ def _facture_importee_encore_au_brouillon(ctx: dict) -> Optional[str]:
     return (
         f"{len(drafts)} facture(s) encore au brouillon : "
         + ", ".join(drafts)
-        + ". Le connecteur ne change JAMAIS le statut d'une facture ni "
-        "n'inscrit un paiement. Tant qu'elles ne sont pas promues dans "
-        "l'application (brouillon → envoyée), puis l'encaissement saisi au "
+        + ". Tant qu'elles ne sont pas promues (update_invoice, brouillon → "
+        "envoyée, ou dans l'application), puis l'encaissement saisi au "
         "registre d'administration à sa date historique — le seul endroit "
-        "d'où un paiement s'inscrit —, le « Journal des honoraires » les "
-        "imprime avec 0 $ reçu et le total en solde, et le sommaire du "
-        "dossier lit « payé 0 »."
+        "d'où un paiement s'inscrit : le connecteur n'en inscrit aucun —, le "
+        "« Journal des honoraires » les imprime avec 0 $ reçu et le total en "
+        "solde, et le sommaire du dossier lit « payé 0 »."
     )
 
 

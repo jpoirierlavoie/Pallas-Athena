@@ -64,6 +64,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import expense as expense_model
     from models import folder as folder_model
     from models import hearing as hearing_model
+    from models import invoice as invoice_model
     from models import note as note_model
     from models import partie as partie_model
     from models import protocol as protocol_model
@@ -772,9 +773,11 @@ def _e2e_db(monkeypatch):
     # folder_model too (lot 2A, T7): manage_folder reads and writes the
     # filing tree through its model. doc_template_model too (lot 2A, T10):
     # update_template reads and writes the template through its model.
+    # invoice_model too (lot 3b): update_invoice reads and writes the
+    # invoice through its model.
     return install(monkeypatch, *_MODULES, protocol_model, revision_model,
-                   hearing_model, folder_model, doc_template_model, dav_sync,
-                   write_support)
+                   hearing_model, folder_model, doc_template_model,
+                   invoice_model, dav_sync, write_support)
 
 
 def _closed_task(db):
@@ -865,6 +868,17 @@ def _template(db):
     return "tpl1"
 
 
+def _draft_invoice(db):
+    """A brouillon as the invoice model stores it (update_invoice's DRAFT
+    mode edits its notes — no source, no counter involved)."""
+    db.seed("invoices/inv1", {
+        **invoice_model._default_doc(), "id": "inv1",
+        "invoice_number": "2026-F031", "dossier_id": "d1",
+        "status": "brouillon", "date": DT, "due_date": DT,
+        "created_at": DT, "updated_at": DT, "etag": "e0"})
+    return "inv1"
+
+
 # tool → (collection, factory, id key, arguments, (field, stored value))
 _HANDLER_CASES = {
     "update_partie": ("parties", _partie, "partie_id",
@@ -918,6 +932,10 @@ _HANDLER_CASES = {
     # tests: tests/test_mcp_template_writes.py).
     "update_template": ("doc_templates", _template, "template_id",
                         {"name": "Lettre révisée"}, ("name", "Lettre révisée")),
+    # Lot 3b — an invoice's DRAFT correction (its status and void paths are
+    # tests/test_mcp_billing_writes.py's).
+    "update_invoice": ("invoices", _draft_invoice, "invoice_id",
+                       {"notes": "Corrigées"}, ("notes", "Corrigées")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -934,7 +952,7 @@ _SECOND_ARGS = {
 # Tools that DEMAND expected_etag for the change the case makes (plan rule
 # 3, D8: replacing prose). They cannot « guard their own read » without
 # one — they refuse the call instead, which the own-read test asserts.
-_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous"}
+_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous", "update_invoice"}
 
 # A decision is taken ONCE (lot 1b, L7): the chained-edit test cannot make a
 # second, different write — confirming a confirmed request is the honest
@@ -961,6 +979,7 @@ _HANDLER_GETTERS = {
     "update_document": (document_model, "get_document_strict"),
     "manage_folder": (folder_model, "list_dossier_folders"),
     "update_template": (doc_template_model, "get_template"),
+    "update_invoice": (invoice_model, "get_invoice"),
 }
 
 

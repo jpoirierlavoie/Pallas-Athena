@@ -54,11 +54,17 @@ client it was built for: the practice moved to a Claude for Work account
 under a data-processing agreement, so the reason the chat existed — keeping
 privileged material out of a consumer product — no longer holds. Nothing
 was ever stored in ``chat_drafts``; the feature never saw use.
-**NOTHING is ever deleted**, no invoice status is ever set and no payment is
-ever recorded (``mcp.disclosure.NEVERS`` — the sweep would catch a handler
-reaching one). That is why, for example, ``list_protocol_steps`` derives
-overdue status by date comparison instead of calling
-``check_overdue_steps``, which writes. (Note the request path itself does
+**NOTHING is ever deleted**, no payment is ever recorded and no invoice is
+ever marked « payée » (``mcp.disclosure.NEVERS`` — the sweep would catch a
+handler reaching one). Since lot 3b (BILL) an invoice IS created from real
+unbilled sources — consuming the year's next number, allocated inside the
+model's transaction —, corrected while a brouillon, promoted (envoyée,
+en_retard) and voided, and a budget version is appended: the ``budgets``
+collection and the two ``counters`` (``invoices-{year}``,
+``budget-{dossier_id}``) are written, through their models only. And a
+READ handler writes nothing at all — that is why, for example,
+``list_protocol_steps`` derives overdue status by date comparison instead
+of calling ``check_overdue_steps``, which writes. (Note the request path itself does
 write outside the tool path: ``bearer.stamp_token_last_used``,
 ``oauth.touch_client``, and ``mcp/write_support.py``'s idempotency
 records.)
@@ -119,6 +125,7 @@ from mcp import coverage, import_audit
 from mcp.write_support import register_persistence_hooks, run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
+from models import budget as budget_model
 from models import concurrency
 from models import doc_template as doc_template_model
 from models import dossier as dossier_model
@@ -139,13 +146,14 @@ from security import TAG_RE, sanitize
 from services import docx_identifiers as identifiers_service
 from services import gabarit_champs as gabarit_service
 from services import gabarits as gabarit_writer
+from services import note_honoraires as note_honoraires_service
 from services import protocoles as protocol_service
 from services import rendez_vous as rendez_vous_service
 from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, deadlines, docx_templatize, pdf_text, phases, recurrence,
-    storage_identity, taxonomie,
+    analyse_blocs, budget_math, deadlines, docx_templatize, pdf_text, phases,
+    recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import extract_placeholders, validate_template
@@ -158,7 +166,9 @@ from utils.docx_leak_scan import (
     words_within,
 )
 from utils.format_fr import format_date_fr, format_rate_fr
-from utils.logging_setup import log_hearing_series_event
+from utils.logging_setup import (
+    log_dossier_event, log_hearing_series_event, log_unexpected,
+)
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
 from utils.template_fields import (
@@ -176,6 +186,8 @@ from utils.validators import format_phone_display
 
 from mcp.tools import (
     ANALYSE_OPERATIONS_MAX,
+    BUDGET_HISTORY_MAX,
+    BUDGET_NOTE_MAX_CHARS,
     CONCURRENCY_OPTIONAL,
     CONTENT_MAX_CHARS,
     CONCURRENCY_REQUIRED,
@@ -184,6 +196,9 @@ from mcp.tools import (
     DOCUMENT_TITLE_MAX_CHARS,
     DOCUMENT_TEXT_MAX_CHARS,
     FOLDER_TREE_MAX,
+    INVOICE_NOTES_MAX_CHARS,
+    INVOICE_SOURCES_MAX,
+    INVOICE_TERMS_MAX_CHARS,
     MARKDOWN_DOCUMENT_MAX_CHARS,
     PHASE_BULK_MAX,
     TOOLS,
@@ -2892,6 +2907,14 @@ def get_invoice(args: dict) -> dict:
             "facture dans l'application avant de vous fier à ce détail."
         )
     record["warnings"] = warnings
+    # Lot 3b: what update_invoice needs, from the read that fed it.
+    record["etag"] = concurrency.etag_of(invoice)
+    record["connector_transitions"] = _connector_transitions(invoice)
+    record["void_reason"] = (
+        str(invoice.get("void_reason") or "")
+        if invoice.get("status") == "annulée" else None
+    )
+    record["created_via"] = str(invoice.get("created_via") or "")
     return {"found": True, "invoice": record}
 
 
@@ -4717,24 +4740,24 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
     The model refuses too; this pre-read exists so the refusal NAMES the
     invoice and the way out instead of surfacing a bare model error. (It
     was written for the `dry_run` contract, removed 2026-08-27, and is
-    kept for the message.) Note the remedy named is real — voiding
-    the invoice in the application releases every source still attached to
-    it (``void_invoice`` sets invoiced back to False), which is the ONE way
-    back. Since 2026-09-26 that void is REFUSED while a payment stands on
-    the invoice (reverse it first, in « Administration » or « Fidéicommis »);
-    the message below does not say so yet — a connector-visible text, it
-    moves with the Lot 3 text commit and its consent train.
+    kept for the message.) The remedy named is real — voiding the invoice
+    releases every source still attached to it (``void_invoice_report``
+    sets invoiced back to False), and since lot 3b the connector can void
+    it too (``update_invoice``, status annulée) — REFUSED while a payment
+    stands on the invoice (reverse it first, in the application). The
+    number is never given back.
     """
     if not row.get("invoiced"):
         return
     raise ToolArgumentError(
         f"{kind} est déjà porté(e) à la facture "
-        f"{row.get('invoice_id') or '(inconnue)'}. Le connecteur ne corrige "
-        "jamais une entrée facturée — seule sa phase du litige reste "
-        "reclassable (set_time_entry_phase, set_expense_phase) — et ne peut "
-        "pas annuler une facture. "
-        "Pour la libérer : annulez la facture dans l'application — ses "
-        "entrées et déboursés redeviennent modifiables."
+        f"{row.get('invoice_id') or '(inconnue)'}. Une entrée facturée ne "
+        "se corrige plus — seule sa phase du litige reste reclassable "
+        "(set_time_entry_phase, set_expense_phase). Pour la libérer : "
+        "annulez la facture (update_invoice avec status « annulée », ou "
+        "dans l'application), possible tant qu'aucun paiement n'y est "
+        "inscrit — ses entrées et déboursés redeviennent modifiables ; son "
+        "numéro, lui, n'est jamais réattribué."
     )
 
 
@@ -5092,6 +5115,7 @@ def _billing_edit(
     entity_type: str,
     getter,
     updater,
+    mover,
     text_fields: tuple,
     legacy_collection: str,
     entity_builder,
@@ -5105,6 +5129,16 @@ def _billing_edit(
     an entry deliberately marked non-billable AND rematerialise its amount,
     the model recomputing on every save. Same for a defaulted ``taxable``,
     which would add QST to a non-taxable disbursement.
+
+    ``dossier_id`` (lot 3b) MOVES the row, by the ONE rule of
+    ``models/billing_move`` — through *mover* (``move_time_entry`` /
+    ``move_expense``: a partial write of the dossier link and its two
+    labels, nothing else) when it is the only change, through *updater*
+    (which applies the same rule inside its own transaction) when fields
+    change with it. The « from » confirmation the move demands is the
+    dossier this handler READ; the etag it compares against is that read's,
+    so a row moved or edited since is refused, never re-filed on a stale
+    view. The target is resolved first, like every write's dossier.
     """
     row_id = (args.get(id_key) or "").strip()
     if not row_id:
@@ -5114,6 +5148,22 @@ def _billing_edit(
         raise ToolArgumentError(f"{kind} introuvable : {row_id}.")
     expected = _expected_etag(args, existing, tool=tool, subject=stale_subject)
     _refuse_if_invoiced(existing, kind)
+
+    stored_dossier = str(existing.get("dossier_id") or "")
+    target: Optional[dict] = None
+    if "dossier_id" in args:
+        wanted = str(args.get("dossier_id") or "").strip()
+        if not wanted:
+            raise ToolArgumentError(
+                "`dossier_id` ne peut pas être vide : une entrée de temps ou "
+                "un déboursé appartient toujours à un dossier."
+            )
+        if wanted != stored_dossier:
+            _wanted, target = _resolve_write_dossier(
+                {"dossier_id": wanted}, required=True)
+            # The id the caller named and the resolver found — never the
+            # record's own copy of it.
+            target = {**target, "id": wanted}
 
     data: dict[str, Any] = {}
     for field in text_fields:
@@ -5150,25 +5200,74 @@ def _billing_edit(
     if "legacy_ref" in data and data["legacy_ref"] != existing.get("legacy_ref", ""):
         _refuse_legacy_ref_collision(legacy_collection, data["legacy_ref"])
 
-    if not data:
+    if not data and target is None:
+        if "dossier_id" in args:
+            # Already filed there — a replay of a move that succeeded.
+            return {
+                "updated": True,
+                "entity_type": entity_type,
+                "entity": entity_builder(existing),
+                "moved": False,
+                "previous_dossier_id": None,
+                "warnings": [
+                    f"{kind} est déjà à ce dossier : rien n'a été écrit."
+                ],
+            }
         raise ToolArgumentError(
             "Aucun champ à modifier : fournissez au moins un champ."
         )
 
-
-    row, errors = updater(row_id, data, expected_etag=expected)
+    if target is not None and not data:
+        row, errors, _moved = mover(
+            row_id, target, from_dossier_id=stored_dossier,
+            expected_etag=expected,
+        )
+    else:
+        if target is not None:
+            data["dossier_id"] = target["id"]
+        row, errors = updater(row_id, data, expected_etag=expected)
     _raise_if_stale(
         errors, tool=tool, subject=stale_subject,
         reread=lambda: getter(row_id),
     )
     if errors:
         raise ToolArgumentError("; ".join(errors))
+    moved = target is not None
     return {
         "updated": True,
         "entity_type": entity_type,
         "entity": entity_builder(row),
-        "warnings": [],
+        "moved": moved,
+        "previous_dossier_id": stored_dossier if moved else None,
+        "warnings": _move_warnings(existing, target, entity_type) if moved else [],
     }
+
+
+def _move_warnings(row: dict, target: dict, entity_type: str) -> list[str]:
+    """What a billing row's move changes beyond its dossier — said, never
+    silently absorbed."""
+    out = [
+        "Le budget des deux dossiers change : la consommation de cette "
+        "ligne quitte l'ancien dossier et s'ajoute au nouveau (sa phase du "
+        "litige est conservée)."
+    ]
+    if entity_type == "time_entry":
+        rate = int(row.get("rate") or 0)
+        target_rate = target.get("hourly_rate")
+        if isinstance(target_rate, int) and target_rate != rate:
+            out.append(
+                f"Le taux de l'entrée ({format_cents(rate)}/h) est conservé : "
+                f"il diffère du taux du dossier de destination "
+                f"({format_cents(target_rate)}/h). Corrigez rate_cents si "
+                "l'entrée doit suivre le nouveau dossier."
+            )
+    status = target.get("status", "")
+    if status in ("fermé", "archivé"):
+        out.append(
+            f"Le dossier de destination est « {status} » : l'entrée y est "
+            "classée, et elle y sera facturée si vous le décidez."
+        )
+    return out
 
 
 _TIME_ENTRY_TEXT = ("description", "legacy_ref")
@@ -5219,6 +5318,7 @@ def update_time_entry(args: dict) -> dict:
             entity_type="time_entry",
             getter=time_entry_model.get_time_entry,
             updater=time_entry_model.update_time_entry,
+            mover=time_entry_model.move_time_entry,
             text_fields=_TIME_ENTRY_TEXT,
             legacy_collection="timeentries",
             entity_builder=_time_entry_entity,
@@ -5237,6 +5337,7 @@ def update_expense(args: dict) -> dict:
             entity_type="expense",
             getter=expense_model.get_expense,
             updater=expense_model.update_expense,
+            mover=expense_model.move_expense,
             text_fields=_EXPENSE_TEXT,
             legacy_collection="expenses",
             entity_builder=_expense_entity,
@@ -5711,15 +5812,15 @@ def _import_invoice_impl(args: dict) -> dict:
             "maintenant marqués facturés : le connecteur ne peut plus les "
             "modifier, sauf leur phase du litige (set_time_entry_phase, "
             "set_expense_phase). Pour défaire cet import, annulez la "
-            "facture dans l'application — les entrées et déboursés "
-            "redeviennent modifiables ; le numéro reste attaché à la "
-            "facture annulée tant qu'elle n'est pas supprimée dans "
-            "l'application.",
-            "La facture est au BROUILLON. Le connecteur ne change jamais le "
-            "statut d'une facture ni n'inscrit un paiement : promouvez-la "
-            "dans l'application (brouillon → envoyée, puis le paiement à sa "
-            "date historique), sinon le « Journal des honoraires » l'imprime "
-            "avec 0 $ reçu.",
+            "facture (update_invoice avec status « annulée », ou dans "
+            "l'application) — les entrées et déboursés redeviennent "
+            "modifiables ; le numéro reste attaché à la facture annulée tant "
+            "qu'elle n'est pas supprimée dans l'application.",
+            "La facture est au BROUILLON. Promouvez-la (update_invoice, "
+            "brouillon → envoyée, ou dans l'application), puis saisissez le "
+            "paiement à sa date historique dans l'application — le "
+            "connecteur n'inscrit aucun paiement —, sinon le « Journal des "
+            "honoraires » l'imprime avec 0 $ reçu.",
         ],
     }
 
@@ -5738,6 +5839,912 @@ def _import_invoice_entity(invoice: dict, dossier_id: str) -> dict:
                 "gst_amount", "qst_amount", "total"):
         _money(row, key, invoice.get(key, 0))
     return row
+
+
+# ── Lot 3b — BILL: preview_invoice, create_invoice, update_invoice ──────
+#
+# preview_invoice and create_invoice share EVERYTHING before the write: the
+# selection (_invoice_selection), the invoice document (_issued_invoice_data
+# → models.invoice.invoice_document_from, the ONE builder) and the model's
+# plan_invoice under create_invoice's own flags (generated, every source
+# required). The retired dry_run doubled every write and forced handlers to
+# re-implement model guards that drifted; this preview is a separate READ
+# that runs the model's computation itself, so there is nothing to drift.
+# The one difference is the total the write is TOLD (expected_total_cents):
+# it is what the preview reports.
+
+_INVOICE_SUBJECT = "Cette facture a été modifiée"
+_INVOICE_NOT_FOUND = (
+    "Facture introuvable. Prenez son identifiant dans list_invoices."
+)
+# (current, target) — the promotions this connector makes (decision D3).
+# « payée » → « envoyée » (reopening a hand-set payée) stays the
+# application's; « annulée » is the void, never a status write.
+_CONNECTOR_STATUS_MOVES = frozenset({
+    ("brouillon", "envoyée"), ("envoyée", "en_retard"),
+    ("en_retard", "envoyée"),
+})
+_INVOICE_DRAFT_ARGS = ("notes", "payment_terms", "due_date",
+                       "refresh_billing_address")
+_NUMBER_IS_PERMANENT = (
+    "Le numéro {number} est consommé DÉFINITIVEMENT : il ne sera jamais "
+    "réattribué, même si la facture est annulée."
+)
+
+
+def _invoice_past_due(invoice: dict) -> bool:
+    """True once the invoice's due date is strictly before today in
+    Montréal — the only moment « en retard » is a true statement."""
+    due = _as_utc(invoice.get("due_date"))
+    return due is not None and due.date() < _today_mtl()
+
+
+def _connector_transitions(invoice: dict) -> list[str]:
+    """The statuses update_invoice can set on *invoice* NOW — the model's
+    own authority (``available_transitions``), narrowed to the promotions
+    this connector makes, « en_retard » only past the due date. Judged on
+    the invoice alone: a payment standing in the registers is re-read by
+    the void's own transaction."""
+    current = invoice.get("status", "")
+    out: list[str] = []
+    for target in invoice_model.available_transitions(invoice):
+        if target == "annulée":
+            out.append(target)
+        elif (current, target) in _CONNECTOR_STATUS_MOVES and (
+                target != "en_retard" or _invoice_past_due(invoice)):
+            out.append(target)
+    return out
+
+
+def _invoice_date(args: dict) -> datetime:
+    """The invoice date: the argument, else today in Montréal; never after
+    today — an invoice dated in the future would print a false date."""
+    today = _today_mtl()
+    when = _write_date(args, "date", required=False)
+    if when is None:
+        return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    if when.date() > today:
+        raise ToolArgumentError(
+            f"`date` ({when.date().isoformat()}) est dans le futur : une "
+            "facture porte la date de son émission ou une date passée.",
+            reason="invoice_refused",
+        )
+    return when
+
+
+def _invoice_selection(args: dict, dossier_id: str) -> tuple[list[str], list[str], bool]:
+    """``(time_entry_ids, expense_ids, truncated)`` — the ONE selection rule
+    of preview_invoice and create_invoice: named ids (never both named ids
+    and all_unbilled, never an id twice, at most INVOICE_SOURCES_MAX in
+    all), or every billable unbilled source of the dossier, oldest first.
+    ``truncated`` means the dossier holds more than one invoice may carry."""
+    entry_ids = list(args.get("time_entry_ids") or [])
+    expense_ids = list(args.get("expense_ids") or [])
+    if args.get("all_unbilled"):
+        if entry_ids or expense_ids:
+            raise ToolArgumentError(
+                "`all_unbilled` ou des identifiants nommés — pas les deux : "
+                "une sélection doit avoir UN sens."
+            )
+        rows = [("t", e) for e in time_entry_model.get_unbilled_time_entries(dossier_id)]
+        rows += [("x", x) for x in expense_model.get_unbilled_expenses(dossier_id)]
+        rows.sort(key=lambda r: (_as_utc(r[1].get("date")) or _UTC_MIN,
+                                 str(r[1].get("id") or "")))
+        truncated = len(rows) > INVOICE_SOURCES_MAX
+        rows = rows[:INVOICE_SOURCES_MAX]
+        return ([str(r.get("id") or "") for k, r in rows if k == "t"],
+                [str(r.get("id") or "") for k, r in rows if k == "x"],
+                truncated)
+    if not entry_ids and not expense_ids:
+        raise ToolArgumentError(
+            "Nommez au moins une entrée de temps (`time_entry_ids`) ou un "
+            "déboursé (`expense_ids`), ou passez `all_unbilled` true."
+        )
+    for label, ids in (("time_entry_ids", entry_ids), ("expense_ids", expense_ids)):
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ToolArgumentError(
+                f"`{label}` contient des identifiants en double : "
+                + ", ".join(dupes)
+                + ". Chaque source ne peut être facturée qu'une fois."
+            )
+    if len(entry_ids) + len(expense_ids) > INVOICE_SOURCES_MAX:
+        raise ToolArgumentError(
+            f"Au plus {INVOICE_SOURCES_MAX} sources par facture (entrées et "
+            "déboursés ensemble) : partagez la facturation."
+        )
+    return entry_ids, expense_ids, False
+
+
+def _issued_invoice_data(args: dict, dossier_id: str, dossier: dict) -> dict:
+    """The invoice document's caller data — exactly the web form's
+    (``routes/invoices.invoice_create``): the dossier's FIRST client and its
+    billing address as on file, the firm's tax numbers from the settings
+    singleton, the date and due date. A client that does not resolve, an
+    address that could not be read, a tax charged under an empty number are
+    the MODEL's refusals (plan_invoice / issuance_refusals), judged on this
+    document for the preview and the write alike."""
+    clients = dossier.get("clients") or []
+    client_id = str(clients[0].get("id") or "") if clients else ""
+    client_name = clients[0].get("name", "") if clients else ""
+    cab = cabinet_dict()
+    data: dict[str, Any] = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "client_id": client_id,
+        "client_name": client_name,
+        "date": _invoice_date(args),
+        "gst_number": cab.get("gst_number", ""),
+        "qst_number": cab.get("qst_number", ""),
+        "created_via": "mcp",
+    }
+    if client_id:
+        client = partie_model.get_partie(client_id)
+        if client is not None:
+            data["billing_address"] = invoice_model.billing_address_from(client)
+    due = _write_date(args, "due_date", required=False)
+    if due is not None:
+        data["due_date"] = due
+    return data
+
+
+def _issuance_warnings(dossier: dict, data: dict) -> list[str]:
+    """True facts about issuing to this dossier's client — never refusals."""
+    out: list[str] = []
+    clients = dossier.get("clients") or []
+    if len(clients) > 1:
+        out.append(
+            f"Le dossier compte {len(clients)} clients : la facture est "
+            "adressée au PREMIER, comme dans l'application."
+        )
+    billing = data.get("billing_address") or {}
+    if data.get("client_id") and billing.get("name") and not str(
+            billing.get("street") or "").strip():
+        out.append(
+            "L'adresse de facturation du client n'a pas de rue : complétez "
+            "sa fiche avant d'envoyer la facture (update_invoice avec "
+            "refresh_billing_address la recopie sur un brouillon)."
+        )
+    held = (dossier.get("trust_balance_by_client") or {}).get(
+        data.get("client_id") or "", 0)
+    if int(held or 0) > 0:
+        out.append(
+            f"Le client détient {format_cents(int(held))} en fidéicommis dans "
+            "ce dossier. Aucune provision n'est déduite de la facture : une "
+            "provision s'applique APRÈS l'envoi, par un « paiement "
+            "d'honoraires » inscrit dans l'application."
+        )
+    if dossier.get("status") in ("fermé", "archivé"):
+        out.append(
+            f"Le dossier est « {dossier.get('status')} » : la facture peut "
+            "néanmoins être émise."
+        )
+    return out
+
+
+def _preview_sources(plan, entry_ids: list[str], expense_ids: list[str]) -> list[dict]:
+    """One row per source asked, in the order asked — the line it becomes,
+    or why it cannot be one (the model's own reason)."""
+    lines = {item.get("source_id"): item for item in plan.line_items
+             if item.get("source_id")}
+    rows: list[dict] = []
+    for kind, ids in (("time_entry", entry_ids), ("expense", expense_ids)):
+        for source_id in ids:
+            item = lines.get(source_id)
+            reason = plan.skipped.get(source_id)
+            row: dict[str, Any] = {
+                "id": source_id, "kind": kind,
+                "retained": item is not None and reason is None,
+                "reason": reason,
+                "date": None, "description": None, "hours": None,
+                "taxable": None, "amount_cents": None, "amount_display": None,
+            }
+            if item is not None and reason is None:
+                row.update({
+                    "date": date_str(_as_utc(item.get("date"))),
+                    "description": item.get("description", ""),
+                    "hours": (float(item["hours"]) if item.get("hours") is not None
+                              else None),
+                    "taxable": bool(item.get("taxable", True)),
+                })
+                _money(row, "amount", item.get("amount", 0))
+            rows.append(row)
+    return rows
+
+
+def preview_invoice(args: dict) -> dict:
+    """READ — what create_invoice would issue. Writes nothing, allocates
+    nothing: plan_invoice reads the sources and the client and returns."""
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    entry_ids, expense_ids, truncated = _invoice_selection(args, dossier_id)
+    data = _issued_invoice_data(args, dossier_id, dossier)
+    merged = invoice_model.invoice_document_from(data)
+    plan = invoice_model.plan_invoice(
+        dossier_id, entry_ids, expense_ids, merged,
+        generated=True, require_all_sources=True,
+    )
+    refusals = list(plan.errors)
+    if truncated:
+        refusals.append(
+            f"Plus de {INVOICE_SOURCES_MAX} sources non facturées : une "
+            "facture n'en porte pas autant. Nommez les sources à facturer."
+        )
+    totals = plan.totals or invoice_model.compute_totals(plan.line_items)
+    payload: dict[str, Any] = {
+        "dossier": {
+            "id": dossier_id,
+            "file_number": dossier.get("file_number", "") or "",
+            "title": dossier.get("title", "") or "",
+            "status": dossier.get("status", "") or "",
+        },
+        "client": {"id": data.get("client_id", ""),
+                   "name": data.get("client_name", "") or ""},
+        "sources": _preview_sources(plan, entry_ids, expense_ids),
+        "line_count": len(plan.line_items),
+        "number_prefix": f"{_today_mtl().strftime('%Y')}-F",
+        "ready": not refusals and bool(plan.line_items),
+        "refusals": refusals,
+        "warnings": list(plan.warnings) + _issuance_warnings(dossier, data),
+        "truncated": truncated,
+    }
+    for key in ("subtotal_fees", "subtotal_expenses", "subtotal",
+                "gst_amount", "qst_amount", "total"):
+        _money(payload, key, totals.get(key, 0))
+    return payload
+
+
+def _invoice_write_entity(invoice: dict, **extra: Any) -> dict:
+    row: dict[str, Any] = {
+        "id": invoice.get("id", ""),
+        "dossier_id": invoice.get("dossier_id", ""),
+        "dossier_file_number": invoice.get("dossier_file_number", "") or "",
+        "label": invoice.get("invoice_number", "") or "",
+        "invoice_number": invoice.get("invoice_number", "") or "",
+        "date": date_str(_as_utc(invoice.get("date"))),
+        "due_date": date_str(_as_utc(invoice.get("due_date"))),
+        "status": invoice.get("status", ""),
+        "status_label": invoice_model.STATUS_LABELS.get(
+            invoice.get("status", ""), invoice.get("status", "")),
+        # The invoice AS STORED after this write — the next edit's etag.
+        "etag": concurrency.etag_of(invoice),
+    }
+    _money(row, "total", invoice.get("total", 0))
+    _money(row, "amount_due", invoice.get("amount_due", 0))
+    row.update(extra)
+    return row
+
+
+def create_invoice(args: dict) -> dict:
+    return run_write("create_invoice", args, lambda: _create_invoice_impl(args))
+
+
+def _create_invoice_impl(args: dict) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    entry_ids, expense_ids, truncated = _invoice_selection(args, dossier_id)
+    if truncated:
+        raise ToolArgumentError(
+            f"Plus de {INVOICE_SOURCES_MAX} sources non facturées : une "
+            "facture n'en porte pas autant. Nommez les sources à facturer "
+            "(preview_invoice les liste). Aucune facture n'a été créée.",
+            reason="invoice_refused",
+        )
+    expected_total = args.get("expected_total_cents")
+    if not isinstance(expected_total, int) or isinstance(expected_total, bool):
+        raise ToolArgumentError(
+            "`expected_total_cents` est requis : le total_cents que "
+            "preview_invoice a rendu pour cette même sélection."
+        )
+    data = _issued_invoice_data(args, dossier_id, dossier)
+    if "notes" in args:
+        data["notes"] = _clean_entity_text(
+            str(args["notes"] or ""), "notes", INVOICE_NOTES_MAX_CHARS)
+    if "payment_terms" in args:
+        terms = _clean_entity_text(
+            str(args["payment_terms"] or ""), "payment_terms",
+            INVOICE_TERMS_MAX_CHARS)
+        if not terms:
+            raise ToolArgumentError(
+                "`payment_terms` ne peut pas être vide : elles s'impriment sur "
+                "la facture. Omettez-les pour les conditions par défaut."
+            )
+        data["payment_terms"] = terms
+
+    invoice, errors = invoice_model.create_invoice(
+        dossier_id, entry_ids, expense_ids, data,
+        expected_total=expected_total,
+        require_all_sources=True,
+    )
+    if errors:
+        raise ToolArgumentError(
+            "; ".join(errors) + " Aucune facture n'a été créée — aucun numéro "
+            "n'a été consommé.",
+            reason="invoice_refused",
+        )
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    number = invoice.get("invoice_number", "")
+    warnings = [
+        _NUMBER_IS_PERMANENT.format(number=number),
+        f"La facture est au BROUILLON : rien n'a été envoyé au client. Ses "
+        f"{len(entry_ids)} entrée(s) et {len(expense_ids)} déboursé(s) sont "
+        "maintenant facturés et figés (sauf leur phase du litige) ; "
+        "l'annulation (update_invoice, status « annulée ») les libère.",
+    ]
+    year_warning = invoice_model.number_year_warning(invoice.get("date"), number)
+    if year_warning:
+        warnings.append(year_warning)
+    warnings += _issuance_warnings(dossier, data)
+    entity = _invoice_write_entity(invoice)
+    for key in ("subtotal_fees", "subtotal_expenses", "subtotal",
+                "gst_amount", "qst_amount"):
+        _money(entity, key, invoice.get(key, 0))
+    return {
+        "created": True,
+        "entity_type": "invoice",
+        "entity": entity,
+        "line_count": len(entry_ids) + len(expense_ids),
+        "source_ids": {"time_entry_ids": list(entry_ids),
+                       "expense_ids": list(expense_ids)},
+        "warnings": warnings,
+    }
+
+
+def _stale_invoice(args: dict, invoice: dict) -> str:
+    """The caller's expected_etag, compared with the handler's read — a
+    stale one refused HERE, naming when the invoice last changed."""
+    wanted = str(args.get("expected_etag") or "")
+    if wanted != concurrency.etag_of(invoice):
+        raise _stale_refusal("update_invoice", _INVOICE_SUBJECT, invoice)
+    return wanted
+
+
+def _raise_invoice_errors(errors: list[str], invoice_id: str) -> None:
+    _raise_if_stale(
+        errors, tool="update_invoice", subject=_INVOICE_SUBJECT,
+        reread=lambda: invoice_model.get_invoice(invoice_id),
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors), reason="invoice_refused")
+
+
+def _note_on_file(invoice_id: str) -> Optional[bool]:
+    """Whether a note d'honoraires of this invoice is filed — None when the
+    lookup failed (a warning is then simply omitted, never guessed)."""
+    try:
+        return bool(document_model.find_generated_for_invoice(invoice_id))
+    except Exception:
+        return None
+
+
+def update_invoice(args: dict) -> dict:
+    return run_write("update_invoice", args, lambda: _update_invoice_impl(args))
+
+
+def _update_invoice_impl(args: dict) -> dict:
+    invoice_id = str(args.get("invoice_id") or "").strip()
+    if not document_model.is_addressable_id(invoice_id):
+        raise ToolArgumentError(_INVOICE_NOT_FOUND)
+    invoice = invoice_model.get_invoice(invoice_id)
+    if invoice is None:
+        raise ToolArgumentError(_INVOICE_NOT_FOUND)
+    if "expected_etag" not in args:
+        # Required (plan rule 3): an invoice change is judged on the
+        # version the caller READ — there is no own-read fallback here.
+        raise ToolArgumentError(
+            "`expected_etag` est requis : l'etag de la facture lue par "
+            "get_invoice. Rien n'a été écrit."
+        )
+    status = args.get("status")
+    draft_keys = [k for k in _INVOICE_DRAFT_ARGS if k in args]
+    if status and draft_keys:
+        raise ToolArgumentError(
+            "Une modification par appel : un changement de statut ("
+            "`status`) OU la correction d'un brouillon ("
+            + ", ".join(f"`{k}`" for k in draft_keys) + "), pas les deux."
+        )
+    if "void_reason" in args and status != "annulée":
+        raise ToolArgumentError(
+            "`void_reason` n'accompagne que `status` « annulée »."
+        )
+    if status == "annulée":
+        return _void_invoice(args, invoice)
+    if status:
+        return _set_invoice_status(args, invoice, status)
+    if not draft_keys:
+        raise ToolArgumentError(
+            "Aucune modification demandée : `status`, ou un champ de "
+            "brouillon (notes, payment_terms, due_date, "
+            "refresh_billing_address)."
+        )
+    return _edit_invoice_draft(args, invoice)
+
+
+def _invoice_edit_payload(
+    mode: str, invoice: dict, *, previous_status: str, applied: bool,
+    changed: Optional[list[str]] = None, report: Optional[dict] = None,
+    warnings: Optional[list[str]] = None,
+) -> dict:
+    report = report or {}
+    entity = _invoice_write_entity(
+        invoice,
+        previous_status=previous_status,
+        void_reason=(str(invoice.get("void_reason") or "")
+                     if invoice.get("status") == "annulée" else None),
+    )
+    _money(entity, "amount_paid", invoice.get("amount_paid", 0))
+    _money(entity, "balance", invoice_model.balance_of(invoice))
+    return {
+        "updated": True,
+        "mode": mode,
+        "outcome": "applied" if applied else "unchanged",
+        "entity_type": "invoice",
+        "entity": entity,
+        "changed_fields": list(changed or []),
+        "released_time_entry_ids": list(report.get("released_time_entry_ids") or []),
+        "released_expense_ids": list(report.get("released_expense_ids") or []),
+        "foreign_source_ids": list(report.get("foreign_source_ids") or []),
+        "missing_source_ids": list(report.get("missing_source_ids") or []),
+        "connector_transitions": _connector_transitions(invoice),
+        "warnings": list(warnings or []),
+    }
+
+
+def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
+    invoice_id = invoice.get("id") or args["invoice_id"]
+    current = invoice.get("status", "")
+    if current == target:
+        # Before the etag: a replay of a promotion that succeeded is a
+        # no-op, never a false conflict.
+        return _invoice_edit_payload(
+            "status", invoice, previous_status=current, applied=False,
+            warnings=[f"La facture est déjà « {current} » : rien n'a été "
+                      "écrit."])
+    if (current, target) not in _CONNECTOR_STATUS_MOVES:
+        if current == "payée":
+            message = (
+                "Cette facture est « payée ». Le connecteur ne rouvre pas "
+                "une facture payée : si un encaissement l'a soldée, "
+                "contre-passez-le dans l'application — elle se rouvrira "
+                "d'elle-même."
+            )
+        elif current == "annulée":
+            message = "Cette facture est annulée : son statut ne change plus."
+        elif current == "brouillon":
+            message = (
+                "Un brouillon passe d'abord à « envoyée » ; « en_retard » ne "
+                "s'applique qu'à une facture envoyée."
+            )
+        else:
+            message = (
+                f"Transition de « {current} » vers « {target} » non "
+                "permise ici."
+            )
+        raise ToolArgumentError(message, reason="invoice_refused")
+    if target == "en_retard":
+        if invoice.get("due_date") is None:
+            raise ToolArgumentError(
+                "Cette facture n'a pas de date d'échéance : elle ne peut pas "
+                "être « en retard ».", reason="invoice_refused")
+        if not _invoice_past_due(invoice):
+            raise ToolArgumentError(
+                "L'échéance de cette facture n'est pas passée : elle n'est "
+                "pas « en retard ».", reason="invoice_refused")
+    wanted = _stale_invoice(args, invoice)
+    written, errors = invoice_model.update_status_report(
+        invoice_id, target, expected_etag=wanted)
+    _raise_invoice_errors(errors, invoice_id)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    warnings: list[str] = []
+    if current == "brouillon":
+        warnings.append(
+            "Rien n'a été envoyé au client : la facture est MARQUÉE envoyée. "
+            "Seule une annulation défait ce statut. Elle compte désormais "
+            "dans les comptes à recevoir, et son encaissement se saisit dans "
+            "l'application."
+        )
+        if _note_on_file(invoice_id) is False:
+            warnings.append(
+                "Aucune note d'honoraires n'a encore été générée pour cette "
+                "facture (create_document, source invoice_note)."
+            )
+        for amount_key, number_key, label in (
+            ("gst_amount", "gst_number", "TPS"),
+            ("qst_amount", "qst_number", "TVQ"),
+        ):
+            if int(written.get(amount_key) or 0) > 0 and not str(
+                    written.get(number_key) or "").strip():
+                warnings.append(
+                    f"La facture porte la {label} sans numéro d'inscription "
+                    f"{label} : elle a été émise avant que le numéro soit "
+                    "saisi dans « Paramètres »."
+                )
+    return _invoice_edit_payload(
+        "status", written, previous_status=current, applied=True,
+        warnings=warnings)
+
+
+def _void_invoice(args: dict, invoice: dict) -> dict:
+    invoice_id = invoice.get("id") or args["invoice_id"]
+    current = invoice.get("status", "")
+    if "void_reason" not in args:
+        raise ToolArgumentError(
+            "`void_reason` est requis pour annuler une facture : il est "
+            "conservé sur la facture."
+        )
+    reason = str(args.get("void_reason") or "").strip()
+    if not reason:
+        raise ToolArgumentError("`void_reason` ne peut pas être vide.")
+    reason_errors = invoice_model.invalid_void_reason(reason)
+    if reason_errors:
+        raise ToolArgumentError("; ".join(reason_errors))
+    if current == "annulée":
+        return _invoice_edit_payload(
+            "void", invoice, previous_status=current, applied=False,
+            warnings=["La facture est déjà annulée : rien n'a été écrit."])
+    if current == "payée":
+        raise ToolArgumentError(
+            "Cette facture est payée : contre-passez d'abord, dans "
+            "l'application, l'encaissement qui l'a soldée. Rien n'a été "
+            "annulé.", reason="invoice_refused")
+    wanted = _stale_invoice(args, invoice)
+    report, errors = invoice_model.void_invoice_report(
+        invoice_id, expected_etag=wanted, reason=reason)
+    _raise_invoice_errors(errors, invoice_id)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    written = report["invoice"]
+    number = written.get("invoice_number", "")
+    warnings = [
+        f"Le numéro {number} reste attaché à la facture annulée : il n'est "
+        "jamais réattribué à une autre facture.",
+    ]
+    released = (len(report.get("released_time_entry_ids") or [])
+                + len(report.get("released_expense_ids") or []))
+    if released:
+        warnings.append(
+            f"{released} source(s) redeviennent non facturées : modifiables, "
+            "et facturables de nouveau."
+        )
+    if report.get("foreign_source_ids"):
+        warnings.append(
+            f"{len(report['foreign_source_ids'])} source(s) sont portées par "
+            "une AUTRE facture depuis : elles n'ont pas été touchées."
+        )
+    if report.get("missing_source_ids"):
+        warnings.append(
+            f"{len(report['missing_source_ids'])} source(s) n'existent plus : "
+            "rien à libérer pour elles."
+        )
+    if _note_on_file(invoice_id):
+        warnings.append(
+            "La note d'honoraires déjà générée reste dans « Projets » : elle "
+            "ne correspond plus à une facture en vigueur."
+        )
+    return _invoice_edit_payload(
+        "void", written, previous_status=current, applied=True,
+        report=report, warnings=warnings)
+
+
+def _edit_invoice_draft(args: dict, invoice: dict) -> dict:
+    invoice_id = invoice.get("id") or args["invoice_id"]
+    refusal = invoice_model.draft_edit_refusal(invoice)
+    if refusal:
+        raise ToolArgumentError(refusal, reason="invoice_refused")
+    changes: dict[str, Any] = {}
+    for key in ("notes", "payment_terms"):
+        if key in args:
+            changes[key] = str(args[key] if args[key] is not None else "")
+    if "due_date" in args:
+        due = _write_date(args, "due_date", required=True)
+        changes["due_date"] = due
+    refresh = bool(args.get("refresh_billing_address"))
+    if not changes and not refresh:
+        raise ToolArgumentError(
+            "Aucune modification demandée : refresh_billing_address false ne "
+            "change rien."
+        )
+    doc, errors, changed = invoice_model.update_invoice_draft(
+        invoice_id, changes,
+        expected_etag=str(args.get("expected_etag") or ""),
+        refresh_billing_address=refresh,
+    )
+    _raise_invoice_errors(errors, invoice_id)
+    warnings: list[str] = []
+    if not changed:
+        warnings.append("Les valeurs demandées sont déjà celles du brouillon : "
+                        "rien n'a été écrit.")
+    elif _note_on_file(invoice_id):
+        warnings.append(
+            "Une note d'honoraires générée avant cette correction ne la "
+            "reflète pas : générez-la de nouveau (create_document, source "
+            "invoice_note)."
+        )
+    return _invoice_edit_payload(
+        "draft", doc, previous_status=invoice.get("status", ""),
+        applied=bool(changed), changed=changed, warnings=warnings)
+
+
+# ── Lot 3b — BILL: get_budget, create_budget_version ────────────────────
+#
+# A budget is APPEND-ONLY (models/budget): a « change » is a new version,
+# and the version in force is the reference the client was quoted. Both
+# tools read the history through the STRICT reader — « no budget » and
+# « unreadable » are different answers, and a new version is based on it.
+
+_BUDGET_READ_ERROR = (
+    "Les versions du budget de ce dossier n'ont pas pu être lues — lecture "
+    "impossible. Rien n'a été écrit : réessayez dans un instant."
+)
+
+
+def _budget_line_rows(budget: dict) -> list[dict]:
+    rate = int(budget.get("hourly_rate") or 0)
+    rows: list[dict] = []
+    for line in sorted(budget.get("lines") or [],
+                       key=lambda l: str(l.get("sous_phase") or "")):
+        code = str(line.get("sous_phase") or "")
+        hours = float(line.get("hours") or 0)
+        phase = phases.phase_of(code)
+        row: dict[str, Any] = {
+            "sous_phase": code,
+            "phase": phase,
+            "phase_label": phases.PHASE_LABELS.get(phase, ""),
+            "sous_phase_label": phases.SOUS_PHASE_LABELS.get(code, ""),
+            "hours": hours,
+        }
+        _money(row, "frais", int(line.get("frais_cents") or 0))
+        _money(row, "fees", budget_math.line_fees_cents(hours, rate))
+        rows.append(row)
+    return rows
+
+
+def _budget_version_row(budget: dict) -> dict:
+    totals = budget_math.budget_totals(budget)
+    row: dict[str, Any] = {
+        "id": budget.get("id", ""),
+        "dossier_id": budget.get("dossier_id", ""),
+        "version": int(budget.get("version") or 0),
+        "note": str(budget.get("note") or ""),
+        "lines": _budget_line_rows(budget),
+        "totals": {"hours": totals["hours"]},
+        **_stamps(budget),
+    }
+    _money(row, "hourly_rate", int(budget.get("hourly_rate") or 0))
+    for key in ("fees", "frais", "total"):
+        _money(row["totals"], key, totals[f"{key}_cents"])
+    return row
+
+
+def _budget_view_payload(view: dict) -> dict:
+    rows = []
+    for r in view.get("rows") or []:
+        row: dict[str, Any] = {
+            "phase": r.get("phase", ""),
+            "libelle": r.get("libelle", ""),
+            "budget_hours": float(r.get("budget_hours") or 0),
+            "actual_hours": float(r.get("actual_hours") or 0),
+            "pct": r.get("pct"),
+            "level": r.get("level", "none"),
+        }
+        _money(row, "budget", r.get("budget_cents", 0))
+        _money(row, "actual", r.get("actual_cents", 0))
+        _money(row, "ecart", r.get("ecart_cents", 0))
+        rows.append(row)
+    out: dict[str, Any] = {"rows": rows, "pct": view.get("pct"),
+                           "level": view.get("level", "none")}
+    _money(out, "unphased", (view.get("unphased") or {}).get("total_cents", 0))
+    _money(out, "budget_total", view.get("budget_total_cents", 0))
+    _money(out, "actual_total", view.get("actual_total_cents", 0))
+    return out
+
+
+def _budget_versions(dossier_id: str) -> list[dict]:
+    try:
+        return budget_model.list_budget_versions_strict(dossier_id)
+    except Exception:
+        raise ToolArgumentError(_BUDGET_READ_ERROR)
+
+
+def get_budget(args: dict) -> dict:
+    """READ — the budget in force, budget vs actuals, and the history."""
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    if not dossier_id or dossier_model.get_dossier(dossier_id) is None:
+        raise ToolArgumentError(
+            f"Dossier introuvable : {dossier_id or '(vide)'}. Utilisez "
+            "list_dossiers pour obtenir un dossier_id valide."
+        )
+    versions = _budget_versions(dossier_id)
+    latest = versions[0] if versions else None
+    actuals = budget_model.aggregate_actuals(
+        time_entry_model.list_time_entries(dossier_id=dossier_id),
+        expense_model.list_expenses(dossier_id=dossier_id),
+    )
+    view = budget_model.build_budget_view(latest, actuals)
+    shown = versions[:BUDGET_HISTORY_MAX] if args.get("include_history", True) else []
+    history = []
+    for b in shown:
+        row: dict[str, Any] = {"id": b.get("id", ""),
+                               "version": int(b.get("version") or 0),
+                               **_stamps(b)}
+        _money(row, "total", budget_math.budget_totals(b)["total_cents"])
+        history.append(row)
+    return {
+        "dossier_id": dossier_id,
+        "has_budget": latest is not None,
+        "base_version": int(latest.get("version") or 0) if latest else 0,
+        "latest": _budget_version_row(latest) if latest else None,
+        "versions": history,
+        "truncated": len(versions) > len(shown),
+        "view": _budget_view_payload(view),
+    }
+
+
+def _clean_budget_hours(raw: Any, code: str) -> float:
+    """Budget hours at two decimals — finer is REFUSED, never rounded (the
+    _clean_hours rule; zero is legitimate here: it removes a line)."""
+    try:
+        hours = float(raw or 0)
+    except (TypeError, ValueError):
+        raise ToolArgumentError(f"Heures invalides sur la ligne « {code} ».")
+    if hours < 0:
+        raise ToolArgumentError(f"Heures négatives sur la ligne « {code} ».")
+    if abs(round(hours, 2) - hours) > 1e-9:
+        raise ToolArgumentError(
+            f"Ligne « {code} » : {hours} h porte plus de deux décimales — "
+            "donnez la valeur au centième."
+        )
+    return round(hours, 2)
+
+
+def create_budget_version(args: dict) -> dict:
+    return run_write("create_budget_version", args,
+                     lambda: _create_budget_version_impl(args))
+
+
+def _create_budget_version_impl(args: dict) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    base_version = args.get("base_version")
+    if not isinstance(base_version, int) or isinstance(base_version, bool):
+        raise ToolArgumentError(
+            "`base_version` est requis : la base_version que get_budget rend "
+            "(0 quand le dossier n'a pas encore de budget)."
+        )
+    mode = args.get("mode")
+    if mode not in ("replace", "merge"):
+        raise ToolArgumentError("`mode` doit valoir replace ou merge.")
+
+    requested: dict[str, tuple[float, int]] = {}
+    for line in args.get("lines") or []:
+        code = str(line.get("sous_phase") or "")
+        if code in requested:
+            raise ToolArgumentError(
+                f"Sous-code en double dans `lines` : « {code} »."
+            )
+        requested[code] = (_clean_budget_hours(line.get("hours"), code),
+                           int(line.get("frais_cents") or 0))
+
+    versions = _budget_versions(dossier_id)
+    latest = versions[0] if versions else None
+    current = int(latest.get("version") or 0) if latest else 0
+    stored = {
+        str(l.get("sous_phase") or ""): (round(float(l.get("hours") or 0), 2),
+                                         int(l.get("frais_cents") or 0))
+        for l in (latest or {}).get("lines") or []
+    }
+    if mode == "replace":
+        result = {c: v for c, v in requested.items() if v != (0.0, 0)}
+    else:
+        result = dict(stored)
+        for code, value in requested.items():
+            if value == (0.0, 0):
+                result.pop(code, None)
+            else:
+                result[code] = value
+    if not result:
+        raise ToolArgumentError(
+            "Le budget doit garder au moins une ligne non nulle."
+        )
+
+    if "hourly_rate_cents" in args:
+        rate = int(args["hourly_rate_cents"])
+    elif latest is not None:
+        rate = int(latest.get("hourly_rate") or 0)
+    else:
+        rate = int(dossier.get("hourly_rate") or 0)
+    if "note" in args:
+        note = _clean_entity_text(str(args["note"] or ""), "note",
+                                  BUDGET_NOTE_MAX_CHARS)
+    else:
+        note = str((latest or {}).get("note") or "")
+
+    # Before the base check: a replay of a version already recorded is a
+    # no-op, never a false conflict.
+    if (latest is not None and result == stored
+            and rate == int(latest.get("hourly_rate") or 0)
+            and note == str(latest.get("note") or "")):
+        return _budget_write_payload(
+            latest, created=False, stored=stored, result=result,
+            warnings=["Identique à la version en vigueur (v"
+                      f"{current}) : rien n'a été écrit."])
+    if base_version != current:
+        raise ToolArgumentError(
+            f"La version en vigueur de ce budget est la v{current}, pas la "
+            f"v{base_version} : une version a été enregistrée depuis votre "
+            "lecture. Rien n'a été écrit — relisez get_budget, puis refaites "
+            "la version sur la version actuelle.",
+            reason="budget_version_conflict",
+        )
+    doc, errors = budget_model.create_budget(
+        {"dossier_id": dossier_id, "hourly_rate": rate, "note": note,
+         "lines": [{"sous_phase": c, "hours": h, "frais_cents": f}
+                   for c, (h, f) in sorted(result.items())]},
+        base_version=base_version,
+    )
+    if errors and budget_model.is_version_conflict(errors):
+        raise ToolArgumentError(
+            "Une version plus récente de ce budget a été enregistrée pendant "
+            "cet appel. Rien n'a été écrit — relisez get_budget, puis "
+            "refaites la version sur la version actuelle.",
+            reason="budget_version_conflict",
+        )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    try:
+        log_dossier_event(
+            "budget_saved", dossier_id, budget_id=doc["id"],
+            version=doc["version"], line_count=len(doc["lines"]), via="mcp",
+        )
+    except Exception:
+        log_unexpected("mcp budget logging failed")
+    warnings = [
+        f"La v{doc['version']} devient le budget de référence : son "
+        "« Estimation » est un document remis au CLIENT. Les versions "
+        "antérieures restent conservées et consultables.",
+    ]
+    removed = sorted(set(stored) - set(result))
+    if removed:
+        warnings.append(
+            "Lignes retirées par rapport à la version précédente : "
+            + ", ".join(removed) + "."
+        )
+    dossier_rate = dossier.get("hourly_rate")
+    if isinstance(dossier_rate, int) and dossier_rate != rate:
+        warnings.append(
+            f"Le taux de cette version ({format_cents(rate)}/h) diffère du "
+            f"taux du dossier ({format_cents(dossier_rate)}/h)."
+        )
+    return _budget_write_payload(doc, created=True, stored=stored,
+                                 result=result, warnings=warnings)
+
+
+def _budget_write_payload(
+    budget: dict, *, created: bool, stored: dict, result: dict,
+    warnings: list[str],
+) -> dict:
+    common = set(stored) & set(result)
+    return {
+        "created": created,
+        "outcome": "created" if created else "unchanged",
+        "entity_type": "budget",
+        "entity": {
+            "id": budget.get("id", ""),
+            "dossier_id": budget.get("dossier_id", ""),
+            "label": f"v{int(budget.get('version') or 0)}",
+            "version": int(budget.get("version") or 0),
+        },
+        "budget": _budget_version_row(budget),
+        "diff": {
+            "added": sorted(set(result) - set(stored)) if created else [],
+            "changed": sorted(c for c in common if stored[c] != result[c])
+            if created else [],
+            "removed": sorted(set(stored) - set(result)) if created else [],
+        },
+        "warnings": warnings,
+    }
 
 
 # ── 39. create_dossier (WRITE) ──────────────────────────────────────────
@@ -11068,14 +12075,18 @@ _CREATE_DOCUMENT_ARGS = {
     "markdown": ("dossier_id", "title", "markdown", "category",
                  "document_date", "folder_id"),
     "copy": ("document_id", "dossier_id", "display_name", "folder_id"),
+    # Lot 3b: the invoice decides the dossier, and the note always lands in
+    # « Projets » (the service files it by the folder's ROLE).
+    "invoice_note": ("invoice_id", "regenerate"),
 }
 _CREATE_DOCUMENT_REQUIRED = {
     "markdown": ("dossier_id", "title", "markdown"),
     "copy": ("document_id",),
+    "invoice_note": ("invoice_id",),
 }
 _CREATE_DOCUMENT_ALL = ("dossier_id", "title", "markdown", "category",
                         "document_date", "folder_id", "document_id",
-                        "display_name")
+                        "display_name", "invoice_id", "regenerate")
 _NO_ACTIVE_NOTE_TEMPLATE = (
     "Aucun gabarit « Note (impression) » n'est désigné comme actif : le "
     "juriste doit en désigner un dans Gabarits (l'application ne retient "
@@ -11091,7 +12102,8 @@ def create_document(args: dict) -> dict:
 def _create_document_impl(args: dict) -> dict:
     source = args.get("source")
     if source not in _CREATE_DOCUMENT_ARGS:
-        raise ToolArgumentError("`source` doit valoir markdown ou copy.")
+        raise ToolArgumentError(
+            "`source` doit valoir markdown, copy ou invoice_note.")
     stray = [k for k in _CREATE_DOCUMENT_ALL
              if k in args and k not in _CREATE_DOCUMENT_ARGS[source]]
     if stray:
@@ -11108,7 +12120,76 @@ def _create_document_impl(args: dict) -> dict:
         )
     if source == "markdown":
         return _create_markdown_document(args)
+    if source == "invoice_note":
+        return _invoice_note_document(args)
     return _copy_stored_document(args)
+
+
+def _invoice_note_document(args: dict) -> dict:
+    """The invoice's Word note d'honoraires — ``services/note_honoraires``,
+    the ONE generation the web button runs too: the invoice and its lines
+    read strictly, the template the lawyer DESIGNATED, the fingerprint of
+    what the note prints (an identical note already filed is returned, not
+    filed twice, unless *regenerate*), the Storage uid from the guard that
+    never returns « unknown », « Projets » by its role. Every refusal comes
+    back before anything is written."""
+    invoice_id = str(args.get("invoice_id") or "").strip()
+    if not document_model.is_addressable_id(invoice_id):
+        raise ToolArgumentError(f"{_INVOICE_NOT_FOUND} {_NOTHING_CREATED}")
+    try:
+        note = note_honoraires_service.generer_note_honoraires(
+            invoice_id,
+            regenerate=bool(args.get("regenerate")),
+            generated_by=_GENERATED_BY,
+        )
+    except note_honoraires_service.NoteRefusee as refusal:
+        message = refusal.message
+        if "Rien n'a été" not in message:
+            message = f"{message} {_NOTHING_CREATED}"
+        raise ToolArgumentError(message)
+
+    # ── Committed (or reused): nothing below may refuse. ───────────────
+    doc = note.document
+    invoice = note.invoice or {}
+    folder = note.folder
+    if folder is None and doc.get("folder_id"):
+        folder = folder_model.get_folder(
+            doc.get("dossier_id") or "", doc["folder_id"]
+        ) or {"id": doc["folder_id"]}
+    template = note.template or {}
+    warnings: list[str] = []
+    if note.reused:
+        warnings.append(
+            "Une note identique à ce qu'elle imprimerait est déjà classée : "
+            "elle est rendue, RIEN n'a été écrit (regenerate true en classe "
+            "une nouvelle)."
+        )
+    if invoice.get("status") == "brouillon":
+        warnings.append(
+            "La facture est au brouillon : cette note est un PROJET, à ne "
+            "pas remettre avant d'avoir marqué la facture envoyée."
+        )
+    return {
+        "created": True,
+        "source": "invoice_note",
+        "reused": bool(note.reused),
+        "invoice": {
+            "id": invoice_id,
+            "invoice_number": str(invoice.get("invoice_number") or ""),
+            "status": str(invoice.get("status") or ""),
+        },
+        "entity_type": "document",
+        "entity": _document_entity(doc),
+        "folder": _folder_row(folder),
+        "template": {
+            "id": str(template.get("id") or ""),
+            "name": str(template.get("name") or ""),
+            "version": int(template.get("version") or 1),
+        },
+        "source_document_id": None,
+        "protection": None,
+        "warnings": warnings,
+    }
 
 
 def _target_folder(args: dict, dossier_id: str) -> Any:
@@ -11350,6 +12431,8 @@ def _create_markdown_document(args: dict) -> dict:
     return {
         "created": True,
         "source": "markdown",
+        "reused": False,
+        "invoice": None,
         "entity_type": "document",
         "entity": _document_entity(doc),
         "folder": _folder_row(landed),
@@ -11478,6 +12561,8 @@ def _copy_stored_document(args: dict) -> dict:
     return {
         "created": True,
         "source": "copy",
+        "reused": False,
+        "invoice": None,
         "entity_type": "document",
         "entity": _document_entity(copy),
         "folder": _folder_row(folder),

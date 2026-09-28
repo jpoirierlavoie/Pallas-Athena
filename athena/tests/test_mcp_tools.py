@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 71  # 29 lectures + 42 ecritures
+    assert len(tools.TOOLS) == 76  # 31 lectures + 45 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -337,6 +337,13 @@ _IDEMPOTENT_WRITES = frozenset({
     # version in force — write nothing (update_template). NOT here:
     # create_template, whose second call registers a second template.
     "update_template",
+    # Lot 3b. The state asked for, when already stored, writes nothing
+    # (update_invoice: the same status, a void of a voided invoice, draft
+    # values already there); a version identical to the one in force
+    # writes nothing (create_budget_version). NOT here: create_invoice — a
+    # second call without its key is a second invoice (hence the key it
+    # DEMANDS).
+    "update_invoice", "create_budget_version",
 })
 
 
@@ -390,6 +397,10 @@ def test_write_tools_set_is_pinned():
         # deja verse a un dossier, corriger un gabarit (metadonnees, ou
         # nouvelle version de son fichier — la precedente conservee).
         "create_template", "update_template",
+        # Lot 3b — FACTURER : emettre une facture (un numero consomme pour
+        # toujours), corriger un brouillon, promouvoir ou annuler une
+        # facture, enregistrer une nouvelle version du budget.
+        "create_invoice", "update_invoice", "create_budget_version",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -426,6 +437,11 @@ def test_edit_tools_set_is_pinned():
         # Lot 2A (T10) — REPLACES a template's metadata or its file in force
         # (the previous version kept); create_template replaces nothing.
         "update_template",
+        # Lot 3b — create_invoice consumes a number for ever and freezes its
+        # sources; update_invoice replaces a draft's fields or the status
+        # (its void releases the sources); create_budget_version supersedes
+        # the reference budget.
+        "create_invoice", "update_invoice", "create_budget_version",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 

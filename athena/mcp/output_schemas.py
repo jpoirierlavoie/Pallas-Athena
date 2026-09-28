@@ -570,9 +570,11 @@ def _dossier_list_row() -> dict:
     }, optional=_PROVENANCE_KEYS)
 
 
-def _invoice_row(extra: Optional[dict[str, Any]] = None) -> dict:
+def _invoice_row(extra: Optional[dict[str, Any]] = None,
+                 optional: tuple[str, ...] = ()) -> dict:
     """SHARED by list_invoices, get_invoice and
-    get_billing_snapshot.outstanding_invoices — one row shape, no drift."""
+    get_billing_snapshot.outstanding_invoices — one row shape, no drift.
+    *optional* names extra keys that are typed but never required."""
     properties: dict[str, Any] = {
         "id": _str(),
         "invoice_number": _str(),
@@ -606,7 +608,7 @@ def _invoice_row(extra: Optional[dict[str, Any]] = None) -> dict:
     }
     if extra:
         properties.update(extra)
-    return _obj(properties)
+    return _obj(properties, optional=optional)
 
 
 def _partie_ref() -> dict:
@@ -1368,6 +1370,96 @@ def _scrubbed_properties() -> dict:
             "asked (or a metadata edit); templatizing: always run, null "
             "only if it could not (see errors)."),
     }
+
+
+# ── Lot 3b — BILL fragments ─────────────────────────────────────────────
+
+
+def _billing_move_keys() -> dict[str, Any]:
+    """What update_time_entry / update_expense say about a MOVE (lot 3b):
+    always emitted, false/null on an edit that stays in its dossier."""
+    return {
+        "moved": _bool(
+            "true = this call filed the row under another dossier (its "
+            "`dossier_id` is the new one)."),
+        "previous_dossier_id": _nstr(
+            "The dossier it was in before a move; null when it did not move."),
+    }
+
+
+def _budget_version() -> dict:
+    """One budget version as stored — lines by sub-code, its frozen rate."""
+    return _obj({
+        "id": _str(),
+        "dossier_id": _str(),
+        "version": _int("≥ 1, per dossier; the newest is the reference."),
+        **_money("hourly_rate", "FROZEN into the version."),
+        "note": _str("Assumptions, as written; '' when none."),
+        "lines": _arr(_obj({
+            "sous_phase": _str(),
+            "phase": _str("Derived from the sub-code's prefix."),
+            "phase_label": _str(),
+            "sous_phase_label": _str(),
+            "hours": _num(),
+            **_money("frais", "Estimated disbursements."),
+            **_money("fees", "hours × the version's rate."),
+        })),
+        "totals": _obj({
+            "hours": _num(),
+            **_money("fees"),
+            **_money("frais"),
+            **_money("total"),
+        }),
+        **_stamps(),
+    }, optional=_PROVENANCE_KEYS)
+
+
+def _budget_view() -> dict:
+    """Budget vs actuals per phase — models.budget.build_budget_view."""
+    return _obj({
+        "rows": _arr(_obj({
+            "phase": _str(),
+            "libelle": _str("French phase label."),
+            "budget_hours": _num(),
+            **_money("budget"),
+            "actual_hours": _num(),
+            **_money("actual", "Billable time worked + every disbursement, "
+                               "billed or not."),
+            **_money("ecart", "budget − actual; negative = over budget."),
+            "pct": {"type": ["number", "null"],
+                    "description": "actual ÷ budget in DOLLARS, %; null "
+                                   "when the phase has no envelope."},
+            "level": {"type": "string",
+                      "enum": ["none", "ok", "warn", "over"],
+                      "description": "warn from 80 %, over past 100 %."},
+        })),
+        **_money("unphased", "Consumption carrying no phase code — shown "
+                             "apart, never dropped."),
+        **_money("budget_total"),
+        **_money("actual_total"),
+        "pct": {"type": ["number", "null"]},
+        "level": {"type": "string", "enum": ["none", "ok", "warn", "over"]},
+    })
+
+
+def _invoice_write_entity(extra: dict[str, Any]) -> dict:
+    """An invoice AS STORED after a BILL write — never its line text."""
+    props: dict[str, Any] = {
+        "id": _str(),
+        "dossier_id": _str(),
+        "dossier_file_number": _str("Snapshot at issuance."),
+        "label": _str("The invoice number."),
+        "invoice_number": _str(),
+        "date": _nstr("YYYY-MM-DD."),
+        "due_date": _nstr("YYYY-MM-DD."),
+        "status": _str(),
+        "status_label": _str(),
+        **_money("total"),
+        **_money("amount_due", "Frozen at issuance (total − retainer)."),
+        **_written_etag(),
+    }
+    props.update(extra)
+    return _obj(props, optional=("etag",))
 
 
 OUTPUT_SCHEMAS: dict[str, dict] = {
@@ -2157,10 +2249,87 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 **_money("amount"),
             })),
             "warnings": _arr(_str(), "French; empty when nothing is amiss."),
-            }),
+            # Lot 3b: what update_invoice needs, read here.
+            "etag": _str(
+                "Concurrency token of the stored invoice — update_invoice's "
+                "expected_etag. '' on a legacy invoice that never had one."),
+            "connector_transitions": _arr(_str(), (
+                "The statuses update_invoice can set NOW (« annulée » = the "
+                "void). Judged on this invoice alone: a payment standing in "
+                "the registers is re-checked by the void itself.")),
+            "void_reason": _nstr(
+                "Why the invoice was voided (update_invoice); null unless "
+                "annulée, '' when voided in the application."),
+            "created_via": _str(
+                f"Path that created the invoice: {_VIA_VOCABULARY}. '' = not "
+                "recorded."),
+            }, optional=("etag", "created_via")),
         }),
         {"invoice_id": _str("Echo of the id that was not found.")},
     ),
+
+    # ── Lot 3b — BILL (reads) ───────────────────────────────────────────
+    "preview_invoice": _obj({
+        "dossier": _obj({
+            "id": _str(), "file_number": _str(), "title": _str(),
+            "status": _str("A closed dossier can still be billed."),
+        }),
+        "client": _obj({
+            "id": _str("The dossier's FIRST client; '' when it has none."),
+            "name": _str(),
+        }),
+        "sources": _arr(_obj({
+            "id": _str(),
+            "kind": {"type": "string", "enum": ["time_entry", "expense"]},
+            "retained": _bool("true = it becomes a line of the invoice."),
+            "reason": _nstr(
+                "Why it cannot be billed (French) — introuvable, déjà "
+                "facturée (and on which invoice), another dossier's, non "
+                "facturable; null when retained."),
+            "date": _nstr("YYYY-MM-DD; null when not retained."),
+            "description": _nstr(
+                "Prints VERBATIM on the invoice; null when not retained."),
+            "hours": {"type": ["number", "null"],
+                      "description": "Time entries only."},
+            "taxable": {"type": ["boolean", "null"]},
+            "amount_cents": {"type": ["integer", "null"]},
+            "amount_display": _nstr(),
+        })),
+        "line_count": _int("Lines the invoice would carry."),
+        **_money("subtotal_fees"),
+        **_money("subtotal_expenses"),
+        **_money("subtotal"),
+        **_money("gst_amount"),
+        **_money("qst_amount"),
+        **_money("total", "Pass it as create_invoice's expected_total_cents "
+                          "— with the SAME selection."),
+        "number_prefix": _str(
+            "The year's sequence (« 2026-F »). The number itself is drawn "
+            "only when create_invoice commits."),
+        "ready": _bool("false = create_invoice would refuse (see refusals)."),
+        "refusals": _arr(_str(), "French; each blocks the creation."),
+        "warnings": _arr(_str(), "French; true facts, never blocking."),
+        "truncated": _bool(
+            "all_unbilled: more sources than one invoice may carry — "
+            "create_invoice refuses; name the sources instead."),
+    }),
+
+    "get_budget": _obj({
+        "dossier_id": _str(),
+        "has_budget": _bool(),
+        "base_version": _int(
+            "The version in force (0 = none) — create_budget_version's "
+            "base_version."),
+        "latest": {**_budget_version(), "type": ["object", "null"]},
+        "versions": _arr(_obj({
+            "id": _str(),
+            "version": _int(),
+            **_money("total", "Fees + disbursements of that version."),
+            **_stamps(),
+        }, optional=_PROVENANCE_KEYS), "Newest first."),
+        "truncated": _bool("More versions than include_history returns."),
+        "view": _budget_view(),
+    }),
 
     "create_partie": _partie_write_result("created"),
     "update_partie": _partie_write_result("updated"),
@@ -2180,6 +2349,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_money("amount", "Recomputed as hours x rate; 0 when not billable."),
             **_written_etag(),
         }, optional=("etag",)),
+        **_billing_move_keys(),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
     }),
@@ -2199,6 +2369,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_money("amount", "Stored verbatim; never recomputed."),
             **_written_etag(),
         }, optional=("etag",)),
+        **_billing_move_keys(),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
     }),
@@ -2294,6 +2465,81 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "idempotent_replay",
     ]),
 
+    # ── Lot 3b — BILL (writes) ──────────────────────────────────────────
+    "create_invoice": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « invoice »."),
+        "entity": _invoice_write_entity({
+            **_money("subtotal_fees"),
+            **_money("subtotal_expenses"),
+            **_money("subtotal"),
+            **_money("gst_amount"),
+            **_money("qst_amount"),
+        }),
+        "line_count": _int(),
+        "source_ids": _obj({
+            "time_entry_ids": _arr(_str(), "Now invoiced — frozen."),
+            "expense_ids": _arr(_str(), "Now invoiced — frozen."),
+        }),
+        "warnings": _arr(_str(), "French; the number is PERMANENT."),
+        **_write_protocol_keys(),
+    }),
+
+    "update_invoice": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "mode": {"type": "string", "enum": ["draft", "status", "void"]},
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = the invoice already was so: NOTHING was "
+                "written (no etag moved)."),
+        },
+        "entity_type": _str("Always « invoice »."),
+        "entity": _invoice_write_entity({
+            "previous_status": _str("The status before this call."),
+            "void_reason": _nstr("null unless annulée."),
+            **_money("amount_paid", "Recorded payment; 0 when none."),
+            **_money("balance", "amount_due − amount_paid."),
+        }),
+        "changed_fields": _arr(_str(), "draft: the fields that changed."),
+        "released_time_entry_ids": _arr(_str(), (
+            "void: now unbilled — editable and billable again.")),
+        "released_expense_ids": _arr(_str()),
+        "foreign_source_ids": _arr(_str(), (
+            "void: sources billed on ANOTHER invoice since — left alone.")),
+        "missing_source_ids": _arr(_str(), (
+            "void: sources that no longer exist — nothing to release.")),
+        "connector_transitions": _arr(_str(), (
+            "The statuses this tool can set next.")),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
+    "create_budget_version": _obj({
+        "created": _bool("false with outcome « unchanged »."),
+        "outcome": {
+            "type": "string", "enum": ["created", "unchanged"],
+            "description": (
+                "« unchanged » = identical to the version in force: NOTHING "
+                "was written."),
+        },
+        "entity_type": _str("Always « budget »."),
+        "entity": _obj({
+            "id": _str("The version's id."),
+            "dossier_id": _str(),
+            "label": _str("« vN »."),
+            "version": _int(),
+        }),
+        "budget": _budget_version(),
+        "diff": _obj({
+            "added": _arr(_str(), "Sub-codes new in this version."),
+            "changed": _arr(_str(), "Sub-codes whose hours or frais moved."),
+            "removed": _arr(_str(), "Sub-codes the version in force had."),
+        }),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
     "create_dossier": _dossier_write_result("created"),
     "update_dossier": _dossier_write_result("updated"),
 
@@ -2335,8 +2581,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "severity": _str("manquement | signalement."),
                 "label": _str(),
                 "detail": _str(
-                    "What to do IN THE APPLICATION — the connector cannot "
-                    "delete, void, or change an invoice's status."
+                    "What to do, in French — the connector deletes nothing, "
+                    "so a duplicate is removed in the application."
                 ),
             })),
             "checks_skipped": _arr(_str(
@@ -3222,15 +3468,28 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "create_document": _obj({
         "created": {"type": "boolean", "enum": [True]},
         "source": {
-            "type": "string", "enum": ["markdown", "copy"],
+            "type": "string", "enum": ["markdown", "copy", "invoice_note"],
             "description": "What the document was made from.",
+        },
+        "reused": _bool(
+            "invoice_note: true = a note identical to what would print was "
+            "already filed — returned, NOTHING written. Always false for "
+            "markdown and copy."),
+        "invoice": {
+            **_obj({
+                "id": _str(),
+                "invoice_number": _str(),
+                "status": _str(),
+            }),
+            "type": ["object", "null"],
+            "description": "invoice_note: the invoice printed; null otherwise.",
         },
         "entity_type": _str("Always « document »."),
         "entity": _document_write_entity(),
         "folder": _generated_folder(),
         "template": _template_ref(nullable=True),
         "source_document_id": _nstr(
-            "copy: the document copied; null for markdown."),
+            "copy: the document copied; null otherwise."),
         "protection": {
             **_obj({
                 "niveau_protection": _int(

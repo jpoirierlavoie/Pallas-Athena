@@ -549,6 +549,24 @@ INLINE_FORMS: dict[str, tuple[tuple[str, ...], str]] = {
     ),
 }
 
+# {models module: (the route that saves it, the model call it passes the
+# version to, the template's hidden field, the proof test)} — for an
+# APPEND-ONLY entity whose « edit » is a NEW record built on the version a
+# page read (lot 3b: create_budget_version). There is no stored record to
+# erase and so no etag to carry: what a stale tab could do is record a
+# version built on an outdated one, and the web form refuses that by the
+# version counter (``base_version``, lot 3a) — checked here on the route,
+# the model call and the template, and proved end to end by the named test.
+VERSIONED_FORMS: dict[str, tuple[str, str, str, str]] = {
+    "budget": (
+        "routes/budgets.py::budget_create",
+        "create_budget",
+        "templates/budgets/form.html",
+        "tests/test_budget_base_version.py::"
+        "test_a_stale_form_is_refused_at_200_with_its_figures_kept",
+    ),
+}
+
 # {models module: why no web edit form of it can exist}. For a record the
 # connector rewrites that no page of the application shows or edits — so
 # no stale browser tab can erase what the connector wrote. Held to it: the
@@ -719,7 +737,7 @@ def test_the_reach_is_derived_and_not_vacuous():
 
 def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
     missing = (_edited_by_edit_tools() - set(_FORMS) - set(PENDING)
-               - set(INLINE_FORMS) - set(NO_WEB_FORM))
+               - set(INLINE_FORMS) - set(NO_WEB_FORM) - set(VERSIONED_FORMS))
     assert not missing, (
         f"the connector edits {sorted(missing)} but no web edit form of it "
         "carries expected_etag — a stale browser tab would silently erase "
@@ -730,8 +748,40 @@ def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
 
 def test_every_record_a_write_tool_rewrites_has_its_web_form_or_its_lot():
     missing = (_modified_by_any_write() - set(_FORMS) - set(PENDING)
-               - set(INLINE_FORMS) - set(NO_WEB_FORM))
+               - set(INLINE_FORMS) - set(NO_WEB_FORM) - set(VERSIONED_FORMS))
     assert not missing, sorted(missing)
+
+
+def test_every_versioned_form_is_reached_carries_its_version_and_is_proved():
+    """A VERSIONED_FORMS entry is a claim, each half checked (lot 3b): a
+    connector edit tool reaches the entity ONLY through a creator (it is
+    append-only — nothing rewrites a stored record, so no etag exists to
+    protect it); the web route hands the submitted base to the model; the
+    form carries the field; and the named test proves the stale refusal."""
+    reach = _handler_reach()
+    for entity, (route, model_call, template, proof) in VERSIONED_FORMS.items():
+        verbs = {verb for t in tools.EDIT_TOOLS for mod, verb in reach[t]
+                 if mod == entity}
+        assert verbs, f"{entity}: no connector edit reaches it"
+        assert all(v.startswith(_CREATOR_VERBS) for v in verbs), (
+            f"{entity}: a connector write REWRITES it ({sorted(verbs)}) — it "
+            "needs an etag form, not a version counter")
+        assert entity not in _FORMS and entity not in PENDING, entity
+        path, _, fn_name = route.partition("::")
+        tree = ast.parse((_ATHENA / path).read_text(encoding="utf-8"))
+        fn = next(n for n in tree.body
+                  if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == model_call]
+        assert calls and all(any(k.arg == "base_version" for k in c.keywords)
+                             for c in calls), route
+        form = (_ATHENA / template).read_text(encoding="utf-8")
+        assert 'name="base_version"' in form, template
+        proof_path, _, test_name = proof.partition("::")
+        proof_tree = ast.parse((_ATHENA / proof_path).read_text(encoding="utf-8"))
+        assert test_name in {n.name for n in ast.walk(proof_tree)
+                             if isinstance(n, ast.FunctionDef)}, proof
 
 
 def test_a_record_without_a_web_form_really_has_none():
