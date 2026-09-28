@@ -1190,6 +1190,24 @@ def _folder_delete_message(rapport: dict) -> str:
             f" — {deplaces} fichier{'s' if deplaces != 1 else ''} "
             f"déplacé{'s' if deplaces != 1 else ''} vers le dossier parent"
         )
+    orphelins = int(rapport.get("orphaned_files", 0) or 0)
+    if orphelins:
+        # Correctifs du lot 2A : les ENREGISTREMENTS partent d'abord, dans la
+        # transaction qui relit le sous-arbre ; un fichier que le stockage a
+        # refusé d'effacer ensuite n'est plus référencé par rien — dit, pour
+        # qu'une suppression voulue complète ne se lise pas comme telle.
+        if orphelins == 1:
+            phrase += (
+                ". Le stockage n'a pas pu effacer 1 fichier : il n'est plus "
+                "accessible dans l'application, mais ses octets restent en "
+                "stockage"
+            )
+        else:
+            phrase += (
+                f". Le stockage n'a pas pu effacer {orphelins} fichiers : ils "
+                "ne sont plus accessibles dans l'application, mais leurs "
+                "octets restent en stockage"
+            )
     return phrase
 
 

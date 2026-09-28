@@ -315,6 +315,29 @@ def test_le_message_du_deplacement_dit_le_nombre_deplace(web, trail, monkeypatch
     assert "3 fichiers déplacés vers le dossier parent" in cible
 
 
+def test_le_message_dit_les_fichiers_que_le_stockage_n_a_pas_effaces(
+    web, trail, monkeypatch,
+):
+    """Correctifs du lot 2A : les enregistrements partent d'abord (dans la
+    transaction qui relit le sous-arbre), les fichiers ensuite — un fichier
+    que le stockage refuse d'effacer est dit, jamais tu."""
+    rapport = _rapport(
+        documents=[{"id": "a", "display_name": "R", "category": "autre"},
+                   {"id": "b", "display_name": "S", "category": "autre"}],
+        folders=[{"id": "f1", "name": "P"}],
+    )
+    rapport["orphaned_files"] = 2
+    monkeypatch.setattr(rd, "delete_folder", lambda *a, **k: (True, "", rapport))
+    reponse = web.post("/documents/folders/f1/delete",
+                       data={"dossier_id": "d1", "contents": "delete"})
+    from urllib.parse import unquote_plus
+
+    cible = unquote_plus(reponse.headers["Location"])
+    assert "1 dossier et 2 fichiers supprimés" in cible
+    assert "Le stockage n'a pas pu effacer 2 fichiers" in cible
+    assert len(trail) == 3          # chaque entité reste journalisée
+
+
 # ── Le dialogue, rendu RÉELLEMENT ──────────────────────────────────────────
 
 
@@ -556,3 +579,37 @@ def test_un_echange_pendant_le_dialogue_est_refuse_de_bout_en_bout(web_reel, mon
     assert "a changé depuis l'affichage" in _erreur(reponse)
     assert store.peek("documents/ailleurs")["folder_id"] == "f1"
     assert store.peek("folders/f1") is not None
+
+
+def test_un_classement_concurrent_pendant_la_suppression_parait_dans_la_banniere(
+    web_reel, monkeypatch,
+):
+    """Correctifs du lot 2A (la course de la revue de T7), sur la route ET le
+    modèle réels : le connecteur classe un fichier dans le dossier pendant sa
+    suppression. Rien n'est supprimé, le fichier n'est jamais orphelin, et la
+    bannière le dit — en 2xx, comme tout refus de cette route."""
+    client, store = web_reel
+    monkeypatch.setattr(rd, "record_deletion", lambda *a, **k: None)
+    base = {"dossier_id": "d1", "category": "autre"}
+    store.seed("folders/f1", {"id": "f1", "dossier_id": "d1", "name": "Pièces",
+                              "parent_folder_id": None})
+    store.seed("documents/dedans", {"id": "dedans", "folder_id": "f1", **base})
+    store.seed("documents/glisse", {"id": "glisse", "folder_id": None, **base})
+    fired = []
+
+    def _hook(info):
+        if not fired and any(p.startswith("documents/") for _k, p in info.ops):
+            fired.append(True)
+            store.external_write("documents/glisse",
+                                 {"id": "glisse", "folder_id": "f1", **base})
+
+    store.add_commit_hook(_hook)
+    reponse = client.post("/documents/folders/f1/delete", data={
+        "dossier_id": "d1", "contents": "move",
+    }, headers={"HX-Request": "true"})
+
+    assert fired and reponse.status_code == 302
+    assert "a changé pendant la suppression" in _erreur(reponse)
+    assert store.peek("folders/f1") is not None
+    assert store.peek("documents/glisse")["folder_id"] == "f1"
+    assert store.peek("documents/dedans")["folder_id"] == "f1"

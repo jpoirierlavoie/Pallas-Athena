@@ -624,7 +624,10 @@ def test_a_delete_on_a_stale_count_touches_nothing(store):
     )
 
     assert not ok and "a changé" in message and "2 fichiers" in message
-    assert rapport == {"folders": [], "documents": [], "moved": 0}
+    # The report gained `orphaned_files` (fixups of lot 2A — files whose
+    # records went but whose bytes could not be erased): deliberately.
+    assert rapport == {"folders": [], "documents": [], "moved": 0,
+                       "orphaned_files": 0}
     assert store.peek("folders/f1") is not None
     assert store.peek("documents/a") and store.peek("documents/glisse")
     assert store.commits == []
@@ -681,7 +684,10 @@ def test_a_swap_that_keeps_the_count_is_refused_by_the_fingerprint(store):
     )
 
     assert not ok and "a changé" in message
-    assert rapport == {"folders": [], "documents": [], "moved": 0}
+    # The report gained `orphaned_files` (fixups of lot 2A — files whose
+    # records went but whose bytes could not be erased): deliberately.
+    assert rapport == {"folders": [], "documents": [], "moved": 0,
+                       "orphaned_files": 0}
     assert store.peek("documents/ailleurs")["folder_id"] == "f1"
     assert store.peek("folders/f1") is not None
     assert _writes(store) == []
@@ -732,102 +738,58 @@ def test_a_system_folder_can_still_be_deleted_and_comes_back_at_its_id(store):
 # enregistrements de dossiers ensuite) et le fail CLOSED : un échec sur les
 # documents ne doit JAMAIS supprimer le dossier, sous peine de laisser des
 # fichiers avec un folder_id mort — invisibles dans le navigateur.
+#
+# PORTÉ DÉLIBÉRÉMENT sur le faux Firestore partagé (correctifs du lot 2A) :
+# ces tests tournaient sur un faux fait main (_FauxDB — `batch()` et
+# `document()` seulement). La suppression relit désormais son sous-arbre DANS
+# une transaction avant chaque écriture destructive (la course de la revue
+# de T7), ce qu'un tel faux ne sait pas faire : chaque assertion d'origine
+# est conservée, relue dans ce que le magasin STOCKE. Le mode « delete »
+# efface les fichiers par le faux Cloud Storage réaliste — il ne passe plus
+# par `document.delete_document` (fichier d'abord, hors transaction), dont
+# le test qui le simulait est remplacé par les deux pannes réelles : celle de
+# la transaction (rien n'est supprimé) et celle d'un fichier (orphelin compté).
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class _FauxRef:
-    def __init__(self, store, doc_id):
-        self._store = store
-        self._id = doc_id
+from tests._fake_gcs import FakeBucket  # noqa: E402
 
 
-class _FauxBatch:
-    def __init__(self, journal):
-        self._journal = journal
-        self._ops = []
-
-    def update(self, ref, fields):
-        self._ops.append(("update", ref, dict(fields)))
-
-    def delete(self, ref):
-        self._ops.append(("delete", ref, None))
-
-    def commit(self):
-        self._journal.append(list(self._ops))
-        for kind, ref, fields in self._ops:
-            if kind == "update":
-                ref._store[ref._id].update(fields)
-            else:
-                ref._store.pop(ref._id, None)
-        self._ops = []
-
-
-class _FauxCollection:
-    def __init__(self, store):
-        self._store = store
-
-    def document(self, doc_id):
-        return _FauxRef(self._store, doc_id)
-
-
-class _FauxDB:
-    def __init__(self, folders, documents, journal):
-        self._stores = {"folders": folders, "documents": documents}
-        self._journal = journal
-
-    def collection(self, name):
-        return _FauxCollection(self._stores[name])
-
-    def batch(self):
-        return _FauxBatch(self._journal)
-
-
-def _arbre(monkeypatch):
+def _arbre(store, monkeypatch):
     """d1 : « Pièces » (f1) ▸ « Annexes » (f2) — 1 document dans f1, 2 dans
-    f2 — plus un document à la racine et un cousin dans « Ailleurs » (fx)."""
-    folders = {
-        "f1": {"id": "f1", "dossier_id": "d1", "name": "Pièces",
-               "parent_folder_id": None},
-        "f2": {"id": "f2", "dossier_id": "d1", "name": "Annexes",
-               "parent_folder_id": "f1"},
-        "fx": {"id": "fx", "dossier_id": "d1", "name": "Ailleurs",
-               "parent_folder_id": None},
-    }
-    documents = {
-        "a": {"id": "a", "dossier_id": "d1", "folder_id": "f1",
-              "display_name": "Requête", "category": "procédure"},
-        "b": {"id": "b", "dossier_id": "d1", "folder_id": "f2",
-              "display_name": "Annexe 1", "category": "pièce"},
-        "c": {"id": "c", "dossier_id": "d1", "folder_id": "f2",
-              "display_name": "Annexe 2", "category": "pièce"},
-        "racine": {"id": "racine", "dossier_id": "d1", "folder_id": None,
-                   "display_name": "Note", "category": "autre"},
-        "cousin": {"id": "cousin", "dossier_id": "d1", "folder_id": "fx",
-                   "display_name": "Autre", "category": "autre"},
-    }
-    journal: list = []
-    monkeypatch.setattr(folder, "db", _FauxDB(folders, documents, journal))
-    monkeypatch.setattr(
-        folder, "_all_folders",
-        lambda did: [dict(f) for f in folders.values() if f["dossier_id"] == did],
-    )
-    monkeypatch.setattr(
-        folder, "_all_documents",
-        lambda did: [dict(d) for d in documents.values() if d["dossier_id"] == did],
-    )
-    monkeypatch.setattr(
-        folder, "get_folder",
-        lambda did, fid: dict(folders[fid]) if fid in folders else None,
-    )
+    f2 — plus un document à la racine et un cousin dans « Ailleurs » (fx).
+    Chaque document a son fichier dans le faux seau."""
+    bucket = FakeBucket()
+    monkeypatch.setattr(folder.storage, "bucket", lambda: bucket)
+    _seed_folder(store, "f1", "Pièces")
+    _seed_folder(store, "f2", "Annexes", "f1")
+    _seed_folder(store, "fx", "Ailleurs")
+    for doc_id, fid, name, cat in (
+        ("a", "f1", "Requête", "procédure"),
+        ("b", "f2", "Annexe 1", "pièce"),
+        ("c", "f2", "Annexe 2", "pièce"),
+        ("racine", None, "Note", "autre"),
+        ("cousin", "fx", "Autre", "autre"),
+    ):
+        path = f"users/u1/dossiers/d1/documents/{doc_id}/{doc_id}.pdf"
+        store.seed(f"documents/{doc_id}", {
+            "id": doc_id, "dossier_id": "d1", "folder_id": fid,
+            "display_name": name, "category": cat, "storage_path": path,
+        })
+        bucket.put(path, b"%PDF-" + doc_id.encode())
     monkeypatch.setattr(folder, "_touch_folder", lambda did, fid: None)
-    return folders, documents, journal
+    return bucket
+
+
+def _doc(store, doc_id):
+    return store.peek(f"documents/{doc_id}")
 
 
 # ── Les décomptes du dialogue ──────────────────────────────────────────────
 
 
-def test_subtree_index_compte_le_sous_arbre_et_le_niveau(monkeypatch):
-    _arbre(monkeypatch)
+def test_subtree_index_compte_le_sous_arbre_et_le_niveau(store, monkeypatch):
+    _arbre(store, monkeypatch)
     index = folder.subtree_index("d1")
     # « Pièces » : 3 fichiers en tout (1 + 2), 1 sous-dossier…
     assert index["f1"]["documents"] == 3
@@ -846,7 +808,7 @@ def test_subtree_index_compte_le_sous_arbre_et_le_niveau(monkeypatch):
 
 
 @pytest.mark.parametrize("lecteur", ["_all_folders", "_all_documents"])
-def test_subtree_index_echoue_ferme(monkeypatch, lecteur):
+def test_subtree_index_echoue_ferme(store, monkeypatch, lecteur):
     """Un décompte illisible ne doit pas passer pour « dossier vide » : LES
     DEUX lectures propagent, contrairement à list_folders et list_documents,
     qui s'ouvrent toutes les deux. Le cas des DOCUMENTS est le
@@ -854,7 +816,7 @@ def test_subtree_index_echoue_ferme(monkeypatch, lecteur):
     dossier est vide », le dossier aurait été supprimé, et les fichiers
     seraient restés avec un folder_id mort — le bogue même que ce lot
     supprime, réintroduit par la porte de derrière."""
-    _arbre(monkeypatch)
+    _arbre(store, monkeypatch)
 
     def _boom(_did):
         raise RuntimeError("firestore indisponible")
@@ -865,10 +827,12 @@ def test_subtree_index_echoue_ferme(monkeypatch, lecteur):
 
 
 @pytest.mark.parametrize("lecteur", ["_all_folders", "_all_documents"])
-def test_la_suppression_refuse_quand_le_contenu_est_illisible(monkeypatch, lecteur):
+def test_la_suppression_refuse_quand_le_contenu_est_illisible(
+    store, monkeypatch, lecteur,
+):
     """Et delete_folder transforme cette propagation en refus net : rien
     n'est supprimé, ni fichier ni dossier."""
-    folders, documents, journal = _arbre(monkeypatch)
+    bucket = _arbre(store, monkeypatch)
 
     def _boom(_did):
         raise RuntimeError("firestore indisponible")
@@ -878,137 +842,317 @@ def test_la_suppression_refuse_quand_le_contenu_est_illisible(monkeypatch, lecte
         ok, err, rapport = folder.delete_folder("d1", "f1", contents=mode)
         assert not ok, mode
         assert "Impossible de lire le contenu" in err, mode
-        assert "f1" in folders and "f2" in folders, mode
-        assert journal == [], mode
+        assert store.peek("folders/f1") and store.peek("folders/f2"), mode
+        assert _writes(store) == [], mode
         assert rapport["documents"] == [] and rapport["folders"] == [], mode
+    assert len(bucket.objects) == 5
 
 
 # ── Mode « move » ──────────────────────────────────────────────────────────
 
 
-def test_move_reparente_tout_le_sous_arbre_en_une_ecriture(monkeypatch):
-    folders, documents, journal = _arbre(monkeypatch)
+def test_move_reparente_tout_le_sous_arbre_en_une_ecriture(store, monkeypatch):
+    bucket = _arbre(store, monkeypatch)
     ok, err, rapport = folder.delete_folder("d1", "f1", contents="move")
     assert ok and err == ""
     # Les trois fichiers du sous-arbre passent au parent de « Pièces »
     # (None = racine), y compris ceux qui étaient deux niveaux plus bas.
-    assert documents["a"]["folder_id"] is None
-    assert documents["b"]["folder_id"] is None
-    assert documents["c"]["folder_id"] is None
+    for doc_id in ("a", "b", "c"):
+        assert _doc(store, doc_id)["folder_id"] is None
     # UNE écriture par document — l'ancienne récursion en faisait une par
     # niveau traversé (et mintait un etag à chaque fois).
-    ecritures = [op for lot in journal for op in lot if op[0] == "update"]
-    assert len(ecritures) == 3
-    assert "f1" not in folders and "f2" not in folders
-    assert "fx" in folders
+    ecritures = [op for op in _writes(store) if op[0] == "update"]
+    assert sorted(ecritures) == [
+        ("update", "documents/a"), ("update", "documents/b"),
+        ("update", "documents/c"),
+    ]
+    assert store.peek("folders/f1") is None and store.peek("folders/f2") is None
+    assert store.peek("folders/fx") is not None
     assert rapport["moved"] == 3
     assert rapport["documents"] == []            # rien n'a été supprimé
     assert {f["id"] for f in rapport["folders"]} == {"f1", "f2"}
-    # Hors du sous-arbre : intact.
-    assert documents["cousin"]["folder_id"] == "fx"
-    assert documents["racine"]["folder_id"] is None
+    # Hors du sous-arbre : intact. Et aucun fichier n'est effacé.
+    assert _doc(store, "cousin")["folder_id"] == "fx"
+    assert _doc(store, "racine")["folder_id"] is None
+    assert len(bucket.objects) == 5
 
 
-def test_move_vers_un_parent_intermediaire(monkeypatch):
+def test_move_vers_un_parent_intermediaire(store, monkeypatch):
     """Supprimer un sous-dossier remonte ses fichiers d'UN niveau, pas à la
     racine — le libellé du dialogue dit bien « dossier parent »."""
-    _folders, documents, _journal = _arbre(monkeypatch)
+    _arbre(store, monkeypatch)
     ok, _err, _rapport = folder.delete_folder("d1", "f2", contents="move")
     assert ok
-    assert documents["b"]["folder_id"] == "f1"
-    assert documents["c"]["folder_id"] == "f1"
+    assert _doc(store, "b")["folder_id"] == "f1"
+    assert _doc(store, "c")["folder_id"] == "f1"
+    assert store.peek("folders/f1") is not None
 
 
 # ── Mode « delete » ────────────────────────────────────────────────────────
 
 
-def test_delete_supprime_les_documents_du_sous_arbre(monkeypatch):
-    folders, documents, _journal = _arbre(monkeypatch)
-    import models.document as document
-
-    supprimes: list = []
-
-    def faux_delete(doc_id):
-        supprimes.append(doc_id)
-        documents.pop(doc_id, None)
-        return True, ""
-
-    monkeypatch.setattr(document, "delete_document", faux_delete)
-
+def test_delete_supprime_les_documents_du_sous_arbre(store, monkeypatch):
+    bucket = _arbre(store, monkeypatch)
     ok, err, rapport = folder.delete_folder("d1", "f1", contents="delete")
     assert ok and err == ""
-    assert set(supprimes) == {"a", "b", "c"}
-    assert "f1" not in folders and "f2" not in folders
+    for doc_id in ("a", "b", "c"):
+        assert _doc(store, doc_id) is None
+        assert f"users/u1/dossiers/d1/documents/{doc_id}/{doc_id}.pdf" not in bucket.objects
+    assert store.peek("folders/f1") is None and store.peek("folders/f2") is None
     # Le compte-rendu porte de quoi journaliser UNE entité à la fois.
     assert {d["id"] for d in rapport["documents"]} == {"a", "b", "c"}
     assert {f["id"] for f in rapport["folders"]} == {"f1", "f2"}
     assert rapport["documents"][0]["display_name"]    # un titre pour la piste
-    assert rapport["moved"] == 0
-    # Hors du sous-arbre : intact.
-    assert "cousin" in documents and "racine" in documents
+    assert rapport["moved"] == 0 and rapport["orphaned_files"] == 0
+    # Hors du sous-arbre : intact, fichiers compris.
+    assert _doc(store, "cousin") and _doc(store, "racine")
+    assert len(bucket.objects) == 2
 
 
-def test_delete_echoue_ferme_et_conserve_les_dossiers(monkeypatch):
-    """LE point : si une suppression de fichier échoue, le dossier RESTE.
+def test_delete_echoue_ferme_et_conserve_les_dossiers(store, monkeypatch):
+    """LE point : si la suppression des fichiers échoue, le dossier RESTE.
     L'ancienne version avalait l'erreur et supprimait quand même, laissant
-    des documents au folder_id mort, invisibles dans l'interface."""
-    folders, documents, _journal = _arbre(monkeypatch)
-    import models.document as document
+    des documents au folder_id mort, invisibles dans l'interface.
 
-    def faux_delete(doc_id):
-        if doc_id == "c":
-            return False, "Erreur lors de la suppression du fichier."
-        documents.pop(doc_id, None)
-        return True, ""
+    Réécrit délibérément (correctifs du lot 2A) : la panne simulée était
+    celle de `document.delete_document` sur le 3e fichier ; les fichiers
+    d'un lot se suppriment désormais dans UNE transaction, si bien qu'une
+    panne de son commit ne supprime RIEN — ni enregistrement, ni fichier."""
+    bucket = _arbre(store, monkeypatch)
 
-    monkeypatch.setattr(document, "delete_document", faux_delete)
+    def _panne(info):
+        if any(path.startswith("documents/") for _k, path in info.ops):
+            raise gexc.ServiceUnavailable("commit refusé")
 
+    store.add_commit_hook(_panne)
     ok, err, rapport = folder.delete_folder("d1", "f1", contents="delete")
     assert not ok
     assert "conservé" in err and "réessayez" in err.lower()
     # Les dossiers survivent : l'arborescence reste navigable et l'opération
     # se rejoue sur ce qui reste.
-    assert "f1" in folders and "f2" in folders
-    assert rapport["folders"] == []
-    # Le compte-rendu dit honnêtement ce qui est déjà parti.
-    assert len(rapport["documents"]) < 3
+    assert store.peek("folders/f1") and store.peek("folders/f2")
+    assert rapport["folders"] == [] and rapport["documents"] == []
+    for doc_id in ("a", "b", "c"):
+        assert _doc(store, doc_id)["folder_id"] in ("f1", "f2")
+    assert len(bucket.objects) == 5
 
 
-def test_delete_refuse_au_dela_du_plafond(monkeypatch):
-    folders, _documents, journal = _arbre(monkeypatch)
+def test_un_fichier_non_efface_est_compte_comme_orphelin(store, monkeypatch):
+    """Les ENREGISTREMENTS partent d'abord, dans la transaction ; un fichier
+    que le stockage refuse d'effacer ensuite reste orphelin sous le préfixe
+    du propriétaire — référencé par rien — et le compte-rendu le dit."""
+    bucket = _arbre(store, monkeypatch)
+    real_blob = bucket.blob
+
+    class _Tenace:
+        def __init__(self, blob):
+            self._blob = blob
+
+        def delete(self, **_kw):
+            raise gexc.ServiceUnavailable("stockage indisponible")
+
+    monkeypatch.setattr(
+        bucket, "blob",
+        lambda name: _Tenace(real_blob(name)) if name.endswith("/b.pdf")
+        else real_blob(name))
+    ok, err, rapport = folder.delete_folder("d1", "f1", contents="delete")
+    assert ok and err == ""
+    assert _doc(store, "b") is None                  # l'enregistrement est parti
+    assert "users/u1/dossiers/d1/documents/b/b.pdf" in bucket.objects
+    assert rapport["orphaned_files"] == 1
+    assert {d["id"] for d in rapport["documents"]} == {"a", "b", "c"}
+
+
+def test_delete_refuse_au_dela_du_plafond(store, monkeypatch):
+    _arbre(store, monkeypatch)
     monkeypatch.setattr(folder, "MAX_FOLDER_DELETE_DOCUMENTS", 2)
     ok, err, _rapport = folder.delete_folder("d1", "f1", contents="delete")
     assert not ok
     assert "3 fichiers" in err and "limite de 2" in err
-    assert "f1" in folders and journal == []          # aucune écriture
+    assert store.peek("folders/f1") and _writes(store) == []   # aucune écriture
 
 
-def test_un_mode_inconnu_ne_supprime_jamais(monkeypatch):
+def test_un_mode_inconnu_ne_supprime_jamais(store, monkeypatch):
     """Un champ de formulaire absent, périmé ou forgé retombe sur « move » :
     la branche destructive est un consentement, jamais un défaut."""
     for mode in ("", "recursive", "true", "DELETE", "supprimer"):
-        _folders, documents, _journal = _arbre(monkeypatch)
+        _arbre(store, monkeypatch)
         ok, _err, rapport = folder.delete_folder("d1", "f1", contents=mode)
         assert ok, mode
         assert rapport["documents"] == [], mode       # rien de supprimé
-        assert documents["a"]["folder_id"] is None, mode
+        assert _doc(store, "a")["folder_id"] is None, mode
 
 
 # ── Dossier vide, dossier introuvable ──────────────────────────────────────
 
 
-def test_dossier_vide_dans_les_deux_modes(monkeypatch):
+def test_dossier_vide_dans_les_deux_modes(store, monkeypatch):
     for mode in ("move", "delete"):
-        folders, _documents, _journal = _arbre(monkeypatch)
-        folders["vide"] = {"id": "vide", "dossier_id": "d1", "name": "Vide",
-                           "parent_folder_id": None}
+        _arbre(store, monkeypatch)
+        _seed_folder(store, "vide", "Vide")
         ok, err, rapport = folder.delete_folder("d1", "vide", contents=mode)
         assert ok and err == "", mode
-        assert "vide" not in folders, mode
+        assert store.peek("folders/vide") is None, mode
         assert rapport["documents"] == [] and rapport["moved"] == 0, mode
 
 
-def test_dossier_introuvable(monkeypatch):
-    _arbre(monkeypatch)
+def test_dossier_introuvable(store, monkeypatch):
+    _arbre(store, monkeypatch)
     ok, err, _rapport = folder.delete_folder("d1", "fantome", contents="delete")
     assert not ok and "introuvable" in err
+
+
+# ── La course de la revue de T7 (correctifs du lot 2A) ─────────────────────
+#
+# Le connecteur reclasse désormais des documents (move_documents,
+# update_document) et crée des dossiers de classement (manage_folder). Une
+# telle écriture qui tombe ENTRE la lecture du sous-arbre et les écritures
+# en lot de la suppression laissait un document sous un folder_id mort (en
+# « delete » comme en « move »), et en « move » l'écriture de reparentage,
+# sans garde, ramenait au parent un document que le connecteur venait de
+# classer ailleurs. Le crochet de commit du faux serveur glisse l'écriture
+# concurrente juste avant la première écriture destructive — la fenêtre
+# même de l'ancien code. Chaque test ÉCHOUE sur lui.
+
+
+def _race_on_first_destructive_commit(store, path, data):
+    """Slip ANOTHER writer's write of *path* in right before the first
+    commit that deletes or rewrites a document or a folder."""
+    fired = []
+
+    def _hook(info):
+        if fired:
+            return
+        if any(kind in ("update", "delete", "set")
+               and (p.startswith("documents/") or p.startswith("folders/"))
+               for kind, p in info.ops):
+            fired.append(True)
+            store.external_write(path, data)
+
+    store.add_commit_hook(_hook)
+    return fired
+
+
+@pytest.mark.parametrize("mode", ["move", "delete"])
+def test_un_document_classe_dans_le_sous_arbre_pendant_la_suppression_n_est_jamais_orphelin(
+    store, monkeypatch, mode,
+):
+    _arbre(store, monkeypatch)
+    fired = _race_on_first_destructive_commit(store, "documents/racine", {
+        "id": "racine", "dossier_id": "d1", "folder_id": "f2",
+        "display_name": "Note", "category": "autre",
+        "storage_path": "users/u1/dossiers/d1/documents/racine/racine.pdf",
+    })
+
+    ok, err, rapport = folder.delete_folder(
+        "d1", "f1", contents=mode, expected_documents=3, expected_folders=1)
+
+    assert fired
+    assert not ok and "a changé pendant la suppression" in err
+    assert "Le dossier a été conservé" in err
+    # Le document glissé dedans vit dans un dossier VIVANT, jamais mort.
+    assert _doc(store, "racine")["folder_id"] == "f2"
+    assert store.peek("folders/f2") is not None
+    assert store.peek("folders/f1") is not None
+    assert rapport["folders"] == []
+    # Rien n'a été fait : la première transaction a vu le changement.
+    assert rapport["documents"] == [] and rapport["moved"] == 0
+    for doc_id in ("a", "b", "c"):
+        assert _doc(store, doc_id) is not None
+
+
+def test_un_document_sorti_du_sous_arbre_n_est_pas_ramene_au_parent(
+    store, monkeypatch,
+):
+    """« move » : le connecteur classe « b » dans « Ailleurs » pendant la
+    suppression — l'ancien reparentage, sans garde, le ramenait à la racine."""
+    _arbre(store, monkeypatch)
+    _race_on_first_destructive_commit(store, "documents/b", {
+        "id": "b", "dossier_id": "d1", "folder_id": "fx",
+        "display_name": "Annexe 1", "category": "pièce",
+        "storage_path": "users/u1/dossiers/d1/documents/b/b.pdf",
+    })
+    ok, err, _rapport = folder.delete_folder("d1", "f1", contents="move")
+    assert not ok and "a changé pendant la suppression" in err
+    assert _doc(store, "b")["folder_id"] == "fx"
+    assert store.peek("folders/f1") is not None
+
+
+def test_un_document_sorti_du_sous_arbre_n_est_pas_detruit(store, monkeypatch):
+    """« delete » : le connecteur sort « b » du sous-arbre pendant la
+    suppression — « Tout supprimer » ne détruit pas un document qui n'y est
+    plus, ni son fichier."""
+    bucket = _arbre(store, monkeypatch)
+    _race_on_first_destructive_commit(store, "documents/b", {
+        "id": "b", "dossier_id": "d1", "folder_id": "fx",
+        "display_name": "Annexe 1", "category": "pièce",
+        "storage_path": "users/u1/dossiers/d1/documents/b/b.pdf",
+    })
+    ok, _err, rapport = folder.delete_folder("d1", "f1", contents="delete")
+    assert not ok
+    assert _doc(store, "b")["folder_id"] == "fx"
+    assert "users/u1/dossiers/d1/documents/b/b.pdf" in bucket.objects
+    assert rapport["documents"] == []
+
+
+def test_un_document_classe_apres_les_fichiers_bloque_la_suppression_des_dossiers(
+    store, monkeypatch,
+):
+    """La fenêtre entre la phase des documents et celle des dossiers : un
+    document classé dans « Annexes » APRÈS le reparentage de son contenu.
+    Les dossiers sont conservés — et ce qui était déjà déplacé est dit."""
+    _arbre(store, monkeypatch)
+    fired = []
+
+    def _hook(info):
+        if fired:
+            return
+        if any(p.startswith("folders/") and kind == "delete"
+               for kind, p in info.ops):
+            fired.append(True)
+            store.external_write("documents/racine", {
+                "id": "racine", "dossier_id": "d1", "folder_id": "f2",
+                "display_name": "Note", "category": "autre",
+            })
+
+    store.add_commit_hook(_hook)
+    ok, err, rapport = folder.delete_folder("d1", "f1", contents="move")
+    assert fired
+    assert not ok and "3 fichiers avaient déjà été déplacés" in err
+    assert store.peek("folders/f1") and store.peek("folders/f2")
+    assert _doc(store, "racine")["folder_id"] == "f2"
+    assert rapport["moved"] == 3 and rapport["folders"] == []
+
+
+def test_un_sous_dossier_cree_pendant_la_suppression_n_est_jamais_orphelin(
+    store, monkeypatch,
+):
+    """manage_folder crée un sous-dossier sous « Annexes » pendant la
+    suppression : il ne reste jamais sous un parent supprimé."""
+    _arbre(store, monkeypatch)
+    _race_on_first_destructive_commit(store, "folders/neuf", {
+        "id": "neuf", "dossier_id": "d1", "name": "Neuf",
+        "parent_folder_id": "f2", "order": 0,
+    })
+    ok, err, _rapport = folder.delete_folder("d1", "f1", contents="move")
+    assert not ok and "a changé pendant la suppression" in err
+    assert store.peek("folders/neuf")["parent_folder_id"] == "f2"
+    assert store.peek("folders/f2") is not None
+
+
+def test_chaque_ecriture_destructive_relit_le_sous_arbre_dans_sa_transaction(
+    store, monkeypatch,
+):
+    """La garde est STRUCTURELLE : les deux lectures (dossiers, documents)
+    de chaque phase passent par la transaction qui écrit."""
+    _arbre(store, monkeypatch)
+    store.reset_logs()
+    ok, _err, _rapport = folder.delete_folder("d1", "f1", contents="delete")
+    assert ok
+    transactional_queries = [
+        r for r in store.reads if r.rpc == "run_query" and r.transactional]
+    # Phase des documents (1 lot) + phase des dossiers : 2 × 2 requêtes.
+    assert len(transactional_queries) == 4
+    for commit in store.commits:
+        if any(p.startswith(("documents/", "folders/")) for _k, p in commit.ops):
+            assert commit.transaction is not None

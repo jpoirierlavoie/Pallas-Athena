@@ -41,7 +41,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
+from firebase_admin import storage
 from google.api_core.exceptions import AlreadyExists
+from google.cloud.exceptions import NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
@@ -978,7 +980,79 @@ def move_folder(
     return folder, [], True
 
 
-_BATCH_CHUNK = 450          # Firestore caps a batch at 500 operations
+# A chunk of the documents phase. Production has had no per-commit write cap
+# since 2023-03-29 (tests/_fake_firestore.py cites the release note); the
+# chunk only bounds how much ONE transaction rewrites — each chunk re-reads
+# the subtree anyway.
+_BATCH_CHUNK = 450
+
+SUBTREE_CHANGED_DURING = (
+    "Le contenu de ce dossier a changé pendant la suppression : un fichier "
+    "ou un sous-dossier y a été ajouté, retiré ou déplacé entre-temps. "
+    "{done}Le dossier a été conservé, avec tout ce qu'il contient encore — "
+    "rechargez la page, vérifiez son contenu, puis recommencez."
+)
+
+
+def _documents_query(dossier_id: str):
+    return db.collection("documents").where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    )
+
+
+def _subtree_now(
+    dossier_id: str, folder_id: str, transaction,
+) -> tuple[Optional[dict], set[str], dict[str, dict]]:
+    """``(the folder record, the subtree's folder ids, {doc id: document
+    filed inside it})``, read THROUGH *transaction* — both queries.
+
+    Read in the transaction that writes, so a connector write landing on
+    ANY folder or document of the dossier between this read and the commit
+    aborts the commit (the real client re-runs the body on fresh data, as
+    the fake server does), and the re-run then sees the change and refuses.
+    That is what closes the window the batched deletes of 2026-08-14 left
+    open (review of T7): a ``move_documents`` or ``update_document`` refile
+    INTO the subtree used to land after the read and before the folder
+    records were deleted — the document then pointed at a dead
+    ``folder_id``, in no folder and at no root; and in « move » mode the
+    reparent write, unguarded, moved a document the connector had just
+    filed ELSEWHERE back to the parent. A read failure is the French
+    refusal, never « empty ».
+    """
+    try:
+        folders = [
+            s.to_dict() or {}
+            for s in _folders_query(dossier_id).stream(transaction=transaction)
+        ]
+        documents = [
+            s.to_dict() or {}
+            for s in _documents_query(dossier_id).stream(transaction=transaction)
+        ]
+    except Exception:
+        log_unexpected("folder subtree re-read failed", dossier_id=dossier_id)
+        raise _Refused(["Impossible de lire le contenu du dossier. Réessayez."])
+    record = next((f for f in folders if f.get("id") == folder_id), None)
+    ids = set(_descendant_ids(folder_id, _children_index(folders)))
+    members = {
+        d["id"]: d for d in documents
+        if d.get("id") and d.get("folder_id") in ids
+    }
+    return record, ids, members
+
+
+def _done_phrase(contents: str, count: int) -> str:
+    """What the documents phase already did before a refusal — said, since
+    it is not undone (each committed chunk stands)."""
+    if not count:
+        return "Rien n'a été modifié. "
+    if count == 1:
+        head = "1 fichier avait déjà été"
+        tail = "supprimé" if contents == CONTENTS_DELETE else "déplacé"
+    else:
+        head = f"{count} fichiers avaient déjà été"
+        tail = "supprimés" if contents == CONTENTS_DELETE else "déplacés"
+    where = "" if contents == CONTENTS_DELETE else " vers le dossier parent"
+    return f"{head} {tail}{where}. "
 
 
 def delete_folder(
@@ -1003,39 +1077,54 @@ def delete_folder(
       exists solely because the user is asked first and told the count.
 
     ``expected_documents`` / ``expected_folders`` (lot 2A, T2) are the
-    subtree counts the confirmation dialog ANNOUNCED. When given, the
-    deletion is refused — nothing touched — unless the subtree read at
-    execution time still holds exactly that many documents and sub-folders:
-    once the connector can move documents and folders, something may have
-    been moved INTO the folder between the render and the click, and « Tout
-    supprimer » would destroy it without it ever being shown. ``None``
-    asserts nothing (a page rendered before the dialog posted them).
-    ``expected_fingerprint`` (review of T2) is the dialog's
-    :func:`_subtree_fingerprint`: the counts alone let a SWAP through — one
-    file moved out, another moved in, « 3 fichiers » still true — and the
-    newcomer would be destroyed unseen. The
-    comparison is made on the same read the deletion then acts on; a write
-    landing in the milliseconds between that read and the batched deletes
-    is not covered — the deletion spans several commits and cannot be one
-    transaction.
+    subtree counts the confirmation dialog ANNOUNCED, and
+    ``expected_fingerprint`` (review of T2) its :func:`_subtree_fingerprint`
+    — which records, not only how many (the counts alone let a SWAP
+    through). When given, the deletion is refused — nothing touched — unless
+    the subtree read at execution time still matches them. ``None`` asserts
+    nothing (a page rendered before the dialog posted them).
 
-    ORDER IS LOAD-BEARING: documents first, folder records second. A failure
-    in the document phase ABORTS without touching the folders (fail CLOSED).
-    The old code swallowed the reparent failure and deleted the folder
-    anyway, leaving documents with a dead ``folder_id`` — invisible in the
-    browser (``list_documents`` filters on exact equality), reachable only
-    through a free-text search or the whole-dossier ZIP.
+    Every DESTRUCTIVE write re-reads the subtree in its own transaction
+    (fixups of lot 2A — the T7 review's race, left open until then). The
+    documents go by chunks, each chunk ONE transaction that re-reads the
+    dossier's folders and documents (:func:`_subtree_now`) and refuses
+    unless the subtree is still exactly the one announced, minus what the
+    earlier chunks already handled: same folder ids, the folder still under
+    the same parent, and exactly the documents still to handle — a
+    document refiled INTO the subtree or OUT of it by the connector (or by
+    another tab) in between refuses the rest, fail CLOSED. Then the folder
+    records go in ONE transaction that re-reads the same way and refuses
+    while ANY document still points into the subtree or its folder set
+    changed. A write racing either transaction aborts its commit (the
+    reads are in the transaction) and the re-run refuses. So no document is
+    ever left under a dead ``folder_id``, a move never reverts a refile made
+    meanwhile, and « Tout supprimer » never destroys a document moved out
+    meanwhile — nor one moved in after the lawyer read the count.
+
+    ORDER IS LOAD-BEARING: documents first, folder records second. A refusal
+    or a failure in the document phase ABORTS without touching the folders
+    (fail CLOSED): the tree stays navigable and the operation replays over
+    what is left. In « delete » mode a chunk deletes the document RECORDS in
+    its transaction, then their stored files — records first, the order
+    ``delete_template`` uses: a file that cannot be erased is an orphan
+    under the owner's prefix, referenced by nothing, with a log line; the
+    old order (file first, outside any transaction) could erase the bytes
+    of a document the connector had just moved out of the subtree, leaving
+    a record with no file. The count of such orphans travels in the report
+    (``orphaned_files``).
 
     Returns ``(ok, french_message, report)`` where *report* carries the
     folders and documents ACTUALLY destroyed, so the route can mint one
     deletion event per entity (the house invariant); the old
     ``(bool, str)`` return made that impossible, and only the top folder was
-    ever journalled.
+    ever journalled. A refusal after committed chunks still reports what
+    those chunks destroyed.
     """
     if contents not in VALID_CONTENTS:
         contents = CONTENTS_MOVE
 
-    vide: dict = {"folders": [], "documents": [], "moved": 0}
+    vide: dict = {"folders": [], "documents": [], "moved": 0,
+                  "orphaned_files": 0}
 
     existing = get_folder(dossier_id, folder_id)
     if not existing:
@@ -1071,56 +1160,104 @@ def delete_folder(
         ), vide
 
     folders_by_id = {f["id"]: f for f in _folders_by_ids(dossier_id, folder_ids)}
+    announced_ids = set(folder_ids)
+    remaining = {d["id"] for d in documents if d.get("id")}
+    by_id = {d["id"]: d for d in documents if d.get("id")}
+    order = [d["id"] for d in documents if d.get("id")]
     supprimes: list[dict] = []
     moved = 0
+    orphans = 0
 
-    # ── 1. Documents ──────────────────────────────────────────────────
-    if contents == CONTENTS_DELETE:
-        from models.document import delete_document
+    def _check(transaction, expected_members: set[str]) -> None:
+        record, ids, members = _subtree_now(dossier_id, folder_id, transaction)
+        if (
+            record is None
+            or (record.get("parent_folder_id") or None) != (parent_id or None)
+            or ids != announced_ids
+            or set(members) != expected_members
+        ):
+            raise _Refused([SUBTREE_CHANGED_DURING])
 
-        for doc in documents:
-            ok, erreur = delete_document(doc.get("id", ""))
-            if not ok:
-                # Stop here and keep every folder record: the tree stays
-                # navigable and the operation replays over what is left.
-                return False, (
-                    f"{len(supprimes)} fichier(s) supprimé(s), puis : {erreur} "
-                    "Le dossier a été conservé — réessayez."
-                ), {"folders": [], "documents": supprimes, "moved": 0}
-            supprimes.append(doc)
-    elif documents:
-        try:
+    # ── 1. Documents, chunk by chunk, each chunk re-reading the subtree ──
+    for start in range(0, len(order), _BATCH_CHUNK):
+        chunk = order[start:start + _BATCH_CHUNK]
+
+        @firestore.transactional
+        def _apply_chunk(transaction, chunk=chunk) -> None:
+            _check(transaction, set(remaining))       # reads first
             now = datetime.now(timezone.utc)
-            for start in range(0, len(documents), _BATCH_CHUNK):
-                batch = db.batch()
-                for doc in documents[start:start + _BATCH_CHUNK]:
-                    ref = db.collection("documents").document(doc["id"])
-                    batch.update(ref, {
+            for doc_id in chunk:
+                ref = db.collection("documents").document(doc_id)
+                if contents == CONTENTS_DELETE:
+                    transaction.delete(ref)
+                else:
+                    transaction.update(ref, {
                         "folder_id": parent_id,
                         **provenance.update_fields(now),
                     })
-                batch.commit()
-            moved = len(documents)
-        except Exception:
-            log_unexpected("folder document reparent failed")
-            return False, (
-                "Impossible de déplacer les fichiers. Le dossier a été "
-                "conservé — réessayez."
-            ), vide
 
-    # ── 2. Folder records (the subtree, deepest first is irrelevant —
-    #       the whole set goes in one commit) ────────────────────────────
+        try:
+            _apply_chunk(db.transaction())
+        except _Refused as refusal:
+            done = len(supprimes) if contents == CONTENTS_DELETE else moved
+            message = refusal.errors[0]
+            if message == SUBTREE_CHANGED_DURING:
+                message = message.format(done=_done_phrase(contents, done))
+            return False, message, {
+                "folders": [], "documents": supprimes, "moved": moved,
+                "orphaned_files": orphans,
+            }
+        except Exception:
+            log_unexpected("folder document phase failed")
+            done = len(supprimes) if contents == CONTENTS_DELETE else moved
+            verb = ("supprimer" if contents == CONTENTS_DELETE else "déplacer")
+            return False, (
+                f"Impossible de {verb} les fichiers. "
+                f"{_done_phrase(contents, done)}Le dossier a été conservé — "
+                "réessayez."
+            ), {"folders": [], "documents": supprimes, "moved": moved,
+                "orphaned_files": orphans}
+
+        remaining.difference_update(chunk)
+        if contents == CONTENTS_DELETE:
+            for doc_id in chunk:
+                provenance.note_commit("documents", doc_id)
+                supprimes.append(by_id[doc_id])
+            orphans += _erase_files([by_id[i] for i in chunk])
+        else:
+            for doc_id in chunk:
+                provenance.note_commit("documents", doc_id)
+            moved += len(chunk)
+
+    # ── 2. Folder records — ONE transaction, re-reading the subtree: no
+    #       document may point into it any more, and no folder joined it ──
+    @firestore.transactional
+    def _drop_folders(transaction) -> None:
+        _check(transaction, set())
+        # Deepest first (the reversed pre-order): a record set cut short by
+        # an error could never orphan a sub-folder under a deleted parent.
+        for fid in reversed(folder_ids):
+            transaction.delete(db.collection(COLLECTION).document(fid))
+
     try:
-        for start in range(0, len(folder_ids), _BATCH_CHUNK):
-            batch = db.batch()
-            for fid in folder_ids[start:start + _BATCH_CHUNK]:
-                batch.delete(db.collection(COLLECTION).document(fid))
-            batch.commit()
+        _drop_folders(db.transaction())
+    except _Refused as refusal:
+        done = len(supprimes) if contents == CONTENTS_DELETE else moved
+        message = refusal.errors[0]
+        if message == SUBTREE_CHANGED_DURING:
+            message = message.format(done=_done_phrase(contents, done))
+        return False, message, {
+            "folders": [], "documents": supprimes, "moved": moved,
+            "orphaned_files": orphans,
+        }
     except Exception:
         log_unexpected("folder delete failed")
         return False, "Erreur lors de la suppression. Veuillez réessayer.", {
             "folders": [], "documents": supprimes, "moved": moved,
+            "orphaned_files": orphans,
         }
+    for fid in folder_ids:
+        provenance.note_commit(COLLECTION, fid)
 
     if parent_id:
         _touch_folder(dossier_id, parent_id)
@@ -1129,7 +1266,35 @@ def delete_folder(
         "folders": [folders_by_id.get(fid, {"id": fid}) for fid in folder_ids],
         "documents": supprimes,
         "moved": moved,
+        "orphaned_files": orphans,
     }
+
+
+def _erase_files(documents: list[dict]) -> int:
+    """Erase the stored files of documents whose RECORDS were just deleted
+    — the count of those that could not be erased (orphans under the
+    owner's prefix, referenced by nothing: never listed, never served).
+    A file already missing is not an orphan. Never raises."""
+    orphans = 0
+    try:
+        bucket = storage.bucket()
+    except Exception:
+        log_unexpected("folder delete: storage unavailable",
+                       count=len(documents))
+        return sum(1 for d in documents if d.get("storage_path"))
+    for doc in documents:
+        path = doc.get("storage_path") or ""
+        if not path:
+            continue
+        try:
+            bucket.blob(path).delete()
+        except NotFound:
+            continue
+        except Exception:
+            orphans += 1
+            log_unexpected("folder delete: document file not erased",
+                           document_id=doc.get("id", ""))
+    return orphans
 
 
 def _folders_by_ids(dossier_id: str, folder_ids: list[str]) -> list[dict]:
