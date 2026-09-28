@@ -1076,6 +1076,20 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
     return None
 
 
+def get_dossier_strict(dossier_id: str) -> Optional[dict]:
+    """The dossier, ``None`` when it does not exist — and RAISES on a read
+    error, unlike :func:`get_dossier`, which swallows it into ``None``.
+
+    For a caller whose ``None`` means something (fixups of lot 2A: a
+    template rename checked against its source dossier must tell « that
+    dossier was deleted » from « the store could not answer »). Same shape
+    as ``get_dossier``: migrations applied, removed fields purged."""
+    doc = db.collection(COLLECTION).document(dossier_id).get()
+    if not doc.exists:
+        return None
+    return _strip_removed_fields(_migrate_parties(doc.to_dict() or {}))
+
+
 def get_dossier_by_file_number(file_number: str) -> Optional[dict]:
     """The dossier bearing *file_number*, or None when none does.
 

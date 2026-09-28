@@ -537,33 +537,124 @@ def test_values_already_stored_write_nothing(world):
     assert world["db"].peek(f"doc_templates/{tid}") == before
 
 
-def test_a_rename_is_checked_against_no_dossier_and_the_texts_say_so(world):
-    """Regression (review of T11): INSTRUCTIONS and the consent said a
-    template was refused while « it or the template's name » named the
-    source dossier — true only of a template being CREATED (create_template,
-    begin_upload create). A RENAME through update_template has no source
-    dossier to scan against: the name is stored as given — here a client's
-    surname, which then prints in every generated document's name, for any
-    client. The texts now say so rather than promise a check that never
-    runs; this pins both halves, so a scan added later must move the texts
-    with it."""
+def test_a_rename_without_a_recorded_source_is_said_unchecked(world):
+    """REWRITTEN deliberately (fixups of lot 2A). It pinned « a rename is
+    checked against NO dossier » — the review of T11's disclosure of a gap
+    the critic of lot 2A then asked to close. A template now RECORDS the
+    dossier it was drawn from, and a rename is checked against it. This
+    one (the web form's: no source recorded) has nothing to be checked
+    against: the name is stored, and the result SAYS it was not checked —
+    never a silent pass."""
     tid = world["template"]
     result = _update(world, name="Lettre Tremblay")
     assert result["changed_fields"] == ["name"]
     assert result["leak_scan"] is None
+    assert result["name_check"] == {
+        "performed": False, "dossier_ids": [], "missing_dossier_ids": [],
+        "accepted": [], "unused_accept": 0}
+    assert any("contrôlé contre AUCUN dossier" in w for w in result["warnings"])
     assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre Tremblay"
+
+
+def test_a_rename_is_checked_against_the_source_dossier_and_the_texts_say_so(
+    world,
+):
+    """Fixups of lot 2A — FAILS on the old handler, which stored « Lettre
+    Tremblay » on a template drawn from Tremblay's dossier: that name then
+    printed in the name of every document generated from it, for any
+    client. Refused, naming the identifier; accepted only on the lawyer's
+    word, echoed back."""
+    _seed_source(world)
+    created = _create(name="Lettre type")
+    tid = created["entity"]["id"]
+    stored = world["db"].peek(f"doc_templates/{tid}")
+    assert stored["source_dossier_id"] == "d1"
+    before = dict(stored)
+    exc = _refused(handlers.update_template,
+                   {"template_id": tid, "name": "Lettre Tremblay"})
+    assert exc.reason == "template_residue"
+    assert "« Tremblay »" in str(exc) and "accept_residual" in str(exc)
+    assert "Rien n'a été modifié" in str(exc)
+    assert world["db"].peek(f"doc_templates/{tid}") == before
+
+    result = handlers.update_template({
+        "template_id": tid, "name": "Lettre Tremblay",
+        "accept_residual": ["Tremblay"]})
+    assert result["name_check"]["performed"] is True
+    assert result["name_check"]["dossier_ids"] == ["d1"]
+    assert result["name_check"]["accepted"] == ["Tremblay"]
+    assert any("« Tremblay » reste dans le NOM" in w for w in result["warnings"])
+    assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre Tremblay"
+
     text = endpoint.INSTRUCTIONS
     assert "refused while it or the template's name" not in text
     assert "the name of a template it CREATES" in text
-    assert ("A name you give a template that exists is checked against no "
-            "dossier") in text
-    assert "a new name is checked against NO dossier" in (
+    assert "checked against no dossier" not in text
+    assert "a new name is checked against the dossiers its files came from" in (
         tools.TOOLS["update_template"]["description"])
     consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
                         / "_templates.html").read_text(encoding="utf-8").split())
-    assert "lui ou le nom du gabarit nomme" not in consent
-    assert ("Le nouveau nom donné à un gabarit existant n'est contrôlé contre "
-            "<strong>aucun</strong> dossier") in consent
+    assert "n'est contrôlé contre <strong>aucun</strong> dossier" not in consent
+    assert "Le nouveau nom donné à un gabarit existant est contrôlé" in consent
+
+
+def test_the_model_refuses_a_residue_on_every_path(world):
+    """The rule lives in the MODEL (plan rule 2): a caller that skips the
+    handler's check — the web form, a future path — is refused too, with a
+    message that names nothing of the dossier."""
+    _seed_source(world)
+    tid = _create(name="Lettre type")["entity"]["id"]
+    got, errors, changed = tpl_model.update_template(
+        tid, {"name": "Mise en demeure Tremblay"})
+    assert got is None and changed is False
+    assert errors == [tpl_model.NAME_RESIDUE_ERROR]
+    assert "Tremblay" not in tpl_model.NAME_RESIDUE_ERROR
+    got, errors, changed = tpl_model.update_template(
+        tid, {"name": "Mise en demeure"})
+    assert errors == [] and changed is True
+
+
+def test_a_new_version_s_source_dossier_is_checked_too(world):
+    """A web template (no source) given a new FILE from d1's document: the
+    version records d1, and a rename is then checked against it."""
+    _seed_source(world, "v2src", V2)
+    tid = world["template"]
+    result = _update(world, source_document_id="v2src", expected_version=1)
+    assert result["file_replaced"] is True
+    entry = world["db"].peek(f"doc_templates/{tid}/versions/2")
+    assert entry["source_dossier_id"] == "d1"
+    assert world["db"].peek(f"doc_templates/{tid}")["source_dossier_id"] == ""
+    exc = _refused(handlers.update_template,
+                   {"template_id": tid, "name": "Lettre Tremblay"})
+    assert exc.reason == "template_residue"
+
+
+def test_a_rename_check_that_cannot_read_refuses(world, monkeypatch):
+    _seed_source(world)
+    tid = _create(name="Lettre type")["entity"]["id"]
+    before = dict(world["db"].peek(f"doc_templates/{tid}"))
+
+    def _down(_did):
+        raise RuntimeError("firestore indisponible")
+
+    from models import dossier as dossier_model
+    monkeypatch.setattr(dossier_model, "get_dossier_strict", _down)
+    import services.template_names as template_names
+    monkeypatch.setattr(template_names, "get_dossier_strict", _down)
+    exc = _refused(handlers.update_template,
+                   {"template_id": tid, "name": "Lettre neutre"})
+    assert "réessayez" in str(exc)
+    assert world["db"].peek(f"doc_templates/{tid}") == before
+
+
+def test_a_deleted_source_dossier_is_said_not_checked(world):
+    _seed_source(world)
+    tid = _create(name="Lettre type")["entity"]["id"]
+    world["db"].external_delete("dossiers/d1")
+    result = _update(world, template_id=tid, name="Lettre Tremblay")
+    assert result["name_check"]["performed"] is False
+    assert result["name_check"]["missing_dossier_ids"] == ["d1"]
+    assert any("n'existe plus" in w for w in result["warnings"])
 
 
 def test_a_stale_expected_etag_is_refused_and_nothing_written(world):
@@ -642,7 +733,12 @@ def test_a_kind_change_to_a_special_kind_is_never_active_and_says_so(world):
      "Deux corrections distinctes"),
     ({}, "Rien à corriger"),
     ({"expected_version": 1}, "ne s'applique qu'à un nouveau fichier"),
-    ({"accept_residual": ["Tremblay"]}, "ne s'applique qu'à un nouveau fichier"),
+    # Changed deliberately (fixups of lot 2A): accept_residual now also
+    # serves a new NAME, so alone it is simply « nothing to correct » — and
+    # beside metadata WITHOUT a name it is refused as misplaced.
+    ({"accept_residual": ["Tremblay"]}, "Rien à corriger"),
+    ({"description": "x", "accept_residual": ["Tremblay"]},
+     "ne s'applique qu'à un nouveau nom"),
     ({"name": ""}, "ne peut pas être vide"),
     ({"category": "pièce"}, "`category`"),
 ])
@@ -1013,3 +1109,68 @@ def test_the_instructions_and_the_consent_name_the_template_tools():
     flat = " ".join(consent.split())
     assert "Gérer vos gabarits" in flat
     assert "document d'origine n'est jamais modifié" in flat
+
+
+# ══════════════════════════════════════════════════════════════════════
+# The web edit form's rename (fixups of lot 2A)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _web_client():
+    from flask import Flask
+
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.doc_templates as rdt
+    from tz import to_mtl
+    from utils.icons import ms
+
+    app = Flask(__name__, template_folder=str(_ATHENA / "templates"),
+                static_folder=str(_ATHENA / "static"))
+    app.secret_key = "t"
+    app.jinja_env.globals.update(csrf_token=lambda: "tok", ms=ms,
+                                 csp_nonce="n")
+    app.jinja_env.filters.update(to_mtl=to_mtl)
+    app.register_blueprint(rdt.doc_templates_bp)
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = UID
+        sess["email"] = "juriste@example.com"
+        sess["expires_at"] = datetime(2099, 1, 1, tzinfo=UTC)
+    return client
+
+
+def test_the_web_form_refuses_a_rename_naming_the_source_dossier(world):
+    """FAILS on the old model: the edit form stored « Lettre Tremblay » on
+    a template drawn from Tremblay's dossier. The refusal re-renders the
+    form (200 — htmx and the plain POST alike) and names NOTHING of the
+    dossier beyond « le nom reprend un identifiant du dossier source »."""
+    _seed_source(world)
+    tid = _create(name="Lettre type")["entity"]["id"]
+    before = dict(world["db"].peek(f"doc_templates/{tid}"))
+    web = _web_client()
+    resp = web.post(f"/gabarits/{tid}", data={
+        "name": "Lettre Tremblay", "description": "", "category":
+        "correspondance", "kind": "gabarit",
+        "expected_etag": before["etag"]})
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "Le nom reprend un identifiant du dossier source" in html
+    assert "« Tremblay »" not in html
+    assert world["db"].peek(f"doc_templates/{tid}") == before
+    ok = web.post(f"/gabarits/{tid}", data={
+        "name": "Lettre neutre", "description": "", "category":
+        "correspondance", "kind": "gabarit",
+        "expected_etag": before["etag"]})
+    assert ok.status_code == 302
+    assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre neutre"
+
+
+def test_the_web_form_renames_freely_a_template_with_no_recorded_source(world):
+    tid = world["template"]
+    before = dict(world["db"].peek(f"doc_templates/{tid}"))
+    resp = _web_client().post(f"/gabarits/{tid}", data={
+        "name": "Lettre Tremblay", "description": "", "category":
+        "correspondance", "kind": "gabarit",
+        "expected_etag": before["etag"]})
+    assert resp.status_code == 302
+    assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre Tremblay"

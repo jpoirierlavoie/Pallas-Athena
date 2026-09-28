@@ -139,6 +139,7 @@ from services import gabarit_champs as gabarit_service
 from services import gabarits as gabarit_writer
 from services import protocoles as protocol_service
 from services import rendez_vous as rendez_vous_service
+from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
     analyse_blocs, deadlines, pdf_text, phases, recurrence,
@@ -12686,6 +12687,7 @@ def _create_uploaded_template(holder: _UploadHolder, data: bytes,
          "description": params.get("description", ""),
          "category": params.get("category") or "autre", "kind": kind},
         uid, template_id=str(holder.ticket.get("reserved_template_id") or ""),
+        source_dossier_id=str(holder.ticket.get("dossier_id") or ""),
     )
     if template is None:
         raise _template_write_failed(holder, errors)
@@ -12731,6 +12733,7 @@ def _install_replacement(holder: _UploadHolder, data: bytes, current: dict,
         template_id, {}, io.BytesIO(data),
         _neutral_template_filename(current.get("name", "")), len(data),
         expected_version=expected,
+        source_dossier_id=str(holder.ticket.get("dossier_id") or ""),
     )
     if template is not None:
         return template, changed
@@ -12865,9 +12868,10 @@ _TEMPLATE_METADATA_KEYS = ("name", "description", "category", "kind")
 # The arguments of a FILE replacement. Refused beside metadata — two
 # gestures, two calls: a version event is not a record edit (the upload
 # ticket's replace mode draws the same line) — and without a source, where
-# they would be silently ignored.
+# they would be silently ignored. `accept_residual` belongs to both modes
+# since the fixups of lot 2A: residues of a new FILE, or of a new NAME.
 _TEMPLATE_FILE_KEYS = ("source_document_id", "expected_version",
-                       "accept_residual", "scrub_properties")
+                       "scrub_properties")
 _TEMPLATE_UNKNOWN = (
     "`template_id` : aucun gabarit ne porte cet identifiant — prenez-le dans "
     f"list_templates. {_NOTHING_MODIFIED}"
@@ -13214,7 +13218,7 @@ def _create_template_impl(args: dict) -> dict:
         io.BytesIO(data), _neutral_template_filename(name), len(data),
         {"name": name, "description": description, "category": category,
          "kind": kind},
-        uid,
+        uid, source_dossier_id=dossier_id,
     )
     if template is None:
         raise _model_refusal(errors, nothing)
@@ -13256,7 +13260,7 @@ def _template_edit_payload(
     template: dict, *, mode: str, changed: list[str], warnings: list[str],
     source_document_id: Optional[str] = None, file_replaced: bool = False,
     replaced_version: Optional[int] = None, leak_scan: Optional[dict] = None,
-    scrubbed: Optional[list[str]] = None,
+    scrubbed: Optional[list[str]] = None, name_check: Optional[dict] = None,
 ) -> dict:
     return {
         "updated": True,
@@ -13269,6 +13273,7 @@ def _template_edit_payload(
         "replaced_version": replaced_version,
         "leak_scan": leak_scan,
         "scrubbed_properties": scrubbed,
+        "name_check": name_check,
         "warnings": warnings,
     }
 
@@ -13315,6 +13320,11 @@ def _update_template_impl(args: dict) -> dict:
             "kind — ou, pour un nouveau fichier, source_document_id et "
             f"expected_version. {_NOTHING_MODIFIED}"
         )
+    if metadata and "accept_residual" in args and "name" not in args:
+        raise ToolArgumentError(
+            "`accept_residual` ne s'applique qu'à un nouveau nom (`name`) ou "
+            f"à un nouveau fichier (source_document_id). {_NOTHING_MODIFIED}"
+        )
     if file_args and "source_document_id" not in args:
         raise ToolArgumentError(
             ", ".join(f"`{k}`" for k in file_args)
@@ -13331,6 +13341,76 @@ _ALREADY_STORED = (
     "Toutes les valeurs envoyées étaient déjà enregistrées : rien n'a été "
     "modifié."
 )
+
+
+def _name_check_report(check) -> dict:
+    """What the rename check did — ids of dossiers, the identifiers the
+    lawyer accepted (the dossier's own data, echoed where it lands), never
+    the name the caller sent."""
+    return {
+        "performed": bool(check.performed),
+        "dossier_ids": list(check.dossier_ids),
+        "missing_dossier_ids": list(check.missing_dossier_ids),
+        "accepted": list(check.accepted),
+        "unused_accept": len(check.unused_accept),
+    }
+
+
+def _checked_rename(template: dict, name: str, accept: list[str],
+                    nothing: str) -> tuple[dict, list[str]]:
+    """A RENAME against the template's source dossiers (fixups of lot 2A)
+    — ``(name_check report, warnings)``, or a refusal naming each residue
+    (the dossier's own data, as the creation check does), never the name.
+
+    The model enforces the same rule on every path
+    (``doc_template.update_template`` refuses a residue with a message that
+    names nothing); run here first so the refusal can name what to fix and
+    the result can say what was — or was not — checked."""
+    try:
+        check = template_names.check_rename(template, name, accept=accept)
+    except template_names.NameCheckUnavailable as exc:
+        raise ToolArgumentError(f"{exc} {nothing}", reason="template_retry")
+    if check.residues:
+        listed = "; ".join(
+            f"« {r} »" for r in check.residues[:_RESIDUES_LISTED_MAX])
+        more = len(check.residues) - _RESIDUES_LISTED_MAX
+        tail = f" — et {more} autre(s)" if more > 0 else ""
+        raise ToolArgumentError(
+            "Le nouveau nom (`name`) reprend un identifiant du dossier dont ce "
+            f"gabarit est tiré : {listed}{tail}. Ce nom s'imprimerait dans le "
+            "nom de chaque document tiré de ce gabarit, pour tout client. "
+            "Donnez-lui un nom neutre — ou, SEULEMENT si le juriste accepte "
+            "chacun d'eux, listez-les, tels qu'écrits ici, dans "
+            f"accept_residual. {nothing}",
+            reason="template_residue",
+        )
+    warnings: list[str] = []
+    if not check.performed:
+        warnings.append(
+            "Aucun dossier source n'est enregistré pour ce gabarit (versé dans "
+            "l'application, créé avant ce contrôle, ou déclaré sans dossier "
+            "source)" + (
+                ", ou il n'existe plus" if check.missing_dossier_ids else "")
+            + " : le nouveau nom n'a été contrôlé contre AUCUN dossier. Il "
+            "s'imprime dans le nom de chaque document tiré de ce gabarit : "
+            "jamais le nom d'une partie."
+        )
+    elif check.missing_dossier_ids:
+        warnings.append(
+            f"{len(check.missing_dossier_ids)} dossier(s) source enregistré(s) "
+            "n'existe(nt) plus : le nom n'a été contrôlé que contre les autres."
+        )
+    warnings += [
+        f"« {a} » reste dans le NOM du gabarit, accepté : il s'imprimera dans "
+        "le nom de chaque document tiré de ce gabarit."
+        for a in check.accepted
+    ]
+    if check.unused_accept:
+        warnings.append(
+            f"{len(check.unused_accept)} entrée(s) d'accept_residual ne "
+            "correspondent à aucun identifiant trouvé dans le nom."
+        )
+    return _name_check_report(check), warnings
 
 
 def _update_template_metadata(args: dict, template_id: str, template: dict) -> dict:
@@ -13360,6 +13440,7 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
             raise ToolArgumentError(
                 f"`kind` : valeur hors vocabulaire. {nothing}")
         data["kind"] = args["kind"]
+    accept = _clean_accept_residual(args.get("accept_residual"), nothing)
 
     # What would CHANGE — the model's own comparison, so a value already
     # stored is not a change here either.
@@ -13372,9 +13453,17 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
         args, template, tool="update_template", subject=_TEMPLATE_SUBJECT)
     if "kind" in changed and doc_template_model.is_active(template):
         raise _active_kind_refusal(template)
+    name_check: Optional[dict] = None
+    rename_warnings: list[str] = []
+    if "name" in changed:
+        name_check, rename_warnings = _checked_rename(
+            template, data["name"], accept, nothing)
+    elif accept:
+        rename_warnings.append(
+            "`accept_residual` ignoré : le nom n'a pas changé.")
 
     updated, errors, wrote = doc_template_model.update_template(
-        template_id, data, expected_etag=expected)
+        template_id, data, expected_etag=expected, name_accept=accept)
     _raise_if_stale(
         errors, tool="update_template", subject=_TEMPLATE_SUBJECT,
         reread=lambda: doc_template_model.get_template(template_id),
@@ -13384,6 +13473,8 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
             # The designation landed between the read and the commit.
             raise _active_kind_refusal(
                 doc_template_model.get_template(template_id) or template)
+        if doc_template_model.NAME_CHECK_UNAVAILABLE_ERROR in errors:
+            raise ToolArgumentError(" ".join(errors), reason="template_retry")
         raise _model_refusal(errors, nothing)
     if not wrote:
         # Another writer stored these very values meanwhile.
@@ -13391,7 +13482,7 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
             updated, mode="metadata", changed=[], warnings=[_ALREADY_STORED])
 
     # ── Committed: nothing below may refuse. ───────────────────────────
-    warnings: list[str] = []
+    warnings: list[str] = list(rename_warnings)
     if "kind" in changed:
         warnings += _never_active_warning(data["kind"])
         warnings += _special_kind_file_warnings(
@@ -13399,9 +13490,12 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
     _log_template_write(
         "template_updated", template_id=template_id, file_replaced=False,
         version=int(updated.get("version") or 1), fields_changed=changed,
+        **({"name_checked": name_check["performed"],
+            "accepted_residue_count": len(name_check["accepted"])}
+           if name_check is not None else {}),
     )
     return _template_edit_payload(updated, mode="metadata", changed=changed,
-                                  warnings=warnings)
+                                  warnings=warnings, name_check=name_check)
 
 
 def _template_version_moved(stored: int, expected: int) -> ToolArgumentError:
@@ -13498,6 +13592,7 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
         template_id, {}, io.BytesIO(data),
         _neutral_template_filename(template.get("name", "")), len(data),
         expected_etag=expected, expected_version=expected_version,
+        source_dossier_id=dossier_id,
     )
     _raise_if_stale(
         errors, tool="update_template", subject=_TEMPLATE_SUBJECT,

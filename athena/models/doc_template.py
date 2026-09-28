@@ -60,7 +60,7 @@ import hmac
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import NamedTuple, Optional
+from typing import Iterable, NamedTuple, Optional
 
 import google.auth
 from google.api_core.exceptions import PreconditionFailed
@@ -194,6 +194,21 @@ VERSION_INTEGRITY_ERROR = (
     "lors de son installation : rétablissement refusé. Rien n'a été modifié."
 )
 INVALID_TEMPLATE_ID_ERROR = "Identifiant de gabarit invalide."
+SOURCE_DOSSIER_INVALID_ERROR = "Identifiant de dossier source invalide."
+# The rename rule (fixups of lot 2A): a template's name prints into the
+# name of every document generated from it, for every client. The web
+# refusal names NOTHING of the dossier (the lawyer knows it); the
+# connector's names each identifier (services.template_names).
+NAME_RESIDUE_ERROR = (
+    "Le nom reprend un identifiant du dossier source de ce gabarit : il "
+    "s'imprimerait dans le nom de chaque document tiré de ce gabarit, pour "
+    "tout client. Choisissez un nom neutre."
+)
+NAME_CHECK_UNAVAILABLE_ERROR = (
+    "Le nom n'a pas pu être contrôlé contre le dossier source de ce gabarit "
+    "(lecture impossible) : rien n'a été modifié — réessayez dans un "
+    "instant."
+)
 TEMPLATE_ID_CONFLICT_ERROR = (
     "Un autre gabarit porte déjà cet identifiant : rien n'a été créé."
 )
@@ -223,6 +238,9 @@ class _NewFile(NamedTuple):
     extraction: dict
     user_segment: str
     base_version: int
+    # The dossier the new file was taken from ("" = none recorded) — kept
+    # on its write-once version entry (fixups of lot 2A).
+    source_dossier_id: str = ""
 
 
 def _default_doc() -> dict:
@@ -244,6 +262,11 @@ def _default_doc() -> dict:
         "passthrough_fields": [],
         "slots_required": [],
         "validation_warnings": [],
+        # The dossier the template's first file was taken from — set at
+        # CREATION only, never by a metadata edit ("" = none recorded: a
+        # web upload, a template older than the fixups of lot 2A, or an
+        # upload ticket that declared none). See check_rename.
+        "source_dossier_id": "",
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -325,6 +348,19 @@ def _changed_metadata(existing: dict, proposed: dict) -> dict:
 
 
 # ── File validation and extraction ─────────────────────────────────────
+
+
+def _clean_source_dossier_id(value: object) -> tuple[str, list[str]]:
+    """A source dossier id as it will be STORED — ``""`` or an id that
+    names one document (no slash, bounded). Refused rather than altered."""
+    if value is None or value == "":
+        return "", []
+    if not isinstance(value, str):
+        return "", [SOURCE_DOSSIER_INVALID_ERROR]
+    text = value.strip()
+    if not text or len(text) > 128 or "/" in text or text != value:
+        return "", [SOURCE_DOSSIER_INVALID_ERROR]
+    return text, []
 
 
 def _validate_file(filename: str, file_size: int) -> list[str]:
@@ -555,8 +591,13 @@ def _version_entry(
     now: datetime,
     restored_from: Optional[int] = None,
     restored_by: str = "",
+    source_dossier_id: str = "",
 ) -> dict:
-    """A version's write-once record — no etag, never updated."""
+    """A version's write-once record — no etag, never updated.
+
+    ``source_dossier_id`` (fixups of lot 2A) — the dossier the file was
+    taken from, ``""`` when none is recorded: a rename is checked against
+    every dossier any version came from (:func:`template_source_dossier_ids`)."""
     entry = {
         "version": int(version),
         "filename": filename,
@@ -568,6 +609,7 @@ def _version_entry(
         "created_via": provenance.current_via(),
         "restored_from": restored_from,
         "restored_by": sanitize(str(restored_by or ""), max_length=200),
+        "source_dossier_id": source_dossier_id,
     }
     for key in _INVENTORY_KEYS:
         entry[key] = list(inventory.get(key) or [])
@@ -595,6 +637,10 @@ def _backfilled_entry(current: dict, now: datetime) -> dict:
         "created_via": (current.get("created_via", "") or "") if first else "",
         "restored_from": None,
         "restored_by": "",
+        # A version-1 backfill knows its source (the template's creation);
+        # a later one does not.
+        "source_dossier_id": (
+            str(current.get("source_dossier_id") or "") if first else ""),
         "backfilled": True,
         "recorded_at": now,
     }
@@ -641,6 +687,7 @@ def create_template(
     user_id: str,
     *,
     template_id: Optional[str] = None,
+    source_dossier_id: str = "",
 ) -> tuple[Optional[dict], list[str]]:
     """Validate, extract placeholders, upload to Storage, persist the doc.
 
@@ -658,6 +705,12 @@ def create_template(
     checked before anything is written, again when the create-only upload
     finds the object taken, and again when the record's ``create()`` finds
     the id taken.
+
+    ``source_dossier_id`` (keyword, fixups of lot 2A) — the dossier the
+    file was taken from (the connector's create_template and upload
+    ticket; ``""`` for the web form, which has none). Stored on the
+    template and on its ``versions/1`` entry, never editable afterwards: a
+    later RENAME is checked against it (:func:`update_template`).
     """
     # The uid FIRST — before the stream is read: a template must never be
     # written under a prefix that is not the owner's (users/unknown/…).
@@ -671,12 +724,16 @@ def create_template(
 
         if not is_canonical_uuid4(template_id):
             return None, [INVALID_TEMPLATE_ID_ERROR]
+    source_dossier_id, errors = _clean_source_dossier_id(source_dossier_id)
+    if errors:
+        return None, errors
     fields, errors = _metadata_input(metadata or {})
     if not errors:
         errors = _metadata_value_errors(fields)
     if errors:
         return None, errors
-    merged = {**_default_doc(), **fields}
+    merged = {**_default_doc(), **fields,
+              "source_dossier_id": source_dossier_id}
     meta_errors = _validate(merged)
     if meta_errors:
         return None, meta_errors
@@ -722,7 +779,7 @@ def create_template(
     entry = _version_entry(
         1, filename=safe_filename, original_filename=filename,
         file_size=len(docx_bytes), storage_path=storage_path, sha256=digest,
-        inventory=extraction, now=now,
+        inventory=extraction, now=now, source_dossier_id=source_dossier_id,
     )
 
     # Upload to Firebase Storage (never log the path — it may embed names).
@@ -1040,7 +1097,7 @@ def clear_active_template(
 
 def _prepare_new_file(
     existing: dict, template_id: str, docx_bytes: bytes, filename: str,
-    original_filename: str,
+    original_filename: str, *, source_dossier_id: str = "",
 ) -> tuple[Optional[_NewFile], list[str]]:
     """Validate and extract a replacement file (nothing is stored yet)."""
     try:
@@ -1058,6 +1115,7 @@ def _prepare_new_file(
         extraction=extraction,
         user_segment=segment,
         base_version=int(existing.get("version") or 1),
+        source_dossier_id=source_dossier_id,
     ), []
 
 
@@ -1154,6 +1212,7 @@ def _commit_update(
                     sha256=new_file.sha256, inventory=new_file.extraction,
                     now=now, restored_from=restored_from,
                     restored_by=restored_by,
+                    source_dossier_id=new_file.source_dossier_id,
                 ),
             )
         fields.update(provenance.update_fields(now))
@@ -1186,6 +1245,8 @@ def update_template(
     *,
     expected_etag: Optional[str] = None,
     expected_version: Optional[int] = None,
+    source_dossier_id: str = "",
+    name_accept: Iterable[str] = (),
 ) -> tuple[Optional[dict], list[str], bool]:
     """Update metadata; optionally install a new version of the file.
 
@@ -1209,8 +1270,25 @@ def update_template(
     Changing the kind of the DESIGNATED template of a special kind is
     refused (the kind would be left with a designation that no longer
     matches it).
+
+    A RENAME is checked against the template's source dossiers (fixups of
+    lot 2A — :func:`services.template_names.check_rename`): the one it was
+    created from and every one a later version was taken from. A new name
+    carrying one of their identifiers — a party's name, a file number — is
+    refused (:data:`NAME_RESIDUE_ERROR`), unless it is in *name_accept*
+    (the connector's ``accept_residual``, on the lawyer's word; the web
+    form has none); a check that cannot read is refused too
+    (:data:`NAME_CHECK_UNAVAILABLE_ERROR`), never « nothing found ». With
+    no source dossier recorded, there is nothing to check against.
+
+    ``source_dossier_id`` (keyword) — the dossier a NEW FILE was taken from,
+    recorded on its version entry (never on the template, whose own field
+    is its creation's).
     """
     proposed, errors = _metadata_input(data or {})
+    if errors:
+        return None, errors, False
+    source_dossier_id, errors = _clean_source_dossier_id(source_dossier_id)
     if errors:
         return None, errors, False
     try:
@@ -1220,6 +1298,24 @@ def update_template(
         return None, [READ_ERROR], False
     if existing is None:
         return None, [NOT_FOUND_ERROR], False
+
+    renamed = proposed.get("name")
+    if (
+        "name" in proposed
+        and renamed != existing.get("name", _default_doc()["name"])
+        and not _metadata_value_errors({"name": renamed})
+    ):
+        # Lazy: the check reads dossiers and contacts through services
+        # that import other models.
+        from services import template_names
+
+        try:
+            check = template_names.check_rename(
+                existing, renamed, accept=name_accept)
+        except template_names.NameCheckUnavailable:
+            return None, [NAME_CHECK_UNAVAILABLE_ERROR], False
+        if check.residues:
+            return None, [NAME_RESIDUE_ERROR], False
 
     new_file: Optional[_NewFile] = None
     if file_stream is not None and filename:
@@ -1239,7 +1335,8 @@ def update_template(
             )
             return None, ["Le fichier n'a pas pu être lu. Veuillez réessayer."], False
         new_file, errors = _prepare_new_file(
-            existing, template_id, docx_bytes, filename, filename
+            existing, template_id, docx_bytes, filename, filename,
+            source_dossier_id=source_dossier_id,
         )
         if errors:
             return None, errors, False
@@ -1306,9 +1403,12 @@ def restore_template_version(
         return None, [VERSION_INTEGRITY_ERROR], False
 
     filename = entry.get("filename") or "gabarit.docx"
+    source, _source_errors = _clean_source_dossier_id(
+        entry.get("source_dossier_id") or "")
     new_file, errors = _prepare_new_file(
         existing, template_id, docx_bytes, filename,
         entry.get("original_filename") or filename,
+        source_dossier_id=source,
     )
     if errors:
         return None, errors, False
@@ -1348,6 +1448,36 @@ def list_versions(
         if strict:
             raise TemplateReadError(template_id) from exc
         return []
+
+
+# More versions than any template will carry: the list is read WHOLE —
+# a source dossier missed past the window would be a rename checked
+# against nothing, in silence.
+_SOURCE_VERSIONS_WINDOW = 1000
+
+
+def template_source_dossier_ids(template: dict) -> list[str]:
+    """Every dossier *template*'s files were taken from — its creation's
+    (``source_dossier_id``) first, then each recorded version's — distinct,
+    in that order. ``[]`` when none is recorded.
+
+    RAISES :class:`TemplateReadError` when the versions cannot be read: a
+    rename check that reads « no source » on an outage would pass a name
+    it should refuse. Fixups of lot 2A.
+    """
+    ids: list[str] = []
+    own = str(template.get("source_dossier_id") or "")
+    if own:
+        ids.append(own)
+    template_id = str(template.get("id") or "")
+    if template_id:
+        for entry in list_versions(
+            template_id, limit=_SOURCE_VERSIONS_WINDOW, strict=True,
+        ):
+            source = str(entry.get("source_dossier_id") or "")
+            if source and source not in ids:
+                ids.append(source)
+    return ids
 
 
 def delete_template(template_id: str) -> tuple[bool, str]:

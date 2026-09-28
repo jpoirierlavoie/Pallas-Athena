@@ -5459,8 +5459,9 @@ TOOLS: dict[str, dict] = {
             "WRITE — corrects ONE template, in one of two calls. METADATA: "
             "name, description, category, kind — an omitted field is "
             "untouched; the kind of the ACTIVE template of a special kind "
-            "cannot change; a new name is checked against NO dossier. Or a "
-            "new FILE: source_document_id (a .docx "
+            "cannot change; a new name is checked against the dossiers its "
+            "files came from, when recorded (name_check says whether it "
+            "was). Or a new FILE: source_document_id (a .docx "
             "already in a dossier) + expected_version from list_templates — "
             "installed as a NEW version, the one in force KEPT and "
             "restorable in the application; refused while the file names "
@@ -5480,7 +5481,8 @@ TOOLS: dict[str, dict] = {
                     "maxLength": TEMPLATE_NAME_MAX_CHARS,
                     "description": (
                         "Metadata: its new name, in French — printed in the "
-                        "name of every generated document: never a client's."
+                        "name of every generated document: never a client's. "
+                        "Refused while it names a source dossier."
                     ),
                 },
                 "description": {
@@ -5519,7 +5521,10 @@ TOOLS: dict[str, dict] = {
                             "One identifier exactly as a refusal named it."
                         ),
                     },
-                    "description": "File: residues the LAWYER accepts to keep.",
+                    "description": (
+                        "Residues the LAWYER accepts to keep — in the new "
+                        "file, or in a new name."
+                    ),
                 },
                 "scrub_properties": {
                     "type": "boolean",

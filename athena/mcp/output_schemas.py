@@ -3334,10 +3334,32 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "or a file identical to the version in force)."),
         "leak_scan": _template_leak_report(nullable=True),
         "scrubbed_properties": _scrubbed_properties(),
+        # Fixups of lot 2A: a RENAME is checked against the dossiers the
+        # template's files came from — when any is recorded.
+        "name_check": {
+            **_obj({
+                "performed": _bool(
+                    "false = no source dossier is recorded for this template "
+                    "(or none still exists): the new name was checked "
+                    "against NOTHING."),
+                "dossier_ids": _arr(_str(), "The dossiers checked."),
+                "missing_dossier_ids": _arr(
+                    _str(), "Recorded source dossiers that no longer exist."),
+                "accepted": _arr(_str(
+                    "An identifier accepted in the name (accept_residual) — "
+                    "it WILL print in every generated document's name.")),
+                "unused_accept": _int(
+                    "accept_residual entries matching nothing found."),
+            }),
+            "type": ["object", "null"],
+            "description": (
+                "The rename's identifier check; null when the name did not "
+                "change (and on a file replacement)."),
+        },
         "warnings": _arr(_str(), "French; empty when clean."),
         **_write_protocol_keys(),
     }, required=["updated", "mode", "entity_type", "entity",
                  "changed_fields", "source_document_id", "file_replaced",
                  "replaced_version", "leak_scan", "scrubbed_properties",
-                 "warnings", "idempotent_replay"]),
+                 "name_check", "warnings", "idempotent_replay"]),
 }

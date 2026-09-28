@@ -675,6 +675,11 @@ def test_a_template_is_created_under_its_reserved_id_with_a_neutral_name(world):
     assert "Tremblay" not in template["filename"]
     assert template["created_via"] == "mcp" and template["version"] == 1
     assert not tpl_model.is_active(template)
+    # Fixups of lot 2A: the source dossier is RECORDED — a later rename is
+    # checked against it — on the template and on its first version.
+    assert template["source_dossier_id"] == "d1"
+    assert world["db"].peek(
+        f"doc_templates/{template['id']}/versions/1")["source_dossier_id"] == "d1"
     assert done["leak_scan"]["performed"] is True
     assert done["replaced_version"] is None
     assert ticket["status"] == ut.STATUS_DONE
@@ -767,6 +772,8 @@ def test_a_declared_absence_of_source_dossier_is_echoed_at_both_steps(world):
     assert done["leak_scan"]["performed"] is False
     assert any("par déclaration (aucun_dossier_source)" in w
                for w in done["warnings"])
+    created = world["db"].peek(f"doc_templates/{done['entity']['id']}")
+    assert created["source_dossier_id"] == ""
 
 
 @pytest.mark.parametrize("mode", ["create", "replace"])
@@ -928,6 +935,9 @@ def test_a_replacement_installs_a_new_version_and_keeps_the_old(world):
     assert _ticket(world, opened["ticket_id"])["staged_sha256"] == (
         hashlib.sha256(new).hexdigest())
     assert done["entity"]["version"] == 2
+    # Declared from no dossier: the new version records none.
+    assert world["db"].peek(
+        f"doc_templates/{tid}/versions/2")["source_dossier_id"] == ""
 
 
 def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(world):
