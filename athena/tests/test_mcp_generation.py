@@ -797,3 +797,4 @@ def test_the_instructions_state_the_rules_verbatim():
     assert "`fill_gabarit`" in text and "`create_document`" in text
     assert "It never changes an existing document's FILE" in text
     assert "within its OWN dossier" in text
+    assert "« par Claude (connecteur) »" in text

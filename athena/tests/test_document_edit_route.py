@@ -202,6 +202,31 @@ def test_an_edited_analysis_field_alone_reaches_the_analysis(client, db):
     assert entry["declenche_par"] == "juriste"
 
 
+def test_a_copy_s_inherited_protection_shows_and_survives_an_untouched_save(
+    client, db,
+):
+    """Lot 2A (T8): a copy carries its source's level as a SEED — no
+    sub-nature. The detail page shows the régime; the edit page renders; a
+    save that touches only a tag leaves the seed exactly as it was (the
+    form posts every analysis field back, and none of them differs)."""
+    champ, _ = doc._analyse_derivee(_CLIENT_LETTER, document={})
+    seed = doc.protection_seed({"id": "src", "analyse": champ},
+                               now=DT)
+    _seed(db, analyse=seed, filename="lettre.docx",
+          file_type=doc.EXTENSION_MIME_TYPES[".docx"])
+
+    detail = client.get("/documents/doc1").get_data(as_text=True)
+    assert "Secret professionnel" in html_module.unescape(detail)
+    resp = client.post("/documents/doc1/edit",
+                       data=_posted_back(client, tags="urgent"))
+
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:400]
+    stored = db.peek(PATH)
+    assert stored["tags"] == ["urgent"]
+    assert stored["analyse"] == seed
+    assert db.peek_collection(f"{PATH}/analyses") == {}
+
+
 def test_analysis_values_typed_without_a_sub_nature_are_said_not_saved(
     client, db,
 ):

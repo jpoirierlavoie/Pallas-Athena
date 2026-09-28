@@ -811,7 +811,9 @@ def build_instructions(
         "`mcp_updated_at` — returned by the read rows whose output schema "
         "declares those keys, which not every read does; the notes, tasks "
         "and events it CREATES, and the text it APPENDS to or REPLACES in a "
-        "note, also carry a dated « … par Claude le … » line."
+        "note, also carry a dated « … par Claude le … » line; a Word "
+        "document it generates or copies says « par Claude (connecteur) » "
+        "in its provenance (`genere_depuis`)."
     )
     parts.append(_FORMATS_EN)
     return " ".join(parts)
