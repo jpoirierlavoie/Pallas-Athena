@@ -59,6 +59,30 @@ def _invoice_ids(ctx: dict) -> set:
     }
 
 
+def is_imported(invoice: dict) -> bool:
+    """True when *invoice* was REPRISE from the previous system
+    (``import_invoice``), never one this application issued — PURE.
+
+    The marker ``imported`` (a bool, stamped by ``models.invoice
+    .create_invoice`` itself from whether a number was carried over — fixups
+    of lot 3) decides when present: every invoice created since. Without it
+    (every invoice stored before; nothing is migrated), an invoice is an
+    import when it carries a ``legacy_ref`` — lot Q's decision D-10 gave one
+    to every imported record — or when the connector created it
+    (``created_via`` « mcp »): until lot 3b, ``import_invoice`` was the
+    connector's ONLY invoice creator, and ``create_invoice`` stamps the
+    marker. A pre-marker web invoice therefore never reads as imported,
+    and neither does an invoice ``create_invoice`` issued.
+    """
+    invoice = invoice or {}
+    marker = invoice.get("imported")
+    if isinstance(marker, bool):
+        return marker
+    if str(invoice.get("legacy_ref") or "").strip():
+        return True
+    return str(invoice.get("created_via") or "") == "mcp"
+
+
 # ── IMP-01 ────────────────────────────────────────────────────────────────
 
 
@@ -214,15 +238,20 @@ def _entree_facturee_sans_facture(ctx: dict) -> Optional[str]:
 
 
 def _facture_importee_encore_au_brouillon(ctx: dict) -> Optional[str]:
+    # IMPORTED brouillons only (fixups of lot 3): a brouillon create_invoice
+    # just issued — or one the lawyer is still preparing on the web — is
+    # not « encore au brouillon » after a reprise, and the detail's advice
+    # (enter the payment « à sa date historique ») would be false for it.
     drafts = [
         (e.get("invoice") or {}).get("invoice_number", "?")
         for e in (ctx.get("invoices") or [])
         if (e.get("invoice") or {}).get("status") == "brouillon"
+        and is_imported(e.get("invoice") or {})
     ]
     if not drafts:
         return None
     return (
-        f"{len(drafts)} facture(s) encore au brouillon : "
+        f"{len(drafts)} facture(s) reprise(s) encore au brouillon : "
         + ", ".join(drafts)
         + ". Tant qu'elles ne sont pas promues (update_invoice, brouillon → "
         "envoyée, ou dans l'application), puis l'encaissement saisi au "

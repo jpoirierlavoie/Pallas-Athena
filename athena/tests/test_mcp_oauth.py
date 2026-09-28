@@ -592,6 +592,18 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     # dossiers en tient compte » implied both budgets always move.
     assert "le temps non facturable ne compte dans aucun budget" in flat
     assert "le budget des deux dossiers en tient compte" not in flat
+    # Fixups of lot 3 — invoice numbers: the COUNTER never reissues one
+    # (its promise, said with its subject), and an imported invoice's number
+    # can be imported again once the voided invoice is deleted.
+    assert "la numérotation de l'année ne le réattribue jamais" in flat
+    assert "il ne sera jamais réattribué, même si" not in flat
+    assert "ce numéro repris peut être importé de nouveau" in flat
+    # Fixups of lot 3 — D18: a category stored before the marker is the
+    # lawyer's, except « autre »; the lot-2A caveat that said the opposite
+    # (« faute d'historique… ») is gone.
+    assert ("Une catégorie posée <strong>avant</strong> cette mise à jour "
+            "est tenue pour la vôtre et n'est jamais remplacée") in flat
+    assert "faute d'historique" not in flat
     # Lot 0a (disclosure step) — three sentences of this screen were false.
     # Voiding does NOT free the number; only the notes, tasks and events the
     # connector CREATES carry a dated mention (every write is journaled and

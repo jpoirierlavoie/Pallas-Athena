@@ -289,9 +289,10 @@ def test_get_import_audit_dit_quand_les_postes_sont_illisibles(audit):
 
 
 def test_get_import_audit_signale_une_facture_restee_au_brouillon(audit):
+    # An IMPORTED invoice (fixups of lot 3: IMP-07 reads the marker).
     audit["invoices"] = [{"id": "i1", "invoice_number": "2019-F014",
                           "status": "brouillon", "subtotal": 45000,
-                          "total": 45000}]
+                          "total": 45000, "imported": True}]
     audit["line_items"] = {"i1": [{"id": "li1", "source_id": "e1",
                                    "amount": 45000}]}
     audit["entries"] = [{"id": "e1", "amount": 45000, "invoiced": True,

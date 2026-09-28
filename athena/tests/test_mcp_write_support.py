@@ -825,6 +825,34 @@ def test_a_required_tool_still_releases_on_a_refusal(fake, required):
     assert _entries(fake) == {}
 
 
+@pytest.mark.parametrize("policy", [tools.IDEMPOTENCY_OPTIONAL,
+                                    tools.IDEMPOTENCY_REQUIRED])
+def test_an_uncertain_outcome_keeps_its_claim_under_either_policy(
+    fake, monkeypatch, policy,
+):
+    """Fixups of lot 3: a refusal raised with keep_claim says the write MAY
+    have landed (a raise out of a commit). Released like a refusal — the old
+    code — the same-key retry would run and write a second time; kept, it is
+    refused as in flight. FAILS on the old run_write, which released it."""
+    monkeypatch.setitem(tools.TOOLS["create_note"], "idempotency", policy)
+    uncertain = ToolArgumentError("issue incertaine",
+                                  reason="invoice_outcome_uncertain",
+                                  keep_claim=True)
+    with pytest.raises(ToolArgumentError) as excinfo:
+        ws.run_write("create_note", _args(), _raising(uncertain))
+    assert excinfo.value is uncertain
+    assert fake.peek(_path("create_note"))["status"] == "pending"
+    with pytest.raises(ToolArgumentError) as retried:
+        ws.run_write("create_note", _args(),
+                     lambda: pytest.fail("a same-key retry must not run"))
+    assert retried.value.reason == "idempotency_in_flight"
+
+
+def test_keep_claim_defaults_to_false():
+    assert ToolArgumentError("non").keep_claim is False
+    assert ToolArgumentError("non", keep_claim=True).keep_claim is True
+
+
 def test_store_fails_open_both_ways(monkeypatch):
     broken = mock.Mock()
     broken.collection.side_effect = RuntimeError("firestore down")

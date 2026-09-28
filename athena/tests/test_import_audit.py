@@ -41,10 +41,12 @@ def _entry(eid, *, amount=45000, invoiced=False, invoice_id="",
 
 
 def _invoice(iid="i1", *, number="2019-F014", status="payée", subtotal=45000,
-             items=None):
+             items=None, **marks):
+    """*marks* — the import provenance (``imported``, ``legacy_ref``,
+    ``created_via``) IMP-07 reads since the fixups of lot 3."""
     return {
         "invoice": {"id": iid, "invoice_number": number, "status": status,
-                    "subtotal": subtotal, "total": subtotal},
+                    "subtotal": subtotal, "total": subtotal, **marks},
         "line_items": items if items is not None else [
             {"id": "li1", "source_id": "e1", "amount": subtotal},
         ],
@@ -101,7 +103,7 @@ def test_les_details_nomment_la_voie_du_connecteur_quand_elle_existe():
     assert "NOUVEAU numéro" in imp01
     assert "Facturez-les" not in imp01
 
-    drafts = _ctx(invoices=[_invoice(status="brouillon")])
+    drafts = _ctx(invoices=[_invoice(status="brouillon", imported=True)])
     assert "update_invoice" in {
         f["code"]: f for f in ia.run_checks(drafts)}["IMP-07"]["detail"]
 
@@ -245,7 +247,9 @@ def test_imp06_se_tait_quand_la_facture_est_la():
 
 
 def test_imp07_facture_encore_au_brouillon_dit_ce_que_ca_casse():
-    ctx = _ctx(invoices=[_invoice(status="brouillon")])
+    # REWRITTEN (fixups of lot 3): the invoice is marked IMPORTED — an
+    # unmarked brouillon no longer triggers IMP-07 (below).
+    ctx = _ctx(invoices=[_invoice(status="brouillon", imported=True)])
     findings = {f["code"]: f for f in ia.run_checks(ctx)}
     assert "IMP-07" in findings
     detail = findings["IMP-07"]["detail"]
@@ -258,3 +262,43 @@ def test_imp07_facture_encore_au_brouillon_dit_ce_que_ca_casse():
 
 def test_imp07_se_tait_sur_une_facture_promue():
     assert "IMP-07" not in _codes(_ctx(invoices=[_invoice(status="payée")]))
+
+
+@pytest.mark.parametrize("marks, imported", [
+    ({"imported": True}, True),                     # marked by the model
+    ({"imported": False, "legacy_ref": "ANC-1"}, False),  # the marker decides
+    ({"imported": False, "created_via": "mcp"}, False),   # create_invoice's
+    ({"legacy_ref": "ANC-1"}, True),                # legacy: lot Q's D-10
+    ({"legacy_ref": "  "}, False),
+    ({"created_via": "mcp"}, True),                 # legacy: import_invoice
+    ({"created_via": "web"}, False),                # legacy: the web form
+    ({}, False),                                    # legacy, no provenance
+    ({"imported": "oui", "legacy_ref": "ANC-1"}, True),   # not a bool: legacy
+])
+def test_is_imported(marks, imported):
+    assert ia.is_imported({"invoice_number": "2019-F014", **marks}) is imported
+
+
+def test_imp07_ne_signale_que_les_factures_reprises():
+    """FAILS on the old predicate, which flagged EVERY brouillon — including
+    an invoice create_invoice just issued, whose detail then told the
+    caller to enter its payment « à sa date historique »."""
+    ctx = _ctx(invoices=[
+        _invoice("i1", number="2019-F014", status="brouillon", imported=True),
+        _invoice("i2", number="2026-F031", status="brouillon",
+                 imported=False, created_via="mcp"),     # create_invoice
+        _invoice("i3", number="2026-F030", status="brouillon",
+                 created_via="web"),                     # legacy web draft
+        _invoice("i4", number="251601-01", status="brouillon",
+                 legacy_ref="ANC-251601"),               # legacy import
+    ])
+    detail = {f["code"]: f for f in ia.run_checks(ctx)}["IMP-07"]["detail"]
+    assert detail.startswith("2 facture(s) reprise(s) encore au brouillon")
+    assert "2019-F014" in detail and "251601-01" in detail
+    assert "2026-F031" not in detail and "2026-F030" not in detail
+
+
+def test_imp07_se_tait_sur_une_facture_emise_par_create_invoice():
+    ctx = _ctx(invoices=[_invoice(number="2026-F031", status="brouillon",
+                                  imported=False, created_via="mcp")])
+    assert "IMP-07" not in _codes(ctx)

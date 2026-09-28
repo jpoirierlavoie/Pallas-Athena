@@ -14,8 +14,15 @@ le marqueur ``category_set_by_lawyer`` (``models.document.
 category_set_by_lawyer``), posé VRAI par un geste explicite du juriste — le
 formulaire d'édition qui CHANGE la catégorie, « Confirmer la catégorie », un
 versement dont il a quitté la valeur présélectionnée — et FAUX partout
-ailleurs. Rien n'est migré : un document sans marqueur n'est au juriste que
-s'il porte ``category_confirmed_by``.
+ailleurs. Rien n'est migré. Un document SANS marqueur (tout document
+antérieur au 2026-09-28) est au juriste s'il porte ``category_confirmed_by``,
+OU si sa catégorie est autre chose que vide ou « autre » (la valeur par
+défaut du téléversement) — la règle de l'avocat, « refuser sur une catégorie
+confirmée », appliquée du côté qu'il a choisi : rien n'enregistrait, avant le
+marqueur, qu'une catégorie avait été choisie, donc toute catégorie autre que
+le défaut est tenue pour la sienne (correctifs du lot 3, qui RÉÉCRIVENT
+délibérément la règle des correctifs du lot 2A, où un document ancien n'était
+au juriste que s'il portait ``category_confirmed_by``).
 
 Tout passe par les VRAIS modèles et le vrai gestionnaire au-dessus du faux
 Firestore partagé ; on relit ce qui est STOCKÉ. Chaque refus ÉCHOUE sur le
@@ -80,6 +87,12 @@ def fake(monkeypatch):
          category_set_by_lawyer=True)                      # the lawyer's
     _doc(fake, "presume", category="preuve", category_source="mcp",
          category_set_by_lawyer=False)                     # Claude's
+    _doc(fake, "ancien", category="jugement")              # legacy, chosen
+    _doc(fake, "vide", category="")                        # legacy, blank
+    _doc(fake, "defaut_neuf", category="autre",
+         category_set_by_lawyer=False)                     # new upload default
+    _doc(fake, "genere", category="procédure",
+         category_set_by_lawyer=False)                     # a generation's
     return fake
 
 
@@ -99,27 +112,59 @@ def _refused(did, category) -> tools.ToolArgumentError:
 
 @pytest.mark.parametrize("doc, lawyers", [
     ({}, False),                                            # legacy, blank
-    ({"category_source": "juriste"}, False),                # untouched default
+    ({"category_source": "juriste"}, False),                # legacy, no category
+    ({"category": "autre"}, False),                         # legacy upload default
+    ({"category": "  autre  "}, False),
+    ({"category": "", "category_source": ""}, False),       # legacy, blank
     ({"category_confirmed_by": "me@x.ca"}, True),           # legacy, confirmed
+    ({"category": "autre",
+      "category_confirmed_by": "me@x.ca"}, True),           # a confirmed « autre »
     ({"category_confirmed_by": "   "}, False),
+    # REWRITTEN (fixups of lot 3): a legacy category other than the upload
+    # default is the LAWYER'S — the fixups of lot 2A read these three as
+    # untouched defaults, which left his older choices replaceable.
+    ({"category": "jugement"}, True),                       # source absent
+    ({"category": "pièce", "category_source": ""}, True),   # source blank
+    ({"category": "procédure", "category_source": "juriste"}, True),
     ({"category_set_by_lawyer": True}, True),
     ({"category_set_by_lawyer": False,
       "category_confirmed_by": "me@x.ca"}, False),          # the marker decides
+    ({"category": "jugement",
+      "category_set_by_lawyer": False}, False),             # the marker decides
     ({"category_source": "mcp", "category_set_by_lawyer": True}, False),
+    ({"category": "jugement", "category_source": "mcp"}, False),   # presumed
+    ({"category": "jugement", "category_source": "analyse"}, False),
     ({"category_source": "analyse",
       "category_confirmed_by": "me@x.ca"}, False),          # presumed: never his
     ({"category_set_by_lawyer": "oui"}, False),             # not a bool: legacy
+    ({"category_set_by_lawyer": "oui",
+      "category": "jugement"}, True),                       # ... judged as legacy
 ])
 def test_who_chose_the_category(doc, lawyers):
     assert document_model.category_set_by_lawyer(doc) is lawyers
 
 
+def test_a_retired_legacy_value_is_judged_as_the_autre_it_reads_as(fake):
+    """« entente » and « note » left the vocabulary and read as « autre »
+    (``_migrate_category``): stored on a legacy document, they are the
+    untouched default, not a choice — every reader migrates first."""
+    _doc(fake, "entente", category="entente")
+    # The raw record would read as a choice; the migrated one does not.
+    assert document_model.category_set_by_lawyer(
+        {"category": "entente"}) is True
+    assert document_model.category_set_by_lawyer(
+        document_model.get_document("entente")) is False
+    assert _mcp_category("entente", "preuve")["changed_fields"] == ["category"]
+
+
 # ── update_document ───────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("did", ["choisi", "confirme"])
+@pytest.mark.parametrize("did", ["choisi", "confirme", "ancien"])
 def test_a_category_the_lawyer_chose_or_confirmed_is_refused(fake, did):
-    """FAILS on the old handler, which replaced it and only warned."""
+    """FAILS on the old handler, which replaced it and only warned — and,
+    for « ancien » (a legacy « jugement » with no marker), on the lot-2A
+    fixup rule, which read it as an untouched default and replaced it."""
     before = fake.peek(f"documents/{did}")
     exc = _refused(did, "correspondance")
     assert "choisie ou confirmée par le juriste" in str(exc)
@@ -133,7 +178,8 @@ def test_a_category_the_lawyer_chose_or_confirmed_is_refused(fake, did):
     assert fake.peek(f"documents/{did}")["category"] == before["category"]
 
 
-@pytest.mark.parametrize("did", ["defaut", "presume"])
+@pytest.mark.parametrize(
+    "did", ["defaut", "presume", "vide", "defaut_neuf", "genere"])
 def test_an_untouched_default_or_a_presumed_category_stays_claudes(fake, did):
     result = _mcp_category(did, "correspondance")
     stored = fake.peek(f"documents/{did}")
@@ -180,7 +226,8 @@ def test_list_documents_says_which_category_is_the_lawyers(fake):
     rows = {r["id"]: r for r in handlers.list_documents(
         {"dossier_id": "d1"})["items"]}
     assert {i: r["category_set_by_lawyer"] for i, r in rows.items()} == {
-        "defaut": False, "confirme": True, "choisi": True, "presume": False}
+        "defaut": False, "confirme": True, "choisi": True, "presume": False,
+        "ancien": True, "vide": False, "defaut_neuf": False, "genere": False}
 
 
 # ── The web gestures that make it the lawyer's ────────────────────────────

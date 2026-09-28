@@ -92,8 +92,14 @@ So on an exception:
   Firestore write EXCEPTION into a French error list, which the handler
   raises as a refusal — and an error on a write does not prove it did not
   land (a timeout can follow a commit). The claim is released there as for
-  any refusal; the Lot 5 money models are transactional and read-verify for
-  that reason.
+  any refusal — UNLESS the handler raised the refusal with
+  ``keep_claim=True``, its statement that the outcome is uncertain (fixups
+  of lot 3: ``create_invoice`` recognizes the model's
+  ``CREATE_OUTCOME_UNCERTAIN``, a raise out of the invoice transaction,
+  whose success would have consumed a permanent number). The claim then
+  stays ``pending``, under either policy, and the same-key retry is refused
+  exactly as after a ``required`` failure. The Lot 5 money models are
+  transactional and read-verify for that reason.
 
 A release is a ``delete()`` under the ``last_update_time`` the claim's own
 ``create()`` returned — Firestore's delete preconditions are ``exists`` and
@@ -851,6 +857,10 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
                 error = _committed_error(tool, args, commits)
                 _record_partial(tool, key, fingerprint, claim, error, commits)
                 raise error from exc
+            if isinstance(exc, ToolArgumentError) and exc.keep_claim:
+                # An UNCERTAIN outcome (§ 2): the write may have landed, so
+                # the claim stays pending — a same-key retry must never run.
+                raise
             if isinstance(exc, ToolArgumentError) or policy != IDEMPOTENCY_REQUIRED:
                 _release(tool, claim)
             raise

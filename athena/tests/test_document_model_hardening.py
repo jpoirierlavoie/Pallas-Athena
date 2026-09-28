@@ -367,7 +367,10 @@ def test_claude_cannot_pose_a_category_on_an_analysed_document(db):
 
 
 def test_claude_poses_a_presumed_category_on_an_unanalysed_document(db):
-    _seed(db)
+    # REWRITTEN (fixups of lot 3, D18): a LEGACY « correspondance » (no
+    # marker) now reads as the lawyer's and is refused — so the record says
+    # nobody chose its category (a generation's, an upload's default).
+    _seed(db, category_set_by_lawyer=False)
     _saved, errors, _ = doc.update_metadata(
         "doc1", {"category": "preuve"}, source="mcp")
     assert errors == []
@@ -378,7 +381,7 @@ def test_claude_poses_a_presumed_category_on_an_unanalysed_document(db):
 def test_under_the_connector_a_category_is_always_presumed(db):
     """A handler that forgot the keyword — or passed « juriste » — cannot
     make Claude's category read as the lawyer's determination."""
-    _seed(db)
+    _seed(db, category_set_by_lawyer=False)   # nobody's choice (D18, lot 3)
     with provenance.writing_via("mcp", tool="update_document"):
         _saved, errors, _ = doc.update_metadata(
             "doc1", {"category": "preuve"}, source="juriste")

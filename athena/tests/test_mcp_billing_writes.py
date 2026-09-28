@@ -538,13 +538,15 @@ def test_a_void_releases_the_sources_keeps_the_number_and_its_reason(world):
     assert payload["released_time_entry_ids"] == ["e1"]
     assert payload["released_expense_ids"] == ["x1"]
     assert world.peek("timeentries/e1")["invoiced"] is False
-    assert any("jamais réattribué par la numérotation de l'année" in w
+    # REWRITTEN (fixups of lot 3 — one wording on every surface): « never
+    # reassigned » is the COUNTER's promise; an IMPORTED number can be
+    # imported again once the voided invoice is deleted in the application
+    # — the warning says both, and which promise is which.
+    assert any("la numérotation de l'année ne le réattribue jamais" in w
                for w in payload["warnings"])
-    # Lot 3b (the text step): « never reassigned » is the COUNTER's promise;
-    # an imported number is free again once the voided invoice is deleted
-    # in the application — the warning says which promise it makes.
-    assert any("un numéro repris de l'ancien système" in w
-               for w in payload["warnings"])
+    assert any("un numéro REPRIS de l'ancien système (import_invoice) ne "
+               "peut être importé de nouveau qu'une fois la facture annulée "
+               "supprimée" in w for w in payload["warnings"])
     # The next invoice takes F002: the voided one kept its number.
     assert _issued(world, time_entry_ids=["e2"], expense_ids=[])[
         "invoice_number"] == "2026-F002"
@@ -1034,3 +1036,128 @@ def test_a_source_changed_during_the_call_burns_no_number(world, monkeypatch):
     assert world.peek(COUNTER) is None
     assert world.peek_collection("invoices") == {}
     assert world.peek("timeentries/e1")["invoiced"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Correctifs du lot 3 — l'issue incertaine ne se dit jamais « rien créé »
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _lose_the_answer_of_the_invoice_commit(world, monkeypatch):
+    """The invoice transaction's commit LANDS, then the call raises — the
+    answer lost after the server applied it (a reset connection)."""
+    server = world._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(
+                "/invoices/" in server._write_name(w) for w in writes):
+            state["armed"] = False
+            raise RuntimeError("connection reset after the commit")
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+
+
+def test_an_uncertain_create_never_says_no_number_was_consumed(
+    world, monkeypatch,
+):
+    """The model's generic transaction error is AMBIGUOUS: here the invoice
+    WAS written and its number consumed. The old handler appended « aucun
+    numéro n'a été consommé » to it and released the claim, so the same-key
+    retry issued a SECOND invoice under the next number. Both halves fail
+    on the old code."""
+    preview = _preview(time_entry_ids=["e1"])
+    args = {"time_entry_ids": ["e1"],
+            "expected_total_cents": preview["total_cents"],
+            "idempotency_key": "cle-facture-incertaine"}
+    _lose_the_answer_of_the_invoice_commit(world, monkeypatch)
+    with pytest.raises(tools.ToolArgumentError) as uncertain:
+        _create(**args)
+    message = str(uncertain.value)
+    assert uncertain.value.reason == "invoice_outcome_uncertain"
+    assert "aucun numéro n'a été consommé" not in message
+    assert "Aucune facture n'a été créée" not in message
+    assert "INCERTAINE" in message and "list_invoices" in message
+    assert "MÊME idempotency_key" in message
+    # It was written — which is exactly why the text may not deny it.
+    (written,) = world.peek_collection("invoices").values()
+    assert written["invoice_number"] == "2026-F001"
+    assert world.peek(COUNTER)["seq"] == 1
+
+    # The same key cannot issue a second invoice: its claim was KEPT.
+    with pytest.raises(tools.ToolArgumentError) as retried:
+        _create(**args)
+    assert retried.value.reason == "idempotency_in_flight"
+    assert len(world.peek_collection("invoices")) == 1
+    assert world.peek(COUNTER)["seq"] == 1
+
+
+def test_the_model_answers_an_uncertain_outcome_by_its_constant(
+    world, monkeypatch,
+):
+    """The web form shows the model's own text: it never claims nothing
+    was created either (it used to read « Erreur lors de la sauvegarde.
+    Veuillez réessayer. », an invitation to issue the invoice twice)."""
+    preview = _preview(time_entry_ids=["e1"])
+    answers = []
+    real_create = invoice_model.create_invoice
+
+    def recording(*args, **kwargs):
+        answers.append(real_create(*args, **kwargs))
+        return answers[-1]
+
+    monkeypatch.setattr(invoice_model, "create_invoice", recording)
+    _lose_the_answer_of_the_invoice_commit(world, monkeypatch)
+    with pytest.raises(tools.ToolArgumentError):
+        _create(time_entry_ids=["e1"],
+                expected_total_cents=preview["total_cents"])
+    ((invoice, errors),) = answers
+    assert invoice is None
+    assert errors == [invoice_model.CREATE_OUTCOME_UNCERTAIN]
+    assert "vérifiez la liste des factures" in errors[0]
+    assert "Veuillez réessayer" not in errors[0]
+
+
+def test_a_certain_refusal_still_says_no_number_was_consumed(world):
+    """A refusal of the plan precedes the counter: there the suffix is true,
+    and stays."""
+    with pytest.raises(tools.ToolArgumentError) as refused:
+        _create(time_entry_ids=["e1"], expected_total_cents=1)
+    assert refused.value.reason == "invoice_refused"
+    assert "aucun numéro n'a été consommé" in str(refused.value)
+    assert refused.value.keep_claim is False
+
+
+def test_imp07_names_the_imported_brouillon_never_the_issued_one(world):
+    """The real store, both creators (fixups of lot 3): create_invoice
+    stamps `imported: False`, import_invoice `imported: True` — decided by
+    the model from whether a number was carried over — and get_import_audit
+    flags only the reprise. FAILS on the old IMP-07, which named both."""
+    issued = _issued(world)
+    assert issued["imported"] is False
+    total = invoice_model.compute_totals(
+        [{"type": "fee", "amount": 15000, "taxable": True}])["total"]
+    imported = handlers.import_invoice({
+        "dossier_id": "d1", "invoice_number": "2019-F014",
+        "date": "2019-11-04", "time_entry_ids": ["e2"],
+        "expected_total_cents": total,
+    })
+    stored = world.peek(f"invoices/{imported['entity']['id']}")
+    assert stored["imported"] is True
+    findings = {f["code"]: f for f in handlers.get_import_audit(
+        {"dossier_id": "d1"})["findings"]}
+    detail = findings["IMP-07"]["detail"]
+    assert "2019-F014" in detail
+    assert issued["invoice_number"] not in detail
+
+
+def test_a_caller_cannot_mark_an_invoice_imported(world):
+    """The marker is the model's answer, never a data key: `imported` is not
+    in _CREATE_DATA_KEYS, so a caller's True is dropped."""
+    assert "imported" not in invoice_model._CREATE_DATA_KEYS
+    doc = invoice_model.invoice_document_from({"imported": True})
+    assert doc["imported"] is False

@@ -308,7 +308,8 @@ FAMILIES: tuple[Family, ...] = (
             "(`update_invoice`, status annulée — see BILL — or in the "
             "application); that releases every time entry and disbursement "
             "it billed, and the number stays on the voided invoice until the "
-            "lawyer deletes that invoice in the application."
+            "lawyer deletes that invoice in the application — only then can "
+            "that number be imported again."
         ),
     ),
     Family(
@@ -332,7 +333,10 @@ FAMILIES: tuple[Family, ...] = (
             "sources of one dossier, with the preview's total as "
             "expected_total_cents (any difference refuses) and an "
             "idempotency_key (required). It CONSUMES the year's next "
-            "number (AAAA-F###) for ever: a void never gives it back. The "
+            "number (AAAA-F###) for ever: the year counter never reissues "
+            "it, not even after a void. A refusal consumes no number; an "
+            "« Issue INCERTAINE » answer means the invoice MAY exist — "
+            "re-read `list_invoices`, then retry only with the SAME key. The "
             "sources it bills are frozen, their phase aside, until a void "
             "releases them. "
             "`update_invoice` makes ONE change a call against the invoice's "
@@ -408,7 +412,9 @@ FAMILIES: tuple[Family, ...] = (
             "application (an analysed document's category is "
             "`record_document_analysis`'s) — never over a category the "
             "LAWYER chose or confirmed (`category_set_by_lawyer`: refused; "
-            "tell him instead). `move_documents` refiles several "
+            "tell him instead — a document filed before that marker counts "
+            "as his unless its category is « autre »). `move_documents` "
+            "refiles several "
             "documents of one dossier into one folder in one atomic write, "
             "answering each id. `manage_folder` creates, renames or moves a "
             "folder of the filing tree; the system folders « Projets » and "

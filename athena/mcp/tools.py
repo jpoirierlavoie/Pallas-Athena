@@ -49,13 +49,24 @@ class ToolArgumentError(Exception):
     (``mcp_write_refused``) — a machine-stable snake_case code, never text.
     Keyword-only, so every existing one-message raise is unchanged and
     logs as :data:`DEFAULT_REFUSAL_REASON`.
+
+    ``keep_claim`` (fixups of lot 3) — the one raise that is NOT a promise
+    that nothing was written: the model's write RAISED, and a raise out of
+    a commit does not prove the commit did not land
+    (``models.invoice.CREATE_OUTCOME_UNCERTAIN``). ``run_write`` then KEEPS
+    the call's idempotency claim pending instead of releasing it, so a
+    same-key retry is refused (in flight, then « interrompu », which asks
+    for a re-read) and can never write a second time. The message says the
+    outcome is uncertain; it never says « nothing was written ».
     """
 
     def __init__(
-        self, message: str, *, reason: str = DEFAULT_REFUSAL_REASON
+        self, message: str, *, reason: str = DEFAULT_REFUSAL_REASON,
+        keep_claim: bool = False,
     ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.keep_claim = bool(keep_claim)
 
 
 class CommittedWriteError(Exception):
@@ -4373,7 +4384,8 @@ TOOLS: dict[str, dict] = {
             "(set_time_entry_phase / set_expense_phase) until the invoice is "
             "voided (update_invoice, status annulée, or the application), "
             "which releases every source — the number itself stays on the "
-            "voided invoice until the lawyer deletes that invoice there."
+            "voided invoice until the lawyer deletes that invoice there; only "
+            "then can it be imported again."
         ),
         "input_schema": {
             "type": "object",
@@ -4492,10 +4504,13 @@ TOOLS: dict[str, dict] = {
             "client. Run preview_invoice first with the same selection and "
             "pass its total_cents as expected_total_cents: any difference "
             "refuses. It takes the year's NEXT number (AAAA-F###), consumed "
-            "FOR EVER — never reissued, even once voided — and lands in "
+            "FOR EVER — the counter never reissues it, even once voided — "
+            "and lands in "
             "brouillon: nothing is sent. Its sources are then frozen until "
             "update_invoice voids it. idempotency_key REQUIRED; confirm with "
-            "the user first."
+            "the user first. A refusal consumes no number; an « Issue "
+            "INCERTAINE » answer means it MAY exist — re-read list_invoices "
+            "before retrying, with the SAME key."
         ),
         "input_schema": {
             "type": "object",
@@ -4548,7 +4563,10 @@ TOOLS: dict[str, dict] = {
             "client and number never change. STATUS: brouillon → envoyée, "
             "envoyée ↔ en_retard (only past due_date); envoyée SENDS NOTHING "
             "and only a void undoes it. VOID: status annulée + void_reason "
-            "releases every source it billed, never its number; REFUSED "
+            "releases every source it billed, never its number (the counter "
+            "never reissues one; an IMPORTED number can be imported again "
+            "once the lawyer deletes the voided invoice in the application); "
+            "REFUSED "
             "while a payment stands (reverse it in the application). Never "
             "payée: a payment is recorded in the application's accounting."
         ),
@@ -5165,7 +5183,9 @@ TOOLS: dict[str, dict] = {
             "notes_internes — the lawyer's own text. A category you set is "
             "stored PRESUMED until the lawyer confirms it in the "
             "application; it is refused on a category the lawyer chose or "
-            "confirmed (category_set_by_lawyer: true — tell him instead), "
+            "confirmed (category_set_by_lawyer: true — tell him instead; a "
+            "document filed before that marker counts as his unless its "
+            "category is « autre »), "
             "and on a document that carries an analysis, whose category "
             "derives from it (use record_document_analysis). Values already "
             "stored write nothing."

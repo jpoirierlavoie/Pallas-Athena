@@ -54,6 +54,23 @@ class _DuplicateNumberError(Exception):
     already borne by another invoice — aborts, never writes."""
 
 
+# :func:`create_invoice`'s answer when its transaction RAISED (fixups of lot
+# 3). Every other error it returns is CERTAIN to precede any write — a
+# refused plan, a failed first-of-year seed (reads only), a source or
+# number conflict raised inside the transaction body, which aborts it. A
+# raise out of the transaction is not: a commit RPC that fails does not
+# prove the commit did not land (the server can apply it and the answer be
+# lost), so the invoice MAY exist, under a consumed number. It is therefore
+# never worded « nothing was created », on either surface: the web form
+# shows it as is, and the connector recognizes THIS constant to keep its
+# idempotency claim and say the outcome is uncertain.
+CREATE_OUTCOME_UNCERTAIN = (
+    "L'enregistrement de la facture a échoué d'une façon qui ne permet pas "
+    "de savoir si elle a été créée : vérifiez la liste des factures du "
+    "dossier avant de réessayer."
+)
+
+
 class _StatusRefused(Exception):
     """Refusal raised inside the status transaction (aborts, never writes).
 
@@ -326,6 +343,16 @@ def _default_doc() -> dict:
         # elle-même permet à une reprise interrompue de retrouver ce
         # qu'elle a déjà écrit. Jamais sérialisé en vCard ni en iCal.
         "legacy_ref": "",
+        # La facture a-t-elle été REPRISE d'un ancien système (sous son
+        # numéro d'origine, jamais tiré du compteur) ? Posé par
+        # create_invoice LUI-MÊME, de `invoice_number` — jamais lu des
+        # données d'un appelant (hors _CREATE_DATA_KEYS) — depuis les
+        # correctifs du lot 3 : IMP-07 (« facture importée encore au
+        # brouillon ») ne peut plus confondre une reprise avec une facture
+        # que create_invoice vient d'émettre. ABSENT sur les factures
+        # antérieures (aucune migration) : mcp.import_audit.is_imported
+        # les juge alors sur `legacy_ref` et `created_via`.
+        "imported": False,
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -1200,6 +1227,8 @@ def create_invoice(
       year counter is then **never read and never advanced**; without it the
       counter allocates as always. It cannot arrive through *data* (which
       ``merged.update`` clobbers), so ``request.form`` can never forge one.
+      It is also what stamps the invoice ``imported`` (True here, False on
+      the generated path — IMP-07's marker, never a caller's value).
     * *expected_total* — the grand total printed on the paper invoice. On any
       difference the creation is refused, with the gap, the breakdown and the
       retained-versus-supplied source count. No tolerance: one cent of
@@ -1220,6 +1249,9 @@ def create_invoice(
     even reads the counter; a refused GENERATED invoice consumes nothing
     either, since its number is allocated inside the same transaction that
     writes the invoice (every read — sources, counter — before any write).
+    The ONE uncertain answer is :data:`CREATE_OUTCOME_UNCERTAIN`: the
+    transaction raised, and a raise out of a commit does not prove that
+    nothing landed.
 
     Only the keys of ``_CREATE_DATA_KEYS`` are taken from *data*; the
     payment state is forced (``brouillon``, nothing paid): an invoice is born
@@ -1296,6 +1328,9 @@ def create_invoice(
         "status": "brouillon",
         "amount_paid": 0,
         "paid_date": None,
+        # The import marker (IMP-07): the model's own answer — a number
+        # carried over is an import, a counter number never is.
+        "imported": invoice_number is not None,
     })
     provenance.stamp_create(merged, now)
 
@@ -1392,10 +1427,12 @@ def create_invoice(
     # create_dossier's file_number check, which fails open. A duplicated
     # number in a legal accounting register is invisible to the lawyer and
     # unrepairable without renumbering an artifact already sent to a client;
-    # a blocked web form on a transient error is merely annoying.
+    # a blocked web form on a transient error is merely annoying. And the
+    # answer is UNCERTAIN, never « nothing was created »: the raise can
+    # follow a commit the server applied (CREATE_OUTCOME_UNCERTAIN).
     except Exception:
         log_unexpected("create_invoice: transaction failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        return None, [CREATE_OUTCOME_UNCERTAIN]
     provenance.note_commit(COLLECTION, invoice_id)
     log_invoice_event(
         "invoice_created", invoice_id,

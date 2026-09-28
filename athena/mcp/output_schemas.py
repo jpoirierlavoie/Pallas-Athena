@@ -1202,8 +1202,8 @@ def _document_write_entity() -> dict:
         "category_set_by_lawyer": _bool(
             "true = the lawyer CHOSE or CONFIRMED this category in the "
             "application (D18): update_document never replaces it. false = "
-            "presumed, or never chosen (an upload's default, a "
-            "generation's)."),
+            "presumed, or never chosen (a new upload's default, a "
+            "generation's, a pre-marker document's « autre »)."),
         "tags": _arr(_str()),
         "document_date": _nstr("YYYY-MM-DD; null = not dated."),
         "folder_id": _nstr("null = the dossier root."),
@@ -1800,10 +1800,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             },
             "category_set_by_lawyer": _bool(
                 "true = the lawyer CHOSE or CONFIRMED this category (D18): "
-                "update_document refuses to replace it. A « juriste » "
-                "category nobody chose — an upload's default, a "
-                "generation's, a document older than the marker — reads "
-                "false."),
+                "update_document refuses to replace it. false = presumed, "
+                "or nobody chose it (a new upload's default, a "
+                "generation's, a pre-marker document's « autre »); any "
+                "other pre-marker category reads true."),
             "file_type": _str("MIME type."),
             "file_size": _int("Bytes."),
             "file_size_display": _str(),

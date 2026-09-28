@@ -2235,7 +2235,9 @@ Notes:
   way round the check; and that the active note templates are the lawyer's
   to designate AND to undesignate. D18: a category the lawyer chose or
   confirmed (`category_set_by_lawyer: true` on `list_documents`) is never
-  replaced — report the disagreement to him instead.
+  replaced — report the disagreement to him instead; a document filed
+  before that marker counts as his unless its category is « autre » (fixups
+  of lot 3).
 - **Lot 2B — turning a finished letter into a gabarit through the connector
   (ONE consent train: branch `mcp-ecriture-lot2b` — with lot 2A and any
   earlier lot of that stack not yet deployed — in ONE push, then the PILOT
@@ -2488,7 +2490,13 @@ Notes:
   not name, `replace` making the lines the whole budget); and the move of
   an un-invoiced entry by `update_time_entry` / `update_expense` with
   `dossier_id` (its amount and phase kept; its share of the budget actuals
-  follows it — a non-billable time entry counts in no budget).
+  follows it — a non-billable time entry counts in no budget). Since the
+  fixups of lot 3, also: a `create_invoice` answer « Issue INCERTAINE »
+  (reason `invoice_outcome_uncertain`) means the invoice MAY exist — re-read
+  `list_invoices`, and retry only with the SAME key, never a new one before
+  that re-read; the counter never reissues a number, while an IMPORTED
+  invoice's number can be imported again once the voided invoice is deleted
+  in the application; and IMP-07 names imported brouillons only.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

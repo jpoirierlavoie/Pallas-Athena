@@ -393,17 +393,20 @@ MCP_CATEGORY_ON_ANALYSED = (
 )
 
 
-# D18 (2026-09-28 — the lawyer's recommended default, reversible on
-# request): Claude's PRESUMED category (D15) never replaces a category the
-# LAWYER chose or confirmed. See :func:`category_set_by_lawyer` for how a
-# lawyer's choice is told apart from an untouched default.
+# D18 (2026-09-28, confirmed by the lawyer): Claude's PRESUMED category
+# (D15) never replaces a category the LAWYER chose or confirmed. See
+# :func:`category_set_by_lawyer` for how a lawyer's choice is told apart
+# from an untouched default — and why a legacy document counts as his
+# unless its category is « autre » or empty.
 MCP_CATEGORY_ON_LAWYERS = (
     "La catégorie de ce document a été choisie ou confirmée par le juriste "
     "dans l'application : une catégorie présumée ne la remplace pas. "
     "Signalez-lui l'écart ; lui seul la corrige."
 )
 # Where the web UPLOAD form starts (the select's pre-selected value): a
-# category still equal to it was not chosen — see category_set_by_lawyer.
+# NEW upload still equal to it was not chosen, and a LEGACY document (no
+# marker) holding it is the one legacy category Claude may replace — see
+# category_set_by_lawyer.
 # Réception's versement form starts ELSEWHERE (« pièce »,
 # routes/reception.VERSEMENT_DEFAULT_CATEGORY): each form is judged against
 # its own pre-selection, never this one.
@@ -433,13 +436,25 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
     or one an analysis derived) is never the lawyer's, whatever the marker.
 
     LEGACY documents (no marker — every document stored before
-    2026-09-28): the lawyer's only if ``category_confirmed_by`` is present
-    (a « Confirmer la catégorie » of lot 2A); otherwise they count as an
-    untouched default. Nothing is migrated: a category the lawyer changed
-    through the form BEFORE the marker existed reads as untouched — the
-    stated cost of D18's « migrate nothing ». An untouched « autre » the
-    lawyer wants kept is made his by choosing it in the edit form (a
-    change, then back), or by confirming it once Claude presumed another.
+    2026-09-28; nothing is migrated): the lawyer's when
+    ``category_confirmed_by`` is present (a « Confirmer la catégorie »), OR
+    when their category is anything but empty or the upload default
+    :data:`UPLOAD_DEFAULT_CATEGORY` (« autre »). The lawyer's own words
+    (2026-09-28): « refuse on a confirmed one » — and before the marker
+    existed, nothing recorded whether a non-default category was typed on
+    the form, left on Réception's « pièce » or printed by a generation, so
+    every one of them is read as his. That errs on the side he chose:
+    Claude may fail to replace a category nobody chose (he fixes it in the
+    application), never overwrite one he did. Only a legacy « autre » (or
+    empty) — the one value an untouched upload stores — stays replaceable,
+    beside the « mcp » and « analyse » sources, which are never his. An
+    « autre » the lawyer wants kept is made his by choosing it in the edit
+    form (a change, then back), or by confirming it once Claude presumed
+    another.
+
+    *doc* must be read through :func:`_migrate_category` (every reader of
+    this module does): a retired value (« entente », « note ») is judged as
+    the « autre » it reads as.
     """
     doc = doc or {}
     if str(doc.get("category_source") or "juriste") != "juriste":
@@ -447,7 +462,10 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
     marker = doc.get("category_set_by_lawyer")
     if isinstance(marker, bool):
         return marker
-    return bool(str(doc.get("category_confirmed_by") or "").strip())
+    if str(doc.get("category_confirmed_by") or "").strip():
+        return True
+    category = str(doc.get("category") or "").strip()
+    return bool(category) and category != UPLOAD_DEFAULT_CATEGORY
 
 
 class _Refused(Exception):

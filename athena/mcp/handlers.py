@@ -5853,7 +5853,8 @@ def _import_invoice_impl(args: dict) -> dict:
             "facture (update_invoice avec status « annulée », ou dans "
             "l'application) — les entrées et déboursés redeviennent "
             "modifiables ; le numéro reste attaché à la facture annulée tant "
-            "qu'elle n'est pas supprimée dans l'application.",
+            "qu'elle n'est pas supprimée dans l'application — ensuite "
+            "seulement, il peut être importé de nouveau.",
             "La facture est au BROUILLON. Promouvez-la (update_invoice, "
             "brouillon → envoyée, ou dans l'application), puis saisissez le "
             "paiement à sa date historique dans l'application — le "
@@ -5904,9 +5905,33 @@ _CONNECTOR_STATUS_MOVES = frozenset({
 })
 _INVOICE_DRAFT_ARGS = ("notes", "payment_terms", "due_date",
                        "refresh_billing_address")
+# The YEAR COUNTER's promise (monotone: it never reissues a number) — the
+# only one create_invoice can make, since every number it takes comes from
+# that counter. An IMPORTED number is import_invoice's (its own warning).
 _NUMBER_IS_PERMANENT = (
-    "Le numéro {number} est consommé DÉFINITIVEMENT : il ne sera jamais "
-    "réattribué, même si la facture est annulée."
+    "Le numéro {number} est consommé DÉFINITIVEMENT : la numérotation de "
+    "l'année ne le réattribuera jamais, même si la facture est annulée."
+)
+# create_invoice's two kinds of failure (fixups of lot 3). A refusal the
+# model is CERTAIN to have returned before any write — a refused plan, the
+# first-of-year seed, a source changed during the transaction — consumed no
+# number, and says so. The model's CREATE_OUTCOME_UNCERTAIN is the other
+# kind: its transaction raised, and a raise out of a commit does not prove
+# the invoice was not written. That one never says « no number consumed »;
+# it is raised with keep_claim, so the same idempotency_key stays reserved
+# to this call and a retry with it can never issue a second invoice.
+_CREATE_REFUSED_SUFFIX = (
+    " Aucune facture n'a été créée — aucun numéro n'a été consommé."
+)
+_CREATE_OUTCOME_UNCERTAIN = (
+    "Issue INCERTAINE : l'enregistrement de la facture a échoué d'une façon "
+    "qui ne prouve pas que rien n'a été écrit — la facture a PEUT-ÊTRE été "
+    "créée, et son numéro consommé. Relisez list_invoices (ce dossier) AVANT "
+    "toute nouvelle tentative : si elle y figure, elle est émise — ne la "
+    "recréez pas. Sinon, réessayez avec la MÊME idempotency_key, jamais une "
+    "nouvelle : cette clé reste réservée à cet appel, elle ne peut donc pas "
+    "créer une seconde facture, et le refus qu'elle reçoit dit quand une "
+    "clé nouvelle devient sûre."
 )
 
 
@@ -6210,10 +6235,14 @@ def _create_invoice_impl(args: dict) -> dict:
         expected_total=expected_total,
         require_all_sources=True,
     )
+    if invoice_model.CREATE_OUTCOME_UNCERTAIN in errors:
+        raise ToolArgumentError(
+            _CREATE_OUTCOME_UNCERTAIN, reason="invoice_outcome_uncertain",
+            keep_claim=True,
+        )
     if errors:
         raise ToolArgumentError(
-            "; ".join(errors) + " Aucune facture n'a été créée — aucun numéro "
-            "n'a été consommé.",
+            "; ".join(errors) + _CREATE_REFUSED_SUFFIX,
             reason="invoice_refused",
         )
 
@@ -6456,10 +6485,11 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
         # previous system issued (import_invoice) is another matter: it is
         # free again once the lawyer deletes the voided invoice in the
         # application — so the sentence says which promise it makes.
-        f"Le numéro {number} reste attaché à la facture annulée : il n'est "
-        "jamais réattribué par la numérotation de l'année (un numéro repris "
-        "de l'ancien système ne redevient disponible que si le juriste "
-        "supprime la facture annulée dans l'application).",
+        f"Le numéro {number} reste attaché à la facture annulée : la "
+        "numérotation de l'année ne le réattribue jamais ; un numéro REPRIS "
+        "de l'ancien système (import_invoice) ne peut être importé de "
+        "nouveau qu'une fois la facture annulée supprimée dans "
+        "l'application.",
     ]
     released = (len(report.get("released_time_entry_ids") or [])
                 + len(report.get("released_expense_ids") or []))
@@ -11480,14 +11510,17 @@ def _update_document_impl(args: dict) -> dict:
     if "category" in changed and _category_source(existing) == "juriste":
         # D18: a lawyer-set category was refused above; what remains under
         # « juriste » is a category nobody is recorded as having CHOSEN —
-        # an upload left on its default, a generation's, or a document
-        # older than the marker. Said, never called « a choice ».
+        # an upload left on its default, a generation's, or the « autre »
+        # (or blank) of a document older than the marker (any OTHER legacy
+        # category reads as the lawyer's and was refused). Said, never
+        # called « a choice ».
         warnings.append(
             f"La catégorie « {existing.get('category') or ''} » n'était "
             "enregistrée ni comme choisie ni comme confirmée par le juriste "
-            "(valeur par défaut, catégorie d'une génération, ou document "
-            "antérieur à ce suivi) : elle est remplacée, et la nouvelle "
-            "reste PRÉSUMÉE jusqu'à ce qu'il la confirme dans l'application."
+            "(valeur par défaut, catégorie d'une génération, ou « autre » "
+            "d'un document antérieur à ce suivi) : elle est remplacée, et la "
+            "nouvelle reste PRÉSUMÉE jusqu'à ce qu'il la confirme dans "
+            "l'application."
         )
     return _document_edit_payload(updated, changed=changed, warnings=warnings)
 

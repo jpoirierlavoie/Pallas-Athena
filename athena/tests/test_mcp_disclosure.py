@@ -198,6 +198,21 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # entry, which budget.aggregate_actuals never counts (the handler's own
     # move warning already said so; INSTRUCTIONS generalised past it).
     "both dossiers' budget actuals change",
+    # Fixups of lot 3 (invoice numbers): « never reissued » is the YEAR
+    # COUNTER's promise, not an absolute one — an imported number is
+    # importable again once the voided invoice is deleted in the
+    # application, and so is a past year's counter number (CLAUDE.md, the
+    # D-2 residue). Said without its subject, it was false.
+    "never reissued, even once voided",
+    "il ne sera jamais réattribué, même si",
+    # Fixups of lot 3 (D18, the lawyer's « refuse on a confirmed one »): a
+    # category stored before the marker is the LAWYER'S unless it is
+    # « autre » or blank. The lot-2A fixup texts said the opposite — that
+    # such a category (changed on the form before the marker) stayed
+    # replaceable, and that a pre-marker document reads « not chosen ».
+    "faute d'historique, une catégorie que vous aviez",
+    "a document older than the marker — reads",
+    "ou document antérieur à ce suivi",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -838,3 +853,31 @@ def test_the_lot_3b_texts_say_what_billing_does():
     correct = next(f for f in disclosure.FAMILIES if f.key == "correct")
     assert "non-billable time counts in no budget" in correct.instructions_en
     assert "non-billable time counts in no budget" in endpoint.INSTRUCTIONS
+
+    # Fixups of lot 3 — ONE truth about invoice numbers on every surface:
+    # the year counter never reissues a number; an IMPORTED number can be
+    # imported again once the voided invoice is deleted in the application.
+    importing = next(f for f in disclosure.FAMILIES if f.key == "import")
+    assert "the year counter never reissues it" in billing.instructions_en
+    assert "only then can that number be imported again" in (
+        importing.instructions_en)
+    assert "the counter never reissues it" in desc["create_invoice"]
+    assert "an IMPORTED number can be imported again" in desc["update_invoice"]
+    assert "only then can it be imported again" in desc["import_invoice"]
+    with mock.patch("google.cloud.firestore.Client"):
+        from mcp import handlers as _handlers
+    assert _handlers._NUMBER_IS_PERMANENT.startswith(
+        "Le numéro {number} est consommé DÉFINITIVEMENT : la numérotation de "
+        "l'année")
+    # ... and an uncertain creation is said as such, never « no number
+    # consumed »: re-read, then the SAME key.
+    assert "« Issue INCERTAINE »" in billing.instructions_en
+    assert "with the SAME key" in desc["create_invoice"]
+
+    # Fixups of lot 3 (D18): the FILES texts say a category stored before
+    # the marker is the lawyer's unless it is « autre ».
+    files = next(f for f in disclosure.FAMILIES if f.key == "files")
+    assert "counts as his unless its category is « autre »" in (
+        files.instructions_en)
+    assert "counts as his unless its category is « autre »" in (
+        desc["update_document"])
