@@ -4782,9 +4782,11 @@ TOOLS: dict[str, dict] = {
             "folder_id (refiles it), category. Never its file, and never "
             "notes_internes — the lawyer's own text. A category you set is "
             "stored PRESUMED until the lawyer confirms it in the "
-            "application; on a document that carries an analysis the "
-            "category derives from it and is refused here (use "
-            "record_document_analysis). Values already stored write nothing."
+            "application; it is refused on a category the lawyer chose or "
+            "confirmed (category_set_by_lawyer: true — tell him instead), "
+            "and on a document that carries an analysis, whose category "
+            "derives from it (use record_document_analysis). Values already "
+            "stored write nothing."
         ),
         "input_schema": {
             "type": "object",
@@ -4827,7 +4829,8 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
                     "description": (
                         "The category, stored PRESUMED (category_source "
-                        "« mcp »). Refused on an analysed document."
+                        "« mcp »). Refused on an analysed document and on a "
+                        "category the lawyer set."
                     ),
                 },
                 **_expected_etag_prop(_DOCUMENT_ETAG_READERS),

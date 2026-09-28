@@ -1776,6 +1776,9 @@ def list_documents(args: dict) -> dict:
                 # Who posed the category — the edit tools' D15 « présumée »
                 # rule, readable before any edit is attempted.
                 "category_source": _category_source(doc),
+                # D18: true = the lawyer chose or confirmed it — the one
+                # category update_document never replaces.
+                "category_set_by_lawyer": document_model.category_set_by_lawyer(doc),
                 "file_type": doc.get("file_type", ""),
                 "file_size": size,
                 "file_size_display": document_model.format_file_size(size),
@@ -10169,6 +10172,14 @@ _DOCUMENT_ANALYSED_CATEGORY = (
     "(record_document_analysis) — ou laissez le juriste la corriger dans "
     "l'application. Rien n'a été modifié."
 )
+# D18 (2026-09-28): the rule named, never the category's value.
+_DOCUMENT_LAWYERS_CATEGORY = (
+    "`category` refusé : la catégorie de ce document a été choisie ou "
+    "confirmée par le juriste dans l'application, et une catégorie présumée "
+    "ne remplace jamais la sienne (list_documents : category_set_by_lawyer). "
+    "Si elle vous semble erronée, signalez-le-lui ; lui seul la corrige. "
+    "Rien n'a été modifié."
+)
 _DOCUMENT_FOLDER_UNKNOWN = (
     "`folder_id` refusé : ce dossier de classement n'existe pas dans le "
     "dossier du document. Prenez son identifiant dans list_documents "
@@ -10246,6 +10257,7 @@ def _document_entity(doc: dict) -> dict:
         "category": doc.get("category", "") or "",
         "category_source": source,
         "category_presumee": source in ("analyse", "mcp"),
+        "category_set_by_lawyer": document_model.category_set_by_lawyer(doc),
         "tags": list(doc.get("tags") or []),
         "document_date": date_str(_as_utc(doc.get("document_date"))),
         "folder_id": doc.get("folder_id") or None,
@@ -10334,6 +10346,8 @@ def _update_document_impl(args: dict) -> dict:
         return _document_edit_payload(existing, changed=[], warnings=[])
     if "category" in changed and document_model.has_analysis(existing):
         raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
+    if "category" in changed and document_model.category_set_by_lawyer(existing):
+        raise ToolArgumentError(_DOCUMENT_LAWYERS_CATEGORY)
 
     expected = _expected_etag(
         args, existing, tool="update_document", subject=_DOCUMENT_SUBJECT)
@@ -10351,16 +10365,26 @@ def _update_document_impl(args: dict) -> dict:
         # remedy to name (an analysis landed meanwhile; the folder vanished).
         if document_model.MCP_CATEGORY_ON_ANALYSED in errors:
             raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
+        if document_model.MCP_CATEGORY_ON_LAWYERS in errors:
+            # The lawyer chose or confirmed it between the read and the
+            # commit (the model judged it on its transactional read).
+            raise ToolArgumentError(_DOCUMENT_LAWYERS_CATEGORY)
         if document_model.TARGET_FOLDER_NOT_FOUND in errors:
             raise ToolArgumentError(_DOCUMENT_FOLDER_UNKNOWN)
         raise ToolArgumentError("; ".join(errors))
 
     warnings: list[str] = []
     if "category" in changed and _category_source(existing) == "juriste":
+        # D18: a lawyer-set category was refused above; what remains under
+        # « juriste » is a category nobody is recorded as having CHOSEN —
+        # an upload left on its default, a generation's, or a document
+        # older than the marker. Said, never called « a choice ».
         warnings.append(
-            f"La catégorie « {existing.get('category') or ''} » était "
-            "enregistrée comme un choix du juriste ; la nouvelle reste "
-            "PRÉSUMÉE jusqu'à ce qu'il la confirme dans l'application."
+            f"La catégorie « {existing.get('category') or ''} » n'était "
+            "enregistrée ni comme choisie ni comme confirmée par le juriste "
+            "(valeur par défaut, catégorie d'une génération, ou document "
+            "antérieur à ce suivi) : elle est remplacée, et la nouvelle "
+            "reste PRÉSUMÉE jusqu'à ce qu'il la confirme dans l'application."
         )
     return _document_edit_payload(updated, changed=changed, warnings=warnings)
 

@@ -48,6 +48,7 @@ from models.document import (
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
     build_attachment_disposition,
+    UPLOAD_DEFAULT_CATEGORY,
     ingest_blob_as_document,
     sign_blob_url,
 )
@@ -886,6 +887,11 @@ def verser(inv_id: str, batch: str, seq: int):
         metadata,
         user_id,
         portail=portail,
+        # D18 : une catégorie que le juriste a choisie au versement (hors du
+        # défaut présélectionné) est la sienne — le connecteur ne la
+        # remplace jamais.
+        lawyer_set_category=(
+            metadata["category"] != UPLOAD_DEFAULT_CATEGORY),
     )
     if errors or document is None:
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")

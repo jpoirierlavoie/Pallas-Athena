@@ -393,6 +393,57 @@ MCP_CATEGORY_ON_ANALYSED = (
 )
 
 
+# D18 (2026-09-28 — the lawyer's recommended default, reversible on
+# request): Claude's PRESUMED category (D15) never replaces a category the
+# LAWYER chose or confirmed. See :func:`category_set_by_lawyer` for how a
+# lawyer's choice is told apart from an untouched default.
+MCP_CATEGORY_ON_LAWYERS = (
+    "La catégorie de ce document a été choisie ou confirmée par le juriste "
+    "dans l'application : une catégorie présumée ne la remplace pas. "
+    "Signalez-lui l'écart ; lui seul la corrige."
+)
+# Where the upload forms START (the select's pre-selected value): a
+# category still equal to it was not chosen — see category_set_by_lawyer.
+UPLOAD_DEFAULT_CATEGORY = "autre"
+
+
+def category_set_by_lawyer(doc: Optional[dict]) -> bool:
+    """True when *doc*'s category is the LAWYER's own choice (D18).
+
+    The marker ``category_set_by_lawyer`` (a bool) is written:
+
+    * True by an explicit lawyer gesture — the web edit form CHANGING the
+      category (``update_metadata`` with a « juriste » source), « Confirmer
+      la catégorie » (:func:`confirmer_categorie`), or an upload whose form
+      the lawyer moved OFF the pre-selected default (the web upload and
+      Réception's versement: a category other than
+      :data:`UPLOAD_DEFAULT_CATEGORY`);
+    * False by every other writer of a category — a connector category
+      (presumed, D15), an upload left on the default, a generation (the
+      template's own category), an analysis.
+
+    A copy inherits its source's answer (:func:`copy_document`). And a
+    category whose provenance is not « juriste » (a presumed « mcp » one,
+    or one an analysis derived) is never the lawyer's, whatever the marker.
+
+    LEGACY documents (no marker — every document stored before
+    2026-09-28): the lawyer's only if ``category_confirmed_by`` is present
+    (a « Confirmer la catégorie » of lot 2A); otherwise they count as an
+    untouched default. Nothing is migrated: a category the lawyer changed
+    through the form BEFORE the marker existed reads as untouched — the
+    stated cost of D18's « migrate nothing ». An untouched « autre » the
+    lawyer wants kept is made his by choosing it in the edit form (a
+    change, then back), or by confirming it once Claude presumed another.
+    """
+    doc = doc or {}
+    if str(doc.get("category_source") or "juriste") != "juriste":
+        return False
+    marker = doc.get("category_set_by_lawyer")
+    if isinstance(marker, bool):
+        return marker
+    return bool(str(doc.get("category_confirmed_by") or "").strip())
+
+
 class _Refused(Exception):
     """Raised inside a transactional body: nothing is written, the French
     errors travel back to the caller (the real ``transactional`` decorator
@@ -762,6 +813,7 @@ def _prepare_document_record(
     category_source: str = "juriste",
     portail: Optional[dict] = None,
     analyse_seed: Optional[dict] = None,
+    lawyer_set_category: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
     """Build the Firestore record + storage path shared by the two
     ingestion paths (through-app stream and GCS-side copy).
@@ -787,6 +839,10 @@ def _prepare_document_record(
       (:func:`protection_seed`, lot 2A T8): stored as the record's
       ``analyse`` cache, never a qualification (no sub-nature — the
       category stays the caller's). Refused unless it is exactly that shape.
+    * ``lawyer_set_category`` — D18: the lawyer CHOSE this category (an
+      upload form moved off its default, a copy of his choice). Stored as
+      the marker :func:`category_set_by_lawyer` reads; never True beside a
+      source other than « juriste ».
     """
     uid, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -807,6 +863,8 @@ def _prepare_document_record(
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
     merged["category_source"] = category_source
+    merged["category_set_by_lawyer"] = (
+        bool(lawyer_set_category) and category_source == "juriste")
     if analyse_seed is not None:
         merged["analyse"] = dict(analyse_seed)
 
@@ -857,6 +915,7 @@ def ingest_blob_as_document(
     category_source: str = "juriste",
     portail: Optional[dict] = None,
     analyse_seed: Optional[dict] = None,
+    lawyer_set_category: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
     """Ingest an EXISTING GCS object as a document via a server-side copy.
 
@@ -935,6 +994,7 @@ def ingest_blob_as_document(
         content_type, size, metadata, user_id,
         document_id=document_id, category_source=category_source,
         portail=portail, analyse_seed=analyse_seed,
+        lawyer_set_category=lawyer_set_category,
     )
     if errors:
         return None, errors
@@ -1502,7 +1562,10 @@ def update_metadata(
     a « Confirmer » button). ``None`` derives it from the writer, and the
     connector is always « mcp » (:func:`_resolve_category_source`). A
     category change posed by « mcp » is REFUSED on an analysed document,
-    whose category derives from its analysis.
+    whose category derives from its analysis — and (D18) on a category the
+    lawyer chose or confirmed (:func:`category_set_by_lawyer`). A category
+    change stamps the marker: True under « juriste » (the web edit form),
+    False under « mcp ».
 
     Values are validated only where they CHANGE: a legacy value the form
     posts back untouched is not a new write, and must not block the save of
@@ -1555,7 +1618,13 @@ def update_metadata(
         if "category" in changes:
             if source == "mcp" and has_analysis(existing):
                 raise _Refused([MCP_CATEGORY_ON_ANALYSED])
+            if source == "mcp" and category_set_by_lawyer(existing):
+                # D18 — judged on THIS transactional read: a lawyer's
+                # choice landing between the connector's read and its
+                # commit aborts the commit, and the re-run refuses.
+                raise _Refused([MCP_CATEGORY_ON_LAWYERS])
             changes["category_source"] = source
+            changes["category_set_by_lawyer"] = source == "juriste"
         if not changes:
             return existing, False
         fields = {
@@ -1612,6 +1681,9 @@ def confirmer_categorie(
         now = datetime.now(timezone.utc)
         fields = {
             "category_source": "juriste",
+            # D18: from now on the category is the lawyer's — the
+            # connector can no longer replace it.
+            "category_set_by_lawyer": True,
             "category_confirmed_by": sanitize(str(par or ""), max_length=200),
             "category_confirmed_at": now,
             **provenance.update_fields(now),
@@ -3053,4 +3125,6 @@ def copy_document(
         user_id,
         category_source=copy_category_source(source),
         analyse_seed=protection_seed(source, now=datetime.now(timezone.utc)),
+        # D18: a copy of the lawyer's category is still his choice.
+        lawyer_set_category=category_set_by_lawyer(source),
     )

@@ -147,9 +147,14 @@ def test_a_category_set_by_claude_is_stored_presumed(fake):
     assert stored["category_source"] == "mcp"
     assert result["entity"]["category_presumee"] is True
     assert result["entity"]["category_source"] == "mcp"
-    # It replaced a category recorded as the lawyer's: said so.
-    assert any("choix du juriste" in w and "PRÉSUMÉE" in w
+    # REWRITTEN deliberately (D18, fixups of lot 2A): « a » carries an
+    # untouched « autre » — replaceable, and no longer called « un choix du
+    # juriste » (a category the lawyer chose is now REFUSED:
+    # tests/test_document_category_lawyer.py).
+    assert any("ni comme choisie ni comme confirmée" in w and "PRÉSUMÉE" in w
                for w in result["warnings"])
+    assert stored["category_set_by_lawyer"] is False
+    assert result["entity"]["category_set_by_lawyer"] is False
 
 
 def test_an_analysed_documents_category_is_refused_naming_the_analysis_tool(fake):

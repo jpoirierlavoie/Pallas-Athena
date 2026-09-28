@@ -39,6 +39,7 @@ from models.document import (
     get_document,
     get_file_icon,
     get_signed_url,
+    UPLOAD_DEFAULT_CATEGORY,
     ingest_blob_as_document,
     list_documents,
     move_document,
@@ -490,6 +491,10 @@ def api_finaliser():
         metadata,
         user_id,
         document_id=document_id,
+        # D18: a category the lawyer moved OFF the form's pre-selected
+        # default is his choice — the connector never replaces it.
+        lawyer_set_category=(
+            metadata.get("category") != UPLOAD_DEFAULT_CATEGORY),
     )
     try:
         blob.delete()

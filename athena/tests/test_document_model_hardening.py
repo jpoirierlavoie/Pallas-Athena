@@ -417,9 +417,13 @@ def test_confirming_turns_claudes_category_into_the_lawyers(db):
     assert after["category_confirmed_at"] is not None
     assert confirmed["etag"] == after["etag"] != "e0"
     moved = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
+    # Gains `category_set_by_lawyer` deliberately (D18, fixups of lot 2A):
+    # a confirmed category becomes the lawyer's — the connector may no
+    # longer replace it.
     assert moved == {"category_source", "category_confirmed_by",
                      "category_confirmed_at", "updated_at", "etag",
-                     "updated_via"}
+                     "updated_via", "category_set_by_lawyer"}
+    assert after["category_set_by_lawyer"] is True
 
 
 @pytest.mark.parametrize("origin, fragment", [
