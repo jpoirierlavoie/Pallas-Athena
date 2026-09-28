@@ -776,6 +776,20 @@ def test_the_two_link_types_are_journal_types_and_connector_filters():
         assert kind in enum
 
 
+def test_the_filter_says_what_a_mandataire_row_s_title_names():
+    """A `mandataire` row's title is the REPRESENTED contact, its entity_id
+    the mandataire: read like any other row (« entity X titled Y »), it
+    would name the wrong person. The description must say so (it did not
+    on f5033ec)."""
+    from mcp.tools import TOOLS
+
+    text = TOOLS["list_deletions"]["input_schema"]["properties"][
+        "entity_type"]["description"]
+    assert "title = the contact it REPRESENTED" in text
+    assert "entity_id = the mandataire" in text
+    assert "status = the side it left" in text
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 9. Le formulaire web rencontre les mêmes règles (re-rendu à 200)
 # ══════════════════════════════════════════════════════════════════════

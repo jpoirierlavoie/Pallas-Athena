@@ -2577,9 +2577,12 @@ TOOLS: dict[str, dict] = {
                     ],
                     "description": (
                         "Filter to one entity type. `dossier_party` and "
-                        "`mandataire` rows are a LINK removed (a party off "
-                        "a dossier, a mandataire off a contact): the "
-                        "contact itself stays."
+                        "`mandataire` rows are a LINK removed, never a "
+                        "record: the contact stays. `dossier_party`: "
+                        "entity_id = the contact, status = the side it "
+                        "left. `mandataire`: entity_id = the mandataire, "
+                        "title = the contact it REPRESENTED (not the "
+                        "mandataire's name), status = the kind."
                     ),
                 },
                 "dossier_id": _id(
