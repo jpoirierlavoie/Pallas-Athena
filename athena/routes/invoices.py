@@ -29,6 +29,7 @@ from utils import storage_identity
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_rate_fr
 from models.invoice import (
+    DRAFT_FIELDS,
     DRAFT_NOTES_MAX_LENGTH,
     DRAFT_PAYMENT_TERMS_MAX_LENGTH,
     STATUS_LABELS,
@@ -368,6 +369,15 @@ def invoice_create() -> str:
     if errors:
         unbilled_entries = get_unbilled_time_entries(dossier_id)
         unbilled_expenses = get_unbilled_expenses(dossier_id)
+        # The refusal re-renders what the lawyer SUBMITTED — the selection
+        # above all. The page's default is « every unbilled item ticked »,
+        # so without this a refused save (a stale entry, an empty tax
+        # number…) silently re-ticked the entries the lawyer had
+        # deliberately left out, and the next « Créer » billed them. Only
+        # ids still listed as unbilled are kept: a source billed or moved
+        # in the meantime has left the list, and its checkbox with it.
+        chosen_entries = set(selected_entry_ids)
+        chosen_expenses = set(selected_expense_ids)
         ctx = _template_context()
         ctx.update(
             dossier=dossier,
@@ -379,6 +389,13 @@ def invoice_create() -> str:
             invoice_date=f.get("invoice_date", ""),
             errors=errors,
             return_to=return_to,
+            initial_entry_ids=[e.get("id") for e in unbilled_entries
+                               if e.get("id") in chosen_entries],
+            initial_expense_ids=[e.get("id") for e in unbilled_expenses
+                                 if e.get("id") in chosen_expenses],
+            form_due_date=f.get("due_date", ""),
+            form_notes=f.get("notes", ""),
+            form_payment_terms=f.get("payment_terms", ""),
         )
         return render_template("invoices/create.html", **ctx)
 
@@ -549,11 +566,11 @@ def invoice_draft_update(invoice_id: str) -> str:
     """
     expected = edit_conflict.submitted_etag()
     f = request.form
-    changes = {
-        "notes": f.get("notes", ""),
-        "payment_terms": f.get("payment_terms", ""),
-        "due_date": f.get("due_date", ""),
-    }
+    # By PRESENCE, never ``f.get(k, "")``: on this model a present empty
+    # key ERASES (« '' clears » the notes) while an absent one survives, so
+    # a POST lacking a field must leave that field alone rather than blank
+    # it. The page always posts all three.
+    changes = {k: f[k] for k in DRAFT_FIELDS if k in f}
     refresh = f.get("refresh_billing_address") == "on"
     _doc, errors, _changed = update_invoice_draft(
         invoice_id, changes,
@@ -574,12 +591,13 @@ def invoice_draft_update(invoice_id: str) -> str:
     refusal = draft_edit_refusal(current)
     if refusal:
         return _back_to_detail(invoice_id, erreur=refusal)
+    # The submitted values where the POST carried them, the stored ones
+    # otherwise — a field the POST left out was left alone by the model.
     form = {
+        **_draft_form_values(current),
+        **changes,
         "id": invoice_id,
         "etag": etag,
-        "notes": changes["notes"],
-        "payment_terms": changes["payment_terms"],
-        "due_date": changes["due_date"],
         "refresh_billing_address": refresh,
     }
     return _render_draft_form(current, form, errors=errors, conflict=conflict)

@@ -27,8 +27,10 @@ les vrais) ; on relit ce qui est STOCKÉ.
 """
 
 import ast
+import json
 import os
 import pathlib
+import re
 import sys
 from datetime import date, datetime, timezone
 from unittest import mock
@@ -184,7 +186,7 @@ def test_une_source_deja_facturee_nomme_sa_facture(fake):
     eid = _entry(fake, "te-b", invoiced=True, invoice_id="inv-autre")
     xid = _expense(fake, "ex-b", invoiced=True, invoice_id="inv-autre")
     plan = invoice_model.plan_invoice(
-        "d1", [eid], [xid], {**invoice_model._default_doc(), **_data()},
+        "d1", [eid], [xid], invoice_model.invoice_document_from(_data()),
         generated=True, require_all_sources=False)
     assert plan.skipped == {"te-b": "déjà facturée (facture inv-autre)",
                             "ex-b": "déjà facturé (facture inv-autre)"}
@@ -249,7 +251,7 @@ def test_la_lecture_du_client_ne_passe_pas_par_le_lecteur_permissif(fake):
     eid = _entry(fake, "te1")
     fake.reset_logs()
     invoice_model.plan_invoice(
-        "d1", [eid], [], {**invoice_model._default_doc(), **_data()},
+        "d1", [eid], [], invoice_model.invoice_document_from(_data()),
         generated=True, require_all_sources=True)
     assert any("parties/p1" in r.paths for r in fake.reads)
 
@@ -333,7 +335,7 @@ def test_le_plan_dit_que_la_provision_a_ete_ignoree(fake):
     eid = _entry(fake, "te1")
     plan = invoice_model.plan_invoice(
         "d1", [eid], [],
-        {**invoice_model._default_doc(), **_data(retainer_applied=10000)},
+        invoice_model.invoice_document_from(_data(retainer_applied=10000)),
         generated=True, require_all_sources=True)
     assert plan.errors == [] and plan.retainer_applied == 0
     assert any("provision" in w for w in plan.warnings), plan.warnings
@@ -370,7 +372,7 @@ def test_le_numero_suit_l_annee_d_emission_et_le_dit(fake):
     eid = _entry(fake, "te1")
     dated = datetime(2025, 12, 31, tzinfo=UTC)
     plan = invoice_model.plan_invoice(
-        "d1", [eid], [], {**invoice_model._default_doc(), **_data(date=dated)},
+        "d1", [eid], [], invoice_model.invoice_document_from(_data(date=dated)),
         generated=True, require_all_sources=True)
     assert plan.errors == []
     assert any("datée de 2025" in w and "2026-F" in w for w in plan.warnings)
@@ -405,7 +407,7 @@ def test_le_plan_n_ecrit_rien_et_n_alloue_rien(fake):
     eid = _entry(fake, "te1")
     fake.reset_logs()
     plan = invoice_model.plan_invoice(
-        "d1", [eid], [], {**invoice_model._default_doc(), **_data()},
+        "d1", [eid], [], invoice_model.invoice_document_from(_data()),
         generated=True, require_all_sources=True)
     assert plan.errors == [] and plan.totals["total"] > 0
     assert fake.commits == []
@@ -418,7 +420,7 @@ def test_un_plan_refuse_rapporte_ce_qu_il_a_pu_calculer(fake):
     ok = _entry(fake, "te-ok")
     nf = _entry(fake, "te-nf", billable=False)
     plan = invoice_model.plan_invoice(
-        "d1", [ok, nf], [], {**invoice_model._default_doc(), **_data()},
+        "d1", [ok, nf], [], invoice_model.invoice_document_from(_data()),
         generated=True, require_all_sources=True)
     assert plan.errors and plan.refusal_reason == "sources_inutilisables"
     assert plan.skipped == {"te-nf": "non facturable"}
@@ -436,14 +438,35 @@ def test_create_invoice_decide_par_plan_invoice_et_par_lui_seul():
     called = {n.func.id if isinstance(n.func, ast.Name) else n.func.attr
               for n in ast.walk(fn) if isinstance(n, ast.Call)
               and isinstance(n.func, (ast.Name, ast.Attribute))}
-    assert "plan_invoice" in called
+    assert {"plan_invoice", "invoice_document_from"} <= called
     assert not called & {"get_time_entry", "get_expense", "issuance_refusals",
-                         "compute_totals", "_adjustment_line_item"}
+                         "compute_totals", "_adjustment_line_item",
+                         "_sanitize_data", "_default_doc"}
+
+
+def test_l_apercu_et_l_ecriture_jugent_le_meme_document(fake):
+    """(Revue du lot 3a : plan_invoice laissait chaque appelant bâtir son
+    propre document — l'aperçu du lot 3b en aurait assemblé un sans la liste
+    blanche ni le nettoyage de create_invoice, et jugé une AUTRE facture.)
+    Le document jugé est celui d'invoice_document_from : ici un nom de
+    client fait de balises, que le nettoyage vide — refusé par les deux, au
+    même motif, et un statut fourni qui ne franchit pas la liste blanche."""
+    eid = _entry(fake, "te1")
+    data = _data(client_name="<b></b>", status="payée")
+    doc = invoice_model.invoice_document_from(data)
+    assert doc["client_name"] == "" and doc["status"] == "brouillon"
+    plan = invoice_model.plan_invoice(
+        "d1", [eid], [], doc, generated=True, require_all_sources=True)
+    _, errors = invoice_model.create_invoice(
+        "d1", [eid], [], data, require_all_sources=True)
+    assert plan.refusal_reason == "nom_client_vide"
+    assert plan.errors == errors
+    _nothing_written(fake, f"timeentries/{eid}")
 
 
 def test_les_refus_d_emission_sont_purs():
     """issuance_refusals ne lit rien : ce qu'il juge lui est donné."""
-    merged = {**invoice_model._default_doc(), **_data(gst_number="")}
+    merged = invoice_model.invoice_document_from(_data(gst_number=""))
     out = invoice_model.issuance_refusals(
         merged, {"gst_amount": 1500, "qst_amount": 0},
         generated=True, client={"id": "p1"})
@@ -549,6 +572,46 @@ def test_le_formulaire_refuse_une_selection_perimee_par_son_nom(fake, client):
     assert "facture inv-autre" in html
     assert fake.peek_collection("invoices") == {}
     assert fake.peek(f"timeentries/{ok}")["invoiced"] is False
+
+
+def test_un_refus_rend_la_selection_et_les_saisies_de_l_avocat(fake, client):
+    """(Régression, revue du lot 3a : la page coche d'office TOUT le non
+    facturé, et un refus la re-rendait ainsi. L'entrée que l'avocat avait
+    délibérément laissée de côté était donc RECOCHÉE en silence après un
+    refus — une sélection périmée, un numéro de taxe vide… — et le « Créer »
+    suivant la facturait. Ses notes, ses conditions et son échéance
+    disparaissaient aussi.)"""
+    ok = _entry(fake, "te-ok")
+    _entry(fake, "te-laissee-de-cote")                  # listed, NOT chosen
+    stale = _entry(fake, "te-stale", invoiced=True, invoice_id="inv-autre")
+    x_ok = _expense(fake, "x-ok")
+    _expense(fake, "x-laisse")
+    resp = client.post("/factures/", data={
+        "dossier_id": "d1", "invoice_date": "2026-06-15",
+        "selected_entries": [ok, stale], "selected_expenses": [x_ok],
+        "notes": "Mes notes pour le client",
+        "payment_terms": "Payable à réception.",
+        "due_date": "2026-07-01",
+    })
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200 and "Sources inutilisables" in html
+    # The lawyer's own selection — the stale id is gone with its checkbox.
+    assert 'selectedEntries: ["te-ok"]' in html
+    assert 'selectedExpenses: ["x-ok"]' in html
+    assert "Mes notes pour le client" in html
+    assert "Payable à réception." in html
+    assert 'name="due_date" value="2026-07-01"' in html
+
+
+def test_le_premier_affichage_coche_tout_le_non_facture(fake, client):
+    """La valeur par défaut, inchangée : rien n'a été soumis, tout est
+    coché."""
+    _entry(fake, "te-a")
+    _entry(fake, "te-b")
+    html = client.get("/factures/new?dossier_id=d1").get_data(as_text=True)
+    (initial,) = re.findall(r"selectedEntries: (\[[^\]]*\])", html)
+    assert sorted(json.loads(initial)) == ["te-a", "te-b"]
+    assert "Payable dans les 30 jours suivant la date de facturation." in html
 
 
 def test_le_formulaire_n_offre_ni_n_envoie_de_provision(fake, client):

@@ -751,7 +751,9 @@ def number_year_warning(invoice_date: object, number: str) -> str:
     dated 31 December and issued on 2 January carries the NEW year's number.
     That is correct, and surprising: this sentence says it before the
     invoice is sent. A number from another system (an import) is not ours to
-    comment on, and is never flagged.
+    comment on — but this function judges the SHAPE only, and an imported
+    number may well read « 2019-F014 », so only the generated path may ask
+    it (``plan_invoice`` and the web form do; never hand it an import).
 
     String operations only, no pattern — pure, and linear by construction.
     """
@@ -875,6 +877,26 @@ def issuance_refusals(
     return out
 
 
+def invoice_document_from(data: Optional[dict]) -> dict:
+    """The invoice document a creation starts from — the ONE builder.
+
+    Defaults, then from *data* only the keys of ``_CREATE_DATA_KEYS``,
+    sanitized. :func:`plan_invoice` judges THIS document, so every caller
+    that asks it a question — ``create_invoice``, and the connector's
+    preview — must build its document here: a preview assembling its own
+    (unfiltered, unsanitized) would judge another invoice than the one the
+    write stores, the very drift ``plan_invoice`` exists to prevent. (A
+    client name made only of markup, say, is emptied by ``sanitize`` and
+    refused as blank — by both, or by neither.) Pure: reads nothing.
+    """
+    return {
+        **_default_doc(),
+        **_sanitize_data(
+            {k: v for k, v in (data or {}).items() if k in _CREATE_DATA_KEYS}
+        ),
+    }
+
+
 def _read_client_strict(client_id: str) -> Optional[dict]:
     """The contact *client_id* names, or ``None`` when none is on file.
 
@@ -904,11 +926,13 @@ def plan_invoice(
     """Everything ``create_invoice`` decides before its transaction — ONE
     implementation, so a preview and the write cannot drift.
 
-    *merged* is the invoice document as the caller's whitelisted data built
-    it (``_CREATE_DATA_KEYS``, defaults applied). *generated* — the invoice
-    gets a number of our own sequence (``create_invoice`` without
-    ``invoice_number``); ``False`` is the historical import. Reads the
-    sources and the client; writes nothing, allocates nothing.
+    *merged* is the invoice document as :func:`invoice_document_from` builds
+    it from the caller's data — never one a caller assembles itself, or the
+    preview and the write would judge two different documents.
+    *generated* — the invoice gets a number of our own sequence
+    (``create_invoice`` without ``invoice_number``); ``False`` is the
+    historical import. Reads the sources and the client; writes nothing,
+    allocates nothing.
 
     In order, the first refusal wins (its error list is returned as a
     whole), exactly as ``create_invoice`` always refused:
@@ -1204,12 +1228,7 @@ def create_invoice(
     from models.time_entry import COLLECTION as TE_COLLECTION
     from models.expense import COLLECTION as EXP_COLLECTION
 
-    merged = {
-        **_default_doc(),
-        **_sanitize_data(
-            {k: v for k, v in (data or {}).items() if k in _CREATE_DATA_KEYS}
-        ),
-    }
+    merged = invoice_document_from(data)
 
     plan = plan_invoice(
         dossier_id, selected_entry_ids, selected_expense_ids, merged,
@@ -2169,6 +2188,23 @@ _DRAFT_TEXT_RULES = {
 }
 
 
+def _draft_text(value: object) -> str:
+    """A draft text as it is COMPARED and written: LF line breaks, stripped.
+
+    A browser submits every line break of a ``<textarea>`` as CRLF (HTML
+    form submission normalizes them so), while the connector's import and
+    every script store LF. Compared raw, a multi-line note read back
+    unchanged from the page differed from the stored one on EVERY save:
+    it was rewritten, reported among the changed fields — and, being
+    « changed », re-judged against the cap with each break counted twice,
+    so a 1 499-character imported note made an unrelated due-date
+    correction REFUSED. The same text under two line-ending conventions is
+    one text. ``None`` (a legacy key never set) reads as empty.
+    """
+    text = "" if value is None else str(value)
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def update_invoice_draft(
     invoice_id: str,
     changes: dict,
@@ -2192,12 +2228,14 @@ def update_invoice_draft(
     * ``due_date`` — a ``datetime``/``date`` or ``'YYYY-MM-DD'``, never
       before the invoice date.
 
-    Text is stripped; a CHANGED value that is over-long, or that
-    ``sanitize`` would alter, is REFUSED — never truncated or stripped. A
-    value EQUAL to the stored one is not a change and is not re-judged: the
-    web form resubmits every field, and a brouillon written before these
-    caps (web notes went to 2 000 characters) must stay correctable in its
-    other fields. Any other key is refused by name. With
+    Text is stripped and its line breaks read as LF (a browser posts a
+    textarea's as CRLF — :func:`_draft_text`); a CHANGED value that is
+    over-long, or that ``sanitize`` would alter, is REFUSED — never
+    truncated or stripped. A value EQUAL to the stored one (under that one
+    line-ending convention) is not a change and is not re-judged: the web
+    form resubmits every field, and a brouillon written before these caps
+    (web notes went to 2 000 characters) must stay correctable in its other
+    fields. Any other key is refused by name. With
     *refresh_billing_address*, the frozen billing address is re-snapshotted
     from the invoice's client as it is on file NOW (``billing_address_from``,
     the one builder) — read inside the transaction; a client that does not
@@ -2244,7 +2282,7 @@ def update_invoice_draft(
         if not isinstance(changes[key], str):
             errors.append(f"{label} : une chaîne de caractères est attendue.")
         else:
-            wanted[key] = changes[key].strip()
+            wanted[key] = _draft_text(changes[key])
     if "due_date" in changes:
         due, errs = _parse_draft_due_date(changes["due_date"])
         errors += errs
@@ -2292,7 +2330,15 @@ def update_invoice_draft(
                 client_snap.to_dict() or {}
             )
 
-        changed = sorted(k for k, v in target.items() if invoice.get(k) != v)
+        # A text is compared under ONE line-ending convention (_draft_text):
+        # the page's CRLF and the store's LF are the same text, never a
+        # change — otherwise every multi-line note would be rewritten and
+        # re-judged on a save that did not touch it.
+        changed = sorted(
+            k for k, v in target.items()
+            if (_draft_text(invoice.get(k)) if k in _DRAFT_TEXT_RULES
+                else invoice.get(k)) != v
+        )
         invalid: list[str] = []
         for key in changed:
             if key in _DRAFT_TEXT_RULES:

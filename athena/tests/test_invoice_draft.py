@@ -256,6 +256,56 @@ def test_une_echeance_egale_a_la_date_est_permise(fake):
     assert errors == []
 
 
+# Un navigateur soumet chaque retour à la ligne d'un <textarea> en CRLF ; le
+# connecteur (import_invoice) et les scripts stockent LF.
+_LF = "Ligne un\nLigne deux\nLigne trois"
+
+
+def test_un_texte_renvoye_par_le_navigateur_n_est_pas_un_changement(fake):
+    """(Régression, revue du lot 3a : la comparaison était brute. Des notes
+    stockées en LF, relues telles quelles puis renvoyées en CRLF par la
+    page, passaient pour CHANGÉES à chaque sauvegarde : réécrites en CRLF,
+    rapportées dans ``fields_changed`` au journal — alors que le juriste n'y
+    avait pas touché.)"""
+    _invoice(fake, notes=_LF, payment_terms="Payable\nà réception.")
+    _, errors, changed = _edit({
+        "notes": _LF.replace("\n", "\r\n"),
+        "payment_terms": "Payable\r\nà réception.",
+        "due_date": "2026-08-01",
+    })
+    assert errors == [] and changed == ["due_date"]
+    stored = fake.peek(PATH)
+    assert stored["notes"] == _LF
+    assert stored["payment_terms"] == "Payable\nà réception."
+
+
+def test_une_note_importee_proche_du_plafond_ne_bloque_pas_une_autre_correction(
+    fake,
+):
+    """(Régression, revue du lot 3a : 1 499 caractères en LF — sous le
+    plafond de l'import du connecteur, 1 500 — deviennent 1 513 en CRLF.
+    Comptée « changée », la note était rejugée et REFUSAIT la correction de
+    l'échéance, par un message sur des notes que personne n'avait touchées.)"""
+    notes = "\n".join(["x" * 99] * 15)
+    assert len(notes) == 1499
+    _invoice(fake, notes=notes)
+    _, errors, changed = _edit({
+        "notes": notes.replace("\n", "\r\n"), "due_date": "2026-08-01"})
+    assert errors == [] and changed == ["due_date"]
+    assert fake.peek(PATH)["notes"] == notes
+
+
+def test_un_vrai_changement_s_ecrit_en_lf_et_se_compte_comme_il_se_lit(fake):
+    """Une note réellement modifiée, reçue en CRLF, s'écrit en LF — une
+    seule convention au stockage — et son plafond compte les caractères que
+    le juriste voit : un retour à la ligne en vaut UN, jamais deux."""
+    _invoice(fake)
+    typed = "\r\n".join(["y" * 99] * 15)          # 1 499 caractères vus
+    _, errors, changed = _edit({"notes": typed})
+    assert errors == [] and changed == ["notes"]
+    assert fake.peek(PATH)["notes"] == typed.replace("\r\n", "\n")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 3. La concurrence
 # ══════════════════════════════════════════════════════════════════════
@@ -474,6 +524,49 @@ def test_une_facture_envoyee_entre_temps_renvoie_a_sa_fiche_avec_le_motif(
         "payment_terms": "Payable."})
     assert resp.status_code == 302
     assert "erreur" in parse_qs(urlparse(resp.location).query)
+
+
+def test_la_page_ne_reecrit_pas_des_notes_que_le_navigateur_renvoie_en_crlf(
+    fake, client,
+):
+    """Le chemin réel : la page relit des notes LF, le navigateur les renvoie
+    en CRLF avec une autre correction. Seule celle-ci s'écrit."""
+    _invoice(fake, notes=_LF)
+    resp = client.post(f"/factures/{INV}/brouillon", data={
+        "expected_etag": ETAG, "notes": _LF.replace("\n", "\r\n"),
+        "payment_terms": "Payable dans les 30 jours suivant la date de "
+                         "facturation.",
+        "due_date": "2026-07-30"})
+    assert resp.status_code == 302
+    stored = fake.peek(PATH)
+    assert stored["notes"] == _LF
+    assert stored["due_date"] == datetime(2026, 7, 30, tzinfo=UTC)
+
+
+def test_un_envoi_sans_le_champ_notes_ne_les_efface_pas(fake, client):
+    """(Régression, revue du lot 3a : la route fabriquait ``notes = ''``
+    quand le formulaire n'envoyait pas le champ — et sur ce modèle une clé
+    présente et vide EFFACE. Un envoi partiel effaçait les notes.)"""
+    _invoice(fake)
+    resp = client.post(f"/factures/{INV}/brouillon", data={
+        "expected_etag": ETAG, "due_date": "2026-07-30"})
+    assert resp.status_code == 302
+    stored = fake.peek(PATH)
+    assert stored["notes"] == "Premier jet"
+    assert stored["due_date"] == datetime(2026, 7, 30, tzinfo=UTC)
+
+
+def test_un_refus_d_un_envoi_partiel_rend_les_valeurs_stockees(fake, client):
+    """Le re-rendu d'un refus montre ce qui a été soumis, et la valeur
+    STOCKÉE de ce qui ne l'a pas été — jamais un champ vide qu'une
+    sauvegarde suivante enregistrerait."""
+    _invoice(fake)
+    html = client.post(f"/factures/{INV}/brouillon", data={
+        "expected_etag": ETAG, "due_date": "2026-06-01"},   # précède
+    ).get_data(as_text=True)
+    assert "précède" in html
+    assert "Premier jet" in html                 # notes: stored, not blank
+    assert 'value="2026-06-01"' in html          # due date: as submitted
 
 
 def test_la_fiche_offre_la_correction_sur_un_brouillon_seulement(fake, client):

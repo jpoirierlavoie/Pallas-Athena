@@ -84,7 +84,7 @@
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-700 mb-1">Date d'échéance</label>
-          <input type="date" name="due_date" value=""
+          <input type="date" name="due_date" value="{{ form_due_date or '' }}"
                  placeholder="Auto : +30 jours"
                  class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
         </div>
@@ -207,7 +207,8 @@
       </dl>
     </div>
 
-    {# Notes & payment terms #}
+    {# Notes & payment terms — a refused save re-renders what was typed
+       (form_* is set only then; the first render keeps the defaults). #}
     <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6">
       <h2 class="text-sm font-semibold text-gray-900 mb-4">Notes et conditions</h2>
       <div class="space-y-4">
@@ -215,12 +216,12 @@
           <label class="block text-xs font-medium text-gray-700 mb-1">Notes</label>
           <textarea name="notes" rows="2"
                     class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2"
-                    placeholder="Notes imprimées sur la facture"></textarea>
+                    placeholder="Notes imprimées sur la facture">{{ form_notes or '' }}</textarea>
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-700 mb-1">Conditions de paiement</label>
           <textarea name="payment_terms" rows="2"
-                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">Payable dans les 30 jours suivant la date de facturation.</textarea>
+                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{% if form_payment_terms is defined %}{{ form_payment_terms }}{% else %}Payable dans les 30 jours suivant la date de facturation.{% endif %}</textarea>
         </div>
       </div>
     </div>
@@ -245,6 +246,12 @@
 {# Pre-build lookup maps server-side so the script block contains no Jinja control flow. #}
 {% set _entry_ids = unbilled_entries | map(attribute='id') | list %}
 {% set _expense_ids = unbilled_expenses | map(attribute='id') | list %}
+{# The first render ticks every unbilled item; a refused save re-renders the
+   lawyer's OWN selection (initial_*_ids, set by the route only then) —
+   re-ticking everything would bill, on the next « Créer », what was
+   deliberately left out. #}
+{% set _initial_entry_ids = initial_entry_ids if initial_entry_ids is defined else _entry_ids %}
+{% set _initial_expense_ids = initial_expense_ids if initial_expense_ids is defined else _expense_ids %}
 {% set _maps = namespace(amounts={}, taxable={}, type={}) %}
 {% for e in unbilled_entries %}
   {% set _ = _maps.amounts.update({e.id: e.amount}) %}
@@ -267,8 +274,8 @@ function invoiceForm() {
   const typeMap = {{ _maps.type | tojson }};
 
   return {
-    selectedEntries: [...entryIds],
-    selectedExpenses: [...expenseIds],
+    selectedEntries: {{ _initial_entry_ids | tojson }},
+    selectedExpenses: {{ _initial_expense_ids | tojson }},
     subtotalFees: 0,
     subtotalExpenses: 0,
     subtotal: 0,
