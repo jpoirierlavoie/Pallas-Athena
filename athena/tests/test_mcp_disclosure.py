@@ -187,6 +187,12 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "never promoted here",
     "atterrit en brouillon et y reste",
     "lands in brouillon and stays there",
+    # Review of the lot-3b text step: the RECLASSIFY paragraph still said
+    # the reclassifiers « are the only tools that reach a row already
+    # carried to an invoice » — the void (update_invoice, status annulée)
+    # reaches every one of them, to release it.
+    "only tools that reach a row already carried",
+    "only writes that reach a row already carried",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -809,3 +815,13 @@ def test_the_lot_3b_texts_say_what_billing_does():
     import_status = OUTPUT_SCHEMAS["import_invoice"]["properties"]["entity"][
         "properties"]["status"]["description"]
     assert "update_invoice does" in import_status
+
+    # Review of the text step: RECLASSIFY is no longer the only family that
+    # writes to a billed row — the void releases it — so the paragraph says
+    # what stays true: the reclassifiers alone change a row WHILE it stays
+    # billed, and the void releases the row instead.
+    reclassify = next(f for f in disclosure.FAMILIES if f.key == "reclassify")
+    assert "WHILE it stays carried to an invoice" in reclassify.instructions_en
+    assert "a void — BILL — releases the row instead" in (
+        reclassify.instructions_en)
+    assert "WHILE it stays carried to an invoice" in endpoint.INSTRUCTIONS
