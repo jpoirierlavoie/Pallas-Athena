@@ -2219,10 +2219,16 @@ Notes:
   and its « Confirmer » in the application (a copy's category presumed
   only when the lawyer had not set it; its protection level presumed, to
   verify by qualifying the copy); the leak scan of a template taken from a
-  dossier (`accept_residual` on the lawyer's word only) — and that a
-  RENAME is checked against no dossier, so a party's name never goes into
-  a template's name; and that the active note templates are the lawyer's
-  to designate.
+  dossier (`accept_residual` on the lawyer's word only) — and, since the
+  fixups of lot 2A, that a RENAME is checked against the template's source
+  dossiers when they are recorded (`name_check` says whether it was; a
+  party's name still never goes into a template's name), that an uploaded
+  gabarit must name its source `dossier_id` or declare
+  `aucun_dossier_source: true` — only for a file from no dossier, never as a
+  way round the check; and that the active note templates are the lawyer's
+  to designate AND to undesignate. D18: a category the lawyer chose or
+  confirmed (`category_set_by_lawyer: true` on `list_documents`) is never
+  replaced — report the disagreement to him instead.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
