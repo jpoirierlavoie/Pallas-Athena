@@ -168,6 +168,10 @@ def test_a_category_the_lawyer_chose_or_confirmed_is_refused(fake, did):
     before = fake.peek(f"documents/{did}")
     exc = _refused(did, "correspondance")
     assert "choisie ou confirmée par le juriste" in str(exc)
+    # Review of the fixups of lot 3: a legacy category is refused as HELD
+    # to be his — nothing recorded that he chose it — and the refusal says
+    # so rather than asserting a choice as a fact. FAILS on the old text.
+    assert "ou posée avant ce suivi, et tenue pour la sienne" in str(exc)
     assert "Rien n'a été modifié" in str(exc)
     assert before["category"] not in str(exc)             # names the rule only
     assert fake.peek(f"documents/{did}") == before
@@ -267,6 +271,7 @@ def test_the_model_refuses_the_connector_on_every_path(fake):
             "choisi", {"category": "autre"}, source="mcp")
     assert doc is None and changed is False
     assert errors == [document_model.MCP_CATEGORY_ON_LAWYERS]
+    assert "posée avant ce suivi" in document_model.MCP_CATEGORY_ON_LAWYERS
 
 
 # ── Creation: the upload forms and the copy ───────────────────────────────

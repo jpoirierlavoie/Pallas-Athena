@@ -11305,10 +11305,14 @@ _DOCUMENT_ANALYSED_CATEGORY = (
     "(record_document_analysis) — ou laissez le juriste la corriger dans "
     "l'application. Rien n'a été modifié."
 )
-# D18 (2026-09-28): the rule named, never the category's value.
+# D18 (2026-09-28): the rule named, never the category's value. A LEGACY
+# category (no marker, anything but « autre ») is refused as HELD to be the
+# lawyer's — nothing recorded whether he chose it — so the text says « or
+# posed before this tracking », never « he chose it » as a fact.
 _DOCUMENT_LAWYERS_CATEGORY = (
     "`category` refusé : la catégorie de ce document a été choisie ou "
-    "confirmée par le juriste dans l'application, et une catégorie présumée "
+    "confirmée par le juriste dans l'application — ou posée avant ce suivi, "
+    "et tenue pour la sienne —, et une catégorie présumée "
     "ne remplace jamais la sienne (list_documents : category_set_by_lawyer). "
     "Si elle vous semble erronée, signalez-le-lui ; lui seul la corrige. "
     "Rien n'a été modifié."

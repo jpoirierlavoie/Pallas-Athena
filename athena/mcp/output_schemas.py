@@ -1201,9 +1201,10 @@ def _document_write_entity() -> dict:
             "« mcp »), not the lawyer's determination."),
         "category_set_by_lawyer": _bool(
             "true = the lawyer CHOSE or CONFIRMED this category in the "
-            "application (D18): update_document never replaces it. false = "
-            "presumed, or never chosen (a new upload's default, a "
-            "generation's, a pre-marker document's « autre »)."),
+            "application (D18) — or it predates the marker and is not "
+            "« autre », so it is held to be his: update_document never "
+            "replaces it. false = presumed, or never chosen (a new upload's "
+            "default, a generation's, a pre-marker document's « autre »)."),
         "tags": _arr(_str()),
         "document_date": _nstr("YYYY-MM-DD; null = not dated."),
         "folder_id": _nstr("null = the dossier root."),

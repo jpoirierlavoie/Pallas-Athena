@@ -400,7 +400,8 @@ MCP_CATEGORY_ON_ANALYSED = (
 # unless its category is « autre » or empty.
 MCP_CATEGORY_ON_LAWYERS = (
     "La catégorie de ce document a été choisie ou confirmée par le juriste "
-    "dans l'application : une catégorie présumée ne la remplace pas. "
+    "dans l'application — ou posée avant ce suivi, et tenue pour la sienne : "
+    "une catégorie présumée ne la remplace pas. "
     "Signalez-lui l'écart ; lui seul la corrige."
 )
 # Where the web UPLOAD form starts (the select's pre-selected value): a

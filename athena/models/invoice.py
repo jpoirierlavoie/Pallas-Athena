@@ -54,11 +54,31 @@ class _DuplicateNumberError(Exception):
     already borne by another invoice — aborts, never writes."""
 
 
+class _OwnCommitLandedError(Exception):
+    """Raised inside a RE-RUN of the creation transaction that finds THIS
+    call's own invoice id already written — an earlier attempt landed.
+
+    The id is minted fresh by :func:`create_invoice` and known to no other
+    writer, so a source naming it (or an invoice bearing the imported number
+    under it) can only be this very call's commit. The real ``transactional``
+    decorator re-runs its body after an ``Aborted`` commit, and the commit
+    RPC is itself retried on ``ServiceUnavailable`` under the same
+    transaction id: a first commit that LANDED with its answer lost, whose
+    retry is then answered ``Aborted``, re-runs the body over the landed
+    writes. Read as a source conflict (or a duplicate number), that re-run
+    said « nothing was created — no number consumed » over an invoice that
+    exists under a consumed number (review of the fixups of lot 3). It is
+    answered :data:`CREATE_OUTCOME_UNCERTAIN` instead."""
+
+
 # :func:`create_invoice`'s answer when its transaction RAISED (fixups of lot
 # 3). Every other error it returns is CERTAIN to precede any write — a
 # refused plan, a failed first-of-year seed (reads only), a source or
-# number conflict raised inside the transaction body, which aborts it. A
-# raise out of the transaction is not: a commit RPC that fails does not
+# number conflict raised inside the transaction body, which aborts it (a
+# RE-RUN of that body over an earlier attempt that landed is told apart by
+# the call's own invoice id — :class:`_OwnCommitLandedError` — and answered
+# with this constant too). A raise out of the transaction is not: a commit
+# RPC that fails does not
 # prove the commit did not land (the server can apply it and the answer be
 # lost), so the invoice MAY exist, under a consumed number. It is therefore
 # never worded « nothing was created », on either surface: the web form
@@ -1355,6 +1375,11 @@ def create_invoice(
         for ref in source_refs:
             snap = ref.get(transaction=txn)
             src = snap.to_dict() if snap.exists else None
+            if src and src.get("invoice_id") == invoice_id:
+                # THIS call's own id: an earlier attempt of this very
+                # transaction landed (_OwnCommitLandedError) — never a
+                # « source changed », which would deny the invoice.
+                raise _OwnCommitLandedError(ref.id)
             if (
                 not src
                 or src.get("invoiced")
@@ -1376,6 +1401,8 @@ def create_invoice(
                 .stream(transaction=txn)
             )
             if clash:
+                if clash[0].id == invoice_id:
+                    raise _OwnCommitLandedError(invoice_id)
                 raise _DuplicateNumberError(resolved_number)
 
         # The last READ: the year counter, generated path only. Read after
@@ -1406,6 +1433,13 @@ def create_invoice(
 
     try:
         _txn_create(transaction)
+    except _OwnCommitLandedError:
+        # Ahead of the conflict branches: not a refusal — an earlier attempt
+        # of this call wrote the invoice (its number consumed).
+        log_unexpected("create_invoice: an earlier attempt of the "
+                       "transaction landed", exc_info=False,
+                       dossier_id=dossier_id)
+        return None, [CREATE_OUTCOME_UNCERTAIN]
     except _SourceConflictError:
         log_invoice_event("invoice_refused", "", outcome="refused",
                           operation="create", reason="source_modifiee",

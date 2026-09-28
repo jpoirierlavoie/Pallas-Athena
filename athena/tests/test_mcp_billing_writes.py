@@ -1161,3 +1161,80 @@ def test_a_caller_cannot_mark_an_invoice_imported(world):
     assert "imported" not in invoice_model._CREATE_DATA_KEYS
     doc = invoice_model.invoice_document_from({"imported": True})
     assert doc["imported"] is False
+
+
+# ── Revue des correctifs du lot 3 — la reprise d'une transaction déjà écrite ──
+
+
+def _abort_after_the_invoice_commit_lands(world, monkeypatch):
+    """The invoice commit LANDS, then the call is answered ``Aborted`` — the
+    commit RPC retried under the same transaction id after its first answer
+    was lost. The REAL ``transactional`` decorator then re-runs the body
+    over the writes that landed."""
+    from google.api_core import exceptions as gexc
+
+    server = world._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(
+                "/invoices/" in server._write_name(w) for w in writes):
+            state["armed"] = False
+            raise gexc.Aborted("the retried commit of a landed transaction")
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+
+
+def test_a_rerun_over_its_own_landed_commit_is_uncertain_never_a_conflict(
+    world, monkeypatch,
+):
+    """Review of the fixups of lot 3. The re-run found its sources invoiced
+    — by ITSELF — and answered the source conflict, to which the handler
+    appended « Aucune facture n'a été créée — aucun numéro n'a été
+    consommé », and released the key: false, over an invoice that exists
+    under a consumed number. The call's own invoice id tells the two apart.
+    FAILS on the old model."""
+    preview = _preview(time_entry_ids=["e1"])
+    args = {"time_entry_ids": ["e1"],
+            "expected_total_cents": preview["total_cents"],
+            "idempotency_key": "cle-facture-reprise-ecrite"}
+    _abort_after_the_invoice_commit_lands(world, monkeypatch)
+    with pytest.raises(tools.ToolArgumentError) as uncertain:
+        _create(**args)
+    assert uncertain.value.reason == "invoice_outcome_uncertain"
+    assert "aucun numéro n'a été consommé" not in str(uncertain.value)
+    assert "entre-temps" not in str(uncertain.value)
+    (written,) = world.peek_collection("invoices").values()
+    assert written["invoice_number"] == "2026-F001"
+    assert world.peek(COUNTER)["seq"] == 1
+    assert world.peek("timeentries/e1")["invoice_id"] == written["id"]
+    # The key stays reserved: the same-key retry never runs.
+    with pytest.raises(tools.ToolArgumentError) as retried:
+        _create(**args)
+    assert retried.value.reason == "idempotency_in_flight"
+    assert len(world.peek_collection("invoices")) == 1
+
+
+def test_an_import_rerun_over_its_own_landed_commit_is_uncertain(
+    world, monkeypatch,
+):
+    """The import path: the re-run's source check sees its own id too, and
+    its uniqueness read would have found its OWN invoice (« ce numéro existe
+    déjà »). The model answers the uncertain outcome, never a conflict."""
+    total = invoice_model.compute_totals(
+        [{"type": "fee", "amount": 15000, "taxable": True}])["total"]
+    _abort_after_the_invoice_commit_lands(world, monkeypatch)
+    with pytest.raises(tools.ToolArgumentError) as uncertain:
+        handlers.import_invoice({
+            "dossier_id": "d1", "invoice_number": "2019-F015",
+            "date": "2019-11-04", "time_entry_ids": ["e2"],
+            "expected_total_cents": total,
+        })
+    assert str(uncertain.value) == invoice_model.CREATE_OUTCOME_UNCERTAIN
+    (written,) = world.peek_collection("invoices").values()
+    assert written["invoice_number"] == "2019-F015"
+    assert world.peek(COUNTER) is None     # the year counter never moved
