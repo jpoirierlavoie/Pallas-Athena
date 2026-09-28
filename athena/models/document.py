@@ -917,7 +917,7 @@ def ingest_blob_as_document(
         logger.warning(
             "ingest_blob: header read failed: %s", type(exc).__name__
         )
-        return None, ["Lecture du fichier source impossible. Réessayez."]
+        return None, [_INGEST_READ_FAILED]
     content_type = _sniff_header(header, ext)
     if not content_type or content_type not in ALLOWED_MIME_TYPES:
         return None, [
@@ -1067,6 +1067,14 @@ def _noted(result: tuple[Optional[dict], list[str]]) -> tuple[Optional[dict], li
 
 
 _INGEST_FAILED = "Erreur lors du versement. Veuillez réessayer."
+_INGEST_READ_FAILED = "Lecture du fichier source impossible. Réessayez."
+# The refusals of `ingest_blob_as_document` that say « the store failed,
+# nothing was filed, the SAME call may succeed » — as opposed to a refusal
+# of the content itself (its type, its size, its metadata, an id already
+# taken). The connector's upload ticket keeps its bytes for a retry on the
+# former and consumes them on the latter (lot 2A, T9): consuming 200 MB on a
+# store blip would cost the caller the whole upload.
+RETRYABLE_INGEST_ERRORS = (_INGEST_FAILED, _INGEST_READ_FAILED)
 _INGEST_OCCUPIED = (
     "Un autre fichier occupe déjà l'emplacement de ce document : rien n'a "
     "été versé, et rien n'a été supprimé. Téléversez le fichier de nouveau."

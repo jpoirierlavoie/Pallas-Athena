@@ -79,45 +79,91 @@ not established); :func:`get_ticket` and :func:`get_open_ticket` raise too —
 « unreadable » is never « absent ». :func:`release_ticket` and
 :func:`refuse_ticket` are best-effort (``False`` and an ``unexpected`` line):
 a claim they fail to clear goes stale in five minutes and is reclaimed.
+
+The staging object (lot 2A, T9). The bytes of an upload live, until
+finalization, at the ticket's staging object — Storage bookkeeping of the
+exchange, never a filed record — and every Storage verb on it lives HERE,
+so the connector's handlers reach it only through this module:
+
+* :func:`open_ticket` validates, opens the resumable session, THEN writes
+  the ticket — a session that cannot be opened writes nothing (a ticket
+  without a session would be a commit the caller could not use), and a
+  ticket write that fails after the session opened leaves an orphan
+  session, harmless: nothing finalizes it, and the bucket's ``staging/``
+  lifecycle sweeps anything uploaded through it. :func:`open_session`
+  re-opens one for a still-open ticket (``begin_upload``'s replay). The
+  session URI is a CAPABILITY: returned to the caller, never stored,
+  logged or traced here. Its object is created only
+  (``if_generation_match=0``), capped by GCS at the declared size, and
+  carries the declared MD5 in its initiation metadata;
+* :func:`staged_blob` / :func:`staged_mismatch` — the uploaded object,
+  reloaded, and the comparison of its OWN size and MD5 with what the
+  ticket bound (``hmac.compare_digest``);
+* :func:`read_staged_bytes` — a template's bytes, read at the generation
+  that was checked and re-checked against the bound MD5;
+* :func:`discard_staging` — the object consumed once the ticket is
+  SETTLED (versé, refusé, expiré). A claim RELEASED for a later retry
+  (« not uploaded yet », a transient failure) keeps its object: the ticket
+  is still open, and the bytes are what the retry will file.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from google.api_core.exceptions import AlreadyExists
+from firebase_admin import storage
+from google.api_core.exceptions import AlreadyExists, NotFound, PreconditionFailed
 from google.cloud import firestore
 
 from models import db, provenance
-from models.doc_template import MAX_TEMPLATE_SIZE
-from models.document import ALLOWED_EXTENSIONS, MAX_FILE_SIZE, is_canonical_uuid4
+from models.doc_template import DOCX_MIME, MAX_TEMPLATE_SIZE
+from models.document import (
+    ALLOWED_EXTENSIONS,
+    EXTENSION_MIME_TYPES,
+    MAX_FILE_SIZE,
+    is_canonical_uuid4,
+)
 from security import sanitize
 from utils import storage_identity
 from utils.logging_setup import log_unexpected
 
 __all__ = [
+    "ALREADY_RECEIVED_MESSAGE",
     "COLLECTION",
     "FINAL_RETENTION",
     "OPEN_WINDOW",
     "REFUSAL_REASONS",
+    "RETRYABLE_OPEN_ERRORS",
     "STALE_CLAIM_AFTER",
+    "StagedBytesChanged",
     "TicketClaim",
     "TicketStoreUnavailable",
+    "UploadSessionUnavailable",
     "claim_ticket",
     "complete_ticket",
+    "content_type_for",
     "create_ticket",
+    "discard_staging",
     "get_open_ticket",
     "get_ticket",
     "message_for",
+    "open_session",
+    "open_ticket",
+    "read_staged_bytes",
     "record_staged_digest",
     "refuse_ticket",
     "release_ticket",
+    "staged_blob",
+    "staged_exists",
+    "staged_mismatch",
 ]
 
 COLLECTION = "mcp_upload_tickets"
@@ -203,6 +249,38 @@ _SAVE_MESSAGE = (
     "Erreur lors de l'enregistrement du ticket de téléversement : rien n'a "
     "été ouvert. Réessayez."
 )
+_SESSION_MESSAGE = (
+    "Le téléversement n'a pas pu être ouvert auprès du stockage : rien n'a "
+    "été ouvert. Réessayez dans un instant."
+)
+# A replayed opening whose ticket ALREADY holds its bytes: a new session
+# on the same create-only object could only fail at the PUT.
+ALREADY_RECEIVED_MESSAGE = (
+    "Ce ticket a déjà reçu son fichier : ne le téléversez pas de nouveau — "
+    "appelez finalize_upload avec ce ticket_id."
+)
+_STAGING_SHAPE_MESSAGE = (
+    "Ce ticket ne désigne pas un objet de téléversement valide : rien n'a "
+    "été versé."
+)
+
+
+# The refusals of :func:`open_ticket` that say « the store failed, nothing
+# was opened, the same call may succeed » — as opposed to a refusal of what
+# was asked. (The connector logs them under a retry code.)
+RETRYABLE_OPEN_ERRORS = (_SESSION_MESSAGE, _SAVE_MESSAGE)
+
+
+class UploadSessionUnavailable(Exception):
+    """A resumable session could not be opened. French message; never the
+    URL (there is none on failure) nor an exception's text."""
+
+    def __init__(self, message: str = _SESSION_MESSAGE) -> None:
+        super().__init__(message)
+
+
+class StagedBytesChanged(Exception):
+    """The bytes read back are not the ones the checks passed on."""
 
 _CREATE_KEYS = frozenset({
     "purpose", "dossier_id", "filename", "declared_size", "declared_md5_b64",
@@ -447,7 +525,8 @@ def _transaction():
 
 
 def create_ticket(
-    data: dict, *, user_id: str, now: Optional[datetime] = None
+    data: dict, *, user_id: str, now: Optional[datetime] = None,
+    before_write: Optional[Callable[[dict], None]] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Open a ticket: validate and BIND everything ``finalize`` will use.
 
@@ -461,6 +540,12 @@ def create_ticket(
     reserved document or template id. Written with ``create()`` — a ticket
     is never overwritten. Returns ``(ticket, [])`` or ``(None, errors)``;
     nothing is written on a refusal.
+
+    *before_write* (keyword, lot 2A T9) runs on the validated ticket AFTER
+    every check and BEFORE the write — :func:`open_ticket` opens the
+    resumable session there, so a session that cannot be opened writes no
+    ticket. An :class:`UploadSessionUnavailable` it raises is this call's
+    refusal; anything else propagates.
     """
     errors: list[str] = []
     if not isinstance(data, dict):
@@ -554,6 +639,11 @@ def create_ticket(
         "refusal_reason": "",
     }
     doc.update(provenance.create_fields(at))
+    if before_write is not None:
+        try:
+            before_write(doc)
+        except UploadSessionUnavailable as exc:
+            return None, [str(exc)]
     try:
         _ref(ticket_id).create(doc)
     except AlreadyExists:
@@ -563,6 +653,211 @@ def create_ticket(
         return None, [_SAVE_MESSAGE]
     provenance.note_commit(COLLECTION, ticket_id)
     return doc, []
+
+
+def open_ticket(
+    data: dict, *, user_id: str, now: Optional[datetime] = None
+) -> tuple[Optional[dict], Optional[str], list[str]]:
+    """``begin_upload``'s write: :func:`create_ticket`, with the resumable
+    session opened BEFORE the ticket is written.
+
+    Returns ``(ticket, session_url, [])`` or ``(None, None, errors)``. The
+    order is the point: a session that cannot be opened refuses with
+    nothing written — a stored ticket without a session would be a commit
+    the caller could not use, reported « ENREGISTRÉE » by the write
+    protocol — while a ticket write that fails after the session opened
+    leaves only an orphan session, which nothing finalizes.
+    """
+    opened: dict = {}
+
+    def _session(ticket: dict) -> None:
+        opened["url"] = open_session(ticket)
+
+    ticket, errors = create_ticket(data, user_id=user_id, now=now,
+                                   before_write=_session)
+    if ticket is None:
+        return None, None, errors
+    return ticket, opened["url"], []
+
+
+# ── The staging object (GCS) ─────────────────────────────────────────────
+
+
+def content_type_for(ticket: dict) -> str:
+    """The MIME type the session declares — the extension's own (a
+    template is always a .docx). The ingestion re-sniffs the bytes and
+    stores the SNIFFED type either way; this only labels the upload."""
+    if (ticket or {}).get("purpose") == PURPOSE_GABARIT:
+        return DOCX_MIME
+    return EXTENSION_MIME_TYPES.get((ticket or {}).get("ext") or "",
+                                    "application/octet-stream")
+
+
+def _staging_name(ticket: dict) -> str:
+    """The ticket's staging object name, re-checked against the ONE shape
+    :func:`create_ticket` builds — ``staging/{uid}/mcp/{ticket_id}/upload{ext}``
+    — so a record whose path was altered can never point the Storage verbs
+    below at another object (a document's canonical path, above all)."""
+    ticket = ticket or {}
+    name = ticket.get("staging_object")
+    ticket_id = ticket.get("id")
+    if not isinstance(name, str) or not is_canonical_uuid4(ticket_id):
+        raise ValueError(_STAGING_SHAPE_MESSAGE)
+    parts = name.split("/")
+    ext = ticket.get("ext") or ""
+    if (len(parts) != 5 or parts[0] != "staging" or parts[2] != "mcp"
+            or parts[3] != ticket_id or parts[4] != f"upload{ext}"):
+        raise ValueError(_STAGING_SHAPE_MESSAGE)
+    try:
+        storage_identity.require_uid(parts[1])
+    except storage_identity.StorageIdentityUnavailable:
+        raise ValueError(_STAGING_SHAPE_MESSAGE) from None
+    return name
+
+
+def open_session(ticket: dict) -> str:
+    """Open a resumable upload session for the ticket's staging object and
+    return its URI — the CAPABILITY. Never stored, logged or traced here.
+
+    * ``size=`` the declared size — GCS refuses any byte beyond it;
+    * ``if_generation_match=0`` — the session can only CREATE the object:
+      once the bytes landed, no session (not a leaked one, not a replay's)
+      can replace them;
+    * the declared MD5 travels in the initiation metadata
+      (``Blob.md5_hash``, a writable property of google-cloud-storage
+      3.10.1 — ``md5Hash`` is in its ``_WRITABLE_FIELDS``), so the service
+      can reject a PUT of other bytes; ``finalize_upload`` re-checks size
+      and MD5 on the stored object either way, and THAT check is the
+      authoritative one;
+    * no ``origin=`` — the PUT comes from Claude's code sandbox, not a
+      browser page: there is no CORS exchange to authorise.
+
+    Raises :class:`UploadSessionUnavailable` on any failure.
+    """
+    try:
+        name = _staging_name(ticket)
+        size = int(ticket.get("declared_size") or 0)
+        md5 = _canonical_md5(ticket.get("declared_md5_b64"))
+        if size < 1 or md5 is None:
+            raise ValueError("unbound size or digest")
+    except (TypeError, ValueError):
+        raise UploadSessionUnavailable() from None
+    try:
+        blob = storage.bucket().blob(name)
+        blob.md5_hash = md5
+        url = blob.create_resumable_upload_session(
+            content_type=content_type_for(ticket), size=size,
+            if_generation_match=0,
+        )
+    except PreconditionFailed:
+        raise UploadSessionUnavailable(ALREADY_RECEIVED_MESSAGE) from None
+    except Exception as exc:
+        # The class only: an initiation failure carries no session URI, but
+        # its text is the service's, and nothing here needs it.
+        log_unexpected("upload session open failed", exc_info=False,
+                       ticket_id=ticket.get("id"),
+                       error_type=type(exc).__name__)
+        raise UploadSessionUnavailable() from None
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise UploadSessionUnavailable()
+    return url
+
+
+def staged_blob(ticket: dict):
+    """The uploaded object, RELOADED (its size, MD5 and generation are the
+    service's). Raises ``NotFound`` when nothing was uploaded yet, anything
+    else on a store failure — the caller tells the two apart."""
+    try:
+        name = _staging_name(ticket)
+    except ValueError:
+        raise NotFound(_STAGING_SHAPE_MESSAGE) from None
+    blob = storage.bucket().blob(name)
+    blob.reload()
+    return blob
+
+
+def staged_exists(ticket: dict) -> Optional[bool]:
+    """Whether the ticket's object exists — ``None`` when unknowable."""
+    try:
+        staged_blob(ticket)
+    except NotFound:
+        return False
+    except Exception:
+        return None
+    return True
+
+
+def _same_digest(stored: Any, declared: Any) -> bool:
+    if not isinstance(stored, str) or not isinstance(declared, str):
+        return False
+    if not stored or not declared:
+        return False
+    return hmac.compare_digest(stored.encode("ascii", "replace"),
+                               declared.encode("ascii", "replace"))
+
+
+def staged_mismatch(ticket: dict, blob) -> Optional[str]:
+    """``None`` when the uploaded object IS what the ticket bound — its
+    own size and MD5 equal the declared ones — else the refusal reason,
+    ``taille_differente`` or ``empreinte_differente``.
+
+    The defence against a leaked session URI: anyone holding it could PUT,
+    once, bytes of the declared size — never bytes of the declared MD5
+    without being the file. A composite object carries no MD5: refused.
+    Compared with ``hmac.compare_digest`` (constant time)."""
+    try:
+        size = int(blob.size)
+    except (TypeError, ValueError):
+        return "taille_differente"
+    if size != int(ticket.get("declared_size") or -1):
+        return "taille_differente"
+    if not _same_digest(getattr(blob, "md5_hash", None),
+                        _canonical_md5(ticket.get("declared_md5_b64"))):
+        return "empreinte_differente"
+    return None
+
+
+def read_staged_bytes(ticket: dict, blob) -> bytes:
+    """The staged bytes — a template's, ≤ 10 MB — read at the generation
+    that was checked, and re-checked against the bound size and MD5.
+
+    Raises :class:`StagedBytesChanged` when what came back is not the file
+    the checks passed on, anything else on a read failure. The object is
+    create-only, so a change is not expected: this makes the bytes the
+    template is built from the bytes that were compared, by construction.
+    """
+    data = blob.download_as_bytes(if_generation_match=blob.generation)
+    declared = _canonical_md5(ticket.get("declared_md5_b64"))
+    digest = base64.b64encode(hashlib.md5(data).digest()).decode("ascii")  # nosec B324 — an integrity check against GCS's own MD5, not a security hash
+    if len(data) != int(ticket.get("declared_size") or -1) \
+            or not _same_digest(digest, declared):
+        raise StagedBytesChanged()
+    return data
+
+
+def discard_staging(ticket: dict) -> bool:
+    """Consume the ticket's staging object — bookkeeping of the exchange,
+    never a filed record: refused bytes are not kept, filed bytes live on
+    at their canonical path, and an expired upload was never filed.
+
+    Best-effort: ``True`` when the object is gone (already, or now), else
+    ``False`` with an ``unexpected`` line — an object left behind is swept
+    by the canonical bucket's ``staging/`` 7-day lifecycle rule. Called only
+    once the ticket is SETTLED (module docstring)."""
+    try:
+        name = _staging_name(ticket)
+    except ValueError:
+        return False
+    try:
+        storage.bucket().blob(name).delete()
+    except NotFound:
+        return True
+    except Exception as exc:
+        log_unexpected("upload staging cleanup failed", exc_info=False,
+                       ticket_id=(ticket or {}).get("id"),
+                       error_type=type(exc).__name__)
+        return False
+    return True
 
 
 def get_ticket(ticket_id: str) -> Optional[dict]:

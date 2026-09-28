@@ -134,6 +134,105 @@ def test_a_new_special_template_is_never_designated_on_creation(store):
     assert not tpl.is_active(stored)
 
 
+RESERVED = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+
+
+def _create_reserved(data=V1, template_id=RESERVED):
+    return tpl.create_template(
+        io.BytesIO(data), "lettre.docx", len(data),
+        {"name": "Lettre", "category": "correspondance", "kind": "gabarit"},
+        UID, template_id=template_id,
+    )
+
+
+def test_a_reserved_id_is_the_template_s_id(store):
+    """Lot 2A (T9): the upload ticket reserves the id at begin_upload."""
+    db, bucket = store
+    doc, errors = _create_reserved()
+    assert errors == [] and doc["id"] == RESERVED
+    stored = db.peek(f"doc_templates/{RESERVED}")
+    assert stored["storage_path"] == f"users/{UID}/templates/{RESERVED}/v1/lettre.docx"
+    assert bucket.objects[stored["storage_path"]].data == V1
+
+
+def test_a_retried_creation_under_a_reserved_id_lands_on_one_template(store):
+    """A finalization retried after a crash (a stale claim reclaimed) must
+    not create a second template: the one stored under the reserved id with
+    the SAME file is the answer, and its commit is noted."""
+    from models import provenance
+
+    db, bucket = store
+    first, _ = _create_reserved()
+    objects = dict(bucket.objects)
+    with provenance.writing_via("mcp", tool="finalize_upload"):
+        again, errors = _create_reserved()
+        noted = provenance.committed_writes()
+    assert errors == [] and again["id"] == first["id"]
+    assert len(db.peek_collection("doc_templates")) == 1
+    assert bucket.objects == objects                  # nothing uploaded again
+    assert noted == (("doc_templates", RESERVED),)
+
+
+def test_a_reserved_id_holding_another_file_refuses(store):
+    db, _ = store
+    _create_reserved(V1)
+    doc, errors = _create_reserved(V2)
+    assert doc is None and errors == [tpl.TEMPLATE_ID_CONFLICT_ERROR]
+    assert db.peek(f"doc_templates/{RESERVED}")["sha256"] == _sha(V1)
+
+
+@pytest.mark.parametrize("bad", ["", "not-a-uuid", RESERVED.upper(),
+                                 "7c1d2e3f-4a5b-1c6d-8e7f-9a0b1c2d3e4f",
+                                 f"{RESERVED}/versions/1"])
+def test_a_reserved_id_that_is_not_a_canonical_uuid4_refuses(store, bad):
+    db, bucket = store
+    doc, errors = _create_reserved(template_id=bad)
+    assert doc is None and errors == [tpl.INVALID_TEMPLATE_ID_ERROR]
+    assert db.peek_collection("doc_templates") == {} and bucket.objects == {}
+
+
+def test_an_unreadable_reserved_id_refuses_before_any_write(store, monkeypatch):
+    """« Unreadable » is never « free »: a read failure answers READ_ERROR,
+    and the creation stops before its upload."""
+    db, bucket = store
+
+    class _Unreadable:
+        id = RESERVED
+
+        def get(self):
+            raise RuntimeError("store down")
+
+    assert tpl._reserved_answer(_Unreadable(), _sha(V1)) == (None, [tpl.READ_ERROR])
+    real = tpl._reserved_answer
+    monkeypatch.setattr(tpl, "_reserved_answer",
+                        lambda ref, digest: real(_Unreadable(), digest))
+    doc, errors = _create_reserved()
+    assert doc is None and errors == [tpl.READ_ERROR]
+    assert bucket.objects == {} and db.peek_collection("doc_templates") == {}
+
+
+def test_a_concurrent_creation_that_committed_first_is_the_answer(store):
+    """The v1 object is taken by a twin that committed between this call's
+    pre-check and its upload: the create-only upload refuses, and the
+    twin's template — the same file — is the answer, never an error."""
+    db, bucket = store
+    original = tpl._store_version_bytes
+
+    def twin_first(template_id, storage_path, data):
+        tpl._store_version_bytes = original
+        first, errors = _create_reserved()
+        assert errors == []
+        return original(template_id, storage_path, data)
+
+    tpl._store_version_bytes = twin_first
+    try:
+        doc, errors = _create_reserved()
+    finally:
+        tpl._store_version_bytes = original
+    assert errors == [] and doc["id"] == RESERVED
+    assert len(db.peek_collection("doc_templates")) == 1
+
+
 def test_create_ignores_every_key_outside_the_whitelist(store):
     """The old merge persisted whatever the caller sent."""
     db, bucket = store

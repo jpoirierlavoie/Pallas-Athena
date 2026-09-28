@@ -40,7 +40,18 @@ against ``inspect.signature`` of ``google.cloud.storage.blob.Blob`` on
   so a test can plant an object that is already old.
 * ``Blob.create_resumable_upload_session(content_type=None, size=None,
   origin=None, …, if_generation_match=None, …)`` → a session URL string;
-  :meth:`FakeBucket.complete_session` plays the browser's PUT.
+  :meth:`FakeBucket.complete_session` plays the browser's (or a sandbox's)
+  PUT. The blob's WRITABLE metadata set before the call travels in the
+  initiation, as in the library (``_get_writable_metadata``: ``md5Hash`` is
+  one of ``_WRITABLE_FIELDS``, so a ``blob.md5_hash = …`` is sent): the
+  session records it, and the final PUT is refused when its bytes do not
+  hash to it — the service's own check of a declared MD5. The session's
+  ``if_generation_match`` is evaluated when the object is created (a
+  create-only session refuses an object that appeared meanwhile), and a
+  session creates ONE object: a second PUT to a completed session is
+  refused.
+* ``Blob.download_as_bytes(…, if_generation_match=None, …)`` — 412 when the
+  live generation differs.
 * ``md5_hash``/``crc32c`` are base64 strings, as the service returns them.
 
 Deliberately NOT modelled: soft delete, object versioning, ACLs, CMEK,
@@ -124,10 +135,23 @@ class FakeBucket:
         self.objects.pop(name, None)
 
     def complete_session(self, url: str, data: bytes) -> StoredObject:
-        """Play the browser's PUT to a resumable session URL."""
+        """Play the PUT to a resumable session URL — refused as the service
+        refuses it: bytes beyond ``size=``, bytes whose MD5 is not the one
+        declared at initiation, an object that appeared under a create-only
+        session, a second PUT to a completed session."""
         session = self.sessions[url]
+        if session.get("completed"):
+            raise AssertionError("the service refuses a completed session")
         if session["size"] is not None and len(data) != session["size"]:
             raise AssertionError("the service refuses bytes beyond size=")
+        declared = session.get("md5_hash")
+        if declared is not None:
+            actual = base64.b64encode(hashlib.md5(data).digest()).decode()
+            if actual != declared:
+                raise AssertionError(
+                    "the service refuses bytes whose MD5 is not the declared one")
+        self._check_generation(session["name"], session["if_generation_match"])
+        session["completed"] = True
         return self.put(session["name"], data,
                         content_type=session["content_type"])
 
@@ -179,7 +203,9 @@ class FakeBlob:
         return self.name in self.bucket.objects
 
     def download_as_bytes(self, client=None, start=None, end=None,
-                          **_kwargs) -> bytes:
+                          if_generation_match=None, **_kwargs) -> bytes:
+        self._live()
+        self.bucket._check_generation(self.name, if_generation_match)
         data = self._live().data
         begin = start or 0
         stop = len(data) if end is None else end + 1   # end is INCLUSIVE
@@ -259,5 +285,7 @@ class FakeBlob:
         self.bucket.sessions[url] = {
             "name": self.name, "content_type": content_type, "size": size,
             "origin": origin, "if_generation_match": if_generation_match,
+            # The writable metadata the library sends at initiation.
+            "md5_hash": self.md5_hash,
         }
         return url

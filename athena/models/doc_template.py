@@ -190,6 +190,10 @@ VERSION_INTEGRITY_ERROR = (
     "Le fichier de cette version ne correspond plus à l'empreinte enregistrée "
     "lors de son installation : rétablissement refusé. Rien n'a été modifié."
 )
+INVALID_TEMPLATE_ID_ERROR = "Identifiant de gabarit invalide."
+TEMPLATE_ID_CONFLICT_ERROR = (
+    "Un autre gabarit porte déjà cet identifiant : rien n'a été créé."
+)
 
 
 class TemplateReadError(RuntimeError):
@@ -598,12 +602,42 @@ def _backfilled_entry(current: dict, now: datetime) -> dict:
 
 # ── CRUD ────────────────────────────────────────────────────────────────
 
+def _reserved_answer(ref, digest: str) -> Optional[tuple[Optional[dict], list[str]]]:
+    """What a creation under a RESERVED id answers when that id is taken.
+
+    ``None`` — nothing is stored under the id yet, the creation proceeds.
+    The stored template when its file IS these bytes (the same SHA-256):
+    a retried creation — the upload ticket's reclaim, a lost answer —
+    lands on ONE template, never two, and its commit is noted (the record
+    exists, so a failure after it must read as committed). Another file
+    under the id refuses. An unreadable record refuses too (fail closed:
+    « unreadable » is never « free »).
+    """
+    try:
+        snap = ref.get()
+        stored = snap.to_dict() if snap.exists else None
+    except Exception:
+        log_unexpected("template reserved-id read failed", template_id=ref.id)
+        return None, [READ_ERROR]
+    if stored is None:
+        return None
+    if not isinstance(stored, dict):
+        return None, [READ_ERROR]
+    recorded = stored.get("sha256") or ""
+    if recorded and hmac.compare_digest(recorded, digest):
+        provenance.note_commit(COLLECTION, ref.id)
+        return stored, []
+    return None, [TEMPLATE_ID_CONFLICT_ERROR]
+
+
 def create_template(
     file_stream,
     filename: str,
     file_size: int,
     metadata: dict,
     user_id: str,
+    *,
+    template_id: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Validate, extract placeholders, upload to Storage, persist the doc.
 
@@ -611,6 +645,16 @@ def create_template(
     NEVER active on creation — the lawyer designates it (D11). The file is
     version 1, at its ``v1`` path, recorded in ``versions/1`` in the same
     batch as the template itself.
+
+    ``template_id`` (keyword, lot 2A T9) RESERVES the new template's id — a
+    canonical UUIDv4, refused otherwise; ``None`` mints one. The connector's
+    upload ticket reserves it at ``begin_upload`` so that a finalization
+    retried after a crash — a stale claim reclaimed five minutes later —
+    creates ONE template, never two: under a reserved id, a template already
+    stored with the SAME file is the answer (:func:`_reserved_answer`),
+    checked before anything is written, again when the create-only upload
+    finds the object taken, and again when the record's ``create()`` finds
+    the id taken.
     """
     # The uid FIRST — before the stream is read: a template must never be
     # written under a prefix that is not the owner's (users/unknown/…).
@@ -618,6 +662,12 @@ def create_template(
         user_id = storage_identity.require_uid(user_id)
     except storage_identity.StorageIdentityUnavailable as exc:
         return None, [str(exc)]
+    reserved = template_id is not None
+    if reserved:
+        from models.document import is_canonical_uuid4
+
+        if not is_canonical_uuid4(template_id):
+            return None, [INVALID_TEMPLATE_ID_ERROR]
     fields, errors = _metadata_input(metadata or {})
     if not errors:
         errors = _metadata_value_errors(fields)
@@ -643,10 +693,15 @@ def create_template(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    template_id = str(uuid.uuid4())
+    template_id = template_id if reserved else str(uuid.uuid4())
     safe_filename = _safe_filename(filename)
     storage_path = _template_object_path(user_id, template_id, 1, safe_filename)
     digest = _sha256(docx_bytes)
+    ref = db.collection(COLLECTION).document(template_id)
+    if reserved:
+        answer = _reserved_answer(ref, digest)
+        if answer is not None:
+            return answer
 
     merged.update(extraction)
     merged.update(
@@ -670,9 +725,14 @@ def create_template(
     # Upload to Firebase Storage (never log the path — it may embed names).
     generation, errors = _store_version_bytes(template_id, storage_path, docx_bytes)
     if errors:
+        if reserved:
+            # The v1 object is taken: a concurrent creation of THIS reserved
+            # template may have committed meanwhile — then it is the answer.
+            answer = _reserved_answer(ref, digest)
+            if answer is not None:
+                return answer
         return None, errors
 
-    ref = db.collection(COLLECTION).document(template_id)
     try:
         batch = db.batch()
         batch.create(ref, merged)
@@ -683,7 +743,13 @@ def create_template(
             "create_template failed for template %s: %s",
             template_id, type(exc).__name__,
         )
+        # Never deletes an object a committed record names — the answer
+        # below may be that record.
         _delete_own_object_unreferenced(template_id, storage_path, generation)
+        if reserved:
+            answer = _reserved_answer(ref, digest)
+            if answer is not None:
+                return answer
         return None, [SAVE_ERROR]
 
     provenance.note_commit(COLLECTION, template_id)

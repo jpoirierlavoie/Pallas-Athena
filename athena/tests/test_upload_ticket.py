@@ -881,3 +881,141 @@ def test_a_replayed_begin_reopens_the_same_open_ticket_or_refuses(monkeypatch):
     other = _open(fake)
     with pytest.raises(ToolArgumentError):
         rehydrate({"ticket_id": other["id"]})               # past its hour
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. L'objet de staging (T9) : la session, la vérification, la consommation
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture()
+def gcs(fake, monkeypatch):
+    from tests._fake_gcs import FakeBucket
+
+    bucket = FakeBucket()
+    monkeypatch.setattr(ut.storage, "bucket", lambda: bucket)
+    return bucket
+
+
+def test_open_ticket_opens_the_session_before_writing_the_ticket(fake, gcs):
+    ticket, url, errors = ut.open_ticket(_document_data(), user_id=REAL_UID,
+                                         now=NOW)
+    assert errors == [] and ticket is not None
+    assert _stored(fake, ticket["id"])["status"] == ut.STATUS_OPEN
+    session = gcs.sessions[url]
+    assert session["name"] == ticket["staging_object"]
+    assert session["size"] == len(PDF) and session["if_generation_match"] == 0
+    assert session["origin"] is None                 # a sandbox, not a page
+    assert session["md5_hash"] == MD5                # sent at initiation
+    assert session["content_type"] == "application/pdf"
+    assert not capability_in(_stored(fake, ticket["id"]))
+
+
+def test_a_session_that_cannot_open_writes_no_ticket(fake, gcs, monkeypatch):
+    from tests._fake_gcs import FakeBlob
+
+    def refused(self, **_kw):
+        raise RuntimeError("403 the service refused")
+
+    monkeypatch.setattr(FakeBlob, "create_resumable_upload_session", refused)
+    ticket, url, errors = ut.open_ticket(_document_data(), user_id=REAL_UID,
+                                         now=NOW)
+    assert ticket is None and url is None
+    assert errors == [ut.RETRYABLE_OPEN_ERRORS[0]]
+    assert fake.peek_collection(ut.COLLECTION) == {}
+
+
+def test_a_refused_opening_opens_no_session(fake, gcs):
+    ticket, url, errors = ut.open_ticket(_document_data(filename="x.exe"),
+                                         user_id=REAL_UID, now=NOW)
+    assert ticket is None and url is None and errors
+    assert gcs.sessions == {}
+
+
+def test_the_staged_object_is_compared_on_its_own_size_and_md5(fake, gcs):
+    ticket = _open(fake)
+    gcs.put(ticket["staging_object"], PDF)
+    blob = ut.staged_blob(ticket)
+    assert ut.staged_mismatch(ticket, blob) is None
+    gcs.put(ticket["staging_object"], PDF + b"x")
+    assert ut.staged_mismatch(ticket, ut.staged_blob(ticket)) == "taille_differente"
+    gcs.put(ticket["staging_object"], bytes(len(PDF)))
+    assert ut.staged_mismatch(ticket, ut.staged_blob(ticket)) == "empreinte_differente"
+
+
+def test_a_composite_object_without_an_md5_is_refused(fake, gcs):
+    ticket = _open(fake)
+    gcs.put(ticket["staging_object"], PDF)
+    blob = ut.staged_blob(ticket)
+    blob.md5_hash = None
+    assert ut.staged_mismatch(ticket, blob) == "empreinte_differente"
+
+
+def test_the_staged_bytes_are_read_at_the_checked_generation(fake, gcs):
+    """The bytes a template is built from are the bytes that were compared:
+    read at the reloaded generation (412 on another), and re-checked."""
+    from google.api_core.exceptions import PreconditionFailed
+
+    ticket = _open(fake)
+    gcs.put(ticket["staging_object"], PDF)
+    blob = ut.staged_blob(ticket)
+    assert ut.read_staged_bytes(ticket, blob) == PDF
+    gcs.put(ticket["staging_object"], PDF)           # a new generation
+    with pytest.raises(PreconditionFailed):
+        ut.read_staged_bytes(ticket, blob)
+    blob = ut.staged_blob(ticket)
+    gcs.objects[ticket["staging_object"]].data = bytes(len(PDF))
+    with pytest.raises(ut.StagedBytesChanged):
+        ut.read_staged_bytes(ticket, blob)
+
+
+def test_a_ticket_whose_staging_path_was_altered_reaches_no_object(fake, gcs):
+    """The Storage verbs re-check the ONE shape create_ticket builds: a
+    record pointing elsewhere — a document's canonical path — is never
+    reloaded, read or deleted."""
+    from google.api_core.exceptions import NotFound
+
+    ticket = _open(fake)
+    victim = f"users/{REAL_UID}/dossiers/{DOSSIER_ID}/documents/x/lettre.pdf"
+    gcs.put(victim, PDF)
+    forged = {**ticket, "staging_object": victim}
+    with pytest.raises(NotFound):
+        ut.staged_blob(forged)
+    assert ut.discard_staging(forged) is False
+    with pytest.raises(ut.UploadSessionUnavailable):
+        ut.open_session(forged)
+    assert victim in gcs.objects and gcs.sessions == {}
+
+
+def test_discarding_is_idempotent_and_best_effort(fake, gcs, monkeypatch):
+    from tests._fake_gcs import FakeBlob
+
+    ticket = _open(fake)
+    gcs.put(ticket["staging_object"], PDF)
+    assert ut.discard_staging(ticket) is True
+    assert ticket["staging_object"] not in gcs.objects
+    assert ut.discard_staging(ticket) is True        # already gone
+    gcs.put(ticket["staging_object"], PDF)
+
+    def broken(self, **_kw):
+        raise RuntimeError("503")
+
+    monkeypatch.setattr(FakeBlob, "delete", broken)
+    assert ut.discard_staging(ticket) is False
+    assert ticket["staging_object"] in gcs.objects
+
+
+def test_a_reopened_session_on_a_received_ticket_is_refused_by_the_service(
+    fake, gcs,
+):
+    """create-only: once the bytes landed, no session — a replay's included
+    — can replace them (the fake applies the session's precondition when
+    the object is created, as GCS does)."""
+    ticket, url, _ = ut.open_ticket(_document_data(), user_id=REAL_UID, now=NOW)
+    gcs.complete_session(url, PDF)
+    second = ut.open_session(ticket)
+    from google.api_core.exceptions import PreconditionFailed
+
+    with pytest.raises(PreconditionFailed):
+        gcs.complete_session(second, PDF)
+    assert ut.staged_exists(ticket) is True
