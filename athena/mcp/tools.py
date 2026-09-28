@@ -5462,7 +5462,10 @@ TOOLS: dict[str, dict] = {
                 "name": {
                     "type": "string", "minLength": 1,
                     "maxLength": TEMPLATE_NAME_MAX_CHARS,
-                    "description": "Metadata: its new name, in French.",
+                    "description": (
+                        "Metadata: its new name, in French — printed in the "
+                        "name of every generated document: never a client's."
+                    ),
                 },
                 "description": {
                     "type": "string",

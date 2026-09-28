@@ -13335,6 +13335,12 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
         # replacement, landed by a call whose answer was lost: decided once
         # the bytes are known.)
         raise _template_version_moved(stored_version, expected_version)
+    # A NAMED etag is judged here, before any download (plan rule 3: the
+    # answer to an outdated view is « re-read », not the first guard it
+    # happens to trip); omitted, this is the etag just read, which the
+    # model's transaction compares against.
+    expected = _expected_etag(
+        args, template, tool="update_template", subject=_TEMPLATE_SUBJECT)
     accept = _clean_accept_residual(args.get("accept_residual"), nothing)
     scrub = _clean_scrub_flag(args, nothing)
     source_id = str(args.get("source_document_id") or "").strip()
@@ -13359,8 +13365,6 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
             source_document_id=source_id, leak_scan=leak, scrubbed=scrubbed)
     if stored_version != expected_version:
         raise _template_version_moved(stored_version, expected_version)
-    expected = _expected_etag(
-        args, template, tool="update_template", subject=_TEMPLATE_SUBJECT)
 
     # The template's own name as the new version's file name — never the
     # source document's.

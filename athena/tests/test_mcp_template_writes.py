@@ -702,6 +702,21 @@ def test_a_stale_expected_version_is_refused_before_any_download(
     assert exc.reason == "stale_etag" and "version 3, pas 1" in str(exc)
 
 
+def test_a_stale_named_etag_is_refused_before_any_download(world, monkeypatch):
+    """Plan rule 3: an outdated view is answered « re-read » before any
+    payload work — here, before the source's bytes are downloaded."""
+    _seed_source(world, data=V2)
+
+    def _no_download(*_a, **_k):
+        raise AssertionError("downloaded for a stale etag")
+
+    monkeypatch.setattr(document_model, "get_document_bytes", _no_download)
+    exc = _refused(handlers.update_template, {
+        "template_id": world["template"], "source_document_id": "src",
+        "expected_version": 1, "expected_etag": "perime"})
+    assert exc.reason == "stale_etag" and "list_templates" in str(exc)
+
+
 def test_one_version_ahead_with_other_bytes_is_refused(world):
     tid = world["template"]
     other = _docx(_p("Autre main : {{objet_lettre}}"))
