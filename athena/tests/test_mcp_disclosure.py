@@ -142,6 +142,17 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # EXISTING document's file.
     "never adds a new file to a dossier",
     "en verser un nouveau au dossier",
+    # Lot 2A (T11, the text sweep). update_document sets a PRESUMED category
+    # on an unanalysed document (D15), so « the category is never chosen »
+    # holds for an ANALYSIS only; a replaced template file prints at once on
+    # every document of its kind, so the active template DOES change without
+    # the lawyer (only its DESIGNATION never does); and `query` never
+    # matched a « description » field after 2026-08-31.
+    "you cannot choose or invent one. the",
+    "derived from the one you pick, never chosen",
+    "change jamais sans vous",
+    "filename, description, tags",
+    "names, description and tags",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »
@@ -664,6 +675,49 @@ def test_the_false_claim_detector_is_not_vacuous():
     assert _false_claims_in("once invoiced nothing here can touch it.")
     assert _false_claims_in(
         "neither this connector nor the application can modify it, and")
+
+
+def test_the_lot_2a_texts_say_what_files_and_templates_do():
+    """Lot 2A (T11): the FILES family lost the two template writes to its own
+    TEMPLATES family, and the texts say the rules a caller or the lawyer
+    must know — the upload link is the ONE link (write-only, a documented
+    exception), the sandbox needs egress to storage.googleapis.com, a
+    filled gabarit always lands in « Projets », a presumed category is the
+    lawyer's to confirm, and a replaced template file is kept."""
+    text = endpoint.INSTRUCTIONS
+    assert "FILES: " in text and "TEMPLATES: " in text
+    assert text.index("FILES: ") < text.index("TEMPLATES: ")
+    assert "storage.googleapis.com" in text
+    assert "ALWAYS into its « Projets »" in text
+    assert "shown « présumée » until the lawyer confirms it" in text
+    keys = {n.key: n for n in disclosure.NEVERS}
+    # The documented exception, stated as the promise it bounds.
+    link = keys["link"]
+    assert "`begin_upload`'s `upload_url`" in link.en and "write-only" in link.en
+    assert {"get_signed_url", "sign_blob_url", "generate_signed_url",
+            "build_folder_zip_url"} <= set(link.forbidden)
+    assert "restorable" in keys["template_version"].en
+    assert {"document", "confirm", "active_template"} <= set(keys)
+    # The ANALYSE paragraph and the tool keep the D15 nuance: the category
+    # is never chosen THERE, and a presumed one set in FILES is replaced.
+    analyse = next(f for f in disclosure.FAMILIES if f.key == "analyse")
+    assert "WITHOUT an analysis" in analyse.instructions_en
+    desc = tools.TOOLS["record_document_analysis"]["description"]
+    assert "cannot choose or invent one here" in desc
+    assert "PRESUMED category a FILES tool set" in desc
+    for name in ("get_document_text",):
+        assert "a template is not a document" in tools.TOOLS[name]["description"]
+    files = (_TEMPLATES / "mcp" / "families" / "_files.html").read_text(
+        encoding="utf-8")
+    flat_files = " ".join(files.split())
+    assert "storage.googleapis.com" in flat_files
+    assert "<strong>toujours</strong> dans «&nbsp;Projets&nbsp;»" in flat_files
+    templates = (_TEMPLATES / "mcp" / "families" / "_templates.html").read_text(
+        encoding="utf-8")
+    flat_templates = " ".join(templates.split())
+    assert "Gérer vos gabarits" in flat_templates
+    assert "rétablissable" in flat_templates
+    assert "Gérer vos gabarits" not in flat_files
 
 
 def test_complete_task_describes_the_refusal_it_now_makes():

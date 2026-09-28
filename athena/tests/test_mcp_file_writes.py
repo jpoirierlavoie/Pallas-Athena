@@ -639,12 +639,16 @@ def test_the_files_family_and_its_promises():
     # T10 adds the template writes (create_template / update_template): the
     # source document is only READ, so the « document » NEVER holds again
     # (tests/test_mcp_template_writes.py pins the behaviour).
+    # REWRITTEN in lot 2A (T11): the two template writes left FILES for their
+    # own family, TEMPLATES — the partition still covers every write tool
+    # (tests/test_mcp_disclosure.py), and each family names its members.
     family = next(f for f in disclosure.FAMILIES if f.key == "files")
     assert set(family.tools) == {"update_document", "move_documents",
                                  "manage_folder", "fill_gabarit",
                                  "create_document", "begin_upload",
-                                 "finalize_upload", "create_template",
-                                 "update_template"}
+                                 "finalize_upload"}
+    templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
+    assert set(templates.tools) == {"create_template", "update_template"}
     text = endpoint.INSTRUCTIONS
     assert "FILES: " in text and "PRESUMED" in text
     assert "« Projets »" in text and "notes_internes" in text

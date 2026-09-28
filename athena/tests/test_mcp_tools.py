@@ -3737,6 +3737,36 @@ def test_document_query_is_metadata_only_and_says_so():
     assert "NEVER the text inside the file" in description
 
 
+def test_document_query_names_exactly_the_fields_the_model_searches():
+    """Regression (lot 2A, T11): the description said `query` matched
+    « display name, filename, description, tags » — `description` left the
+    documents on 2026-08-31, and the model's search reads the analysis
+    summary, notes_internes and genere_depuis instead. DERIVED from the
+    model's own concatenation, so the next field added there fails here."""
+    import pathlib
+    import re as _re
+
+    source = (pathlib.Path(__file__).resolve().parent.parent / "models"
+              / "document.py").read_text(encoding="utf-8")
+    start = source.index("searchable = \" \".join([")
+    snippet = source[start:source.index("]).lower()", start)]
+    searched = set(_re.findall(r'\.get\("(\w+)"', snippet))
+    spoken = {
+        "display_name": "display name", "filename": "file name",
+        "analyse": "the analysis summary", "resume": "the analysis summary",
+        "notes_internes": "notes_internes", "genere_depuis": "genere_depuis",
+        "tags": "tags",
+    }
+    assert {"display_name", "tags"} <= searched  # not vacuous
+    assert searched <= set(spoken), searched - set(spoken)
+    description = tools.TOOLS["list_documents"]["description"]
+    for field in searched:
+        assert spoken[field] in description, field
+    assert "filename, description, tags" not in description
+    query = tools.TOOLS["list_documents"]["input_schema"]["properties"]["query"]
+    assert "description and tags" not in query["description"]
+
+
 def test_offset_is_refused_in_cabinet_scope_not_silently_dropped():
     """Cabinet pages by cursor. Accepting an `offset`, validating it, then
     dropping it served page 1 forever — a caller keeping its offset habit

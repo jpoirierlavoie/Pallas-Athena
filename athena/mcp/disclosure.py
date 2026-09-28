@@ -321,7 +321,9 @@ FAMILIES: tuple[Family, ...] = (
             "(`get_reference_vocabulary`) and the `privileges` you identify; "
             "the CODE derives from them the nature, the family, the "
             "protection level and the document's category — you never pick "
-            "those here. A level can only ever "
+            "those here (a category you set in FILES is PRESUMED and only for "
+            "a document WITHOUT an analysis; an analysis replaces it). A "
+            "level can only ever "
             "RISE: a re-analysis retaining fewer privileges keeps the stored "
             "level and flags the divergence, because under-protecting "
             "privileged material is a professional fault while "
@@ -335,8 +337,7 @@ FAMILIES: tuple[Family, ...] = (
         scope=SCOPE_WRITE,
         tools=("update_document", "move_documents", "manage_folder",
                "fill_gabarit", "create_document",
-               "begin_upload", "finalize_upload",
-               "create_template", "update_template"),
+               "begin_upload", "finalize_upload"),
         consent_template="mcp/families/_files.html",
         checkbox_summary_fr=(
             "classer un document (nom, date, étiquettes, dossier de "
@@ -344,10 +345,8 @@ FAMILIES: tuple[Family, ...] = (
             "classement (jamais les dossiers système), produire de "
             "nouveaux projets Word — depuis un gabarit, depuis un texte "
             "rédigé par Claude, par copie d'un .docx du même dossier —, "
-            "téléverser un fichier, comme nouveau document ou comme gabarit, "
-            "enregistrer comme gabarit un .docx déjà versé à un dossier et "
-            "corriger un gabarit (nom, description, catégorie, type, ou "
-            "nouvelle version de son fichier, la précédente conservée)"
+            "téléverser un fichier par un lien de dépôt en écriture seule, "
+            "comme nouveau document ou comme gabarit"
         ),
         instructions_en=(
             "`update_document` REPLACES a document's filing fields you name "
@@ -365,36 +364,58 @@ FAMILIES: tuple[Family, ...] = (
             "allowed). Ids and etags come from `list_documents` "
             "(include_folders for the tree). New Word files are always NEW "
             "documents, drafts never sent: `fill_gabarit` fills a gabarit "
-            "for a dossier into its « Projets » — you write ONLY the blocs "
-            "and manual fields `list_templates` (with template_id) reports, "
-            "the application resolves every other field, and a text holding "
+            "for a dossier, ALWAYS into its « Projets » — you write ONLY the "
+            "blocs and manual fields `list_templates` (with template_id) "
+            "reports, the application resolves every other field, and a "
+            "text holding "
             # Doubled: this paragraph goes through str.format().
             "« {{{{ » or « }}}} » is refused; `create_document` prints your "
             "Markdown on the note-print template the lawyer designated "
             "ACTIVE (refused when none is), or copies a stored .docx within "
             "its OWN dossier — the copy keeping the source's category and "
-            "protection level, presumed. Reuse across dossiers goes through "
-            "a gabarit, never a copy. To bring an OUTSIDE file in, "
-            "`begin_upload` opens a one-hour write-only ticket — its "
-            "`upload_url`, the one link any result carries, is for a single "
-            "PUT from your code sandbox, never to be shown to the user — and "
-            "`finalize_upload` files the bytes only if their size and MD5 "
-            "are the ones you declared, as a NEW document or a template (a "
-            "new one, or a NEW version of one: the replaced version is kept); "
-            "a template taken from a dossier is refused while it still names "
-            "that dossier's parties or numbers, when you name it in "
-            "dossier_id — unless the lawyer accepts each residue. Refused or "
-            "expired bytes are discarded: they were never filed. "
+            "protection level, presumed — into « Projets » unless you give "
+            "folder_id. Reuse across dossiers goes through a gabarit, never "
+            "a copy. To bring an OUTSIDE file in, `begin_upload` opens a "
+            "one-hour write-only ticket — its `upload_url`, the one link any "
+            "result carries, is for a single PUT from your code sandbox, "
+            "never to be shown to the user; the PUT needs the sandbox to "
+            "reach storage.googleapis.com (a claude.ai organisation "
+            "setting): if the network refuses it, say so and stop — the "
+            "ticket expires unused, nothing filed — and `finalize_upload` "
+            "files the bytes only if their size and MD5 are the ones you "
+            "declared, as a NEW document or a template (see TEMPLATES). "
+            "Refused or expired bytes are discarded: they were never filed."
+        ),
+    ),
+    Family(
+        key="templates",
+        label="TEMPLATES",
+        scope=SCOPE_WRITE,
+        tools=("create_template", "update_template"),
+        consent_template="mcp/families/_templates.html",
+        checkbox_summary_fr=(
+            "enregistrer comme gabarit un .docx déjà versé à un dossier et "
+            "corriger un gabarit (nom, description, catégorie, type, ou "
+            "nouvelle version de son fichier, la précédente conservée)"
+        ),
+        instructions_en=(
             "`create_template` registers a .docx ALREADY in a dossier as a "
-            "NEW template, its bytes unchanged, and `update_template` "
+            "NEW template, its bytes unchanged (scrub_properties aside: it "
+            "empties the file's document properties), and `update_template` "
             "corrects a template's name, description, category or kind — or "
             "installs a stored .docx as a NEW version of its file (the one "
-            "in force kept, restorable in the application); a file taken "
+            "in force kept, restorable in the application). An OUTSIDE .docx "
+            "becomes a template, or a NEW version of one, through "
+            "`begin_upload` (purpose gabarit) and `finalize_upload`. Ids, "
+            "versions and etags come from `list_templates`. A file taken "
             "from a dossier document is ALWAYS checked against that "
-            "document's own dossier, and refused while it or the new "
-            "template's name still names its parties or numbers, unless "
-            "the lawyer accepts each residue. A special kind is never made "
-            "active, and the active template's kind never changes here."
+            "document's own dossier, an uploaded one only against the "
+            "dossier_id you name — refused while it or the template's name "
+            "still names that dossier's parties or numbers, unless the "
+            "lawyer accepts each residue. A special kind is never made "
+            "active, and the active template's kind never changes here; a "
+            "new file for the ACTIVE template prints at once on every "
+            "document of its kind."
         ),
     ),
 )
@@ -632,6 +653,61 @@ NEVERS: tuple[Never, ...] = (
         ),
     ),
     Never(
+        key="template_version",
+        # Lot 2A (T11): the TEMPLATES family replaces a template's FILE
+        # (update_template, finalize_upload in replace mode) — never in
+        # place. The model writes each version to its own v{N} object,
+        # create-only, and records a write-once versions/{N} entry; the one
+        # in force before stays stored and restorable (web « Rétablir »).
+        # No connector call can express an overwrite (the GCS byte verbs are
+        # the « document » promise's), so the behaviour is pinned instead.
+        fr=(
+            "remplacer le fichier d'un gabarit <strong>sans en garder la "
+            "version précédente</strong> — chaque version reste conservée, "
+            "rétablissable dans l'application"
+        ),
+        en=(
+            "It never replaces a template's file without keeping the "
+            "previous one: every version stays stored, restorable in the "
+            "application."
+        ),
+        behavioural_test=(
+            "tests/test_mcp_template_writes.py::"
+            "test_a_new_file_is_installed_as_a_new_version_the_old_one_kept"
+        ),
+    ),
+    Never(
+        key="link",
+        # The documented exception to « no signed URL in tool output »
+        # (plan D4, lot 2A T9): begin_upload's upload_url, a WRITE-only
+        # resumable-session URI for ONE neutral staging object — the only
+        # capability any result carries (tests/test_mcp_framework_guards
+        # ._OUTPUT_NAME_EXEMPTIONS names it; tests/test_mcp_output_schemas
+        # scans every real payload's VALUES with that single pair allowed).
+        # The signers of the model layer are named so that no connector
+        # module or reached service can ever mint a READ link.
+        fr=(
+            "obtenir un <strong>lien de lecture ou de téléchargement</strong> "
+            "d'un fichier — le seul lien qu'il reçoit est celui d'un dépôt&nbsp;: "
+            "en écriture seule, pour un seul fichier, versé seulement dans "
+            "l'heure et seulement s'il est bien celui annoncé"
+        ),
+        en=(
+            "No result ever carries a link that reads or downloads a file, "
+            "nor a storage path: the ONE link is `begin_upload`'s "
+            "`upload_url` — write-only, for one file, filed only within the "
+            "hour and only if it is the file declared."
+        ),
+        forbidden=(
+            "get_signed_url", "sign_blob_url", "generate_signed_url",
+            "get_version_signed_url", "build_folder_zip_url",
+        ),
+        behavioural_test=(
+            "tests/test_mcp_framework_guards.py::"
+            "test_no_output_at_all_declares_a_url_or_a_storage_path"
+        ),
+    ),
+    Never(
         key="confirm",
         # Split from « document » by lot 2A (T7): a category Claude sets is
         # PRESUMED (D15), exactly like an analysis, and the ONE way out of
@@ -733,8 +809,9 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
 # but the privilege warning belongs in the text every client model reads.
 _READ_CONTENT_EN = (
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT LAYER "
-    "(PDF and .docx; take ids from list_documents; bounded per call — follow "
-    "next_page). A scanned page has no text layer and is reported honestly "
+    "(PDF and .docx; take ids from list_documents or from the entity a file "
+    "write returned; bounded per call — follow next_page; a template is not "
+    "a document — list_templates describes its fields). A scanned page has no text layer and is reported honestly "
     "(pages_without_text) — empty never means blank on paper, and nothing is "
     "OCR'd. Document content is privileged: quote only what the task "
     "requires."

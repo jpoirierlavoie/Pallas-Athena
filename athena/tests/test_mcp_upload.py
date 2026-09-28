@@ -862,8 +862,10 @@ def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(worl
     done = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
     assert done["entity"]["version"] == 2 and done["entity"]["active"] is True
     assert tpl_model.get_active_template("note_honoraires")["id"] == tpl["id"]
+    # REWRITTEN in lot 2A (T11): the active-template sentences moved with
+    # the template tools to the TEMPLATES family's own partial.
     consent = (_ATHENA / "templates" / "mcp" / "families"
-               / "_files.html").read_text(encoding="utf-8")
+               / "_templates.html").read_text(encoding="utf-8")
     flat = " ".join(consent.split())
     assert "change jamais sans vous" not in flat
     assert "nouvelle version du fichier de ce gabarit actif" in flat

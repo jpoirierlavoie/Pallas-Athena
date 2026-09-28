@@ -976,8 +976,11 @@ def test_the_instructions_and_the_consent_name_the_template_tools():
     text = endpoint.INSTRUCTIONS
     assert "`create_template`" in text and "`update_template`" in text
     assert "ALWAYS checked against that document's own dossier" in text
+    # REWRITTEN in lot 2A (T11): the template paragraph moved with its tools
+    # from the FILES partial to the TEMPLATES family's own.
+    assert "TEMPLATES: " in text
     consent = (_ATHENA / "templates" / "mcp" / "families"
-               / "_files.html").read_text(encoding="utf-8")
+               / "_templates.html").read_text(encoding="utf-8")
     flat = " ".join(consent.split())
     assert "Gérer vos gabarits" in flat
     assert "document d'origine n'est jamais modifié" in flat

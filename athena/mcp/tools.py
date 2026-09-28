@@ -1745,23 +1745,18 @@ TOOLS: dict[str, dict] = {
         "description": (
             "List document METADATA — names, categories, sizes, versions; "
             "never file contents or download links. `query` matches METADATA "
-            "ONLY (display name, filename, description, tags) and NEVER the "
-            "text inside the file; to READ a document's content, take its id "
-            "from here and call get_document_text (content SEARCH across "
-            "files is still not available). "
-            "Scope: one dossier by default (dossier_id required), or "
-            "scope=\"cabinet\" to search document metadata across every "
-            "dossier — each row then carries its dossier_id/file "
-            "number/title, and folder_path is \"\" (resolving folder "
-            "breadcrumbs firm-wide would cost one query per dossier). "
-            "Optionally filter "
-            "by folder, category, a free-text query over names, description "
-            "and tags, or a date window. Each row carries folder_path "
-            "(resolved; \"\" = dossier root) and document_date — the "
-            "document's OWN date when the lawyer entered one (null "
-            "otherwise; created_at is only the upload instant, often days "
-            "after the event on scanned papers) — plus its etag, "
-            "category_source and folder_system_role. include_folders adds "
+            "ONLY (display name, file name, the analysis summary, "
+            "notes_internes, genere_depuis, tags), NEVER the text inside the "
+            "file — read that with get_document_text (content SEARCH across "
+            "files is still not available). Scope: one dossier by default "
+            "(dossier_id required), or scope=\"cabinet\" across every "
+            "dossier (folder_path is then \"\"). Filter by folder, "
+            "category, `query` or a date window. Each row carries its "
+            "dossier, folder_path (\"\" = dossier root), document_date — "
+            "the document's OWN date when the lawyer entered one (null "
+            "otherwise; created_at is only the upload instant) —, its etag, "
+            "category_source (« mcp »: set by Claude, PRESUMED until the "
+            "lawyer confirms) and folder_system_role. include_folders adds "
             "the dossier's whole folder tree."
         ),
         "input_schema": {
@@ -1799,8 +1794,10 @@ TOOLS: dict[str, dict] = {
                 "query": {
                     "type": "string",
                     "maxLength": 120,
-                    "description": ("Free-text match on names, description "
-                                    "and tags."),
+                    "description": (
+                        "Free-text match on the metadata the description "
+                        "lists — never the file's text."
+                    ),
                 },
                 "date_from": _date(
                     "Earliest EFFECTIVE date, YYYY-MM-DD inclusive — the "
@@ -2254,8 +2251,8 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "Which vocabulary to enumerate. The four analysis "
                         "ones feed `record_document_analysis`: "
-                        "`sous_natures` (the 42 codes — the category is "
-                        "DERIVED from the one you pick, never chosen), "
+                        "`sous_natures` (the 42 codes — the analysis "
+                        "DERIVES the category from the one you pick), "
                         "`privileges` (7 codes, CUMULATIVE, each with its "
                         "protection LEVEL, its legal basis and its "
                         "reserve — what the code does NOT guarantee), and "
@@ -4517,7 +4514,9 @@ TOOLS: dict[str, dict] = {
         "title": "Texte d'un document",
         "description": (
             "Read a stored document's TEXT LAYER — the reading companion of "
-            "list_documents (take document_id from there). PDF and .docx "
+            "list_documents (take document_id from there, or from the entity "
+            "a file write returned; a template is not a document). PDF and "
+            ".docx "
             "only; a scanned or image-only page has NO text layer and is "
             "reported honestly (has_text false, listed in "
             "pages_without_text) — nothing is OCR'd and empty never means "
@@ -4559,7 +4558,8 @@ TOOLS: dict[str, dict] = {
             "and REPLACES the document's stored category. Read the text with "
             "get_document_text FIRST; never analyse from a filename. You "
             "supply a `sous_nature` from the CLOSED table and the CODE "
-            "derives the category — you cannot choose or invent one. The "
+            "derives the category — you cannot choose or invent one here, "
+            "and it replaces a PRESUMED category a FILES tool set. The "
             "result becomes visible in the application: category badge, "
             "protection level, summary. It is marked PRESUMED until the "
             "lawyer confirms it on screen; nothing you send here can confirm "
