@@ -1446,6 +1446,40 @@ def get_invoice_with_items(invoice_id: str) -> tuple[Optional[dict], list[dict]]
     return invoice, items
 
 
+def get_invoice_with_items_strict(
+    invoice_id: str,
+) -> tuple[Optional[dict], list[dict]]:
+    """The invoice and its line items — a read failure PROPAGATES.
+
+    ``(None, [])`` means the store answered « no such invoice » (or the id
+    cannot name one) — never « the read failed ». The reader of a caller
+    that WRITES on the strength of the answer (``services.note_honoraires``,
+    lot 3a): :func:`get_invoice_with_items` swallows a failed line-item
+    read into ``[]``, and a note d'honoraires filled from that printed the
+    stored totals over empty tables — a client-facing document that looked
+    complete. Same sort as the fail-open reader.
+    """
+    if not isinstance(invoice_id, str) or not invoice_id or "/" in invoice_id:
+        return None, []
+    invoice_ref = db.collection(COLLECTION).document(invoice_id)
+    snap = invoice_ref.get()
+    if not snap.exists:
+        return None, []
+    items = [d.to_dict() or {} for d in invoice_ref.collection(LINE_ITEMS_SUB).stream()]
+    items.sort(
+        key=lambda i: i.get("date") or datetime.min.replace(tzinfo=timezone.utc)
+    )
+    return snap.to_dict() or {}, items
+
+
+def line_items_missing(invoice: dict, items: list[dict]) -> bool:
+    """True when *invoice* shows a non-zero subtotal yet no line item was
+    read — the reads cannot say what the invoice bills. The one rule of the
+    void (``void_invoice_report`` refuses on it) and of the note
+    d'honoraires (which would print totals over empty tables)."""
+    return not items and int(invoice.get("subtotal", 0) or 0) != 0
+
+
 def list_line_items(invoice_id: str) -> list[dict]:
     """The line items of one invoice, without re-reading the invoice.
 
@@ -1979,7 +2013,7 @@ def void_invoice_report(
                 "encaissement_administration",
             )
 
-        if not items and int(invoice.get("subtotal", 0) or 0) != 0:
+        if line_items_missing(invoice, items):
             raise _VoidRefused(
                 "Les lignes de cette facture sont introuvables alors que son "
                 "sous-total n'est pas nul : impossible de savoir quelles "

@@ -681,7 +681,11 @@ def test_the_caller_sweep_finds_what_it_exists_for():
         # ONE uploader of every generated .docx (a filled gabarit, a
         # Markdown document), and the one that must guard the uid.
         "services/gabarits.py:save_generated",
-        "routes/invoices.py:invoice_note_docx",
+        # Lot 3a (step 2): the note d'honoraires left the route for
+        # services/note_honoraires.py, whose save IS save_generated above —
+        # routes/invoices.py:invoice_note_docx no longer uploads (removed
+        # from this list deliberately; the service obtains its uid from a
+        # guard, pinned in tests/test_note_honoraires_service.py).
         "routes/reception.py:verser",
         # Lot 2A T9: the upload ticket's two filings, each obtaining the
         # owner uid itself (a released claim when it cannot).

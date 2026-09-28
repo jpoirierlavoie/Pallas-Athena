@@ -644,6 +644,37 @@ def _portail_fields(portail: Optional[dict]) -> tuple[dict, list[str]]:
     return out, []
 
 
+# The link a GENERATED note d'honoraires keeps to its invoice (lot 3a, step
+# 2): which invoice it renders, and the fingerprint of what it printed —
+# ``services.note_honoraires`` finds an identical note again instead of
+# filing a duplicate. Set by that service alone, through the
+# ``generated_from_invoice`` keyword; never a metadata key a form can post.
+GENERATION_FINGERPRINT_LENGTH = 64   # a SHA-256, lowercase hex
+_GENERATED_FROM_INVOICE_ERROR = "Provenance de génération invalide."
+
+
+def _generated_from_invoice_fields(
+    link: Optional[dict],
+) -> tuple[dict, list[str]]:
+    """``{source_invoice_id, generation_fingerprint}`` from the keyword,
+    checked: exactly the two keys, an addressable invoice id, a SHA-256."""
+    if link is None:
+        return {}, []
+    if not isinstance(link, dict) or set(link) != {"invoice_id", "fingerprint"}:
+        return {}, [_GENERATED_FROM_INVOICE_ERROR]
+    invoice_id = link.get("invoice_id")
+    fingerprint = link.get("fingerprint")
+    if (
+        not is_addressable_id(invoice_id)
+        or not isinstance(fingerprint, str)
+        or len(fingerprint) != GENERATION_FINGERPRINT_LENGTH
+        or any(ch not in "0123456789abcdef" for ch in fingerprint)
+    ):
+        return {}, [_GENERATED_FROM_INVOICE_ERROR]
+    return {"source_invoice_id": invoice_id,
+            "generation_fingerprint": fingerprint}, []
+
+
 def _validate_metadata(data: dict) -> list[str]:
     """Validate document metadata fields. Returns list of error messages."""
     errors: list[str] = []
@@ -820,6 +851,7 @@ def _prepare_document_record(
     portail: Optional[dict] = None,
     analyse_seed: Optional[dict] = None,
     lawyer_set_category: bool = False,
+    generated_from_invoice: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Build the Firestore record + storage path shared by the two
     ingestion paths (through-app stream and GCS-side copy).
@@ -849,6 +881,11 @@ def _prepare_document_record(
       upload form moved off its default, a copy of his choice). Stored as
       the marker :func:`category_set_by_lawyer` reads; never True beside a
       source other than « juriste ».
+    * ``generated_from_invoice`` — ``{"invoice_id", "fingerprint"}``: the
+      invoice a generated note d'honoraires renders and the SHA-256 of what
+      it printed (``services.note_honoraires``, lot 3a), stored as
+      ``source_invoice_id`` / ``generation_fingerprint`` and read back by
+      :func:`find_generated_for_invoice`. Absent on every other record.
     """
     uid, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -862,10 +899,13 @@ def _prepare_document_record(
     fields, errors = _record_metadata(metadata)
     portail_fields, portail_errors = _portail_fields(portail)
     errors += portail_errors
+    invoice_fields, invoice_errors = _generated_from_invoice_fields(
+        generated_from_invoice)
+    errors += invoice_errors
     if errors:
         return None, errors
 
-    merged = {**_default_doc(), **fields, **portail_fields}
+    merged = {**_default_doc(), **fields, **portail_fields, **invoice_fields}
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
     merged["category_source"] = category_source
@@ -1243,13 +1283,16 @@ def upload_document(
     user_id: str,
     *,
     category_source: str = "juriste",
+    generated_from_invoice: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Upload a file to Firebase Storage and create a Firestore record.
 
     Returns (doc, errors). *metadata* is whitelisted and refused rather
     than mangled (see ``_prepare_document_record``); ``category_source``
     says who chose the category — « juriste » for the application's own
-    generators (the template's category), « mcp » when Claude chose it.
+    generators (the template's category), « mcp » when Claude chose it;
+    ``generated_from_invoice`` links a generated note d'honoraires to its
+    invoice (see ``_prepare_document_record``).
     """
     _, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -1280,6 +1323,7 @@ def upload_document(
         dossier_id, dossier_file_number, filename, ext,
         content_type, file_size, metadata, user_id,
         category_source=category_source,
+        generated_from_invoice=generated_from_invoice,
     )
     if errors:
         return None, errors
@@ -1400,6 +1444,30 @@ def get_document(document_id: str) -> Optional[dict]:
     except Exception as exc:
         logger.warning("get_document failed for %s: %s", sanitize_log_value(document_id), exc)
     return None
+
+
+def find_generated_for_invoice(invoice_id: str) -> list[dict]:
+    """The documents generated from *invoice_id* — its notes d'honoraires
+    (``source_invoice_id``, lot 3a) —, newest first. A read failure
+    PROPAGATES: the caller decides whether to FILE a new note on the
+    answer, and « none » on a transient error is a duplicate.
+
+    A single-field equality, served by the automatic index. Only notes
+    generated since lot 3a carry the field; an older one is not found.
+    """
+    if not is_addressable_id(invoice_id):
+        return []
+    rows = [
+        _migrate_category(snap.to_dict() or {})
+        for snap in db.collection(COLLECTION)
+        .where(filter=FieldFilter("source_invoice_id", "==", invoice_id))
+        .stream()
+    ]
+    rows.sort(
+        key=lambda d: d.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return rows
 
 
 # Sentinel value: distinguishes "no folder filter" from "filter to root (None)"

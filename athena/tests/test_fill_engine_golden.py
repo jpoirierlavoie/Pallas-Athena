@@ -9,7 +9,8 @@ neither may move one byte of what the three callers of today print:
   scalars, a multi-paragraph block in a NUMBERED host (the ``values`` path
   keeps Word's numbering — B4), a repeated field, a split run to heal,
   header and footer, a passthrough left verbatim;
-* Phase H.2 — the note d'honoraires (``routes/invoices``): repeating rows +
+* Phase H.2 — the note d'honoraires (``services/note_honoraires`` since
+  lot 3a, ``routes/invoices`` before): repeating rows +
   conditional regions, built by the real ``build_invoice_context``;
 * Phase H.3 — the note print (``routes/notes``): the rich path over a
   plain (un-numbered) host, every Markdown construct, an EMPTY note, and a
@@ -220,8 +221,9 @@ def _phase_h2():
                "clients": [], "opposing_parties": []}
     ctx = build_invoice_context(invoice, items, firm=_FIRM, destinataire=None,
                                 dossier=dossier, today=_TODAY)
-    # The route's assembly (routes.invoices._assemble_note_values), inline:
-    # importing the route would pull in the Firestore client.
+    # The service's assembly (services.note_honoraires.assemble_note_values
+    # since lot 3a — the route's before), inline: importing it would pull
+    # in the Firestore client.
     placeholders = extract_placeholders(docx)
     classification = classify_placeholders(placeholders)
     values = {}

@@ -19,6 +19,12 @@ connector share), so the gabarit tests below patch the SERVICE's seams —
 ``upload_document`` — where they used to patch the route's. What they pin
 is unchanged; the route-level pins over the real store are in
 ``tests/test_gabarit_service.py``.
+
+Lot 3a, step 2: the note d'honoraires moved the same way, into
+``services/note_honoraires.py`` (the one generation the web button and the
+connector share) whose save is ``services.gabarits.save_generated``. Its
+tests below patch the SERVICE's seams — changed deliberately, the pins
+unchanged.
 """
 
 import os
@@ -42,6 +48,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.invoices as ri
     import services.gabarit_champs as champs
     import services.gabarits as sg
+    import services.note_honoraires as nh
     from models import folder as folder_model
 
 from flask import Flask  # noqa: E402
@@ -154,23 +161,24 @@ def test_a_generation_resolves_the_uid_before_writing_the_folder(
 
 @pytest.fixture()
 def facture(monkeypatch):
-    monkeypatch.setattr(ri, "get_invoice_with_items", lambda iid: ({
+    monkeypatch.setattr(nh, "get_invoice_with_items_strict", lambda iid: ({
         "id": "i1", "status": "envoyée", "dossier_id": "d1", "client_id": "",
         "invoice_number": "2026-F031", "dossier_file_number": "2026-001",
     }, []))
-    monkeypatch.setattr(ri, "get_note_honoraires_template",
-                        lambda: {"id": "t9", "name": "Note", "placeholders": []})
-    monkeypatch.setattr(ri, "get_dossier",
+    monkeypatch.setattr(nh, "get_active_template", lambda kind: {
+        "id": "t9", "name": "Note", "placeholders": [], "version": 1,
+        "kind": kind})
+    monkeypatch.setattr(nh, "get_dossier",
                         lambda did: {"id": "d1", "file_number": "2026-001"})
-    monkeypatch.setattr(ri, "cabinet_dict", lambda: {})
-    monkeypatch.setattr(ri, "build_invoice_context", lambda *a, **k: SimpleNamespace(
+    monkeypatch.setattr(nh, "cabinet_dict", lambda: {})
+    monkeypatch.setattr(nh, "build_invoice_context", lambda *a, **k: SimpleNamespace(
         values={}, conditions={},
         rows={"ligne_honoraire": [], "ligne_debours_tx": [], "ligne_debours_ntx": []},
     ))
-    monkeypatch.setattr(ri, "get_template_bytes", lambda tid: b"docx")
-    monkeypatch.setattr(ri, "fill_docx", lambda *a, **k: b"rempli")
+    monkeypatch.setattr(nh, "template_file_bytes", lambda template: b"docx")
+    monkeypatch.setattr(nh, "fill_docx", lambda *a, **k: b"rempli")
     events: list = []
-    monkeypatch.setattr(ri, "log_template_event",
+    monkeypatch.setattr(nh, "log_template_event",
                         lambda event, **kw: events.append((event, kw)))
     return events
 
@@ -178,9 +186,9 @@ def facture(monkeypatch):
 def test_a_note_without_projets_is_refused_never_saved_at_the_root(
     web, facture, monkeypatch,
 ):
-    monkeypatch.setattr(ri, "ensure_system_folder",
+    monkeypatch.setattr(sg, "ensure_system_folder",
                         lambda did, role: (None, [folder_model.READ_ERROR]))
-    monkeypatch.setattr(ri, "upload_document",
+    monkeypatch.setattr(sg, "upload_document",
                         lambda **kw: pytest.fail("note enregistrée hors de « Projets »"))
 
     reponse = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
@@ -203,14 +211,19 @@ def test_a_note_files_into_the_system_folder_by_role(web, facture, monkeypatch):
         saved.update(kw)
         return {"id": "doc1", "display_name": "Note"}, []
 
-    monkeypatch.setattr(ri, "ensure_system_folder", _ensure)
-    monkeypatch.setattr(ri, "upload_document", _upload)
+    monkeypatch.setattr(sg, "ensure_system_folder", _ensure)
+    monkeypatch.setattr(sg, "upload_document", _upload)
 
     reponse = web.post("/factures/i1/note-docx")
 
     assert reponse.status_code == 302
     assert roles == [("d1", folder_model.SYSTEM_ROLE_PROJETS)]
     assert saved["metadata"]["folder_id"] == "sys-projets"
+    # Filed under the SESSION's uid (the web passes request_uid), and
+    # linked to its invoice with the fingerprint of what it printed.
+    assert saved["user_id"] == "u1"
+    assert saved["generated_from_invoice"]["invoice_id"] == "i1"
+    assert len(saved["generated_from_invoice"]["fingerprint"]) == 64
 
 
 # ── Aucun appelant ne connaît plus les dossiers système par leur NOM ──────
@@ -231,7 +244,9 @@ def test_no_caller_finds_a_system_folder_by_name_any_more():
             if "get_or_create_folder(" in text:
                 offenders.append(str(path.relative_to(athena)))
     assert offenders == []
-    # The gabarit route reaches « Projets » through the service since T4.
-    for module in (sg, ri):
-        assert module.ensure_system_folder is folder_model.ensure_system_folder
+    # The gabarit route reaches « Projets » through the service since T4,
+    # the note d'honoraires through the same save since lot 3a (step 2).
+    assert sg.ensure_system_folder is folder_model.ensure_system_folder
     assert not hasattr(dt, "ensure_system_folder")
+    assert not hasattr(ri, "ensure_system_folder")
+    assert nh.save_generated is sg.save_generated

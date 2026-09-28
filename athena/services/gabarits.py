@@ -234,6 +234,7 @@ def save_generated(
     tags: tuple = (),
     document_date: Optional[object] = None,
     folder: object = PROJETS,
+    generated_from_invoice: Optional[dict] = None,
 ) -> tuple[dict, Optional[dict]]:
     """File a generated .docx as a NEW document of *dossier*; return
     ``(document, folder)`` — *folder* the one it landed in, ``None`` for the
@@ -244,7 +245,9 @@ def save_generated(
     CALLER resolved in this dossier (the model re-checks it). The uid is
     checked FIRST, before « Projets » is touched. *category_source* says who
     chose *category*: « juriste » for a template's own category, « mcp »
-    when Claude chose it (shown « présumée »).
+    when Claude chose it (shown « présumée »). *generated_from_invoice*
+    (``{"invoice_id", "fingerprint"}``) links a note d'honoraires to the
+    invoice it renders (``services.note_honoraires``, lot 3a).
 
     Raises :class:`GenerationRefused` as :func:`save_into_projets` does.
     """
@@ -266,6 +269,10 @@ def save_generated(
     }
     if document_date is not None:
         metadata["document_date"] = document_date
+    # Only when given: the writers that never link an invoice keep the call
+    # they have always made.
+    link = ({"generated_from_invoice": generated_from_invoice}
+            if generated_from_invoice is not None else {})
     doc, errors = upload_document(
         dossier_id=dossier_id,
         dossier_file_number=dossier.get("file_number", ""),
@@ -275,6 +282,7 @@ def save_generated(
         metadata=metadata,
         user_id=uid,
         category_source=category_source,
+        **link,
     )
     if errors or doc is None:
         raise GenerationRefused(

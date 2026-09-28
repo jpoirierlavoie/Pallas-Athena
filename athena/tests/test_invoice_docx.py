@@ -277,7 +277,8 @@ def _document_xml(docx):
 
 
 def _assemble(placeholders, ctx):
-    """Mirror routes.invoices._assemble_note_values (pure)."""
+    """Mirror services.note_honoraires.assemble_note_values (pure; the
+    route's until lot 3a)."""
     classification = classify_placeholders(placeholders)
     values = {}
     for name in placeholders:

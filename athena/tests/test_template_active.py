@@ -38,6 +38,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.invoices as ri
     import routes.notes as rn
     import scripts.designer_gabarits_actifs as script
+    import services.note_honoraires as nh
     from models import concurrency
 
 from flask import Flask  # noqa: E402
@@ -421,14 +422,17 @@ def _app(*blueprints):
 
 @pytest.fixture()
 def invoice_web(monkeypatch):
-    monkeypatch.setattr(ri, "get_invoice_with_items", lambda iid: ({
+    # Lot 3a (step 2): the generation is services.note_honoraires — the
+    # seams moved there with it (changed deliberately; the pins below are
+    # the same).
+    monkeypatch.setattr(nh, "get_invoice_with_items_strict", lambda iid: ({
         "id": "i1", "status": "envoyée", "dossier_id": "d1", "client_id": "",
         "invoice_number": "2026-F031",
     }, []))
-    monkeypatch.setattr(ri, "get_template_bytes",
-                        lambda tid: pytest.fail("no template may be filled"))
+    monkeypatch.setattr(nh, "template_file_bytes",
+                        lambda template: pytest.fail("no template may be filled"))
     events = []
-    monkeypatch.setattr(ri, "log_template_event",
+    monkeypatch.setattr(nh, "log_template_event",
                         lambda event, **kw: events.append((event, kw)))
     return _app(ri.invoices_bp), events
 
@@ -437,7 +441,7 @@ def test_the_invoice_note_names_the_fix_when_none_is_designated(
     invoice_web, monkeypatch
 ):
     web, events = invoice_web
-    monkeypatch.setattr(ri, "get_note_honoraires_template", lambda: None)
+    monkeypatch.setattr(nh, "get_active_template", lambda kind: None)
     resp = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
     html = resp.get_data(as_text=True)
     assert resp.status_code == 200
@@ -451,10 +455,10 @@ def test_the_invoice_note_says_retry_when_the_designation_is_unreadable(
 ):
     web, events = invoice_web
 
-    def unreadable():
-        raise tpl.TemplateReadError("note_honoraires")
+    def unreadable(kind):
+        raise tpl.TemplateReadError(kind)
 
-    monkeypatch.setattr(ri, "get_note_honoraires_template", unreadable)
+    monkeypatch.setattr(nh, "get_active_template", unreadable)
     resp = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
     html = resp.get_data(as_text=True)
     assert resp.status_code == 200
