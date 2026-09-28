@@ -868,6 +868,11 @@ def _today_midnight_utc() -> datetime:
 def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
+    # A contact on BOTH sides of a new dossier is refused outright: there is
+    # no legacy record to spare here (see _party_shape_errors).
+    errors = _party_shape_errors(None, merged)
+    if errors:
+        return None, errors
     errors = (
         _normalize_prescription_events(merged)
         + _normalize_significations(merged)
@@ -1342,21 +1347,61 @@ def update_dossier(
     and writes nothing. ``None`` is the unchanged path — including its
     last-moment re-read of the trust fields, which the guarded path does
     not need (see the comment at that re-read).
+
+    Party links (lot 4a). Whatever the caller — the web form, which posts
+    the whole ``clients`` / ``opposing_parties`` arrays, or the connector —
+    the rules below are computed from the ARRAYS, never from the
+    ``client_ids`` mirror (a caller never sends the mirror; it is rebuilt
+    only after validation, so comparing it would compare the old mirror
+    with itself and never fire):
+
+    * a contact may not become a client AND an opposing party
+      (:func:`_party_shape_errors` — grow-only, so a legacy duplicate never
+      locks the dossier out of editing);
+    * a party a signification names cannot leave the dossier;
+    * a client who has EVER had a trust entry on the dossier cannot leave
+      its clients (:func:`_client_trust_errors`, fail closed);
+    * every link that leaves the dossier is journaled in ``audit_events``
+      (``dossier_party``) after the commit (:func:`_journal_party_detaches`).
     """
+    doc, errors, _journaled = _update_dossier(dossier_id, data, expected_etag)
+    return doc, errors
+
+
+def _update_dossier(
+    dossier_id: str, data: dict, guard: Optional[str]
+) -> tuple[Optional[dict], list[str], int]:
+    """:func:`update_dossier`'s body, plus the number of party detaches
+    journaled — which the link helpers below report. *guard* is the public
+    ``expected_etag``, same contract; every other caller goes through the
+    public wrapper (the one ``tests/test_concurrency_models.py`` proves).
+    """
+    expected_etag = guard
     existing = get_dossier(dossier_id)
     if not existing:
-        return None, ["Dossier introuvable."]
+        return None, ["Dossier introuvable."], 0
     if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
+        return None, [concurrency.STALE_ETAG_ERROR], 0
 
     merged = {**existing, **_sanitize_data(data)}
+    # The link rules first: each names what it refuses, where the generic
+    # signification check below would only say « la partie signifiée doit
+    # être une partie au dossier ».
+    errors = _party_shape_errors(existing, merged)
+    if errors:
+        return None, errors, 0
     errors = (
         _normalize_prescription_events(merged)
         + _normalize_significations(merged)
         + _validate(merged)
     )
     if errors:
-        return None, errors
+        return None, errors, 0
+    # Reads the trust register — only when a client actually leaves, and
+    # only once the record is otherwise valid.
+    errors = _client_trust_errors(dossier_id, existing, merged)
+    if errors:
+        return None, errors, 0
 
     # Check file_number uniqueness (if changed)
     if merged["file_number"] != existing.get("file_number"):
@@ -1369,7 +1414,7 @@ def update_dossier(
             )
             for d in dup:
                 if d.id != dossier_id:
-                    return None, ["Ce numéro de dossier existe déjà."]
+                    return None, ["Ce numéro de dossier existe déjà."], 0
         except Exception as exc:
             logger.warning(
                 "update_dossier: duplicate-check query failed for %s: %s",
@@ -1443,15 +1488,610 @@ def update_dossier(
             read_etag=concurrency.etag_of(existing),
         )
     except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
+        return None, [concurrency.STALE_ETAG_ERROR], 0
     except concurrency.Vanished:
-        return None, ["Dossier introuvable."]
+        return None, ["Dossier introuvable."], 0
     except Exception:
         log_unexpected("dossier write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], 0
     provenance.note_commit(COLLECTION, dossier_id)
 
-    return merged, []
+    # AFTER the commit, best-effort: a journal failure never fails the save
+    # (the audit_events doctrine — the write already happened).
+    journaled = _journal_party_detaches(dossier_id, existing, merged)
+    return merged, [], journaled
+
+
+# ── Party links (lot 4a) ──────────────────────────────────────────────────
+#
+# A dossier's parties are two arrays of ``{id, name, roles, avocat_id,
+# avocat_name}`` entries. The web form posts them WHOLE; the connector (lot
+# 4b) edits one entry at a time through the helpers below. The rules live
+# here, in the model, so both paths meet the same ones.
+
+PARTY_SIDES: tuple[str, ...] = ("clients", "opposing_parties")
+PARTY_SIDE_LABELS = {
+    "clients": "les clients",
+    "opposing_parties": "les parties adverses",
+}
+
+# Refusals a caller may want to recognise — constants, never parsed French.
+PARTY_TRUST_CHECK_UNAVAILABLE = (
+    "Impossible de vérifier le registre du fidéicommis de ce dossier : rien "
+    "n'a été enregistré. Veuillez réessayer."
+)
+PARTY_NOT_ON_DOSSIER = "Cette partie ne figure pas au dossier."
+PARTY_ON_BOTH_SIDES = (
+    "Ce contact figure à la fois parmi les clients et parmi les parties "
+    "adverses du dossier : précisez le côté visé."
+)
+PARTY_LAST_CLIENT = (
+    "C'est le seul client du dossier : il ne peut pas en être retiré. "
+    "Ajoutez d'abord l'autre client, puis retirez celui-ci."
+)
+PARTY_INVALID_SIDE = "Côté invalide : « clients » ou « opposing_parties »."
+PARTY_NOTHING_TO_CHANGE = (
+    "Rien à modifier : précisez les rôles ou l'avocat de la partie."
+)
+PARTY_NAMES_UNREADABLE = (
+    "Les fiches des contacts n'ont pas pu être lues : aucun nom n'a été "
+    "rafraîchi. Veuillez réessayer."
+)
+PARTY_DOSSIERS_UNREADABLE = (
+    "Les dossiers de ce contact n'ont pas pu être lus : aucun nom n'a été "
+    "rafraîchi. Veuillez réessayer."
+)
+# The per-contact refresh is bounded — each dossier is its own write.
+REFRESH_MAX_DOSSIERS = 50
+
+
+def _entry_ids(entries) -> list[str]:
+    """The ids of a party array, in order, blanks skipped (never raises —
+    an id-less entry is ``_rebuild_party_mirrors``' KeyError to raise)."""
+    out: list[str] = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            pid = str(entry.get("id") or "").strip()
+            if pid:
+                out.append(pid)
+    return out
+
+
+def _entry_names(*arrays) -> dict[str, str]:
+    """``{partie_id: snapshot name}`` over party arrays (first wins)."""
+    names: dict[str, str] = {}
+    for entries in arrays:
+        for entry in entries or []:
+            if isinstance(entry, dict) and entry.get("id"):
+                names.setdefault(
+                    str(entry["id"]).strip(), str(entry.get("name") or "").strip()
+                )
+    return names
+
+
+def _joined_labels(labels: list[str]) -> str:
+    """« A, B, C et 2 autres » — the partie model's wording."""
+    shown = ", ".join(labels[:3])
+    more = len(labels) - 3
+    if more > 0:
+        shown += f" et {more} autre{'s' if more > 1 else ''}"
+    return shown
+
+
+def _party_shape_errors(existing: Optional[dict], merged: dict) -> list[str]:
+    """The two PURE link rules — no read. *existing* is ``None`` on a create.
+
+    **Cross-side, grow-only.** One contact may not be a client and an
+    opposing party of the same dossier: procedures, the conflict check and
+    the coverage report would all read it wrong. The rule is that the
+    intersection of the two sides may never GROW: a hard rule would refuse
+    every later save of a legacy dossier that already carries a duplicate
+    (the model re-validates the whole record on every update — the « legacy
+    invalid field blocks every edit » trap). On a create nothing is legacy,
+    so any intersection is growth.
+
+    **A served party stays.** A party a signification names (superseded or
+    not — the register is append-only) cannot leave the dossier: the delays
+    of arts. 145/147 C.p.c. run per party. The rule reads the significations
+    of *merged*, so a web form that removes the party AND the erroneous
+    signification in one save is a correction, not a refusal.
+    """
+    before = existing or {}
+    after_c = set(_entry_ids(merged.get("clients")))
+    after_o = set(_entry_ids(merged.get("opposing_parties")))
+    before_c = set(_entry_ids(before.get("clients")))
+    before_o = set(_entry_ids(before.get("opposing_parties")))
+    errors: list[str] = []
+
+    grown = (after_c & after_o) - (before_c & before_o)
+    if grown:
+        names = _entry_names(merged.get("clients"), merged.get("opposing_parties"))
+        shown = _joined_labels([names.get(pid) or pid for pid in sorted(grown)])
+        errors.append(
+            "Un même contact ne peut pas être à la fois client et partie "
+            f"adverse du dossier : {shown}."
+        )
+
+    if existing is not None:
+        left = (before_c | before_o) - (after_c | after_o)
+        served = {
+            str(s.get("partie_id") or "").strip()
+            for s in (merged.get("significations") or [])
+            if isinstance(s, dict)
+        }
+        blocked = sorted(left & served)
+        if blocked:
+            names = _entry_names(before.get("clients"), before.get("opposing_parties"))
+            shown = _joined_labels([names.get(pid) or pid for pid in blocked])
+            errors.append(
+                "Une partie signifiée ne peut pas être retirée du dossier : "
+                f"{shown} — une signification au dossier la nomme."
+            )
+    return errors
+
+
+def _client_trust_errors(
+    dossier_id: str, existing: Optional[dict], merged: dict
+) -> list[str]:
+    """Refuse to take a client with trust history out of the dossier's clients.
+
+    A trust entry names a (dossier, client) couple, and every later entry
+    for that client is refused when the client is no longer a client of the
+    dossier (``models.trust``, « client_hors_dossier ») — so removing a
+    client who holds, or ever held, funds here strands them: the carte-client
+    and the dossier's trust tab lose the client's name, and nothing can move
+    the money out. « EVER », not « currently »: a zero balance still leaves a
+    permanent register that must go on naming its client.
+
+    History is a key of ``trust_balance_by_client`` / ``trust_cleared_by_
+    client`` OR any ``trust_transactions`` row for the couple — a STRICT read
+    (``trust.list_transactions`` propagates) on the existing ``(dossier_id,
+    client_id, sequence)`` index. Any failure refuses the save (fail closed).
+    An opposing party is never a trust client: its removal reads nothing.
+    """
+    if existing is None:
+        return []
+    after = set(_entry_ids(merged.get("clients")))
+    removed = [
+        pid for pid in dict.fromkeys(_entry_ids(existing.get("clients")))
+        if pid not in after
+    ]
+    if not removed:
+        return []
+    keys = set((existing.get("trust_balance_by_client") or {}).keys()) | set(
+        (existing.get("trust_cleared_by_client") or {}).keys()
+    )
+    held = [pid for pid in removed if pid in keys]
+    try:
+        from models import trust as trust_model  # local: trust imports us
+
+        for pid in removed:
+            if pid in held:
+                continue
+            if trust_model.list_transactions(
+                dossier_id=dossier_id, client_id=pid, limit=1
+            ):
+                held.append(pid)
+    except Exception:
+        log_unexpected(
+            "dossier party removal: trust register unreadable",
+            dossier_id=dossier_id,
+        )
+        return [PARTY_TRUST_CHECK_UNAVAILABLE]
+    if not held:
+        return []
+    names = _entry_names(existing.get("clients"))
+    shown = _joined_labels([names.get(pid) or pid for pid in held])
+    return [
+        f"{shown} a eu des sommes en fidéicommis dans ce dossier : il ne peut "
+        "pas en être retiré comme client — le registre du fidéicommis doit "
+        "toujours pouvoir le nommer."
+    ]
+
+
+def _journal_party_detaches(
+    dossier_id: str, existing: dict, saved: dict
+) -> int:
+    """One ``audit_events`` row per link that LEFT the dossier; the count.
+
+    A detach removes a LINK — the contact stays — but it erases a stored
+    array entry, and the journal is what answers « what vanished » for a
+    sync-aware reader (``list_deletions``). Per side: an id on side S before
+    and not after is journaled with ``status = S``, except a MOVE (absent
+    from the other side before, present there after), which is a correction
+    of the side, not a detach. Best-effort and never raises: it runs after
+    the commit.
+    """
+    try:
+        from models import audit_event  # local: keeps the model graph flat
+
+        before_c = set(_entry_ids(existing.get("clients")))
+        before_o = set(_entry_ids(existing.get("opposing_parties")))
+        after_c = set(_entry_ids(saved.get("clients")))
+        after_o = set(_entry_ids(saved.get("opposing_parties")))
+        names = _entry_names(existing.get("clients"), existing.get("opposing_parties"))
+        count = 0
+        for side, before, after, other_before, other_after in (
+            ("clients", before_c, after_c, before_o, after_o),
+            ("opposing_parties", before_o, after_o, before_c, after_c),
+        ):
+            for pid in sorted(before - after):
+                if pid in other_after and pid not in other_before:
+                    continue  # moved to the other side — not a detach
+                if audit_event.record_deletion(
+                    "dossier_party", pid, dossier_id=dossier_id,
+                    title=names.get(pid, ""), status=side,
+                ) is not None:
+                    count += 1
+        return count
+    except Exception:
+        log_unexpected("dossier party detach journal failed", dossier_id=dossier_id)
+        return 0
+
+
+def _locate_party(
+    dossier: dict, partie_id: str, side: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """``(side, None)`` — or ``(None, refusal)``.
+
+    A contact on BOTH sides (a legacy duplicate the grow-only rule tolerates)
+    needs *side*; everywhere else the side is found, and a *side* that does
+    not hold the contact is refused rather than silently corrected.
+    """
+    if side is not None and side not in PARTY_SIDES:
+        return None, PARTY_INVALID_SIDE
+    sides = [s for s in PARTY_SIDES if partie_id in _entry_ids(dossier.get(s))]
+    if side is not None:
+        if side not in sides:
+            return None, (
+                f"Cette partie ne figure pas parmi {PARTY_SIDE_LABELS[side]} "
+                "du dossier."
+            )
+        return side, None
+    if not sides:
+        return None, PARTY_NOT_ON_DOSSIER
+    if len(sides) > 1:
+        return None, PARTY_ON_BOTH_SIDES
+    return sides[0], None
+
+
+def _entry_index(entries: list, partie_id: str) -> int:
+    for index, entry in enumerate(entries):
+        if isinstance(entry, dict) and str(entry.get("id") or "").strip() == partie_id:
+            return index
+    raise LookupError(partie_id)  # _locate_party found it: cannot happen
+
+
+def _prescription_moved(before: dict, after: Optional[dict]) -> bool:
+    """Every save re-derives ``prescription_date`` from the recourse fields
+    (:func:`_apply_prescription_deadline`), so even a link edit can move it
+    — the report says so rather than let a limitation date move in silence."""
+    if after is None:
+        return False
+    return before.get("prescription_date") != after.get("prescription_date")
+
+
+def update_dossier_party(
+    dossier_id: str,
+    partie_id: str,
+    *,
+    side: Optional[str] = None,
+    roles: Optional[list] = None,
+    avocat_id: Optional[str] = None,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], dict]:
+    """Change ONE party's roles and/or lawyer on a dossier.
+
+    Returns ``(dossier, errors, report)`` — a documented deviation from the
+    ``(doc, errors)`` convention, the ``delete_folder`` precedent: a caller
+    must be able to say « changed » apart from « already so », and what the
+    derived dossier-level ``role`` became.
+
+    *roles* is a FULL replacement (``[]`` allowed; ⊆ ``PARTY_ROLES``, no
+    duplicate); *avocat_id* ``""`` removes the lawyer, a contact id sets it
+    (resolved here, its name snapshotted — never supplied by the caller).
+    ``None`` leaves either alone; at least one must be given. The array is
+    rebuilt from the STORED one: every other entry — and this entry's own
+    name snapshot — is written back as stored. An unchanged request writes
+    nothing (``report["changed"]`` False). The save is compare-and-set
+    against the etag read here (after checking *expected_etag* when given),
+    so a write landing in between refuses instead of being reverted.
+    """
+    partie_id = str(partie_id or "").strip()
+    report: dict = {"changed": False, "partie_id": partie_id}
+    if not partie_id:
+        return None, ["Une partie est requise."], report
+    if roles is None and avocat_id is None:
+        return None, [PARTY_NOTHING_TO_CHANGE], report
+
+    existing = get_dossier(dossier_id)
+    if not existing:
+        return None, ["Dossier introuvable."], report
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR], report
+    found_side, refusal = _locate_party(existing, partie_id, side)
+    if refusal:
+        return None, [refusal], report
+
+    stored = list(existing.get(found_side) or [])
+    index = _entry_index(stored, partie_id)
+    entry = stored[index]
+    roles_before = list(entry.get("roles") or [])
+    avocat_before = str(entry.get("avocat_id") or "")
+
+    new_roles = roles_before
+    if roles is not None:
+        if not isinstance(roles, (list, tuple)):
+            return None, ["Les rôles doivent être une liste."], report
+        clean = [str(r) for r in roles]
+        if any(r not in PARTY_ROLES for r in clean):
+            return None, ["Rôle de partie invalide."], report
+        if len(set(clean)) != len(clean):
+            return None, ["Un même rôle figure deux fois."], report
+        new_roles = clean
+
+    new_avocat = avocat_before
+    new_avocat_name = str(entry.get("avocat_name") or "")
+    if avocat_id is not None:
+        new_avocat = str(avocat_id or "").strip()
+        if new_avocat == partie_id:
+            return None, ["Une partie ne peut pas être son propre avocat."], report
+        if new_avocat and new_avocat != avocat_before:
+            from models import partie as partie_model  # local: no model cycle
+
+            avocat = partie_model.get_partie(new_avocat)
+            if avocat is None:
+                return None, ["Avocat introuvable."], report
+            new_avocat_name = partie_model.display_name(avocat)
+        elif not new_avocat:
+            new_avocat_name = ""
+
+    report.update({
+        "side": found_side,
+        "name": str(entry.get("name") or ""),
+        "roles_before": roles_before,
+        "roles_after": new_roles,
+        "avocat_id_before": avocat_before,
+        "avocat_id_after": new_avocat,
+        "avocat_name_after": new_avocat_name,
+        "role_before": str(existing.get("role") or ""),
+        "role_after": str(existing.get("role") or ""),
+        "prescription_date_moved": False,
+    })
+    if new_roles == roles_before and new_avocat == avocat_before:
+        return existing, [], report
+
+    rebuilt = dict(entry)
+    rebuilt["roles"] = new_roles
+    rebuilt["avocat_id"] = new_avocat
+    rebuilt["avocat_name"] = new_avocat_name
+    stored[index] = rebuilt
+    saved, errors, _journaled = _update_dossier(
+        dossier_id, {found_side: stored}, concurrency.etag_of(existing),
+    )
+    if errors:
+        return None, errors, report
+    report["changed"] = True
+    report["role_after"] = str(saved.get("role") or "")
+    report["prescription_date_moved"] = _prescription_moved(existing, saved)
+    return saved, [], report
+
+
+def remove_dossier_party(
+    dossier_id: str,
+    partie_id: str,
+    *,
+    side: Optional[str] = None,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], dict]:
+    """Detach ONE party from a dossier — the contact itself is untouched.
+
+    Returns ``(dossier, errors, report)`` (see :func:`update_dossier_party`).
+    Refused, in this order: the party is not on the dossier (or is on both
+    sides and *side* is missing); it is the LAST client; a signification
+    names it (superseded or not) — unless it stays on the other side of a
+    legacy duplicate, which is the repair of that duplicate; it is a client
+    with trust history on the dossier (through :func:`update_dossier`, which
+    enforces it for every caller, fail closed). The detach is journaled in
+    ``audit_events`` (``dossier_party``) after the commit;
+    ``report["journaled"]`` says whether that row was written.
+    """
+    partie_id = str(partie_id or "").strip()
+    report: dict = {"changed": False, "partie_id": partie_id}
+    if not partie_id:
+        return None, ["Une partie est requise."], report
+
+    existing = get_dossier(dossier_id)
+    if not existing:
+        return None, ["Dossier introuvable."], report
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR], report
+    found_side, refusal = _locate_party(existing, partie_id, side)
+    if refusal:
+        return None, [refusal], report
+
+    stored = list(existing.get(found_side) or [])
+    index = _entry_index(stored, partie_id)
+    entry = stored[index]
+    other_side = "opposing_parties" if found_side == "clients" else "clients"
+    stays = partie_id in _entry_ids(existing.get(other_side))
+    report.update({
+        "side": found_side,
+        "name": str(entry.get("name") or ""),
+        "was_first_client": found_side == "clients" and index == 0,
+        "role_before": str(existing.get("role") or ""),
+        "role_after": str(existing.get("role") or ""),
+        "journaled": False,
+        "prescription_date_moved": False,
+    })
+
+    if found_side == "clients" and not [
+        pid for pid in _entry_ids(stored) if pid != partie_id
+    ]:
+        return None, [PARTY_LAST_CLIENT], report
+    if not stays:
+        served = [
+            s for s in (existing.get("significations") or [])
+            if isinstance(s, dict)
+            and str(s.get("partie_id") or "").strip() == partie_id
+        ]
+        if served:
+            n = len(served)
+            return None, [
+                f"Cette partie a reçu {n} signification"
+                f"{'s' if n > 1 else ''} au dossier : une partie signifiée ne "
+                "peut pas en être retirée."
+            ], report
+
+    remaining = [e for i, e in enumerate(stored) if i != index]
+    saved, errors, journaled = _update_dossier(
+        dossier_id, {found_side: remaining}, concurrency.etag_of(existing),
+    )
+    if errors:
+        return None, errors, report
+    report["changed"] = True
+    report["journaled"] = journaled > 0
+    report["role_after"] = str(saved.get("role") or "")
+    report["prescription_date_moved"] = _prescription_moved(existing, saved)
+    return saved, [], report
+
+
+def _refresh_one(dossier: dict, contacts: dict[str, dict]) -> dict:
+    """Re-snapshot one dossier's party and lawyer names; its report row."""
+    from models import partie as partie_model  # local: no model cycle
+
+    dossier_id = str(dossier.get("id") or "")
+    row: dict = {
+        "dossier_id": dossier_id,
+        "file_number": str(dossier.get("file_number") or ""),
+        "outcome": "unchanged",
+        "reason": "",
+        "changes": [],
+        "missing_partie_ids": [],
+        "prescription_date_moved": False,
+    }
+    missing: list[str] = []
+    changes: list[dict] = []
+    data: dict = {}
+    for side in PARTY_SIDES:
+        rebuilt: list = []
+        side_changed = False
+        for entry in dossier.get(side) or []:
+            if not isinstance(entry, dict):
+                rebuilt.append(entry)
+                continue
+            new_entry = dict(entry)
+            for id_key, name_key in (("id", "name"), ("avocat_id", "avocat_name")):
+                pid = str(entry.get(id_key) or "").strip()
+                if not pid:
+                    continue
+                contact = contacts.get(pid)
+                if contact is None:
+                    # Never blank a snapshot: a missing contact keeps the
+                    # name the procedures cite, and the report says so.
+                    if pid not in missing:
+                        missing.append(pid)
+                    continue
+                live = partie_model.display_name(contact).strip()
+                before = str(entry.get(name_key) or "")
+                if live and live != before:
+                    new_entry[name_key] = live
+                    side_changed = True
+                    changes.append({
+                        "partie_id": pid, "side": side, "field": name_key,
+                        "before": before, "after": live,
+                    })
+            rebuilt.append(new_entry)
+        if side_changed:
+            data[side] = rebuilt
+    row["missing_partie_ids"] = missing
+    if not data:
+        return row
+    saved, errors, _journaled = _update_dossier(
+        dossier_id, data, concurrency.etag_of(dossier)
+    )
+    if errors:
+        row["outcome"] = "refused"
+        row["reason"] = "; ".join(errors)
+        return row
+    row["outcome"] = "applied"
+    row["changes"] = changes
+    row["prescription_date_moved"] = _prescription_moved(dossier, saved)
+    return row
+
+
+def refresh_party_names(
+    *, dossier_id: Optional[str] = None, partie_id: Optional[str] = None
+) -> tuple[list[dict], list[str]]:
+    """Re-snapshot party and lawyer names from the CURRENT contacts.
+
+    The ``name`` / ``avocat_name`` of a party entry are snapshots taken when
+    the party was added — what a generated procedure cites — and a contact
+    correction never reaches them (nor should it silently: a fan-out write on
+    every contact edit would be invisible). This is the explicit refresh,
+    for ONE dossier (*dossier_id*) or for every dossier citing ONE contact
+    (*partie_id* — as a party or as a party's lawyer; at most
+    :data:`REFRESH_MAX_DOSSIERS`). Exactly one selector.
+
+    Returns ``(rows, errors)``: *errors* refuses the whole call and nothing
+    was written; otherwise one row per dossier — ``applied`` (with each
+    change, before and after), ``unchanged`` (no write), or ``refused`` (the
+    save was refused, its reason given; the other dossiers go on). A contact
+    that no longer exists keeps its snapshot and is reported in
+    ``missing_partie_ids``. Only dossiers are written: an invoice, a trust
+    entry or an already-generated document keeps the name it was issued
+    with. Each save is compare-and-set against the version read here.
+    """
+    from models import partie as partie_model  # local: no model cycle
+
+    did = str(dossier_id or "").strip()
+    pid = str(partie_id or "").strip()
+    if bool(did) == bool(pid):
+        return [], ["Précisez un dossier OU un contact — exactement un des deux."]
+
+    if did:
+        dossier = get_dossier(did)
+        if not dossier:
+            return [], ["Dossier introuvable."]
+        dossiers = [dossier]
+    else:
+        try:
+            dossiers = list_dossiers_for_partie_strict(pid)
+        except Exception:
+            log_unexpected("refresh party names: dossiers unreadable")
+            return [], [PARTY_DOSSIERS_UNREADABLE]
+        if len(dossiers) > REFRESH_MAX_DOSSIERS:
+            return [], [
+                f"Ce contact figure dans {len(dossiers)} dossiers (plus de "
+                f"{REFRESH_MAX_DOSSIERS}) : rafraîchissez-les un dossier à "
+                "la fois."
+            ]
+
+    ids: list[str] = []
+    for dossier in dossiers:
+        for side in PARTY_SIDES:
+            for entry in dossier.get(side) or []:
+                if not isinstance(entry, dict):
+                    continue
+                for key in ("id", "avocat_id"):
+                    value = str(entry.get(key) or "").strip()
+                    if value:
+                        ids.append(value)
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        # A contact on no dossier: nothing to refresh — once it is known to
+        # exist (the selector must resolve).
+        if pid and partie_model.get_partie(pid) is None:
+            return [], ["Contact introuvable."]
+        return [_refresh_one(dossier, {}) for dossier in dossiers], []
+    contacts = partie_model.get_parties_bulk(ids)
+    if not contacts:
+        # get_parties_bulk fails OPEN to {} — never read that as « every
+        # contact vanished » (the coverage report's kyc_checked idiom).
+        return [], [PARTY_NAMES_UNREADABLE]
+    if pid and pid not in contacts:
+        return [], ["Contact introuvable."]
+    return [_refresh_one(dossier, contacts) for dossier in dossiers], []
 
 
 # Child collections checked before a dossier may be deleted:
@@ -1721,26 +2361,53 @@ def count_dossiers_for_partie_strict(partie_id: str) -> int:
     return len(ids)
 
 
+def _dossiers_for_partie(partie_id: str) -> list[dict]:
+    """The three ``array_contains`` reads behind both listers — propagates.
+
+    ONE query body, so the display lister and the strict one can never
+    disagree on what « the dossiers of this contact » means.
+    """
+    q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
+    q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
+    q3 = db.collection(COLLECTION).where(filter=FieldFilter("avocat_ids", "array_contains", partie_id))
+    seen: set[str] = set()
+    results: list[dict] = []
+    for query in (q1, q2, q3):
+        for doc in query.stream():
+            d = _migrate_parties(doc.to_dict())
+            if d.get("id") not in seen:
+                seen.add(d["id"])
+                results.append(d)
+    # Newest opened first, same-day ties by creation (date-only
+    # opened_date since lot 4a — see _newest_opened_first_key).
+    results.sort(key=_newest_opened_first_key, reverse=True)
+    return results
+
+
 def list_dossiers_for_partie(partie_id: str) -> list[dict]:
-    """Return all dossiers linked to a partie, newest first."""
+    """Return all dossiers linked to a partie, newest first.
+
+    Fails OPEN to ``[]`` — a display reader (the contact's fiche). A caller
+    that DECIDES on the answer uses :func:`list_dossiers_for_partie_strict`.
+    """
     try:
-        q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
-        q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
-        q3 = db.collection(COLLECTION).where(filter=FieldFilter("avocat_ids", "array_contains", partie_id))
-        seen: set[str] = set()
-        results: list[dict] = []
-        for query in (q1, q2, q3):
-            for doc in query.stream():
-                d = _migrate_parties(doc.to_dict())
-                if d.get("id") not in seen:
-                    seen.add(d["id"])
-                    results.append(d)
-        # Newest opened first, same-day ties by creation (date-only
-        # opened_date since lot 4a — see _newest_opened_first_key).
-        results.sort(key=_newest_opened_first_key, reverse=True)
-        return results
+        return _dossiers_for_partie(partie_id)
     except Exception:
         return []
+
+
+def list_dossiers_for_partie_strict(partie_id: str) -> list[dict]:
+    """:func:`list_dossiers_for_partie`, but read errors PROPAGATE.
+
+    For a write that relies on the answer (the per-contact name refresh,
+    the connector's KYC eligibility from lot 4b): read through the display
+    lister, an outage would read as « this contact is on no dossier ». An
+    empty id is refused before any read (an ``array_contains ""`` would
+    answer nothing, but « nothing » is not an answer to a blank question).
+    """
+    if not isinstance(partie_id, str) or not partie_id.strip():
+        raise ValueError("list_dossiers_for_partie_strict needs a partie id")
+    return _dossiers_for_partie(partie_id)
 
 
 # ── RFC-5545 VJOURNAL serialization ───────────────────────────────────────

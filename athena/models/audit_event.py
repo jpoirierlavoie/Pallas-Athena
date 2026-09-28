@@ -23,7 +23,8 @@ ever updates one):
                                      # expense | time_entry | invoice |
                                      # partie | protocol | protocol_step |
                                      # folder | doc_template | dossier |
-                                     # admin_transaction
+                                     # admin_transaction | hearing_series |
+                                     # dossier_party | mandataire
         "entity_id": str,
         "dossier_id": str,           # "" when the entity had none
         "snapshot_min": {            # just enough to answer « what was it » —
@@ -35,6 +36,14 @@ ever updates one):
 
 Write side lives in the CALLERS (the delete routes + DAV DELETE branches),
 mirroring the CTag-bump discipline — models stay single-collection writers.
+ONE documented exception (lot 4a): the two LINK detaches — a party leaving
+a dossier (``dossier_party``) and a mandataire leaving a contact
+(``mandataire``). A link is an entry of an array inside a full-document
+``set()`` that several callers perform (the web forms post the arrays
+whole, the connector edits one entry), so only the model sees every
+detach; ``models.dossier.update_dossier`` / ``models.partie.update_partie``
+journal them after their own commit, best-effort like every caller here.
+Neither is a record deletion: the contact stays — the row says a LINK went.
 ``record_deletion`` is deliberately try/except-swallowing: it runs AFTER
 the successful delete, and a trail-write blip must never turn a completed
 deletion into a user-facing error (the delete already happened; erroring
@@ -73,6 +82,15 @@ VALID_ENTITY_TYPES = (
     # Légitime UNIQUEMENT parce que la suppression d'une chaîne est atomique
     # (un seul lot) : au-delà, une réussite partielle exigerait le détail.
     "hearing_series",
+    # Lot 4a — a LINK removed, never a record: the contact stays. Journaled
+    # by the model itself (see the module docstring's one exception).
+    #   dossier_party: entity_id = the contact, dossier_id = the dossier,
+    #     title = the party's name snapshot, status = the side it left
+    #     (« clients » / « opposing_parties »);
+    #   mandataire: entity_id = the mandataire contact, title = the name of
+    #     the contact it represented, status = the kind of representation.
+    "dossier_party",
+    "mandataire",
 )
 
 _FETCH_CAP = 200

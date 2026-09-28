@@ -561,6 +561,9 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     # Lot 2A (T9): begin_upload's write — the session opened first, then the
     # ticket written by create_ticket, which stamps and notes.
     ("upload_ticket", "open_ticket"): (("upload_ticket", "create_ticket"),),
+    # Lot 4a (step 2): the public wrapper over the body the party-link
+    # helpers share — the body stamps, writes and notes the commit.
+    ("dossier", "update_dossier"): (("dossier", "_update_dossier"),),
 }
 # Lot 2A (T9). Names the verb regex catches that are NOT tool writes, each
 # with its reason — and each held to the OPPOSITE rule, so an exemption

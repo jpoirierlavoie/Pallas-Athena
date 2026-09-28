@@ -2573,8 +2573,14 @@ TOOLS: dict[str, dict] = {
                         "time_entry", "invoice", "partie", "protocol",
                         "protocol_step", "folder", "doc_template",
                         "dossier", "admin_transaction", "hearing_series",
+                        "dossier_party", "mandataire",
                     ],
-                    "description": "Filter to one entity type.",
+                    "description": (
+                        "Filter to one entity type. `dossier_party` and "
+                        "`mandataire` rows are a LINK removed (a party off "
+                        "a dossier, a mandataire off a contact): the "
+                        "contact itself stays."
+                    ),
                 },
                 "dossier_id": _id(
                     "Only deletions on this dossier (UUIDv4)."
@@ -4802,13 +4808,16 @@ TOOLS: dict[str, dict] = {
                     "type": "array",
                     "description": (
                         "Parties to ADD as clients. Refused if one is already "
-                        "on the dossier."
+                        "on the dossier, on either side."
                     ),
                     "items": _party_entry_props(),
                 },
                 "add_opposing_parties": {
                     "type": "array",
-                    "description": "Parties to ADD as opposing parties.",
+                    "description": (
+                        "Parties to ADD as opposing parties. Refused if one "
+                        "is already on the dossier, on either side."
+                    ),
                     "items": _party_entry_props(),
                 },
                 **_forum_props(),

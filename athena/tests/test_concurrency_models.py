@@ -71,6 +71,8 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import revision as revision_model
     from models import task as task_model
     from models import time_entry as time_entry_model
+    from models import audit_event as audit_event_model
+    from models import trust as trust_model
 
 from tests._fake_firestore import install  # noqa: E402
 
@@ -85,7 +87,10 @@ _MODULES = (partie_model, dossier_model, time_entry_model, expense_model,
 def db(monkeypatch):
     # models.revision too: a note content change stages its revision since
     # D17 (2026-09-27), and the reference must belong to the same store.
-    return install(monkeypatch, *_MODULES, revision_model)
+    # models.trust and models.audit_event since lot 4a (step 2): removing a
+    # client reads its trust history, and a detach is journaled.
+    return install(monkeypatch, *_MODULES, revision_model, trust_model,
+                   audit_event_model)
 
 
 # ── Fabriques : chaque enregistrement naît par le VRAI créateur ──────────
@@ -104,6 +109,19 @@ def _dossier(db):
         "file_number": "2026-001", "title": "Tremblay c. Lavoie",
         "clients": [{"id": "p1", "name": "Jean Tremblay",
                      "roles": ["demandeur"]}],
+    })
+    assert errors == [], errors
+    return doc["id"]
+
+
+def _dossier_two_clients(db):
+    """Two clients, so one of them may leave (never the last one)."""
+    doc, errors = dossier_model.create_dossier({
+        "file_number": "2026-001", "title": "Tremblay c. Lavoie",
+        "clients": [
+            {"id": "p1", "name": "Jean Tremblay", "roles": ["demandeur"]},
+            {"id": "p2", "name": "Marie Tremblay", "roles": ["demandeur"]},
+        ],
     })
     assert errors == [], errors
     return doc["id"]
@@ -190,6 +208,17 @@ _CASES = {
                        lambda i, **kw: dossier_model.update_dossier(
                            i, {"sommaire": "Résumé."}, **kw),
                        "sommaire", "Résumé."),
+    # Lot 4a (step 2): the party-link helpers — the triple return's report
+    # is not this harness's concern. A roles change is read back through
+    # the DERIVED dossier role; a removal through the rebuilt mirror.
+    "update_dossier_party": ("dossiers", _dossier_two_clients,
+                             lambda i, **kw: dossier_model.update_dossier_party(
+                                 i, "p1", roles=["défendeur"], **kw)[:2],
+                             "role", "défendeur"),
+    "remove_dossier_party": ("dossiers", _dossier_two_clients,
+                             lambda i, **kw: dossier_model.remove_dossier_party(
+                                 i, "p2", **kw)[:2],
+                             "client_ids", ["p1"]),
     "update_time_entry": ("timeentries", _time_entry,
                           lambda i, **kw: time_entry_model.update_time_entry(
                               i, {"description": "Révision"}, **kw),
@@ -257,6 +286,8 @@ _ALL = pytest.mark.parametrize("case", sorted(_CASES), ids=sorted(_CASES))
 _GETTERS = {
     "update_partie": (partie_model, "get_partie"),
     "update_dossier": (dossier_model, "get_dossier"),
+    "update_dossier_party": (dossier_model, "get_dossier"),
+    "remove_dossier_party": (dossier_model, "get_dossier"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entry"),
@@ -295,8 +326,14 @@ _RACE_AT_COMMIT = _READS_ONLY_IN_TRANSACTION | _DOCUMENT_PARTIAL | _MOVES
 # changes the content: it left the legacy list below, deliberately, for
 # the two tests after it.
 _CONTENT_REVISED_WITHOUT_ETAG = {"update_note"}
+# Lot 4a (step 2): the party-link helpers rebuild ONE entry of an array they
+# read — so they compare-and-set against THEIR read whatever the caller
+# passes (a blind set() would revert a party added in between). Their own
+# tests below; never the legacy one.
+_SELF_GUARDED = {"update_dossier_party", "remove_dossier_party"}
 _LEGACY_WITHOUT_ETAG = sorted(
-    set(_CASES) - _RACE_AT_COMMIT - _CONTENT_REVISED_WITHOUT_ETAG)
+    set(_CASES) - _RACE_AT_COMMIT - _CONTENT_REVISED_WITHOUT_ETAG
+    - _SELF_GUARDED)
 
 
 def _write_kind(case):
@@ -563,6 +600,44 @@ def test_without_an_etag_a_note_content_change_carries_its_revision(db):
     (rev,) = db.peek_collection(f"{path}/revisions").values()
     assert rev["previous_value"] == "Premier jet."
     assert rev["previous_etag"] == "e-rival" and rev["new_etag"] == doc["etag"]
+
+
+@pytest.mark.parametrize("case", sorted(_SELF_GUARDED),
+                         ids=sorted(_SELF_GUARDED))
+def test_without_an_etag_a_link_helper_guards_on_its_own_read(db, case):
+    """A version the caller never read is not consulted — a rival write
+    BEFORE the call does not refuse it — but the write is the guarded
+    transaction, against the version the helper read."""
+    row_id, path, edit = _setup(db, case)
+    db.external_write(path, {**db.peek(path), "etag": "e-before"})
+    db.reset_logs()
+
+    doc, errors = edit(row_id)
+
+    assert errors == [], errors
+    assert _stored_field(db, case, path) == _expected_value(case)
+    guarded = [c for c in db.commits if c.transaction is not None]
+    assert len(guarded) == 1 and ("set", path) in guarded[0].ops
+    assert doc["etag"] == db.peek(path)["etag"] != "e-before"
+
+
+@pytest.mark.parametrize("case", sorted(_SELF_GUARDED),
+                         ids=sorted(_SELF_GUARDED))
+def test_without_an_etag_a_link_helper_refuses_a_write_after_its_read(
+    db, monkeypatch, case,
+):
+    """…and a rival landing between that read and the commit refuses the
+    call — and survives. A blind set() would have reverted it."""
+    row_id, path, edit = _setup(db, case)
+    _arm_race(db, monkeypatch, case, path, lambda: db.external_write(
+        path, {**db.peek(path), "etag": "e-rival", "rival": True}))
+
+    doc, errors = edit(row_id)
+
+    assert doc is None and errors == STALE
+    stored = db.peek(path)
+    assert stored["etag"] == "e-rival" and stored["rival"] is True
+    assert db.commits == []
 
 
 def test_without_an_etag_a_note_edit_that_keeps_its_content_is_legacy(db):
