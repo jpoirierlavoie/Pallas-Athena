@@ -21,7 +21,8 @@ Both return the SAME report — per substitution: its classification
 (auto / manual / passthrough, from ``utils.template_fields``), the count it
 substituted per part, and every occurrence it deliberately did NOT
 substitute (field results, data-bound content controls, markup inside the
-literal, parts the fill engine never reads). ``templatize`` refuses — returns
+literal, a ``{{…}}`` span the source already carries, parts the fill engine
+never reads). ``templatize`` refuses — returns
 ``data=None`` with the reason — unless every substitution's substituted
 count EQUALS its ``expected_occurrences`` (the ``import_invoice``
 expected-total doctrine): there is never a partial output.
@@ -41,10 +42,14 @@ How a target part is read — a streaming lexer, not a parser
 -----------------------------------------------------------
 One pattern, ``_TOKEN_RE`` (a tag, or a run of text), walks each part; a
 position it cannot tokenize (a stray ``<``) REFUSES the source, never skips
-it. A stack keeps the tags balanced (a mismatch refuses too), which is what
-lets the edit below guarantee well-formed output by construction. From the
-tokens a single character STREAM per part is built from the ``<w:t>`` text
-nodes, each character remembering its text node (a *segment*):
+it. A stack keeps the tags balanced (a mismatch refuses too), and a tag whose
+quotes do not pair up — a ``>`` inside an attribute value cut it short — is
+refused. The lexer is NOT a parser, though (it reads no attribute syntax: an
+unquoted value or a raw control character goes through it), so every target
+part is ALSO parsed with defusedxml before anything else, and one that does
+not parse refuses the source by name. From the tokens a single character
+STREAM per part is built from the ``<w:t>`` text nodes, each character
+remembering its text node (a *segment*):
 
 * Transparent — runs, bookmarks, proofing marks, hyperlinks, smart tags and
   every property subtree (``w:rPr``/``w:pPr``/…): a literal Word split
@@ -84,7 +89,8 @@ ALL-CAPS placeholder, the catalog's upper-casing convention); whole-word by
 Unicode category (letters, digits, marks, ``_``), looking through soft
 hyphens; the LONGEST literal first, each accepted occurrence masking its
 range; existing ``{{…}}`` spans are masked before anything, so a literal can
-never land inside a placeholder or break one.
+never land inside a placeholder or break one — an occurrence there is
+COUNTED (``in_existing_placeholders``), never silently skipped.
 
 How it edits
 ------------
@@ -96,9 +102,11 @@ modified ``<w:t>`` whose new text needs it. Untouched tokens are re-emitted
 verbatim.
 
 Checks on the output (templatize) — the archive re-opens with ``zipfile``
-and passes ``testzip``; ``docx_fill.validate_template`` reports no error,
-every inserted name among its placeholders and none among its split-run
-suspects; and in every rewritten part, the fill engine's own normalized view
+and passes ``testzip``; every rewritten part parses with defusedxml (no
+tree is built: well-formedness only); ``docx_fill.validate_template``
+reports no error, every inserted name among its placeholders and none among
+its split-run suspects; and in every rewritten part, the fill engine's own
+normalized view (one normalization per part, whatever the number of names)
 holds exactly the source's count of each inserted name plus what was
 inserted. Any failure refuses (``data=None``).
 
@@ -111,8 +119,10 @@ the check over every compiled pattern of this module and spies on
 (:data:`MAX_CANDIDATES`) bounds the Python-level work a literal that
 matches everywhere but never as a whole word could otherwise cost.
 
-Pure: standard library plus the fill engine's caps and the field catalog —
-no Firestore, no Flask, no logging, no ``python-docx``/``docxtpl``. Messages
+Pure: standard library, ``defusedxml`` (a pinned, pure-Python direct
+dependency — the parse gate), the fill engine's caps and the field catalog —
+no Firestore, no Flask, no logging, no I/O, no ``python-docx``/``docxtpl``.
+Messages
 are French and never quote a literal (they name the substitution by its
 number, and the caller's own placeholder name).
 """
@@ -124,8 +134,11 @@ import re
 import unicodedata
 import zipfile
 from array import array
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
+
+from defusedxml.ElementTree import DefusedXMLParser, ParseError
 
 from utils.docx_fill import (
     _ANY_TOKEN_RE,
@@ -190,10 +203,17 @@ _TAG_NAME_RE = re.compile(r"</?([^\s/<>]+)")
 # The five XML entities and the numeric character references.
 _ENTITY_RE = re.compile(
     r"&(?:#x([0-9A-Fa-f]{1,6})|#([0-9]{1,7})|(amp|lt|gt|quot|apos));")
-# Attribute values the lexer reads.
-_FLDCHAR_TYPE_RE = re.compile(r"\sw:fldCharType=(?:\"([^\"<>]*)\"|'([^'<>]*)')")
-_XML_SPACE_RE = re.compile(r"\sxml:space=(?:\"([^\"<>]*)\"|'([^'<>]*)')")
-_W_NAMESPACE_RE = re.compile(r"\sxmlns:w=(?:\"([^\"<>]*)\"|'([^'<>]*)')")
+# Attribute values the lexer reads. XML allows whitespace around « = »
+# (« w:fldCharType = "begin" »): without the \s* a spaced attribute went
+# unseen — a field result read as editable, and an xml:space attribute got a
+# DUPLICATE, which no XML parser (and not Word) accepts.
+_FLDCHAR_TYPE_RE = re.compile(
+    r"\sw:fldCharType\s*=\s*(?:\"([^\"<>]*)\"|'([^'<>]*)')")
+_XML_SPACE_RE = re.compile(r"\sxml:space\s*=\s*(?:\"([^\"<>]*)\"|'([^'<>]*)')")
+_W_NAMESPACE_RE = re.compile(r"\sxmlns:w\s*=\s*(?:\"([^\"<>]*)\"|'([^'<>]*)')")
+# A complete quoted attribute value, either quote — what a tag holding an
+# apostrophe is checked with (see _lex_part).
+_QUOTED_RE = re.compile(r"\"[^\"]*\"|'[^']*'")
 # Anything between double braces — valid placeholder or not — is masked,
 # on top of docx_fill's own token pattern (bounded: a stray « {{ » masks at
 # most this much).
@@ -369,7 +389,9 @@ class SubstitutionReport:
     * ``in_alternate_branches`` — occurrences ALSO substituted in the other
       copies of a text box (``mc:Fallback``), not counted above;
     * ``in_field_results`` / ``in_bound_controls`` / ``blocked_by_markup``
-      — occurrences deliberately NOT substituted;
+      / ``in_existing_placeholders`` — occurrences deliberately NOT
+      substituted (the last: inside a ``{{…}}`` span the source already
+      carries — valid or not, it is never touched, so what it holds stays);
     * ``in_non_target_parts`` — occurrences per reported part (footnotes,
       endnotes, comments, docProps), never substituted;
     * ``fallback_consistent`` — every text box holds the same count in each
@@ -386,6 +408,7 @@ class SubstitutionReport:
     in_field_results: int = 0
     in_bound_controls: int = 0
     blocked_by_markup: int = 0
+    in_existing_placeholders: int = 0
     in_non_target_parts: dict = field(default_factory=dict)
     fallback_consistent: bool = True
 
@@ -393,7 +416,8 @@ class SubstitutionReport:
     def not_substituted(self) -> int:
         """Occurrences seen and left in place, wherever they are."""
         return (self.in_field_results + self.in_bound_controls
-                + self.blocked_by_markup + sum(self.in_non_target_parts.values()))
+                + self.blocked_by_markup + self.in_existing_placeholders
+                + sum(self.in_non_target_parts.values()))
 
 
 @dataclass(frozen=True)
@@ -475,7 +499,8 @@ class _Segment:
 
 class _Part:
     __slots__ = ("name", "mode", "tokens", "raw", "text", "char_seg",
-                 "segments", "ac_branches", "has_soft", "mask", "_stripped",
+                 "segments", "ac_branches", "has_soft", "mask", "braces",
+                 "_stripped",
                  "encoding_bom")
 
     def __init__(self, name: str, mode: str, tokens: list[str], raw: str,
@@ -497,6 +522,10 @@ class _Part:
             for match in pattern.finditer(raw):
                 start, end = match.span()
                 self.mask[start:end] = b"\x01" * (end - start)
+        # The spans masked BEFORE any literal: an occurrence landing there is
+        # counted (in_existing_placeholders), where one landing in a longer
+        # literal's range is not — that one IS substituted, by the longer.
+        self.braces = bytes(self.mask)
         self._stripped: Optional[tuple[str, array]] = None
 
     def stripped(self) -> tuple[str, array]:
@@ -528,6 +557,7 @@ class _Tally:
     field_results: int = 0
     bound: int = 0
     markup: int = 0
+    placeholders: int = 0
     non_target: dict = field(default_factory=dict)
     # (part, alternate-content id) → {branch: substituted count}
     branch_hits: dict = field(default_factory=dict)
@@ -731,8 +761,17 @@ def _lex_part(name: str, xml: str, mode: str, budget: _Budget,
                 continue
             raise _Malformed            # CDATA, DOCTYPE: not Word's output
         # A « > » inside an attribute value ends the tag early: the quotes
-        # of the token no longer pair up.
-        if tok.count('"') % 2:
+        # of the token no longer pair up. Word writes double quotes, so the
+        # parity of « " » decides — unless the tag holds an apostrophe,
+        # which is either inside a double-quoted value (« descr="l'avis" »,
+        # legitimate) or opens a single-quoted one (« a='x>y' », which the
+        # tag pattern cut at the « > »): with every complete quoted value
+        # removed, no quote may remain.
+        if "'" in tok:
+            rest = _QUOTED_RE.sub("", tok)
+            if '"' in rest or "'" in rest:
+                raise _Malformed
+        elif tok.count('"') % 2:
             raise _Malformed
         name_match = _TAG_NAME_RE.match(tok)
         if name_match is None:
@@ -1049,9 +1088,24 @@ def _scan_part(part: _Part, order: list[_Prepared], tallies: dict[int, _Tally],
         while at != -1:
             budget.candidate()
             end = at + size
-            if mask.find(1, at, end) != -1 or (
-                    prep.whole_word and not _boundaries_ok(text, at, end, prep)):
+            if prep.whole_word and not _boundaries_ok(text, at, end, prep):
                 at = text.find(needle, at + 1)
+                continue
+            if mask.find(1, at, end) != -1:
+                if part.braces.find(1, at, end) == -1:
+                    at = text.find(needle, at + 1)
+                    continue
+                # Inside a {{…}} the source already carries: never touched,
+                # never silently skipped either — « {{ Jean Tremblay }} » is
+                # no valid field, so every generated document prints it.
+                if not target:
+                    tally.non_target[part.name] = tally.non_target.get(
+                        part.name, 0) + 1
+                else:
+                    first = next(s for s in char_seg[at:end] if s >= 0)
+                    if _primary(segments[first].path):
+                        tally.placeholders += 1
+                at = text.find(needle, end)
                 continue
             mask[at:end] = b"\x01" * size
             span = char_seg[at:end]
@@ -1200,13 +1254,24 @@ def _read_parts(zf: zipfile.ZipFile, budget: _Budget
         else:
             mode = _MODE_WORD
         try:
-            parts.append(_lex_part(name, xml, mode, budget, found, bom=bom))
+            part = _lex_part(name, xml, mode, budget, found, bom=bom)
         except _Malformed:
             found.setdefault("malformed_xml", []).append(name)
+            continue
         except _TooMuchText:
             return [], {}, [_blocker("too_much_text")]
         except _TooComplex:
             return [], {}, [_blocker("too_complex")]
+        # The lexer is not a parser (see _well_formed): a target part only a
+        # parser can tell is broken is refused HERE, by name, so the preview
+        # says so too — never first at the output check. A part the lexer
+        # already refused for a named reason (a foreign « w: » prefix) keeps
+        # that reason.
+        if target and not any(name in listed for listed in found.values()) and (
+                not _well_formed(data)):
+            found.setdefault("malformed_xml", []).append(name)
+            continue
+        parts.append(part)
     blockers = [_blocker(code, found[code]) for code in (
         "strict_ooxml", "namespace", "encoding", "malformed_xml",
         "tracked_changes", "comments") if code in found]
@@ -1369,6 +1434,7 @@ def _reports(valid: list[_Prepared], tallies: dict[int, _Tally],
             in_alternate_branches=tally.alternate,
             in_field_results=tally.field_results,
             in_bound_controls=tally.bound,
+            in_existing_placeholders=tally.placeholders,
             blocked_by_markup=tally.markup,
             in_non_target_parts=dict(tally.non_target),
             fallback_consistent=consistent,
@@ -1401,6 +1467,9 @@ def _left_in_place(report: SubstitutionReport) -> str:
     if report.in_bound_controls:
         bits.append(f"{report.in_bound_controls} dans un contrôle de contenu "
                     "lié à des données")
+    if report.in_existing_placeholders:
+        bits.append(f"{report.in_existing_placeholders} dans un champ {{{{…}}}} "
+                    "déjà présent dans le document")
     if report.blocked_by_markup:
         bits.append(f"{report.blocked_by_markup} coupée(s) par un trait "
                     "d'union conditionnel ou insécable")
@@ -1427,9 +1496,36 @@ def _write_archive(zf: zipfile.ZipFile, rewritten: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
-def _name_count(xml_bytes: bytes, name: str) -> int:
+def _name_counts(xml_bytes: bytes) -> Counter:
+    """Every placeholder name of a part, as the fill engine sees it — ONE
+    normalization per part, whatever the number of names (normalizing once
+    per NAME cost 84 s for 50 substitutions in a part at the token cap)."""
     xml = _normalize_runs(xml_bytes.decode("utf-8", errors="replace"))
-    return sum(1 for m in PLACEHOLDER_RE.finditer(xml) if m.group(1) == name)
+    return Counter(m.group(1) for m in PLACEHOLDER_RE.finditer(xml))
+
+
+class _NoTarget:
+    """A parser target with no callbacks: well-formedness only, no tree
+    (an ElementTree of a part at the token cap is ~160 MB)."""
+
+    def close(self) -> None:
+        return None
+
+
+def _well_formed(xml_bytes: bytes) -> bool:
+    """True when *xml_bytes* parses. The lexer refuses what it recognizes as
+    malformed, but it is not a parser: it reads no attribute syntax, so an
+    unquoted value or a raw control character in a source passes it, and the
+    part it rewrote would ship broken — Word refuses it, or « repairs » it."""
+    parser = DefusedXMLParser(target=_NoTarget(), forbid_dtd=True)
+    try:
+        parser.feed(xml_bytes)
+        parser.close()
+    except ParseError:
+        return False
+    except ValueError:          # defusedxml's DTD / entity refusals
+        return False
+    return True
 
 
 def _check_output(output: bytes, rewritten: dict[str, bytes],
@@ -1444,6 +1540,9 @@ def _check_output(output: bytes, rewritten: dict[str, bytes],
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError,
             OSError, ValueError):
         return "archive illisible"
+    for part in sorted(rewritten):
+        if not _well_formed(rewritten[part]):
+            return f"XML mal formé dans {part}"
     validation = validate_template(output)
     if validation.errors:
         return "gabarit invalide"
@@ -1456,10 +1555,10 @@ def _check_output(output: bytes, rewritten: dict[str, bytes],
                     "présente du même champ est coupée entre deux passages ; "
                     "retapez-la dans Word")
     for part, inserted in part_inserted.items():
+        before = _name_counts(source_targets[part])
+        after = _name_counts(rewritten[part])
         for name, n in inserted.items():
-            before = _name_count(source_targets[part], name)
-            after = _name_count(rewritten[part], name)
-            if after != before + n:
+            if after[name] != before[name] + n:
                 return f"décompte de {{{{{name}}}}} dans {part}"
     return None
 

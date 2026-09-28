@@ -798,6 +798,131 @@ def test_an_output_check_failure_refuses_rather_than_ship(monkeypatch):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 8 bis. Le lexer n'est pas un parseur (revue de l'étape 1)
+#
+# Chacun de ces tests ÉCHOUE sur le moteur livré à l'étape 1, qui se disait
+# « bien formé PAR CONSTRUCTION » et ne lisait aucune partie avec un parseur.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_spaced_xml_space_attribute_is_replaced_never_duplicated():
+    """XML admet « xml:space = "default" ». L'expression d'attribut exigeait
+    « xml:space=" » : l'attribut passait inaperçu et l'édition en ajoutait
+    un SECOND — attribut en double, qu'aucun parseur (ni Word) n'accepte."""
+    data = _docx(_doc(_p('<w:r><w:t xml:space = "default">Jean</w:t></w:r>',
+                         '<w:r><w:t xml:space = "default">Tremblay et</w:t></w:r>')))
+    result = _ok(data, [Sub("JeanTremblay", "x", 1, whole_word=False)])
+    xml = _part(result.data)
+    assert xml.count("xml:space") == 2          # one per <w:t>, never two
+    assert '<w:t xml:space="preserve"> et</w:t>' in xml
+
+
+def test_a_spaced_fld_char_type_still_marks_the_field_result():
+    """« w:fldCharType = "begin" » : le champ passait inaperçu, et son
+    résultat — que Word régénère — se remplaçait comme du texte."""
+    field = ('<w:r><w:fldChar w:fldCharType = "begin"/></w:r>'
+             '<w:r><w:instrText> DOCPROPERTY Client </w:instrText></w:r>'
+             '<w:r><w:fldChar w:fldCharType = "separate"/></w:r>'
+             + _r("Jean Tremblay")
+             + '<w:r><w:fldChar w:fldCharType = "end"/></w:r>')
+    report = tz.analyse(_docx(_doc(_p(field))),
+                        [Sub("Jean Tremblay", "client.nom_complet", None)]
+                        ).substitutions[0]
+    assert (report.substituted, report.in_field_results) == (0, 1)
+
+
+def test_a_single_quoted_value_hiding_a_gt_is_refused_an_apostrophe_is_not():
+    """« a='x>y' » : le motif de balise coupait au « > », le reste se lisait
+    comme du TEXTE et l'édition réécrivait la valeur d'attribut. Une
+    apostrophe DANS une valeur entre guillemets (« descr="l'avis" », le
+    texte de remplacement d'une image) reste admise."""
+    hidden = _docx(_doc(_p("<w:r><w:t a='x>Jean Tremblay'>abc</w:t></w:r>")))
+    result = tz.templatize(hidden, [Sub("Jean Tremblay", "client.nom_complet", 1)])
+    assert [b.code for b in result.blockers] == ["malformed_xml"]
+    assert result.data is None
+    alt_text = _docx(_doc(_p(
+        "<w:r><w:drawing><wp:docPr id=\"1\" name=\"Image\" descr=\"l'avis\"/>"
+        "</w:drawing></w:r>", _r("Jean Tremblay"))))
+    _ok(alt_text, [Sub("Jean Tremblay", "client.nom_complet", 1)])
+
+
+@pytest.mark.parametrize("run", [
+    "<w:r><w:t a=b>Jean Tremblay</w:t></w:r>",          # unquoted value
+    "<w:r><w:t>Jean Tremblay \x01</w:t></w:r>",        # raw control char
+    '<w:r><w:t w:a="1" w:a="2">Jean Tremblay</w:t></w:r>',  # duplicate attribute
+])
+def test_a_target_no_parser_accepts_is_refused_by_name_even_in_preview(run):
+    """Ce que le lexer ne sait pas voir, un parseur le voit : la partie est
+    refusée comme « XML mal formé » dès l'analyse — l'ancien moteur la
+    réécrivait et livrait un gabarit que Word refuse ou « répare »."""
+    data = _docx(_doc(_p(run)))
+    preview = tz.analyse(data, [Sub("Jean Tremblay", "client.nom_complet", None)])
+    assert [b.code for b in preview.blockers] == ["malformed_xml"]
+    assert preview.blockers[0].parts == ("word/document.xml",)
+    result = tz.templatize(data, [Sub("Jean Tremblay", "client.nom_complet", 1)])
+    assert result.data is None and result.blockers
+
+
+def test_every_rewritten_part_is_parsed_before_anything_ships(monkeypatch):
+    """La garde de sortie : une édition qui casserait le XML (ici, un
+    échappement neutralisé laisse un « & » nu) refuse l'appel au lieu de
+    livrer — validate_template, qui ne lit aucun XML, ne l'aurait pas vu."""
+    data = _docx(_doc(_p(_r("Jean Tremblay &amp; fils"))))
+    monkeypatch.setattr(tz, "_escape_text", lambda text: text)
+    result = tz.templatize(data, [Sub("Jean Tremblay", "client.nom_complet", 1)])
+    assert result.data is None
+    assert "XML mal formé dans word/document.xml" in result.errors[0]
+
+
+def test_an_occurrence_inside_an_existing_brace_span_is_counted_never_silent():
+    """Le masque protège un {{…}} existant — mais l'occurrence qui s'y trouve
+    RESTE dans le gabarit : « {{ Jean Tremblay }} » n'est pas un champ valide
+    (une espace dans le nom), chaque document généré l'imprimerait. L'ancien
+    moteur ne la comptait nulle part : l'appel réussissait, sans un mot."""
+    data = _docx(_doc(_p(_r("{{ Jean Tremblay }} reste")),
+                      _p(_r("Jean Tremblay"))),
+                 word__footnotes_xml=(
+                     f"{DECL}<w:footnotes {NS}><w:footnote w:id=\"1\">"
+                     + _p(_r("{{ Jean Tremblay }}")) + "</w:footnote></w:footnotes>"))
+    result = _ok(data, [Sub("Jean Tremblay", "client.nom_complet", 1)])
+    report = result.substitutions[0]
+    assert report.substituted == 1
+    assert report.in_existing_placeholders == 1
+    assert report.in_non_target_parts == {"word/footnotes.xml": 1}
+    assert report.not_substituted == 2
+    assert any("déjà présent" in w for w in result.warnings)
+    # A longer literal's range is NOT a brace span: the shorter counts zero
+    # there, as before — it was substituted, by the longer.
+    overlap = tz.analyse(_docx(_doc(_p(_r("Jean Tremblay inc.")))),
+                         [Sub("Jean Tremblay inc.", "adverse.nom_complet", None),
+                          Sub("Tremblay", "x", None)])
+    assert [(r.substituted, r.in_existing_placeholders)
+            for r in overlap.substitutions] == [(1, 0), (0, 0)]
+
+
+def test_the_recount_normalizes_each_rewritten_part_once(monkeypatch):
+    """Le recomptage normalisait la partie ENTIÈRE une fois par CHAMP, avant
+    et après : 50 substitutions dans une partie au plafond d'éléments ont
+    pris 84 s sur un poste de travail — au-delà des 60 s de gunicorn. Une
+    normalisation par partie et par côté, quel que soit le nombre de champs."""
+    names = [f"Prénom{k} Nom{k}" for k in range(5)]
+    data = _docx(_doc(*(_p(_r(n)) for n in names)),
+                 word__header1_xml=_hdr(_p(_r(names[0]))))
+    calls = []
+    real = tz._normalize_runs
+
+    def spy(xml):
+        calls.append(len(xml))
+        return real(xml)
+
+    monkeypatch.setattr(tz, "_normalize_runs", spy)
+    result = _ok(data, [Sub(n, f"x{k}", 2 if k == 0 else 1)
+                        for k, n in enumerate(names)])
+    assert set(result.rewritten_parts) == {"word/document.xml", "word/header1.xml"}
+    assert len(calls) == 2 * len(result.rewritten_parts)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 9. La demande
 # ══════════════════════════════════════════════════════════════════════
 
@@ -895,12 +1020,21 @@ def test_a_candidate_storm_is_refused_not_ground_through(monkeypatch):
 
 
 def test_the_engine_is_pure():
-    """Standard library, the fill engine and the field catalog — nothing
-    else: no Firestore, no Flask, no python-docx/docxtpl, no logging."""
+    """Standard library, defusedxml, the fill engine and the field catalog —
+    nothing else: no Firestore, no Flask, no python-docx/docxtpl, no logging.
+
+    RÉÉCRIT à dessein (revue de l'étape 1) : ``defusedxml.ElementTree`` entre
+    dans la liste. L'étape exige que chaque partie réécrite se lise avec
+    defusedxml, et la « bonne formation PAR CONSTRUCTION » qui en dispensait
+    était fausse — un attribut ``xml:space = "…"`` espacé recevait un double,
+    une valeur entre apostrophes cachant un « > » se réécrivait. defusedxml
+    est une dépendance directe épinglée, en Python pur, sans aucune E/S (le
+    module DAV s'en sert déjà) : la pureté qui compte — ni Firestore, ni
+    Flask, ni aller-retour python-docx — tient."""
     source = open(tz.__file__, encoding="utf-8").read()
     allowed = {"__future__", "io", "re", "unicodedata", "zipfile", "array",
-               "dataclasses", "typing", "utils.docx_fill",
-               "utils.template_fields"}
+               "collections", "dataclasses", "typing", "defusedxml.ElementTree",
+               "utils.docx_fill", "utils.template_fields"}
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             assert {a.name for a in node.names} <= allowed
