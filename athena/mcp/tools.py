@@ -5245,7 +5245,11 @@ TOOLS: dict[str, dict] = {
                 "name": {
                     "type": "string", "minLength": 1,
                     "maxLength": TEMPLATE_NAME_MAX_CHARS,
-                    "description": "gabarit create: REQUIRED, its name.",
+                    "description": (
+                        "gabarit create: REQUIRED, its name — printed in "
+                        "every generated document's name, so checked like "
+                        "the file against dossier_id."
+                    ),
                 },
                 "description": {
                     "type": "string",

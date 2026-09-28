@@ -148,6 +148,7 @@ from utils.docx_leak_scan import (
     LeakScanError,
     scan_identifiers,
     scrub_core_properties,
+    text_residues,
 )
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import log_hearing_series_event
@@ -11829,6 +11830,55 @@ def _bound_creation(args: dict, warnings: list[str]) -> dict:
             "kind": kind}
 
 
+def _check_template_name(dossier: dict, name: str, accept: list[str],
+                         warnings: list[str]) -> None:
+    """A new template's NAME, against the source dossier's identifiers —
+    refused at the OPENING, fail CLOSED (review of T9).
+
+    The file scan reads the package only, yet the name prints into the
+    name of every document generated from the template, for every future
+    client (« REF - date - Projet {name} », models.document
+    .projet_document_name) — and it is the neutral FILE name too. A name
+    Claude took from the source file (« Mise en demeure Tremblay ») was the
+    one leak the scan let through. Judged now, when nothing is opened yet:
+    at finalize the refusal would cost the uploaded bytes. The refusal
+    names the identifiers — the dossier's own data, as the file scan's
+    does — never the name the caller sent."""
+    try:
+        identifiers = identifiers_service.dossier_identifiers(dossier)
+    except identifiers_service.IdentifiersUnavailable:
+        raise ToolArgumentError(
+            "Le contrôle des identifiants n'a pas pu lire toutes les parties "
+            f"du dossier source. {_NOTHING_OPENED} Réessayez dans un instant.",
+            reason="upload_retry",
+        )
+    try:
+        found = text_residues(name, identifiers, accept=accept)
+    except LeakScanError as exc:
+        raise ToolArgumentError(f"{exc} {_NOTHING_OPENED}",
+                                reason="upload_residue")
+    if found.residues:
+        listed = "; ".join(
+            f"« {r} »" for r in found.residues[:_RESIDUES_LISTED_MAX])
+        more = len(found.residues) - _RESIDUES_LISTED_MAX
+        tail = f" — et {more} autre(s)" if more > 0 else ""
+        raise ToolArgumentError(
+            "Le nom du gabarit (`name`) nomme encore le dossier dont il est "
+            f"tiré : {listed}{tail}. Ce nom s'imprimerait dans le nom de "
+            "chaque document tiré de ce gabarit, pour tout le cabinet. "
+            "Donnez-lui un nom neutre — ou, SEULEMENT si le juriste accepte "
+            "chacun d'eux, listez-les, tels qu'écrits ici, dans "
+            f"accept_residual. {_NOTHING_OPENED}",
+            reason="upload_residue",
+        )
+    if found.accepted:
+        warnings.append(
+            f"{len(found.accepted)} identifiant(s) du dossier source restent "
+            "dans le NOM du gabarit, acceptés : ils s'imprimeront dans le nom "
+            "de chaque document tiré de ce gabarit."
+        )
+
+
 def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
     """The source dossier (optional) and the template parameters a gabarit
     ticket binds — judged now, as the template model will."""
@@ -11853,8 +11903,9 @@ def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
         )
     warnings: list[str] = []
     dossier_id = ""
+    dossier: dict = {}
     if str(args.get("dossier_id") or "").strip():
-        dossier_id, _dossier = _upload_dossier(args)
+        dossier_id, dossier = _upload_dossier(args)
     accept = _clean_accept_residual(args.get("accept_residual"))
     if accept and not dossier_id:
         raise ToolArgumentError(
@@ -11869,6 +11920,8 @@ def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
                               "scrub_properties": scrub}
     if mode == "create":
         params.update(_bound_creation(args, warnings))
+        if dossier_id:
+            _check_template_name(dossier, params["name"], accept, warnings)
     else:
         params.update(_bound_replacement(args, warnings))
     if not dossier_id:

@@ -655,6 +655,54 @@ def test_a_residue_of_the_source_dossier_refuses_naming_it(world):
     assert any("acceptés" in w for w in done["warnings"])
 
 
+def test_a_template_name_naming_the_source_dossier_is_refused_at_the_opening(world):
+    """Review of T9: the file scan never read the template's NAME, and the
+    name prints into the name of every document generated from it, for
+    every future client (« 2026-014 - … - Projet Mise en demeure
+    Tremblay »), and becomes its « neutral » file name. It is judged at the
+    OPENING — refused, nothing opened, no bytes lost — naming the dossier's
+    identifier, never quoting the name the caller sent."""
+    with pytest.raises(ToolArgumentError) as exc:
+        _begin_gabarit(world, CLEAN_LETTER, dossier_id="d1",
+                       name="Mise en demeure Tremblay")
+    assert exc.value.reason == "upload_residue"
+    assert "« Tremblay »" in str(exc.value) and "`name`" in str(exc.value)
+    assert "Mise en demeure" not in str(exc.value)
+    assert world["db"].peek_collection(ut.COLLECTION) == {}
+    assert world["bucket"].sessions == {}
+    # Accepted on the lawyer's word: opened, and said so.
+    opened = _begin_gabarit(world, CLEAN_LETTER, dossier_id="d1",
+                            name="Mise en demeure Tremblay",
+                            accept_residual=["Tremblay"])
+    assert any("NOM du gabarit" in w for w in opened["warnings"])
+    _put(world, opened, CLEAN_LETTER)
+    done = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert done["entity"]["name"] == "Mise en demeure Tremblay"
+
+
+def test_the_name_check_fails_closed_on_an_unreadable_party(world):
+    world["db"].seed("dossiers/d1", {
+        **world["db"].peek("dossiers/d1"),
+        "clients": [{"id": "fantome", "name": "X", "roles": [],
+                     "avocat_id": "", "avocat_name": ""}],
+        "client_ids": ["fantome"]})
+    with pytest.raises(ToolArgumentError, match="toutes les parties") as exc:
+        _begin_gabarit(world, CLEAN_LETTER, dossier_id="d1")
+    assert exc.value.reason == "upload_retry"
+    assert world["db"].peek_collection(ut.COLLECTION) == {}
+
+
+def test_a_replacement_keeps_its_name_and_is_not_name_checked(world):
+    """A replacement changes the FILE only — its name is the lawyer's, and
+    is not re-judged (the file itself still is, against the dossier)."""
+    tid = world["template"]
+    world["db"].seed(f"doc_templates/{tid}", {
+        **world["db"].peek(f"doc_templates/{tid}"),
+        "name": "Lettre Tremblay"})
+    opened = handlers.begin_upload(_replace_args(world, dossier_id="d1"))
+    assert opened["opened"] is True
+
+
 def test_without_a_source_dossier_the_scan_is_said_not_to_have_run(world):
     opened = _begin_gabarit(world, LEAKY_LETTER)
     assert any("PAS" in w for w in opened["warnings"])
@@ -665,12 +713,16 @@ def test_without_a_source_dossier_the_scan_is_said_not_to_have_run(world):
 
 
 def test_an_unreadable_party_fails_the_scan_closed(world):
+    # The party becomes unreadable AFTER the opening — rewritten at the
+    # review of T9: the opening now reads the identifiers too (the name
+    # check), so a party unreadable from the start refuses there; the
+    # finalize-side scan must still fail closed on its own read.
+    opened = _begin_gabarit(world, CLEAN_LETTER, dossier_id="d1")
     world["db"].seed("dossiers/d1", {
         **world["db"].peek("dossiers/d1"),
         "clients": [{"id": "fantome", "name": "X", "roles": [],
                      "avocat_id": "", "avocat_name": ""}],
         "client_ids": ["fantome"]})
-    opened = _begin_gabarit(world, CLEAN_LETTER, dossier_id="d1")
     _put(world, opened, CLEAN_LETTER)
     with pytest.raises(ToolArgumentError, match="toutes les parties") as exc:
         handlers.finalize_upload({"ticket_id": opened["ticket_id"]})

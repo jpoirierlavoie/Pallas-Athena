@@ -690,6 +690,39 @@ def test_the_scrub_refuses_an_unreadable_package():
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 6 bis. text_residues — a template's NAME (review of lot 2A T9)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_name_is_matched_by_the_scan_s_own_whole_word_rule():
+    """The name prints into every generated document's name: the same
+    folding and whole-word rule as the file scan, the same escape hatch."""
+    identifiers = ["Jean Tremblay", "Tremblay", "2026-001", "Roy", "ab"]
+    found = scan.text_residues("Mise en demeure — TRÉMBLAY 2026 001",
+                               identifiers)
+    assert found.residues == ("Tremblay", "2026-001")
+    assert found.accepted == ()
+    # Whole words only: « Roy » is not in « Royaume » ; « ab » too short.
+    assert scan.text_residues("Lettre au Royaume abc", identifiers) == (
+        scan.TextResidues((), ()))
+    accepted = scan.text_residues("Lettre Tremblay", identifiers,
+                                  accept=["tremblay"])
+    assert accepted == scan.TextResidues((), ("Tremblay",))
+
+
+def test_text_residues_refuses_rather_than_scanning_a_part():
+    with pytest.raises(TypeError):
+        scan.text_residues("Tremblay", "Tremblay")
+    with pytest.raises(TypeError):
+        scan.text_residues(b"Tremblay", ["Tremblay"])
+    with pytest.raises(scan.LeakScanError):
+        scan.text_residues("x" * (scan.MAX_SCANNED_CHARS + 1), ["Tremblay"])
+    with pytest.raises(scan.LeakScanError):
+        scan.text_residues("x", [f"nom{i:05d}" for i in
+                                 range(scan.MAX_IDENTIFIERS + 1)])
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 7. services/docx_identifiers
 # ══════════════════════════════════════════════════════════════════════
 

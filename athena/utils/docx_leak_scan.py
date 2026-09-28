@@ -125,10 +125,12 @@ __all__ = [
     "Residue",
     "SCRUBBED_CORE_PROPERTIES",
     "ScrubbedDocx",
+    "TextResidues",
     "fold_key",
     "fold_tokens",
     "scan_identifiers",
     "scrub_core_properties",
+    "text_residues",
     "words_within",
 ]
 
@@ -485,6 +487,56 @@ def _prepared(identifiers: Iterable[str]) -> tuple[list[tuple[str, tuple]], list
             continue
         kept.setdefault(key, identifier)
     return [(spelling, key) for key, spelling in kept.items()], skipped
+
+
+class TextResidues(NamedTuple):
+    """:func:`text_residues`'s result: the identifiers found in the text
+    (their caller spelling), split into ``residues`` (not accepted) and
+    ``accepted``."""
+
+    residues: tuple[str, ...]
+    accepted: tuple[str, ...]
+
+
+def text_residues(
+    text: str,
+    identifiers: Iterable[str],
+    *,
+    accept: Iterable[str] = (),
+) -> TextResidues:
+    """The identifiers found in a SHORT text a template carries beside its
+    file — its NAME, above all (review of lot 2A T9).
+
+    A template's name is not in the package the scan reads, yet it prints
+    into the name of every document generated from it, for every future
+    client (``models.document.projet_document_name`` — « REF - date - Projet
+    {name} »): a name that still says « Tremblay » is the same leak as a
+    body that does. Same folding, same whole-word rule, same *accept*
+    escape hatch and same bounds as :func:`scan_identifiers`; too-short
+    identifiers are not matched. Raises :class:`LeakScanError` beyond
+    :data:`MAX_IDENTIFIERS` or :data:`MAX_SCANNED_CHARS`, never a partial
+    answer.
+    """
+    if isinstance(identifiers, (str, bytes)) or isinstance(accept, (str, bytes)):
+        raise TypeError("identifiers and accept are collections of strings")
+    if not isinstance(text, str):
+        raise TypeError("text is a string")
+    if len(text) > MAX_SCANNED_CHARS:
+        raise LeakScanError(_TOO_LARGE_MESSAGE)
+    prepared, _skipped = _prepared(identifiers)
+    if len(prepared) > MAX_IDENTIFIERS:
+        raise LeakScanError(
+            "Trop d'identifiants à contrôler d'un coup : le contrôle refuse "
+            "plutôt que de n'en vérifier qu'une partie."
+        )
+    accept_keys = {fold_key(a) for a in accept if isinstance(a, str)}
+    container = fold_key(text)
+    residues: list[str] = []
+    accepted: list[str] = []
+    for spelling, key in prepared:
+        if words_within(key, container):
+            (accepted if key in accept_keys else residues).append(spelling)
+    return TextResidues(tuple(residues), tuple(accepted))
 
 
 def scan_identifiers(
