@@ -161,6 +161,7 @@ __all__ = [
     "record_staged_digest",
     "refuse_ticket",
     "release_ticket",
+    "staged_after_window",
     "staged_blob",
     "staged_exists",
     "staged_mismatch",
@@ -828,6 +829,29 @@ def staged_mismatch(ticket: dict, blob) -> Optional[str]:
                         _canonical_md5(ticket.get("declared_md5_b64"))):
         return "empreinte_differente"
     return None
+
+
+def staged_after_window(ticket: dict, blob) -> bool:
+    """True when a claim taken PAST the ticket's window found bytes that
+    were themselves created after it — a late upload, never filed.
+
+    A fresh claim is taken before ``open_until`` (else the claim itself
+    expires the ticket), so its bytes are in time by construction. A stale
+    claim is RECLAIMED whatever the clock (module docstring) — right when
+    the first finalizer died holding bytes that arrived in time, wrong when
+    it died holding NOTHING (its release failed) and the PUT came after the
+    hour: without this check that late upload would be filed, where the
+    ticket, the consent screen and every refusal say it never is (review
+    of T9). Judged on the object's OWN creation instant (``timeCreated``,
+    loaded by ``reload()``); an object whose instant is unknown is not
+    called late."""
+    ticket = ticket or {}
+    open_until = _as_datetime(ticket.get("open_until"))
+    claimed_at = _as_datetime(ticket.get("claimed_at"))
+    created = _as_datetime(getattr(blob, "time_created", None))
+    if open_until is None or claimed_at is None or created is None:
+        return False
+    return claimed_at >= open_until and created > open_until
 
 
 def read_staged_bytes(ticket: dict, blob) -> bytes:

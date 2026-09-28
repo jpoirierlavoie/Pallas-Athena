@@ -520,6 +520,45 @@ def test_a_stale_claim_is_reclaimed_and_files_the_document_once(world):
     assert ticket["staging_object"] not in world["bucket"].objects
 
 
+def test_a_late_upload_is_never_filed_even_on_a_stale_reclaim(world):
+    """Review of T9: a stale claim is reclaimed whatever the clock — right
+    when the first finalizer died holding bytes that arrived in time. But
+    when it died holding NOTHING (its release failed) and the PUT came
+    after the hour, the reclaim filed that late upload, where the ticket,
+    the consent screen and every refusal say it never is."""
+    opened = _begin_document(world)
+    staging = _staging(world, opened["ticket_id"])
+    # A finalizer claims at 50 min, finds nothing, and dies before its
+    # release lands: the claim stays held.
+    ut.claim_ticket(opened["ticket_id"], now=NOW + timedelta(minutes=50))
+    # The bytes arrive at 70 min — ten minutes past the hour.
+    world["bucket"].put(staging, PDF, content_type="application/pdf",
+                        time_created=NOW + timedelta(minutes=70))
+    world["clock"]["now"] = NOW + timedelta(minutes=80)
+    with pytest.raises(ToolArgumentError, match="expiré") as exc:
+        handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert exc.value.reason == "upload_ticket_closed"
+    assert _documents(world) == {}
+    assert staging not in world["bucket"].objects
+    ticket = _ticket(world, opened["ticket_id"])
+    assert ticket["status"] == ut.STATUS_REFUSED
+    assert ticket["refusal_reason"] == "expire"
+
+
+def test_bytes_in_time_are_filed_by_a_reclaim_past_the_hour(world):
+    """The counterpart: the bytes arrived within the hour, the finalizer
+    died holding them — the reclaim past the hour files them, once."""
+    opened = _begin_document(world)
+    staging = _staging(world, opened["ticket_id"])
+    world["bucket"].put(staging, PDF, content_type="application/pdf",
+                        time_created=NOW + timedelta(minutes=55))
+    ut.claim_ticket(opened["ticket_id"], now=NOW + timedelta(minutes=58))
+    world["clock"]["now"] = NOW + timedelta(minutes=80)
+    done = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert done["already_finalized"] is False
+    assert len(_documents(world)) == 1
+
+
 def test_a_filed_ticket_answers_again_without_a_key_and_writes_nothing(world):
     opened = _begin_document(world)
     _put(world, opened, PDF)

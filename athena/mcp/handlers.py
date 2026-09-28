@@ -12355,6 +12355,14 @@ def _finalize_upload_impl(args: dict) -> dict:
     except Exception:
         _release_upload(holder)
         raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    if upload_ticket_model.staged_after_window(holder.ticket, blob):
+        # A stale claim reclaimed past the hour, over bytes that arrived
+        # after it (the first finalizer died holding nothing — its release
+        # failed): a late upload is never filed (review of T9).
+        _settle_refused(holder, "expire")
+        raise ToolArgumentError(
+            upload_ticket_model.message_for(upload_ticket_model.REASON_EXPIRED),
+            reason="upload_ticket_closed")
     mismatch = upload_ticket_model.staged_mismatch(holder.ticket, blob)
     if mismatch == "taille_differente":
         _settle_refused(holder, mismatch)

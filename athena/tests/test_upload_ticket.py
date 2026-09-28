@@ -954,6 +954,27 @@ def test_the_staged_object_is_compared_on_its_own_size_and_md5(fake, gcs):
     assert ut.staged_mismatch(ticket, ut.staged_blob(ticket)) == "empreinte_differente"
 
 
+def test_bytes_created_after_the_window_are_late_only_on_a_late_claim(fake, gcs):
+    """Review of T9 — staged_after_window: a claim taken past open_until
+    over bytes created past it (the reclaim of a claim whose holder died
+    holding nothing) is a LATE upload. Bytes created in time, or any claim
+    within the window, are not; an unknown creation instant is not called
+    late."""
+    ticket = _open(fake)
+    open_until = ticket["open_until"]
+    late = gcs.put(ticket["staging_object"], PDF,
+                   time_created=open_until + timedelta(minutes=5))
+    blob = ut.staged_blob(ticket)
+    past = {**ticket, "claimed_at": open_until + timedelta(minutes=10)}
+    within = {**ticket, "claimed_at": open_until - timedelta(minutes=1)}
+    assert ut.staged_after_window(past, blob) is True
+    assert ut.staged_after_window(within, blob) is False
+    late.time_created = open_until - timedelta(minutes=1)
+    assert ut.staged_after_window(past, ut.staged_blob(ticket)) is False
+    blob.time_created = None
+    assert ut.staged_after_window(past, blob) is False
+
+
 def test_a_composite_object_without_an_md5_is_refused(fake, gcs):
     ticket = _open(fake)
     gcs.put(ticket["staging_object"], PDF)
