@@ -516,9 +516,15 @@ def test_the_sweep_is_not_vacuous():
 # 5. Les mutateurs que le connecteur atteint — dérivés du source
 # ══════════════════════════════════════════════════════════════════════
 
+# ``upload``/``ingest``/``copy`` since lot 2A (T8): the connector's
+# generations reach the two document creators (through services/gabarits
+# and models/document.copy_document), which noted no commit until then — a
+# failure after the upload (the payload builder) would have come back as a
+# refusal, and the retry saved a second document.
 _MUTATOR_VERB = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
-    r"delete|toggle|complete|attach|link|add|unlink|ensure)_"
+    r"delete|toggle|complete|attach|link|add|unlink|ensure|upload|ingest|"
+    r"copy)_"
 )
 # Lot 1 completeness review: lot 1b's handlers reach models THROUGH the
 # service modules the web routes also use (``services/protocoles.py``,
@@ -540,6 +546,10 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     # Finds, or creates through create_note.
     ("note", "ensure_analyse_note"): (("note", "create_note"),),
 }
+# Mutators that write THEMSELVES but stamp through ONE shared record
+# builder: the stamp is checked on the builder, and the mutator must call it
+# (the commit point stays the mutator's own, after its last write).
+_STAMPED_THROUGH: dict[tuple[str, str], tuple[str, str]] = {}
 _STAMP_HELPERS = {"stamp_create", "stamp_update", "update_fields", "create_fields"}
 # ``commit_document``/``commit_fields`` since 2026-09-25 (lot 0a, étape 5):
 # the etag-guarded edits write through ``models.concurrency``, and its call
@@ -551,14 +561,24 @@ _WRITE_ATTRS = {"set", "update", "create", "commit",
 def _model_references(path: pathlib.Path) -> set[tuple[str, str]]:
     """``(models module, function)`` for every ``<alias>.<verb>_…`` in the
     module at *path*, where ``<alias>`` is a ``from models import X as
-    <alias>`` binding."""
+    <alias>`` binding — and, since lot 2A (T8), every mutator imported BY
+    NAME (``from models.X import verb_…``): services/gabarits reaches
+    ``upload_document`` and ``ensure_system_folder`` that way, and an
+    alias-only sweep never saw them."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     aliases = {}
-    for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module == "models":
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module == "models" and node in tree.body:
             for a in node.names:
                 aliases[a.asname or a.name] = a.name
-    found = set()
+        elif (node.module or "").startswith("models."):
+            module = node.module.split(".", 1)[1]
+            for a in node.names:
+                if _MUTATOR_VERB.match(a.name):
+                    found.add((module, a.name))
     for node in ast.walk(tree):
         if (isinstance(node, ast.Attribute)
                 and isinstance(node.value, ast.Name)
@@ -609,6 +629,27 @@ def _in_except_handler(fn: ast.AST, target: ast.AST) -> bool:
     return False
 
 
+def test_the_stamped_through_entries_are_reached_and_really_build_through():
+    reached = reached_mutators()
+    for (module, name), builder in _STAMPED_THROUGH.items():
+        assert (module, name) in reached, f"stale entry: {module}.{name}"
+        called = {n.func.id for n in ast.walk(_function(module, name))
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert builder[1] in called, f"{module}.{name} no longer calls {builder[1]}"
+
+
+def test_a_mutator_imported_by_name_is_reached(tmp_path):
+    """Lot 2A (T8): the sweep follows ``from models.X import verb_…`` — the
+    form services/gabarits uses — and not only the aliased modules."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "from models.document import projet_document_name, upload_document\n"
+        "from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder\n"
+        "def f():\n    upload_document()\n", encoding="utf-8")
+    assert _model_references(probe) == {
+        ("document", "upload_document"), ("folder", "ensure_system_folder")}
+
+
 def test_the_reached_set_is_derived_and_not_vacuous():
     reached = reached_mutators()
     # Anchors, not an inventory: one per family the connector writes.
@@ -646,7 +687,17 @@ def test_the_delegating_mutators_are_reached_and_really_delegate():
 
 def _assert_stamps_and_notes_its_commit(module: str, name: str) -> None:
     fn = _function(module, name)
-    stamps = [c for h in _STAMP_HELPERS for c in _calls(fn, h)]
+    through = _STAMPED_THROUGH.get((module, name))
+    if through is not None:
+        called = {n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Name)}
+        assert through[1] in called, (
+            f"models.{module}.{name} no longer builds its record through "
+            f"{through[1]}")
+        builder = _function(*through)
+        stamps = [c for h in _STAMP_HELPERS for c in _calls(builder, h)]
+    else:
+        stamps = [c for h in _STAMP_HELPERS for c in _calls(fn, h)]
     assert stamps, f"models.{module}.{name} writes without a provenance stamp"
 
     commits = [c for c in _calls(fn, "note_commit")

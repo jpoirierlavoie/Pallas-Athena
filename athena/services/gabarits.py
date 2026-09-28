@@ -28,12 +28,20 @@ The pipeline, in order:
    used to CUT every single-line value at 2 000 characters: a one-paragraph
    ``{{dossier.sommaire}}`` (5 000 allowed by the model) lost its end in
    the letter, with nothing on screen to say so.
+   The connector's twin is :func:`values_for_connector` (lot 2A, T8): the
+   SERVER's auto values, plus the blocs and manual fields Claude supplied,
+   each checked against the template — never a value for a field the
+   application resolves.
 5. :func:`fill` — the engine, with the ``report=`` channel (SPEC H.4 B9).
 6. :func:`save_into_projets` — into the dossier's « Projets » system folder,
    found by its ROLE (``ensure_system_folder``, lot 2A T2), under the uid
    the caller established (``request_uid()`` on the web, ``owner_uid()`` on
    the connector) — checked by ``require_uid`` BEFORE the folder is touched,
    so nothing at all is written for a request that could not file it.
+   :func:`save_generated` is its general form (lot 2A, T8): any generated
+   .docx — a filled gabarit, a Markdown document printed on the note
+   template —, its own name, category and provenance, into « Projets » or
+   a folder the caller resolved.
 
 Steps 1-4 READ only and live in :mod:`services.gabarit_champs` (lot 2A,
 T6), re-exported here so the route keeps one import: a connector READ
@@ -60,10 +68,16 @@ from models.document import projet_document_name, upload_document
 from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder
 from services.gabarit_champs import (  # noqa: F401 — re-exported, see above
     AUTO_MAX_CHARS,
+    BLOC_MAX_CHARS,
+    BLOCS_MAX_ITEMS,
+    BLOCS_TOTAL_MAX_CHARS,
+    CHAMP_MANUEL_MAX_CHARS,
+    CHAMPS_MANUELS_MAX_ITEMS,
     DOSSIER_NOT_FOUND,
     FIELD_PREFIX,
     MANUAL_MAX_CHARS,
     MULTILINE_MAX_CHARS,
+    ConnectorValues,
     GenerationRefused,
     Inventory,
     InventoryField,
@@ -75,6 +89,7 @@ from services.gabarit_champs import (  # noqa: F401 — re-exported, see above
     passthrough_fields,
     resolve_auto_values,
     resolve_slots,
+    values_for_connector,
     values_from_submission,
 )
 from utils import storage_identity
@@ -135,8 +150,18 @@ def output_names(
 ) -> tuple[str, str]:
     """``(display_name, filename)`` of a generated document:
     ``"REF - YYYY-MM-DD - Projet Nom"`` and its safe ``.docx`` filename."""
+    return projet_names(dossier, template.get("name", "Gabarit"), today)
+
+
+def projet_names(
+    dossier: Optional[dict], name: str, today: date
+) -> tuple[str, str]:
+    """``(display_name, filename)`` of a « projet » named *name*:
+    ``"REF - YYYY-MM-DD - Projet Nom"`` and its safe ``.docx`` filename
+    (``projet_{date}.docx`` when the name sanitizes to nothing — an
+    accent-only title)."""
     reference = (dossier or {}).get("file_number", "")
-    display = projet_document_name(reference, template.get("name", "Gabarit"), today)
+    display = projet_document_name(reference, name, today)
     out_name = secure_filename(f"{display}.docx")
     if not out_name.lower().endswith(".docx"):
         out_name = f"projet_{today.isoformat()}.docx"
@@ -169,35 +194,89 @@ def save_into_projets(
     could not be obtained — the document is NEVER saved at the dossier root
     instead, which the old ``get_or_create_folder`` path did on its None).
     """
+    display, out_name = output_names(template, dossier, today)
+    doc, _folder = save_generated(
+        dossier=dossier, filled=filled, uid=uid,
+        display_name=display, filename=out_name,
+        category=template.get("category", "autre"),
+        genere_depuis=generated_from(template),
+        tags=("gabarit",),
+    )
+    return doc
+
+
+# The « no folder named » default of save_generated: the « Projets » system
+# folder, found by its role. ``None`` means the dossier root.
+PROJETS = object()
+
+
+def ensure_projets(dossier_id: str) -> dict:
+    """*dossier_id*'s « Projets » system folder — by its ROLE, created on
+    first use — or :class:`GenerationRefused` (``projets_unavailable``):
+    never a silent fall back to the dossier root."""
+    folder, errors = ensure_system_folder(dossier_id, SYSTEM_ROLE_PROJETS)
+    if folder is None:
+        raise GenerationRefused(
+            "projets_unavailable", errors[0] if errors else PROJETS_UNAVAILABLE)
+    return folder
+
+
+def save_generated(
+    *,
+    dossier: dict,
+    filled: bytes,
+    uid: str,
+    display_name: str,
+    filename: str,
+    category: str,
+    genere_depuis: str,
+    category_source: str = "juriste",
+    tags: tuple = (),
+    document_date: Optional[object] = None,
+    folder: object = PROJETS,
+) -> tuple[dict, Optional[dict]]:
+    """File a generated .docx as a NEW document of *dossier*; return
+    ``(document, folder)`` — *folder* the one it landed in, ``None`` for the
+    dossier root.
+
+    *folder*: :data:`PROJETS` (the default) → the « Projets » system folder,
+    ensured by its role; ``None`` → the dossier root; a folder dict the
+    CALLER resolved in this dossier (the model re-checks it). The uid is
+    checked FIRST, before « Projets » is touched. *category_source* says who
+    chose *category*: « juriste » for a template's own category, « mcp »
+    when Claude chose it (shown « présumée »).
+
+    Raises :class:`GenerationRefused` as :func:`save_into_projets` does.
+    """
     try:
         uid = storage_identity.require_uid(uid)
     except storage_identity.StorageIdentityUnavailable as exc:
         raise GenerationRefused("save_failed", str(exc)) from exc
     dossier_id = dossier.get("id", "")
-    folder, folder_errors = ensure_system_folder(dossier_id, SYSTEM_ROLE_PROJETS)
-    if folder is None:
-        raise GenerationRefused(
-            "projets_unavailable",
-            folder_errors[0] if folder_errors else PROJETS_UNAVAILABLE,
-        )
-    display, out_name = output_names(template, dossier, today)
+    if folder is PROJETS:
+        target = ensure_projets(dossier_id)
+    else:
+        target = folder if isinstance(folder, dict) else None
     metadata = {
-        "category": template.get("category", "autre"),
-        "folder_id": folder["id"],
-        "display_name": display,
-        "genere_depuis": generated_from(template),
-        "tags": ["gabarit"],
+        "category": category or "autre",
+        "folder_id": (target or {}).get("id"),
+        "display_name": display_name,
+        "genere_depuis": genere_depuis,
+        "tags": list(tags),
     }
+    if document_date is not None:
+        metadata["document_date"] = document_date
     doc, errors = upload_document(
         dossier_id=dossier_id,
         dossier_file_number=dossier.get("file_number", ""),
         file_stream=io.BytesIO(filled),
-        filename=out_name,
+        filename=filename,
         file_size=len(filled),
         metadata=metadata,
         user_id=uid,
+        category_source=category_source,
     )
     if errors or doc is None:
         raise GenerationRefused(
             "save_failed", errors[0] if errors else FILL_ERROR)
-    return doc
+    return doc, target

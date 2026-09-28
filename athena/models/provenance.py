@@ -52,6 +52,16 @@ and a record that forgot it would tell the write protocol « nothing was
 written » about a write that was. Over-reporting a commit only costs a
 retry refusal; under-reporting one invites a duplicate.
 
+One kind of commit is recorded APART (lot 2A, T8): a write a retry
+REPRODUCES rather than repeats — an ensure on a deterministic id, the
+« Projets » system folder a generation creates on first use
+(``models/folder.ensure_system_folder``). ``note_commit(…, idempotent=True)``
+keeps it out of :func:`committed_writes`: a call that fails after such a
+write ALONE has committed nothing a retry would write twice, and reporting
+« ENREGISTRÉE — NE PAS RÉESSAYER » (naming a folder as « the write ») would
+forbid the one retry that is safe — the generation whose upload failed
+after « Projets » was created. :func:`idempotent_writes` lists them.
+
 Pure: no Firestore, no model import. Flask is imported lazily and only to
 read the current request.
 """
@@ -71,7 +81,8 @@ _OVERRIDE: contextvars.ContextVar[Optional[tuple[str, str]]] = (
     contextvars.ContextVar("provenance_override", default=None)
 )
 # The commits noted inside the innermost writing_via block; None outside.
-_COMMITS: contextvars.ContextVar[Optional[list[tuple[str, str]]]] = (
+# Each entry is ``(collection, doc_id, idempotent)`` — see note_commit.
+_COMMITS: contextvars.ContextVar[Optional[list[tuple[str, str, bool]]]] = (
     contextvars.ContextVar("provenance_commits", default=None)
 )
 
@@ -137,7 +148,7 @@ def writing_via(via: str, *, tool: str = "") -> Iterator[None]:
     if via not in VALID_VIA:
         raise ValueError(f"unknown provenance via: {via!r}")
     enclosing = _COMMITS.get()
-    inner: list[tuple[str, str]] = []
+    inner: list[tuple[str, str, bool]] = []
     override_token = _OVERRIDE.set((via, str(tool or "")))
     commits_token = _COMMITS.set(inner)
     try:
@@ -214,21 +225,37 @@ def stamp_create(
     return doc
 
 
-def note_commit(collection: str, doc_id: str) -> None:
+def note_commit(collection: str, doc_id: str, *, idempotent: bool = False) -> None:
     """Record that a write to ``collection/doc_id`` has COMMITTED.
 
     Called by a mutator right after its Firestore write returns. A no-op
     outside a :func:`writing_via` block.
+
+    ``idempotent=True`` — a write a retry REPRODUCES, never repeats (an
+    ensure on a deterministic id): recorded, but left out of
+    :func:`committed_writes` (see the module docstring). Only a mutator
+    whose second run provably writes NOTHING new may pass it.
     """
     commits = _COMMITS.get()
     if commits is not None:
-        commits.append((str(collection), str(doc_id or "")))
+        commits.append((str(collection), str(doc_id or ""), bool(idempotent)))
 
 
 def committed_writes() -> tuple[tuple[str, str], ...]:
-    """The commits noted so far in the innermost :func:`writing_via` block.
+    """The commits noted so far in the innermost :func:`writing_via` block
+    — those a retry would REPEAT (the idempotent ones are left out).
 
     A copy: a reader can never edit the record. Empty outside a block.
     """
     commits = _COMMITS.get()
-    return tuple(commits) if commits is not None else ()
+    if commits is None:
+        return ()
+    return tuple((c, i) for c, i, idem in commits if not idem)
+
+
+def idempotent_writes() -> tuple[tuple[str, str], ...]:
+    """The commits noted with ``idempotent=True`` in the innermost block."""
+    commits = _COMMITS.get()
+    if commits is None:
+        return ()
+    return tuple((c, i) for c, i, idem in commits if idem)

@@ -1274,7 +1274,19 @@ def delete_template(template_id: str) -> tuple[bool, str]:
 
 def get_template_bytes(template_id: str) -> Optional[bytes]:
     """Download the current template file (for filling)."""
-    template = get_template(template_id)
+    return template_file_bytes(get_template(template_id))
+
+
+def template_file_bytes(template: Optional[dict]) -> Optional[bytes]:
+    """The bytes of the file THIS record names — the version it reports.
+
+    A replacement writes a NEW object (``v{N}`` paths) and never overwrites
+    one, so a record a caller already holds keeps naming its own bytes. A
+    caller that reports « gabarit X, version N » fills from this, never from
+    :func:`get_template_bytes`, whose re-read could pick up a replacement
+    committed in between and print version N+1 under the name of N (lot 2A,
+    T8). ``None`` when the record names no file or the download fails.
+    """
     if not template or not template.get("storage_path"):
         return None
     try:
@@ -1282,8 +1294,9 @@ def get_template_bytes(template_id: str) -> Optional[bytes]:
         return bucket.blob(template["storage_path"]).download_as_bytes()
     except Exception as exc:
         logger.warning(
-            "get_template_bytes failed for %s: %s",
-            sanitize_log_value(template_id), type(exc).__name__,
+            "template_file_bytes failed for %s: %s",
+            sanitize_log_value(str(template.get("id") or "")),
+            type(exc).__name__,
         )
         return None
 

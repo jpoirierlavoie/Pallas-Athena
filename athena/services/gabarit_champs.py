@@ -4,8 +4,10 @@ What a generation needs before it writes anything: the dossier and the
 party slots (:func:`resolve_slots`), the auto values resolved server-side
 (:func:`resolve_auto_values`), the placeholder inventory
 (:func:`field_inventory` — kinds and RESOLVED FLAGS, never a value) or the
-popup's prefilled fields (:func:`form_fields`), and the check of a
-submitted form (:func:`values_from_submission`). Nothing here writes: the
+popup's prefilled fields (:func:`form_fields`), the check of a
+submitted form (:func:`values_from_submission`), and the connector's fill
+values (:func:`values_for_connector`, lot 2A T8 — the server's auto values
+plus the blocs and manual fields Claude wrote). Nothing here writes: the
 fill and the save into « Projets » live in :mod:`services.gabarits`, which
 re-exports every name of this module so the web route keeps ONE import.
 
@@ -496,3 +498,248 @@ def values_from_submission(
                 missing += 1
         values[name] = value
     return values, missing
+
+
+# ── 5. The connector's values (lot 2A, T8 — ``fill_gabarit``) ────────────
+#
+# The web fills what the lawyer SUBMITTED in the popup (step 4); the
+# connector fills what the SERVER resolves, plus the two things only Claude
+# can write: the gabarit's BLOCS (passthrough names — « {{FAITS}} ») and its
+# MANUAL fields (letter metadata). Nothing else is Claude's: an auto field
+# named as a bloc is refused, never « overridden » — the application, not
+# the model, prints the parties and the file number (SPEC H.4 D1).
+#
+# Ceilings (SPEC H.4 §4.3; the connector's schema copies them as literals,
+# pinned against these by tests/test_gabarit_mcp.py): a bloc is a SECTION
+# of a procedure, 20 000 characters; all the blocs of one call, 60 000 —
+# the 1 MB /mcp body cap stays the hard bound; a manual field is short
+# letter metadata, the form's own 2 000.
+BLOCS_MAX_ITEMS = 12
+CHAMPS_MANUELS_MAX_ITEMS = 12
+BLOC_MAX_CHARS = 20_000
+BLOCS_TOTAL_MAX_CHARS = 60_000
+CHAMP_MANUEL_MAX_CHARS = MANUAL_MAX_CHARS
+
+# What the fill engine strips in silence (utils/docx_fill._CONTROL_RE): a
+# C0 control character other than tab, newline and carriage return. Refused
+# rather than stripped — nothing supplied is altered without a word.
+_CONTROL_CHARS = frozenset(
+    chr(c) for c in range(32) if chr(c) not in ("\t", "\n", "\r"))
+_NOTHING = "Rien n'a été généré."
+
+
+@dataclass(frozen=True)
+class ConnectorValues:
+    """What a connector fill hands the engine, and what it can report —
+    names and counts, never a value."""
+
+    values: dict = dc_field(default_factory=dict)
+    rich_values: dict = dc_field(default_factory=dict)
+    auto_resolved: tuple = ()          # auto names the server resolved
+    auto_missing: tuple = ()           # → « [CHAMP MANQUANT : …] »
+    manual_missing: tuple = ()         # → « [À COMPLÉTER : …] »
+    blocs_plain: tuple = ()            # supplied, filled as paragraphs
+    blocs_markdown: tuple = ()         # supplied, sent to the rich path
+    blocs_open: tuple = ()             # passthrough names nobody supplied
+
+
+def _names_fr(names) -> str:
+    names = [f"« {n} »" for n in names]
+    return ", ".join(names) if names else "aucun"
+
+
+def _text_problem(text: str, ceiling: int) -> str:
+    """The reason code a supplied text is refused for, or ``""``."""
+    if not text.strip():
+        return "blank"
+    if len(text.replace("\r\n", "\n")) > ceiling:
+        return "too_long"
+    if "{{" in text or "}}" in text:
+        return "sigils"
+    if any(ch in _CONTROL_CHARS for ch in text):
+        return "control"
+    return ""
+
+
+def _refuse_text(problem: str, where: str, ceiling: int, *, field: str) -> GenerationRefused:
+    if problem == "too_long":
+        return GenerationRefused("value_too_long", (
+            f"{where} dépasse {ceiling} caractères : découpez-le, ou "
+            f"rédigez la suite dans Word. {_NOTHING}"), field=field)
+    if problem == "sigils":
+        # The engine would read « {{nom}} » inside the text as a field to
+        # fill (its later passes rescan what an earlier one inserted) and
+        # print dossier data there — the review's « re-substitution ».
+        return GenerationRefused("value_refused", (
+            f"{where} contient « {{{{ » ou « }}}} » : l'application les "
+            "lirait comme un champ à remplir et y imprimerait des données du "
+            f"dossier. Retirez-les. {_NOTHING}"), field=field)
+    if problem == "control":
+        return GenerationRefused("value_refused", (
+            f"{where} contient un caractère de contrôle invisible, que le "
+            f"document ne peut pas porter : retirez-le. {_NOTHING}"),
+            field=field)
+    return GenerationRefused("value_refused", (
+        f"{where} est vide : omettez-le plutôt — il restera tel quel pour "
+        f"Word. {_NOTHING}"), field=field)
+
+
+def values_for_connector(
+    template: dict,
+    resolved: Mapping[str, str],
+    *,
+    blocs: list,
+    manuels: list,
+) -> ConnectorValues:
+    """The fill of *template* on the server's *resolved* auto values plus
+    the blocs and manual fields Claude supplied — or a refusal.
+
+    *blocs* are ``{nom, contenu, markdown?}`` dicts, *manuels* ``{nom,
+    valeur}`` dicts, in request order; names are compared EXACTLY with the
+    template's placeholders, as ``list_templates`` reports them. Raises
+    :class:`GenerationRefused` — nothing is filled — for: too many entries
+    (``too_many_items``); a bloc that names no passthrough placeholder of
+    the template, or names an auto or manual field (``bloc_unknown``); a
+    manual entry that names no manual field (``manual_unknown``); a name
+    given twice, or both as a bloc and as a manual field (``bloc_conflict``);
+    a manual value outside its option list (``manual_option_invalid``); a
+    text past its ceiling (``value_too_long``); an empty text, a text
+    carrying ``{{``/``}}`` or a control character (``value_refused``).
+    Positions in the messages are 1-based; a supplied name is never quoted
+    unless it IS a placeholder of the template.
+
+    Markdown hygiene (autolinks, the chevrons ``bleach`` would strip) is the
+    caller's, BEFORE this: it owns the normalization the note writes share.
+    """
+    placeholders = [p for p in (template.get("placeholders") or [])
+                    if isinstance(p, str)]
+    classification = classify_placeholders(placeholders)
+    auto_names = set(classification.auto)
+    manual_names = set(classification.manual)
+    passthrough = [n for n in placeholders
+                   if n not in auto_names and n not in manual_names]
+
+    if len(blocs) > BLOCS_MAX_ITEMS:
+        raise GenerationRefused("too_many_items", (
+            f"`blocs` : {BLOCS_MAX_ITEMS} blocs au plus par appel "
+            f"({len(blocs)} reçus). {_NOTHING}"), field="blocs")
+    if len(manuels) > CHAMPS_MANUELS_MAX_ITEMS:
+        raise GenerationRefused("too_many_items", (
+            f"`champs_manuels` : {CHAMPS_MANUELS_MAX_ITEMS} champs au plus "
+            f"par appel ({len(manuels)} reçus). {_NOTHING}"),
+            field="champs_manuels")
+
+    supplied: dict[str, tuple[str, bool]] = {}      # bloc name → (text, md)
+    seen_at: dict[str, str] = {}                    # name → where first named
+    total = 0
+    for position, entry in enumerate(blocs, start=1):
+        where = f"Le bloc n° {position}"
+        name = str((entry or {}).get("nom") or "")
+        if name in auto_names:
+            raise GenerationRefused("bloc_unknown", (
+                f"{where} désigne « {name} », un champ que l'application "
+                f"remplit elle-même depuis le dossier : retirez-le. {_NOTHING}"),
+                field=name)
+        if name in manual_names:
+            raise GenerationRefused("bloc_unknown", (
+                f"{where} désigne « {name} », un champ manuel : passez-le "
+                f"dans `champs_manuels`. {_NOTHING}"), field=name)
+        if name not in passthrough:
+            raise GenerationRefused("bloc_unknown", (
+                f"{where} ne désigne aucun bloc de ce gabarit. Blocs à "
+                f"rédiger : {_names_fr(passthrough)}. Écrivez le nom "
+                "exactement comme list_templates (avec template_id) le "
+                f"rapporte — la casse compte. {_NOTHING}"), field="blocs")
+        if name in seen_at:
+            raise GenerationRefused("bloc_conflict", (
+                f"{where} et {seen_at[name]} désignent le même bloc "
+                f"« {name} » : un bloc se rédige une seule fois. {_NOTHING}"),
+                field=name)
+        seen_at[name] = where.replace("Le bloc", "le bloc")
+        text = (entry or {}).get("contenu")
+        text = text if isinstance(text, str) else ""
+        problem = _text_problem(text, BLOC_MAX_CHARS)
+        if problem:
+            raise _refuse_text(problem, where, BLOC_MAX_CHARS, field=name)
+        total += len(text.replace("\r\n", "\n"))
+        supplied[name] = (text, bool((entry or {}).get("markdown", False)))
+    if total > BLOCS_TOTAL_MAX_CHARS:
+        raise GenerationRefused("value_too_long", (
+            f"`blocs` : {total} caractères au total, au-delà de "
+            f"{BLOCS_TOTAL_MAX_CHARS} par appel. Rédigez le reste dans Word, "
+            f"ou générez en deux documents. {_NOTHING}"), field="blocs")
+
+    manual_supplied: dict[str, str] = {}
+    for position, entry in enumerate(manuels, start=1):
+        where = f"Le champ manuel n° {position}"
+        name = str((entry or {}).get("nom") or "")
+        if name not in manual_names:
+            if name in passthrough:
+                detail = (f"désigne « {name} », un bloc : passez-le dans "
+                          "`blocs`.")
+            elif name in auto_names:
+                detail = (f"désigne « {name} », un champ que l'application "
+                          "remplit elle-même : retirez-le.")
+            else:
+                detail = ("ne désigne aucun champ manuel de ce gabarit. "
+                          f"Champs manuels : {_names_fr(sorted(manual_names))}.")
+            raise GenerationRefused("manual_unknown",
+                                    f"{where} {detail} {_NOTHING}",
+                                    field="champs_manuels")
+        if name in seen_at:
+            raise GenerationRefused("bloc_conflict", (
+                f"{where} et {seen_at[name]} désignent le même champ "
+                f"« {name} » : nommez-le une seule fois. {_NOTHING}"),
+                field=name)
+        seen_at[name] = where.replace("Le champ", "le champ")
+        raw = (entry or {}).get("valeur")
+        raw = raw if isinstance(raw, str) else ""
+        if raw.strip():
+            problem = _text_problem(raw, CHAMP_MANUEL_MAX_CHARS)
+            if problem:
+                raise _refuse_text(problem, where, CHAMP_MANUEL_MAX_CHARS,
+                                   field=name)
+        options = manual_options(name)
+        if options and raw.strip() and raw.strip() not in {v for _, v in options}:
+            raise GenerationRefused("manual_option_invalid", (
+                f"La valeur du champ manuel « {name} » ne figure pas dans sa "
+                f"liste. Valeurs admises : {_names_fr(v for _, v in options)} "
+                f"(list_templates les rapporte). {_NOTHING}"), field=name)
+        manual_supplied[name] = raw
+
+    values: dict[str, str] = {}
+    rich_values: dict[str, str] = {}
+    auto_resolved, auto_missing, manual_missing = [], [], []
+    for name in placeholders:
+        if name in auto_names:
+            value = str(resolved.get(name) or "")
+            if value:
+                auto_resolved.append(name)
+            else:
+                value = fallback_value(name, is_auto=True)
+                auto_missing.append(name)
+            values[name] = value
+        elif name in manual_names:
+            value = manual_value(name, manual_supplied.get(name, ""))
+            if value == fallback_value(name, is_auto=False):
+                manual_missing.append(name)
+            values[name] = value
+        elif name in supplied:
+            text, markdown = supplied[name]
+            if markdown:
+                rich_values[name] = text
+            else:
+                values[name] = text
+        # else: passthrough nobody supplied — left verbatim for Word.
+    return ConnectorValues(
+        values=values,
+        rich_values=rich_values,
+        auto_resolved=tuple(auto_resolved),
+        auto_missing=tuple(auto_missing),
+        manual_missing=tuple(manual_missing),
+        blocs_plain=tuple(n for n in passthrough
+                          if n in supplied and not supplied[n][1]),
+        blocs_markdown=tuple(n for n in passthrough
+                             if n in supplied and supplied[n][1]),
+        blocs_open=tuple(n for n in passthrough if n not in supplied),
+    )

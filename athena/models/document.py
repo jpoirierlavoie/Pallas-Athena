@@ -761,6 +761,7 @@ def _prepare_document_record(
     document_id: Optional[str] = None,
     category_source: str = "juriste",
     portail: Optional[dict] = None,
+    analyse_seed: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Build the Firestore record + storage path shared by the two
     ingestion paths (through-app stream and GCS-side copy).
@@ -782,6 +783,10 @@ def _prepare_document_record(
       a template's own category) or « mcp » (Claude — shown « présumée »).
     * ``portail`` — the three ``portail_*`` provenance fields of a document
       versed from Réception.
+    * ``analyse_seed`` — the PROTECTION a copy inherits from its source
+      (:func:`protection_seed`, lot 2A T8): stored as the record's
+      ``analyse`` cache, never a qualification (no sub-nature — the
+      category stays the caller's). Refused unless it is exactly that shape.
     """
     uid, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -790,6 +795,8 @@ def _prepare_document_record(
         return None, [INVALID_DOCUMENT_ID]
     if category_source not in _POSABLE_CATEGORY_SOURCES:
         return None, ["Provenance de catégorie invalide."]
+    if analyse_seed is not None and not _is_protection_seed(analyse_seed):
+        return None, [PROTECTION_SEED_ERROR]
     fields, errors = _record_metadata(metadata)
     portail_fields, portail_errors = _portail_fields(portail)
     errors += portail_errors
@@ -800,6 +807,8 @@ def _prepare_document_record(
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
     merged["category_source"] = category_source
+    if analyse_seed is not None:
+        merged["analyse"] = dict(analyse_seed)
 
     folder_id = merged.get("folder_id")
     if folder_id:
@@ -847,6 +856,7 @@ def ingest_blob_as_document(
     document_id: Optional[str] = None,
     category_source: str = "juriste",
     portail: Optional[dict] = None,
+    analyse_seed: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Ingest an EXISTING GCS object as a document via a server-side copy.
 
@@ -877,6 +887,17 @@ def ingest_blob_as_document(
       references it. The old rollback deleted the canonical path blindly —
       with a reserved id that path can belong to a call that already
       committed, whose document would have lost its bytes in silence.
+
+    ``analyse_seed`` (keyword, lot 2A T8) — a copy's inherited protection
+    (:func:`copy_document`): the record carries it as its ``analyse`` cache,
+    and its write-once journal entry (``analyses/{analyse_id}``) is written
+    in the SAME commit as the record — a copy of a protected document never
+    exists, even for an instant, without the level it inherits.
+
+    Every path that RETURNS a record notes the commit
+    (``provenance.note_commit``): the record exists, so a failure after it
+    in the caller is « ENREGISTRÉE — NE PAS RÉESSAYER », never a refusal a
+    retry would answer with a second document.
     """
     _, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -913,7 +934,7 @@ def ingest_blob_as_document(
         dossier_id, dossier_file_number, filename, ext,
         content_type, size, metadata, user_id,
         document_id=document_id, category_source=category_source,
-        portail=portail,
+        portail=portail, analyse_seed=analyse_seed,
     )
     if errors:
         return None, errors
@@ -931,7 +952,7 @@ def ingest_blob_as_document(
                            document_id=document_id)
             return None, [_INGEST_FAILED]
         if snap.exists:
-            return _same_ingested(snap.to_dict() or {}, dossier_id, size)
+            return _noted(_same_ingested(snap.to_dict() or {}, dossier_id, size))
 
     created_generation = None
     try:
@@ -956,7 +977,7 @@ def ingest_blob_as_document(
             if reserved:
                 done = _read_ingested(ref, dossier_id, size)
                 if done is not None:
-                    return done
+                    return _noted(done)
             if not _same_object(dest, source_blob):
                 return None, [_INGEST_OCCUPIED]
         else:
@@ -983,11 +1004,24 @@ def ingest_blob_as_document(
             # committed meanwhile — then this call's answer is its document.
             done = _read_ingested(ref, dossier_id, size)
             if done is not None:
-                return done
+                return _noted(done)
         return None, [_INGEST_FAILED]
 
     try:
-        ref.create(merged)
+        if analyse_seed is None:
+            ref.create(merged)
+        else:
+            # The record and its seed's journal entry: ONE commit (a batch's
+            # create() carries the same « must not exist » precondition, and
+            # answers AlreadyExists the same way).
+            batch = db.batch()
+            batch.create(ref, merged)
+            batch.set(
+                ref.collection(ANALYSES_SUBCOLLECTION).document(
+                    merged["analyse"]["analyse_id"]),
+                merged["analyse"],
+            )
+            batch.commit()
     except AlreadyExists:
         # Another call committed this id. Its record is the answer when it
         # is the same document; this call's own copy is removed only when
@@ -1000,7 +1034,7 @@ def ingest_blob_as_document(
             return None, [_INGEST_FAILED]
         if existing.get("storage_path") != storage_path:
             _delete_own_object(storage_path, created_generation)
-        return _same_ingested(existing, dossier_id, size)
+        return _noted(_same_ingested(existing, dossier_id, size))
     except Exception as exc:
         logger.warning(
             "ingest_blob failed for document %s: %s",
@@ -1013,10 +1047,23 @@ def ingest_blob_as_document(
         _delete_own_object_unreferenced(ref, storage_path, created_generation)
         done = _read_ingested(ref, dossier_id, size)
         if done is not None:
-            return done
+            return _noted(done)
         return None, [_INGEST_FAILED]
 
+    provenance.note_commit(COLLECTION, document_id)
     return merged, []
+
+
+def _noted(result: tuple[Optional[dict], list[str]]) -> tuple[Optional[dict], list[str]]:
+    """*result*, with its commit noted when it carries a record.
+
+    The ingestion paths that ANSWER with an already-committed record (a
+    replay, a concurrent twin, a commit whose answer was lost): the record
+    exists, so a failure after it in the caller must read as committed."""
+    doc, _errors = result
+    if doc is not None and doc.get("id"):
+        provenance.note_commit(COLLECTION, doc["id"])
+    return result
 
 
 _INGEST_FAILED = "Erreur lors du versement. Veuillez réessayer."
@@ -1196,9 +1243,14 @@ def upload_document(
         _delete_own_object_unreferenced(ref, storage_path, blob.generation)
         done = _read_ingested(ref, dossier_id, file_size)
         if done is not None:
-            return done
+            return _noted(done)
         return None, ["Erreur lors du téléversement. Veuillez réessayer."]
 
+    # The commit point (lot 2A, T8): the connector's generations reach this
+    # writer, and a failure AFTER it (the payload, the audit line) must be
+    # « ENREGISTRÉE — NE PAS RÉESSAYER », never a refusal a retry answers
+    # with a second document.
+    provenance.note_commit(COLLECTION, document_id)
     return merged, []
 
 
@@ -2805,3 +2857,192 @@ def list_analyses(document_id: str, limit: int = 20) -> list[dict]:
     except Exception:
         log_unexpected("document analyses read failed")
         return []
+
+
+# ── Copie d'un document (lot 2A, T8) ─────────────────────────────────────
+#
+# Une copie est un NOUVEAU document, dans le dossier de sa source — jamais
+# ailleurs : copier la pièce privilégiée d'un client dans le dossier d'un
+# autre, sans contrôle d'identifiants, est exactement la fuite que les
+# gabarits (enregistrés ou tirés d'un document, contrôle des identifiants
+# résiduels compris) existent pour éviter. La fonction ne prend donc AUCUN
+# dossier cible : la règle est structurelle, pas une comparaison qu'un
+# appelant pourrait sauter.
+#
+# Les octets ne transitent jamais par l'application : c'est une réécriture
+# GCS (``ingest_blob_as_document``), vers un chemin neuf, en création seule
+# (``if_generation_match=0``) — la source n'est ni réécrite, ni supprimée.
+#
+# La PROTECTION suit la copie. Le plancher de non-déclassement lit
+# ``document["analyse"]["niveau_protection"]`` : une copie d'une lettre au
+# secret professionnel qui n'emporterait pas ce niveau s'afficherait sans
+# régime, et une analyse de la copie pourrait se poser PLUS BAS — la faute
+# professionnelle que tout le module d'analyse protège (sous-protéger).
+# D'où :func:`protection_seed` : le niveau et les privilèges de la source,
+# PRÉSUMÉS (``confirme`` faux, ``declenche_par`` « copie »), sans
+# sous-nature — une copie n'est pas qualifiée, elle hérite d'un plancher.
+
+COPY_SOURCE_NOT_FOUND = "Document source introuvable : rien n'a été copié."
+COPY_SOURCE_UNREADABLE = (
+    "Lecture du document source impossible — réessayez. Rien n'a été copié."
+)
+COPY_FILE_MISSING = (
+    "Le fichier du document source est introuvable dans le stockage : rien "
+    "n'a été copié."
+)
+COPY_NAME_PREFIX = "Copie de "
+PROTECTION_SEED_ERROR = "Protection héritée invalide : rien n'a été versé."
+MOTIF_COPIE = (
+    "Niveau repris du document source (copie) — présumé, à confirmer par "
+    "le juriste."
+)
+_SEED_KEYS = frozenset({
+    "niveau_protection", "privileges", "motifs_protection", "confirme",
+    "confirme_par", "confirme_le", "declenche_par", "source_document_id",
+    "genere_le", "analyse_id",
+})
+
+
+def _is_level(value: object) -> bool:
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and value in (0, 1, 2, 3))
+
+
+def protection_seed(source: dict, *, now: datetime) -> Optional[dict]:
+    """The protection a copy of *source* inherits — PURE; ``None`` when the
+    source carries no level (nothing to inherit, and « none » is never
+    invented as « public »).
+
+    The level and the privileges that found it, and nothing of the
+    qualification: never the sub-nature, the category derivation or the
+    extract — a copy is not qualified, it inherits a FLOOR. ``confirme`` is
+    false, ``declenche_par`` « copie »: presumed, like every automatic
+    path."""
+    from utils import analyse_taxonomies as tax
+
+    analyse = source.get("analyse") or {}
+    level = analyse.get("niveau_protection")
+    if not _is_level(level):
+        return None
+    privileges = list(dict.fromkeys(
+        p for p in (analyse.get("privileges") or [])
+        if isinstance(p, str) and p in tax.VALID_PRIVILEGES
+    ))
+    return {
+        "niveau_protection": level,
+        "privileges": privileges,
+        "motifs_protection": [MOTIF_COPIE],
+        "confirme": False,
+        "confirme_par": None,
+        "confirme_le": None,
+        "declenche_par": "copie",
+        "source_document_id": str(source.get("id") or ""),
+        "genere_le": now,
+        "analyse_id": str(uuid.uuid4()),
+    }
+
+
+def _is_protection_seed(seed: object) -> bool:
+    """Exactly the shape :func:`protection_seed` builds — a creator must
+    never be handed a QUALIFICATION through this door (a sub-nature would
+    make the copy read « analysée », its category derived)."""
+    from utils import analyse_taxonomies as tax
+
+    if not isinstance(seed, dict) or set(seed) != _SEED_KEYS:
+        return False
+    privileges = seed.get("privileges")
+    return (
+        _is_level(seed.get("niveau_protection"))
+        and isinstance(privileges, list)
+        and all(isinstance(p, str) and p in tax.VALID_PRIVILEGES
+                for p in privileges)
+        and seed.get("confirme") is False
+        and seed.get("declenche_par") == "copie"
+        and is_canonical_uuid4(seed.get("analyse_id"))
+    )
+
+
+def copy_category_source(source: dict) -> str:
+    """Who posed the COPY's category — PURE.
+
+    « juriste » only when the source's was the lawyer's (or a legacy
+    document, which reads as his); otherwise « mcp »: a category an
+    analysis derived, or Claude presumed, stays PRESUMED on the copy — and
+    never « analyse », which would claim a qualification the copy does not
+    carry (its seed has no sub-nature)."""
+    source_cs = str(source.get("category_source") or "juriste")
+    return "juriste" if source_cs == "juriste" else "mcp"
+
+
+def default_copy_name(source: dict) -> str:
+    """« Copie de {nom} », cut to the display-name ceiling (a default the
+    application builds, never a caller's value — cutting it alters nothing
+    anyone typed)."""
+    name = source.get("display_name") or source.get("filename") or "document"
+    return (COPY_NAME_PREFIX + str(name))[:DISPLAY_NAME_MAX].rstrip()
+
+
+def copy_document(
+    source_id: str,
+    *,
+    user_id: str,
+    folder_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    genere_depuis: str = "",
+) -> tuple[Optional[dict], list[str]]:
+    """Copy stored document *source_id* into a NEW document of ITS dossier.
+
+    Returns ``(copy, [])`` or ``(None, french_errors)``. *folder_id* is the
+    target folder of that dossier (``None`` = its root — the caller
+    resolves « Projets »); *display_name* defaults to
+    :func:`default_copy_name`. The copy carries the source's category
+    (:func:`copy_category_source` says who posed it), its document date and
+    its protection (:func:`protection_seed`); never its notes internes (the
+    lawyer's text about THE SOURCE), its tags, its analysis extract or its
+    portal provenance. The source is read strictly — an outage is never
+    « introuvable » — and its object reloaded (the size and checksums the
+    copy is judged on).
+    """
+    _, uid_errors = _storage_uid(user_id)
+    if uid_errors:
+        return None, uid_errors
+    if not is_addressable_id(source_id):
+        return None, [COPY_SOURCE_NOT_FOUND]
+    try:
+        source = get_document_strict(source_id)
+    except Exception:
+        log_unexpected("document copy: source unreadable")
+        return None, [COPY_SOURCE_UNREADABLE]
+    if source is None:
+        return None, [COPY_SOURCE_NOT_FOUND]
+    storage_path = str(source.get("storage_path") or "")
+    filename = str(source.get("filename") or "")
+    if not storage_path or not filename:
+        return None, [COPY_FILE_MISSING]
+    try:
+        blob = storage.bucket().blob(storage_path)
+        blob.reload()
+    except NotFound:
+        return None, [COPY_FILE_MISSING]
+    except Exception:
+        log_unexpected("document copy: source object unreadable")
+        return None, [COPY_SOURCE_UNREADABLE]
+
+    metadata = {
+        "display_name": (default_copy_name(source)
+                         if display_name is None else display_name),
+        "category": source.get("category") or "autre",
+        "document_date": source.get("document_date"),
+        "folder_id": folder_id,
+        "genere_depuis": genere_depuis,
+    }
+    return ingest_blob_as_document(
+        blob,
+        str(source.get("dossier_id") or ""),
+        str(source.get("dossier_file_number") or ""),
+        filename,
+        metadata,
+        user_id,
+        category_source=copy_category_source(source),
+        analyse_seed=protection_seed(source, now=datetime.now(timezone.utc)),
+    )

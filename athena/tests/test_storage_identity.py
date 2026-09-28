@@ -677,7 +677,10 @@ def test_the_caller_sweep_finds_what_it_exists_for():
         "routes/doc_templates.py:template_create",
         # Lot 2A T4: the generation's save is the service's (one assembly
         # for the popup and the connector); the route no longer uploads.
-        "services/gabarits.py:save_into_projets",
+        # Lot 2A T8: save_into_projets delegates to save_generated — the
+        # ONE uploader of every generated .docx (a filled gabarit, a
+        # Markdown document), and the one that must guard the uid.
+        "services/gabarits.py:save_generated",
         "routes/invoices.py:invoice_note_docx",
         "routes/reception.py:verser",
     ):

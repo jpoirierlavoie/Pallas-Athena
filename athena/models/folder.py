@@ -737,7 +737,10 @@ def _adopt_legacy(
     if folder is None:
         return None, [], True
     if wrote:
-        provenance.note_commit(COLLECTION, folder_id)
+        # IDEMPOTENT (lot 2A, T8): a second run finds the role stamped and
+        # writes nothing — so a generation that fails AFTER this adoption
+        # committed nothing a retry would repeat (models/provenance).
+        provenance.note_commit(COLLECTION, folder_id, idempotent=True)
         # ONE line per dossier and role, ever: the adoption is permanent.
         # `legacy_candidates > 1` flags a past fork the lawyer may want to
         # merge by hand (the others stay ordinary folders).
@@ -787,7 +790,11 @@ def _create_system_folder(
         log_unexpected("system folder create failed", dossier_id=dossier_id)
         return None, ["Erreur lors de la création du dossier système. "
                       "Veuillez réessayer."]
-    provenance.note_commit(COLLECTION, folder_id)
+    # IDEMPOTENT (lot 2A, T8): the id is deterministic, so a retry reads
+    # this very folder back instead of creating a second — a generation that
+    # fails after it (its upload) committed nothing a retry would repeat,
+    # and must not be reported « ENREGISTRÉE — NE PAS RÉESSAYER ».
+    provenance.note_commit(COLLECTION, folder_id, idempotent=True)
     return folder, []
 
 
