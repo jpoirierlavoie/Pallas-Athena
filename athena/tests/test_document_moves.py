@@ -356,6 +356,28 @@ def test_is_addressable_id():
     assert doc.is_addressable_id("3f2b8c1e-9a4d-4c6b-8e2f-1a2b3c4d5e6f")
     for bad in ("", "a/b", "a/b/c", None, 4, ["a"]):
         assert not doc.is_addressable_id(bad), bad
+    # Review of T7: the ids Firestore's server refuses (its documented id
+    # rules) are absences too — « . », « .. », ``__.*__``, > 1 500 bytes,
+    # not UTF-8 — never a read that fails and reads « réessayez ».
+    for bad in (".", "..", "____", "__x__", "é" * 751, "a\ud800b"):
+        assert not doc.is_addressable_id(bad), bad
+    for good in ("___", "__x", "x__", "a.b", "é" * 750, "..."):
+        assert doc.is_addressable_id(good), good
+
+
+def test_the_fail_open_reader_never_reads_a_deeper_record(db):
+    """Review of T7 — fails on the reviewed code: get_document had no guard,
+    so a slashed id read an entry of the analysis journal as a document
+    (and every read path built on it — the connector's get_document_text,
+    get_document_bytes — followed)."""
+    _seed(db, "a")
+    db.seed("documents/a/analyses/j1", {"analyse_id": "j1",
+                                        "dossier_id": "d1"})
+    db.reset_logs()
+    for bad in ("a/analyses/j1", "__x__", ".."):
+        assert doc.get_document(bad) is None, bad
+    assert db.reads == []
+    assert doc.get_document("a")["id"] == "a"
 
 
 # ══════════════════════════════════════════════════════════════════════

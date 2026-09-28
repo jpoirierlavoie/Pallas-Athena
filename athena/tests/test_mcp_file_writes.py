@@ -283,6 +283,25 @@ def test_an_unknown_a_slashed_and_an_unreadable_document(fake, monkeypatch):
     assert "Lecture du document impossible" in message
 
 
+@pytest.mark.parametrize("bad", ["__reserve__", ".", ".."])
+def test_an_id_firestore_refuses_is_absent_never_a_store_failure(fake, bad):
+    """Review of T7 — fails on the reviewed code: the client builds a
+    reference to « __reserve__ », « . » or « .. » without complaint and the
+    SERVER refuses the RPC, so the strict reader answered « Lecture du
+    document impossible — réessayez » for an id no retry will ever read,
+    and a refile into such a folder id surfaced as a failed save."""
+    message = _refused(handlers.update_document,
+                       {"document_id": bad, "display_name": "X"})
+    assert "Document introuvable" in message
+    assert "réessayez" not in message
+
+    fake.reset_logs()
+    message = _refused(handlers.update_document,
+                       {"document_id": "a", "folder_id": bad})
+    assert message == handlers._DOCUMENT_FOLDER_UNKNOWN
+    assert _writes(fake) == []
+
+
 def test_update_document_demands_a_field(fake):
     message = _refused(handlers.update_document, {"document_id": "a"})
     assert "Aucun champ" in message and "notes internes" in message
@@ -380,6 +399,35 @@ def test_move_documents_refuses_an_unknown_dossier_and_an_unreadable_tree(
         "dossier_id": "d1", "document_ids": ["a"], "folder_id": "f1"})
     assert "Lecture des dossiers de classement impossible" in message
     assert fake.peek("documents/a")["folder_id"] is None
+
+
+def test_one_id_firestore_refuses_is_one_refused_row_not_a_sunk_batch(fake):
+    """Review of T7 — fails on the reviewed code: « __x__ » reached the
+    transaction's batched read, the server refused the RPC, and the WHOLE
+    move failed as « Erreur lors du déplacement » (with a traceback logged
+    as an unexpected store failure) — the good row never moved."""
+    result = handlers.move_documents({
+        "dossier_id": "d1", "document_ids": ["a", "__x__", ".."],
+        "folder_id": "f1"})
+
+    assert [(r["document_id"], r["outcome"]) for r in result["results"]] == [
+        ("a", "moved"), ("__x__", "refused"), ("..", "refused")]
+    assert result["results"][1]["reason"] == document_model.MOVE_NOT_FOUND
+    assert fake.peek("documents/a")["folder_id"] == "f1"
+
+
+def test_get_document_text_never_reads_a_deeper_record(fake):
+    """Review of T7 — fails on the reviewed code: the fail-open reader
+    behind the connector's document READS had no slash guard, so
+    ``get_document_text`` answered ``found: true`` for an entry of a
+    document's analysis journal."""
+    fake.seed("documents/a/analyses/j1", {
+        "analyse_id": "j1", "dossier_id": "d1",
+        "file_type": "application/pdf"})
+
+    assert document_model.get_document("a/analyses/j1") is None
+    result = handlers.get_document_text({"document_id": "a/analyses/j1"})
+    assert result["found"] is False
 
 
 def test_the_move_schema_bounds_the_batch():
