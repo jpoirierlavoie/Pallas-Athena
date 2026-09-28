@@ -5315,9 +5315,9 @@ TOOLS: dict[str, dict] = {
             "identifiers, then a new template or a NEW version of the one "
             "named (the replaced version is kept). Nothing received yet → "
             "refused, the ticket stays open: PUT, then call again. A ticket "
-            "already filed answers its result again. A refused, expired or "
-            "filed ticket never reopens: begin anew with a NEW "
-            "idempotency_key."
+            "already filed answers its result again — never upload that "
+            "file anew. A refused or expired ticket never reopens: begin "
+            "anew with a NEW idempotency_key."
         ),
         "input_schema": {
             "type": "object",

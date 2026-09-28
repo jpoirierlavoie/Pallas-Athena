@@ -345,10 +345,52 @@ def test_the_url_is_never_stored_and_a_replay_reopens_the_same_ticket(world):
     with pytest.raises(ToolArgumentError, match="finalize_upload") as exc:
         handlers.begin_upload(dict(args))
     assert exc.value.reason == "upload_already_received"
-    # Once settled, a replay refuses « fermé » and names a NEW key.
+    # Once FILED, a replay refuses — and sends the caller to finalize_upload,
+    # never to a new ticket (review of T9: it named a « NOUVELLE
+    # idempotency_key », the instruction that files the same file twice).
     handlers.finalize_upload({"ticket_id": first["ticket_id"]})
-    with pytest.raises(ToolArgumentError, match="NOUVELLE idempotency_key"):
+    with pytest.raises(ToolArgumentError, match="déjà été versé") as exc:
         handlers.begin_upload(dict(args))
+    assert exc.value.reason == "upload_already_received"
+    assert "finalize_upload" in str(exc.value)
+    assert "idempotency_key" not in str(exc.value)
+
+
+def test_a_replayed_opening_never_leads_to_a_second_document(world):
+    """Review of T9. The replay a task re-run makes — the SAME key, say one
+    derived from the file's digest — once the file is filed: followed to
+    the letter, the refusal must lead back to the ONE document, and never
+    to a second ticket filing the same bytes again."""
+    args = {"purpose": "document", "dossier_id": "d1", "filename": "a.pdf",
+            "size_bytes": len(PDF), "md5_base64": _md5(PDF),
+            "idempotency_key": f"televersement-{_md5(PDF)}"}
+    opened = handlers.begin_upload(dict(args))
+    _put(world, opened, PDF)
+    filed = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    with pytest.raises(ToolArgumentError) as exc:
+        handlers.begin_upload(dict(args))
+    # What the refusal says to do: finalize_upload with this ticket_id.
+    assert "finalize_upload" in str(exc.value)
+    again = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert again["already_finalized"] is True
+    assert again["entity"]["id"] == filed["entity"]["id"]
+    assert len(_documents(world)) == 1
+    assert len(world["db"].peek_collection(ut.COLLECTION)) == 1
+
+
+def test_a_replayed_opening_during_a_finalization_says_wait(world):
+    """Review of T9: a ticket held by a finalization is not « closed » — the
+    claim is released « not received », or the ticket files. The replay
+    says wait and retry, never « open a new one »."""
+    args = {"purpose": "document", "dossier_id": "d1", "filename": "a.pdf",
+            "size_bytes": len(PDF), "md5_base64": _md5(PDF),
+            "idempotency_key": "televersement-cle-0002"}
+    opened = handlers.begin_upload(dict(args))
+    ut.claim_ticket(opened["ticket_id"], now=NOW)
+    with pytest.raises(ToolArgumentError, match="en cours") as exc:
+        handlers.begin_upload(dict(args))
+    assert exc.value.reason == "upload_busy"
+    assert "idempotency_key" not in str(exc.value)
 
 
 # ══════════════════════════════════════════════════════════════════════

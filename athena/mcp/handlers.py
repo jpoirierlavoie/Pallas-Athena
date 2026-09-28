@@ -11966,15 +11966,29 @@ def _persist_begin_upload(payload: dict) -> dict:
 
 def _rehydrate_begin_upload(stored: dict) -> dict:
     """A replayed begin_upload: a FRESH session for the SAME ticket while it
-    is still open — refused once it is claimed, settled or past its hour
-    (the message names a NEW idempotency_key: the same key would replay the
-    same closed ticket for 24 h), and refused when its bytes already
-    arrived (a new session on the create-only object could only fail)."""
+    is still open — refused once it is settled or past its hour (refused,
+    expired: the message names a NEW idempotency_key, since the same key
+    would replay the same closed ticket for 24 h), and refused when its
+    bytes already arrived (a new session on the create-only object could
+    only fail).
+
+    Review of T9: a ticket already FILED, or held by a finalization, is
+    never « open a new one » — that is how the same file would be filed
+    twice. Filed → finalize_upload returns its result; held → wait, then
+    retry (the claim is released « not received », or the ticket files)."""
     ticket_id = str(stored.get("ticket_id") or "")
     try:
         ticket, reason = upload_ticket_model.get_open_ticket(ticket_id)
     except upload_ticket_model.TicketStoreUnavailable as exc:
         raise ToolArgumentError(str(exc), reason="upload_store_unavailable")
+    if reason == upload_ticket_model.REASON_FILED:
+        raise ToolArgumentError(
+            upload_ticket_model.message_for(reason),
+            reason="upload_already_received",
+        )
+    if reason == upload_ticket_model.REASON_BUSY:
+        raise ToolArgumentError(
+            upload_ticket_model.message_for(reason), reason="upload_busy")
     if reason or ticket is None:
         raise ToolArgumentError(
             upload_ticket_model.message_for(reason or "introuvable"),

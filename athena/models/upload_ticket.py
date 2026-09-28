@@ -215,6 +215,9 @@ REASON_EXPIRED = "expire"
 REASON_REFUSED = "refuse"
 REASON_BUSY = "en_cours"
 REASON_CLOSED = "ferme"
+# Already filed: the answer exists, finalize_upload returns it (review of
+# T9 — see _MESSAGES).
+REASON_FILED = "verse"
 
 # « Ouvrez-en un nouveau » says WHICH key: the write protocol tells a caller
 # to REUSE its idempotency_key on a retry, and a replayed opening with that
@@ -239,6 +242,16 @@ _MESSAGES = {
     ),
     REASON_CLOSED: (
         f"Ce ticket de téléversement est fermé : {_NEW_TICKET}."
+    ),
+    # Review of T9: a ticket already FILED must never send its caller to a
+    # new ticket. A replayed begin_upload reaches it with the SAME key — the
+    # natural retry of a task re-run, a key derived from the file's own
+    # digest — and « ouvrez-en un nouveau » would have filed the same file a
+    # second time. finalize_upload answers a filed ticket's result again.
+    REASON_FILED: (
+        "Ce ticket a déjà été versé : ne téléversez pas ce fichier de "
+        "nouveau — appelez finalize_upload avec ce ticket_id, qui rend le "
+        "résultat du versement sans rien verser une seconde fois."
     ),
 }
 _STORE_MESSAGE = (
@@ -881,7 +894,10 @@ def get_open_ticket(
     """``(ticket, "")`` when the ticket is still OPEN for an upload
     (``en_attente``, before ``open_until``), else ``(ticket or None,
     reason)`` — ``introuvable``, ``expire`` (expired, or open but past its
-    window), ``refuse`` (refused) or ``ferme`` (claimed or already filed).
+    window), ``refuse`` (refused), ``en_cours`` (a finalization holds it:
+    wait, then retry — it may be released « not received », or filed) or
+    ``verse`` (already filed: finalize_upload returns its result — never
+    « open a new one », which would file the same file twice).
     Read-only: a replayed ``begin_upload`` asks this before handing out a
     fresh session. Raises :class:`TicketStoreUnavailable` on a read
     failure."""
@@ -893,6 +909,10 @@ def get_open_ticket(
         return ticket, REASON_EXPIRED
     if status == STATUS_REFUSED:
         return ticket, REASON_REFUSED
+    if status == STATUS_DONE:
+        return ticket, REASON_FILED
+    if status == STATUS_CLAIMED:
+        return ticket, REASON_BUSY
     if status != STATUS_OPEN:
         return ticket, REASON_CLOSED
     open_until = _as_datetime(ticket.get("open_until"))

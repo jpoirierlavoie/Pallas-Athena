@@ -656,6 +656,12 @@ def test_a_closed_ticket_s_refusal_names_a_new_idempotency_key():
                    ut.REASON_CLOSED):
         assert "NOUVELLE idempotency_key" in ut.message_for(reason), reason
     assert "idempotency_key" not in ut.message_for(ut.REASON_BUSY)
+    # Review of T9 — a FILED ticket is the opposite case: « ouvrez-en un
+    # nouveau » would file the same file twice. Its message sends the
+    # caller to finalize_upload, which answers the stored result.
+    filed = ut.message_for(ut.REASON_FILED)
+    assert "finalize_upload" in filed and "idempotency_key" not in filed
+    assert "ouvrez" not in filed.lower()
 
 
 def test_get_open_ticket_is_a_read_that_names_why_not(fake):
@@ -666,12 +672,14 @@ def test_get_open_ticket_is_a_read_that_names_why_not(fake):
     assert ut.get_open_ticket(opened["id"],
                               now=NOW + ut.OPEN_WINDOW)[1] == ut.REASON_EXPIRED
     assert _writes(fake) == [] and _stored(fake, opened["id"])["status"] == "en_attente"
-    # claimed, then filed: « fermé »
+    # claimed: « en cours » (wait, then retry); filed: « versé » (finalize
+    # answers its result). Rewritten at the review of T9: both used to read
+    # « fermé — ouvrez-en un nouveau », the refusal that files a file twice.
     claim = ut.claim_ticket(opened["id"], now=NOW)
-    assert ut.get_open_ticket(opened["id"], now=NOW)[1] == ut.REASON_CLOSED
+    assert ut.get_open_ticket(opened["id"], now=NOW)[1] == ut.REASON_BUSY
     ut.complete_ticket(opened["id"], claim_id=claim.claim_id,
                        result={"document_id": opened["reserved_document_id"]})
-    assert ut.get_open_ticket(opened["id"], now=NOW)[1] == ut.REASON_CLOSED
+    assert ut.get_open_ticket(opened["id"], now=NOW)[1] == ut.REASON_FILED
     # refused, or expired by a claim: said as such
     refused, refused_claim = _claimed(fake)
     ut.refuse_ticket(refused["id"], claim_id=refused_claim.claim_id,
@@ -817,7 +825,7 @@ def test_a_replayed_begin_reopens_the_same_open_ticket_or_refuses(monkeypatch):
     model, the real write protocol, the shared fake Firestore and the fake
     GCS: the stored result carries the ticket id and never the URL; a replay
     re-opens a session for the SAME still-open ticket; once the ticket is
-    claimed, a replay refuses « fermé »."""
+    claimed, a replay refuses « en cours » (never « open a new one »)."""
     from mcp import write_support as ws
     from mcp.tools import ToolArgumentError
     from tests._fake_gcs import FakeBucket
@@ -872,10 +880,13 @@ def test_a_replayed_begin_reopens_the_same_open_ticket_or_refuses(monkeypatch):
         _stored(fake, first["ticket_id"])["staging_object"])
     assert len(fake.peek_collection(ut.COLLECTION)) == 1   # the SAME ticket
 
+    # Claimed by a finalization: « en cours » — wait and retry, never a new
+    # ticket (review of T9; it read « fermé — ouvrez-en un nouveau »).
     ut.claim_ticket(first["ticket_id"], now=clock["now"])
     with pytest.raises(ToolArgumentError) as excinfo:
         ws.run_write("create_note", args, lambda: pytest.fail("no"))
-    assert "fermé" in str(excinfo.value)
+    assert "en cours" in str(excinfo.value)
+    assert "idempotency_key" not in str(excinfo.value)
 
     clock["now"] = NOW + ut.OPEN_WINDOW + timedelta(minutes=1)
     other = _open(fake)
