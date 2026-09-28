@@ -651,8 +651,29 @@ def test_refresh_by_contact_covers_every_dossier_it_is_cited_in(db):
     assert errors == []
     assert {r["dossier_id"] for r in rows} == {d1, d2}
     assert all(r["outcome"] == "applied" for r in rows)
-    # p3 / p5 have no fiche: kept and reported, never blanked.
+    # Only av1's snapshots move: p3 / p5 (no fiche) are not even read.
     assert _stored(db, d2)["clients"][0]["name"] == "Luc Roy"
+    assert all(r["missing_partie_ids"] == [] for r in rows)
+
+
+def test_refresh_by_contact_touches_only_that_contact_s_snapshots(db):
+    """Per contact: another party's stale snapshot on the same dossier is
+    NOT refreshed — the caller asked about one contact."""
+    _contact(db, "p1", "Jean-Marc", "Tremblay")
+    _contact(db, "av1", "Anne", "Roy-Gagnon", prefix="Me",
+             contact_role="avocat_adverse")
+    did = _dossier(db, [JEAN], opposing=[
+        _entry("p3", "Paul Roy", ("défendeur",), "av1", "Me Anne Roy")])
+
+    rows, errors = dossier_model.refresh_party_names(partie_id="av1")
+
+    assert errors == []
+    assert [(c["partie_id"], c["field"]) for c in rows[0]["changes"]] == [
+        ("av1", "avocat_name")]
+    assert rows[0]["missing_partie_ids"] == []
+    stored = _stored(db, did)
+    assert stored["clients"][0]["name"] == "Jean Tremblay"  # untouched
+    assert stored["opposing_parties"][0]["avocat_name"] == "Me Anne Roy-Gagnon"
 
 
 def test_refresh_a_stale_dossier_is_refused_and_the_others_go_on(db, monkeypatch):
@@ -691,6 +712,7 @@ def test_refresh_selector_rules(db, monkeypatch):
 
 
 def test_refresh_by_contact_is_bounded(db, monkeypatch):
+    _contact(db, "p1", "Jean", "Tremblay")
     monkeypatch.setattr(dossier_model, "list_dossiers_for_partie_strict",
                         lambda pid: [{"id": f"d{i}"} for i in range(51)])
     rows, errors = dossier_model.refresh_party_names(partie_id="p1")
@@ -700,6 +722,7 @@ def test_refresh_by_contact_is_bounded(db, monkeypatch):
 def test_refresh_by_contact_refuses_when_its_dossiers_are_unreadable(
     db, monkeypatch,
 ):
+    _contact(db, "p1", "Jean", "Tremblay")
     _fail_queries_on(monkeypatch, db, "dossiers")
     rows, errors = dossier_model.refresh_party_names(partie_id="p1")
     assert rows == [] and errors == [dossier_model.PARTY_DOSSIERS_UNREADABLE]

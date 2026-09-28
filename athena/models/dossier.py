@@ -1956,8 +1956,15 @@ def remove_dossier_party(
     return saved, [], report
 
 
-def _refresh_one(dossier: dict, contacts: dict[str, dict]) -> dict:
-    """Re-snapshot one dossier's party and lawyer names; its report row."""
+def _refresh_one(
+    dossier: dict, contacts: dict[str, dict], only: Optional[str] = None,
+) -> dict:
+    """Re-snapshot one dossier's party and lawyer names; its report row.
+
+    *only* restricts the refresh to the snapshots of ONE contact (as a
+    party and as a party's lawyer) — the per-contact mode must never touch
+    another party's name.
+    """
     from models import partie as partie_model  # local: no model cycle
 
     dossier_id = str(dossier.get("id") or "")
@@ -1983,7 +1990,7 @@ def _refresh_one(dossier: dict, contacts: dict[str, dict]) -> dict:
             new_entry = dict(entry)
             for id_key, name_key in (("id", "name"), ("avocat_id", "avocat_name")):
                 pid = str(entry.get(id_key) or "").strip()
-                if not pid:
+                if not pid or (only is not None and pid != only):
                     continue
                 contact = contacts.get(pid)
                 if contact is None:
@@ -2038,9 +2045,11 @@ def refresh_party_names(
     change, before and after), ``unchanged`` (no write), or ``refused`` (the
     save was refused, its reason given; the other dossiers go on). A contact
     that no longer exists keeps its snapshot and is reported in
-    ``missing_partie_ids``. Only dossiers are written: an invoice, a trust
-    entry or an already-generated document keeps the name it was issued
-    with. Each save is compare-and-set against the version read here.
+    ``missing_partie_ids``. Per contact, ONLY that contact's snapshots
+    move — never another party's name on the same dossier. Only dossiers
+    are written: an invoice, a trust entry or an already-generated document
+    keeps the name it was issued with. Each save is compare-and-set against
+    the version read here.
     """
     from models import partie as partie_model  # local: no model cycle
 
@@ -2049,12 +2058,10 @@ def refresh_party_names(
     if bool(did) == bool(pid):
         return [], ["Précisez un dossier OU un contact — exactement un des deux."]
 
-    if did:
-        dossier = get_dossier(did)
-        if not dossier:
-            return [], ["Dossier introuvable."]
-        dossiers = [dossier]
-    else:
+    if pid:
+        contact = partie_model.get_partie(pid)
+        if contact is None:
+            return [], ["Contact introuvable."]
         try:
             dossiers = list_dossiers_for_partie_strict(pid)
         except Exception:
@@ -2066,32 +2073,28 @@ def refresh_party_names(
                 f"{REFRESH_MAX_DOSSIERS}) : rafraîchissez-les un dossier à "
                 "la fois."
             ]
+        contacts = {pid: contact}
+        return [_refresh_one(d, contacts, only=pid) for d in dossiers], []
 
+    dossier = get_dossier(did)
+    if not dossier:
+        return [], ["Dossier introuvable."]
     ids: list[str] = []
-    for dossier in dossiers:
-        for side in PARTY_SIDES:
-            for entry in dossier.get(side) or []:
-                if not isinstance(entry, dict):
-                    continue
-                for key in ("id", "avocat_id"):
-                    value = str(entry.get(key) or "").strip()
-                    if value:
-                        ids.append(value)
+    for side in PARTY_SIDES:
+        for entry in dossier.get(side) or []:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("id", "avocat_id"):
+                value = str(entry.get(key) or "").strip()
+                if value:
+                    ids.append(value)
     ids = list(dict.fromkeys(ids))
-    if not ids:
-        # A contact on no dossier: nothing to refresh — once it is known to
-        # exist (the selector must resolve).
-        if pid and partie_model.get_partie(pid) is None:
-            return [], ["Contact introuvable."]
-        return [_refresh_one(dossier, {}) for dossier in dossiers], []
-    contacts = partie_model.get_parties_bulk(ids)
-    if not contacts:
+    contacts = partie_model.get_parties_bulk(ids) if ids else {}
+    if ids and not contacts:
         # get_parties_bulk fails OPEN to {} — never read that as « every
         # contact vanished » (the coverage report's kyc_checked idiom).
         return [], [PARTY_NAMES_UNREADABLE]
-    if pid and pid not in contacts:
-        return [], ["Contact introuvable."]
-    return [_refresh_one(dossier, contacts) for dossier in dossiers], []
+    return [_refresh_one(dossier, contacts)], []
 
 
 # Child collections checked before a dossier may be deleted:
