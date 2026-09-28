@@ -2404,10 +2404,17 @@ Notes:
      a. `preview_invoice` on a dossier with unbilled work: `ready: true`
         and a total, or `refusals` saying exactly why (a blank tax number
         here means step 1 was skipped). Nothing is written.
-     b. `create_invoice` with that selection and `expected_total_cents`
-        deliberately **one cent off**: refused, the gap named, « Rien n'a été
-        créé » — and the counter unchanged. This proves the allocation sits
-        inside the transaction without consuming anything.
+     b. **Never call `create_invoice` here — not even with a total
+        deliberately wrong.** That refusal is judged in `plan_invoice`,
+        BEFORE the counter is read at all, so it proves nothing about the
+        allocation's place inside the transaction; and the same call with
+        the preview's TRUE total — one slip, one « helpful » correction —
+        issues a real invoice under a permanent number. That the allocation
+        commits with the invoice or not at all is the deploy gate's to
+        prove (`tests/test_mcp_billing_writes.py`
+        `test_a_source_changed_during_the_call_burns_no_number`,
+        `test_a_create_that_would_burn_a_number_never_does`, and
+        `tests/test_invoice_numbering.py`).
      c. `get_invoice` on an existing `envoyée` invoice: an `etag` and its
         `connector_transitions`; then `update_invoice` with `status:
         "envoyée"` — its CURRENT status — and that etag: `outcome:
@@ -2438,7 +2445,8 @@ Notes:
 
   Then update BOTH copies of the claude.ai skill `pallas-athena` the same
   day. What lot 3 makes false there (on top of the lot 1, 2A and 2B lists
-  above): every « 71 outils » (now 76: 31 + 45); SKILL.md « Aucun des … outils
+  above): every tool count — « 49 outils » in the copies as they stand
+  today, « 71 » once the lot 2B list is applied — now 76 (31 + 45); SKILL.md « Aucun des … outils
   n'expose de `dry_run`, de `preview` ni d'équivalent » — still no `dry_run`,
   but `preview_invoice` (like `preview_templatize`) is a READ that computes
   exactly what its write would do; « Les écritures qu'aucun outil ne fait :
@@ -2454,11 +2462,17 @@ Notes:
   listing reads only, `import_invoice` « atterrit en brouillon et y
   reste », and the row « Changer le statut d'une facture, enregistrer un
   paiement, annuler une facture — Impossible ici »; README « ne change
-  aucun statut de facture ». Incomplete rather than false, to extend the
-  same day: « Remplace ce qu'on nomme » lacks `update_invoice` (a
-  brouillon only) and the moves; « Le mur de la facturation » should say
-  that a void (`update_invoice`, status « annulée », refused while a
-  payment stands) releases the entries; `references/vocabulaires.md`'s
+  aucun statut de facture »; and the four `set_*_phase` tools « sont les
+  seuls à atteindre une ligne déjà portée à une facture » — SKILL.md « Le
+  mur de la facturation », `references/comptabilite.md` §1 (its heading
+  « la seule porte qui le traverse » too) and `references/outils.md`
+  family E: the void (`update_invoice`, status « annulée », refused while
+  a payment stands) reaches every such line, to RELEASE it — what stays
+  true is that they alone CHANGE a line while it stays billed (the
+  connector's own INSTRUCTIONS said the same until the review of this
+  step). Incomplete rather than false, to extend the same day: « Remplace
+  ce qu'on nomme » lacks `update_invoice` (a brouillon only) and the
+  moves; `references/vocabulaires.md`'s
   invoice statuses should say which ones `update_invoice` sets (envoyée,
   en_retard, annulée — never payée, never back to brouillon) and that
   `create_budget_version` refuses ADM and HOR. Add: the two-step
