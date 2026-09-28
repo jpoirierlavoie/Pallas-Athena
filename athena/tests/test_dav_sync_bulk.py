@@ -1,9 +1,10 @@
 """The bulk DAV sync primitives of dav/sync.py — their first tests.
 
 `record_tombstones_bulk`, `bump_ctag_in_batch` and `record_tombstones_in_batch`
-carry the closing-dossier drain (routes/dossiers.py) and the series writes of
-models/hearing.py, and later lots build on them (the series delete fix, the
-dossier-status drain). They had no test at all. Everything here runs against
+carry the closing-dossier drain (services/dossier_dav.py since lot 4a —
+routes/dossiers.py before) and the series writes of models/hearing.py, and
+later lots build on them (the series delete fix, the dossier-status drain).
+They had no test at all. Everything here runs against
 the shared fake Firestore (tests/_fake_firestore.py), whose batches are
 atomic and whose commit log is the SERVER's view — so « one read », « chunked
 commits » and « staged, not committed » are asserted on what the store
@@ -210,3 +211,72 @@ def test_bump_and_tombstones_share_one_commit_when_it_succeeds(fake):
     assert fake.peek("hearings/h1") is None
     assert fake.peek(SYNC_DOC)["ctag"] == token
     assert fake.peek(f"{TOMBSTONES}/h1")["sync_token"] == token
+
+
+# ── bump=True — the drain's shape (lot 4a) ─────────────────────────────────
+
+
+def test_bulk_with_bump_is_one_atomic_commit_up_to_the_chunk_minus_one(fake, ctag_calls):
+    """The tombstones AND the bump in ONE commit, with no token read: the
+    tombstones carry the NEW token."""
+    ids = [f"r{i:04d}" for i in range(dav_sync._BATCH_CHUNK - 1)]
+    token = dav_sync.record_tombstones_bulk(NAME, ids, bump=True)
+
+    assert ctag_calls == [] and fake.reads == []
+    assert len(fake.commits) == 1
+    assert fake.peek(SYNC_DOC)["ctag"] == token != "ctag-0"
+    stored = fake.peek_collection(TOMBSTONES)
+    assert sorted(stored) == ids
+    assert {t["sync_token"] for t in stored.values()} == {token}
+
+
+def test_bulk_with_bump_bumps_even_with_no_ids(fake):
+    token = dav_sync.record_tombstones_bulk(NAME, [], bump=True)
+    assert fake.peek(SYNC_DOC)["ctag"] == token
+    assert len(fake.commits) == 1 and fake.peek_collection(TOMBSTONES) == {}
+
+
+def test_a_failed_chunk_with_bump_leaves_the_token_unchanged(fake):
+    """The bump rides in the FINAL chunk: a failure before it means no client
+    can record a token covering half a drain — the caller re-runs it all."""
+    ids = [f"r{i:04d}" for i in range(dav_sync._BATCH_CHUNK + 10)]
+    seen = []
+
+    def fail_final(info):
+        seen.append(info.index)
+        if any(p == SYNC_DOC for _k, p in info.ops):
+            raise gexc.ServiceUnavailable("injected")
+
+    fake.add_commit_hook(fail_final)
+    with pytest.raises(gexc.ServiceUnavailable):
+        dav_sync.record_tombstones_bulk(NAME, ids, bump=True)
+    assert len(seen) == 2
+    assert fake.peek(SYNC_DOC)["ctag"] == "ctag-0"
+    assert len(fake.peek_collection(TOMBSTONES)) == dav_sync._BATCH_CHUNK - 1
+
+
+def test_remove_tombstones_bulk_deletes_only_the_named_ids(fake):
+    for rid in ("a", "b", "keep"):
+        fake.seed(f"{TOMBSTONES}/{rid}", {"deleted_at": None, "sync_token": "t"})
+    assert dav_sync.remove_tombstones_bulk(NAME, ["a", "b", "never"]) is None
+    assert sorted(fake.peek_collection(TOMBSTONES)) == ["keep"]
+    assert fake.peek(SYNC_DOC)["ctag"] == "ctag-0"  # no bump by default
+
+
+def test_remove_tombstones_bulk_with_bump_commits_the_bump_with_the_removals(fake):
+    fake.seed(f"{TOMBSTONES}/a", {"deleted_at": None, "sync_token": "t"})
+    token = dav_sync.remove_tombstones_bulk(NAME, ["a"], bump=True)
+    assert len(fake.commits) == 1
+    kinds = {k for k, _p in fake.commits[0].ops}
+    assert kinds == {"delete", "set"}
+    assert fake.peek(SYNC_DOC)["ctag"] == token
+    assert fake.peek_collection(TOMBSTONES) == {}
+
+
+def test_remove_tombstones_bulk_propagates_a_write_failure(fake):
+    """Unlike remove_tombstone, which logs and swallows: a bulk caller must
+    know."""
+    fake.add_commit_hook(lambda info: (_ for _ in ()).throw(
+        gexc.ServiceUnavailable("injected")))
+    with pytest.raises(gexc.ServiceUnavailable):
+        dav_sync.remove_tombstones_bulk(NAME, ["a"])

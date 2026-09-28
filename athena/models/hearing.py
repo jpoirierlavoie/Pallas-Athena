@@ -501,13 +501,9 @@ def list_hearings(
     default so a pending reservation never syncs or shows up as a real event.
     """
     try:
-        query = db.collection(COLLECTION)
-
-        if dossier_id:
-            query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
-
-        results = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
-        results = _filter_confirmation(results, include_unconfirmed)
+        results = _raw_hearings(
+            dossier_id, include_unconfirmed=include_unconfirmed
+        )
 
         # Client-side filters (Firestore single-field index limitation)
         if status_filter and status_filter in VALID_STATUSES:
@@ -529,6 +525,47 @@ def list_hearings(
         return results
     except Exception:
         return []
+
+
+def _raw_hearings(
+    dossier_id: Optional[str], *, include_unconfirmed: bool
+) -> list[dict]:
+    """The hearing rows of one dossier (every hearing when *dossier_id* is
+    falsy), migrated, then gated by :func:`_filter_confirmation`.
+
+    THE query body :func:`list_hearings` (fail-open) and
+    :func:`list_hearings_strict` (propagates) share, so the two can never
+    disagree about who belongs to a dossier. Raises on a read failure.
+    """
+    query = db.collection(COLLECTION)
+    if dossier_id:
+        query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
+    results = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+    return _filter_confirmation(results, include_unconfirmed)
+
+
+def list_hearings_strict(
+    dossier_id: str, *, include_unconfirmed: bool
+) -> list[dict]:
+    """Every hearing of ONE dossier — a read failure PROPAGATES.
+
+    For a caller that WRITES on the strength of the answer: the DavX5 drain
+    of a closing dossier (``services/dossier_dav.dav_member_ids``) tombstones
+    exactly what this returns, and :func:`list_hearings` answers a Firestore
+    blip with ``[]`` — a drain built on it left every court date on the
+    phone once the collection stopped being advertised.
+
+    *include_unconfirmed* is REQUIRED, with no default: the DAV membership
+    is confirmed hearings only (``False`` — an unconfirmed Bookings import
+    was never on the phone), and a caller must say so rather than inherit
+    it (the ``include_analyse`` lesson).
+
+    An empty or blank *dossier_id* is REFUSED before any query: the shared
+    body reads EVERY hearing for a falsy id. Unordered.
+    """
+    if not isinstance(dossier_id, str) or not dossier_id.strip():
+        raise ValueError("list_hearings_strict needs a dossier id")
+    return _raw_hearings(dossier_id, include_unconfirmed=include_unconfirmed)
 
 
 def list_bookings_all() -> list[dict]:

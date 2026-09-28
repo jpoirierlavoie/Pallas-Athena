@@ -526,6 +526,15 @@ DossierEvent = Literal[
     # NOM avant ce lot est adopté UNE fois, et cette ligne le dit.
     # Identifiants et comptes seulement.
     "system_folder_adopted",
+    # Visibilité DavX5 d'un dossier (lot 4a, services/dossier_dav). Un
+    # changement de statut qui fait entrer ou sortir la collection du
+    # téléphone, une purge (ou un rétablissement) restée INCOMPLÈTE — à
+    # ERROR, c'est la ligne qui dit « des éléments sont restés sur le
+    # téléphone » —, et une resynchronisation demandée. Identifiants,
+    # statuts, sens et comptes seulement — jamais un titre.
+    "dossier_status_changed",
+    "dossier_dav_visibility_incomplete",
+    "dossier_dav_resynced",
 ]
 # Séries récurrentes d'audiences. Un seul clic y crée ou détruit jusqu'à 60
 # documents, frappe autant de pierres tombales et pousse autant de VEVENT vers
@@ -826,15 +835,22 @@ def log_auth_event(
 def log_dossier_event(
     event: DossierEvent,
     dossier_id: str,
+    *,
+    level: int = logging.INFO,
     **extra: Any,
 ) -> None:
-    """Emit a dossier lifecycle event at INFO."""
+    """Emit a dossier lifecycle event — at INFO unless *level* says otherwise.
+
+    *level* exists for ``dossier_dav_visibility_incomplete`` (ERROR): a drain
+    that left resources on the phone is not routine, and the typed helper
+    must be able to say so without a raw ``logger.error``.
+    """
     fields: dict[str, Any] = {
         "event": event,
         "dossier_id": dossier_id,
         **extra,
     }
-    _emit(_PALLAS_DOSSIER, logging.INFO, event, fields)
+    _emit(_PALLAS_DOSSIER, level, event, fields)
 
 
 def log_hearing_series_event(

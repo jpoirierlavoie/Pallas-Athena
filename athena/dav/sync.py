@@ -35,6 +35,23 @@ TOMBSTONE_TTL_DAYS = 30
 # 2026 and has exactly the shape of a dossier collection.
 GENERAL_COLLECTION = "general"
 
+# The dossier statuses whose ``/dav/dossier-{id}/`` collection is ADVERTISED
+# to DavX5 and lists live resources. THE single source (lot 4a): the root
+# Depth:1 PROPFIND (``dav/__init__.py``) iterates it to build discovery, the
+# collection's own handlers (``dav.dossier_collections._dossier_is_active``)
+# test it to decide « live or draining », and ``services/dossier_dav.py``
+# derives from it whether a status transition drains or restores. They used
+# to carry three hand-typed copies (plus six in ``mcp/handlers.py``), and a
+# drift between any two is silent: discovery advertising a collection the
+# drain has emptied, or a drained collection the root keeps listing.
+#
+# ``en_attente`` is ACTIVE here: a pending dossier keeps its collection on
+# the phone. (It is ALSO still in the prescription alerts since lot 0b —
+# ``models.dossier.PRESCRIPTION_ALERT_STATUSES`` — a different question that
+# happens to have the same answer today; the two are deliberately not one
+# constant.)
+ACTIVE_DOSSIER_STATUSES: tuple[str, ...] = ("actif", "en_attente")
+
 
 def collection_for(dossier_id: Optional[str]) -> str:
     """DAV collection name an item belongs to, from its ``dossier_id``.
@@ -242,9 +259,51 @@ def record_tombstones_in_batch(
         )
 
 
-def record_tombstones_bulk(
-    collection_name: str, resource_ids: list[str]
+def remove_tombstones_in_batch(
+    batch, collection_name: str, resource_ids: list[str]
 ) -> None:
+    """Stage the DELETION of *resource_ids*' tombstones into a caller-owned
+    batch — the restore-side sibling of :func:`record_tombstones_in_batch`.
+
+    For resources that (re)enter a collection in bulk (a reopened dossier):
+    paired with :func:`bump_ctag_in_batch`, the removals and the bump commit
+    together or not at all. Deleting a tombstone that does not exist is a
+    no-op in Firestore, so a resource that was never tombstoned costs one
+    harmless write. Unlike :func:`remove_tombstone`, nothing is swallowed
+    here: the caller's ``commit()`` raises, and the caller decides.
+    """
+    tombstones = _sync_ref(collection_name).collection("tombstones")
+    for rid in resource_ids:
+        batch.delete(tombstones.document(rid))
+
+
+def _commit_chunks_with_bump(collection_name: str, resource_ids, stage) -> str:
+    """Stage *resource_ids* chunk by chunk, the CTag bump in the FINAL chunk,
+    then commit the chunks IN ORDER. Returns the new token.
+
+    Each chunk holds at most ``_BATCH_CHUNK - 1`` resources, so a write of up
+    to 449 resources and its bump are ONE atomic commit; a longer one bumps
+    only once every earlier chunk has committed. A failed chunk therefore
+    leaves the token UNCHANGED: no client can record a token that covers half
+    a write, and the caller — told by the propagated exception — re-runs the
+    whole thing (every stage is idempotent). ``stage(batch, chunk, token)``
+    writes one chunk into its batch under the new token.
+    """
+    ids = list(resource_ids)
+    per = _BATCH_CHUNK - 1
+    chunks = [ids[i:i + per] for i in range(0, len(ids), per)] or [[]]
+    batches = [db.batch() for _ in chunks]
+    token = bump_ctag_in_batch(batches[-1], collection_name)
+    for batch, chunk in zip(batches, chunks):
+        stage(batch, chunk, token)
+    for batch in batches:
+        batch.commit()
+    return token
+
+
+def record_tombstones_bulk(
+    collection_name: str, resource_ids: list[str], *, bump: bool = False
+) -> Optional[str]:
     """Record many tombstones with ONE ctag read and chunked batch writes.
 
     ``record_tombstone`` calls ``get_ctag`` inline, so it costs TWO serialized
@@ -258,9 +317,21 @@ def record_tombstones_bulk(
     a caller deleting on the strength of this must not mistake a write
     failure for a completed drain. A failed token READ does not: the
     tombstones are written anyway, stamped « » (:func:`_tombstone_token`).
+
+    ``bump=True`` (lot 4a — the dossier drain, ``services/dossier_dav``):
+    the CTag bump rides in the FINAL chunk (:func:`_commit_chunks_with_bump`)
+    — even for an empty list, which then commits the bump alone — and the
+    tombstones carry the NEW token, with no read. Returns that token;
+    ``None`` without a bump (the caller bumps, as before).
     """
+    if bump:
+        return _commit_chunks_with_bump(
+            collection_name, resource_ids,
+            lambda batch, chunk, token: record_tombstones_in_batch(
+                batch, collection_name, chunk, token),
+        )
     if not resource_ids:
-        return
+        return None
     token = _tombstone_token(collection_name)
     now = datetime.now(timezone.utc)
     tombstones = _sync_ref(collection_name).collection("tombstones")
@@ -272,6 +343,33 @@ def record_tombstones_bulk(
                 {"deleted_at": now, "sync_token": token},
             )
         batch.commit()
+    return None
+
+
+def remove_tombstones_bulk(
+    collection_name: str, resource_ids: list[str], *, bump: bool = False
+) -> Optional[str]:
+    """Delete many tombstones in chunked batch writes — resources that
+    (re)enter a collection together (a reopened dossier, lot 4a).
+
+    WRITE failures propagate, unlike :func:`remove_tombstone`, which logs and
+    swallows its own: a bulk caller must know. ``bump=True`` stages the CTag
+    bump in the FINAL chunk (:func:`_commit_chunks_with_bump`) and returns
+    the new token; ``None`` otherwise.
+    """
+    if bump:
+        return _commit_chunks_with_bump(
+            collection_name, resource_ids,
+            lambda batch, chunk, _token: remove_tombstones_in_batch(
+                batch, collection_name, chunk),
+        )
+    ids = list(resource_ids)
+    for start in range(0, len(ids), _BATCH_CHUNK):
+        batch = db.batch()
+        remove_tombstones_in_batch(
+            batch, collection_name, ids[start:start + _BATCH_CHUNK])
+        batch.commit()
+    return None
 
 
 def remove_tombstone(collection_name: str, resource_id: str) -> None:

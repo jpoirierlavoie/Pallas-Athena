@@ -31,6 +31,7 @@ from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
 from dav.sync import (
+    ACTIVE_DOSSIER_STATUSES,
     bump_ctag,
     collection_for,
     get_ctag,
@@ -106,12 +107,12 @@ dossier_dav_bp = Blueprint("dossier_dav", __name__)
 _PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 
 # A dossier's per-collection resources are exposed to DavX5 only while it is
-# active. Closed/archived dossiers are *drained*, not abruptly removed: the
-# collection still responds (so an enabled client can sync it down without a
-# hard 404) but lists no live resources — only the tombstones recorded on the
-# close transition, which tell DavX5 to delete its local copies. See
-# routes.dossiers._sync_dossier_dav_visibility.
-_ACTIVE_DOSSIER_STATUSES = ("actif", "en_attente")
+# active (``dav.sync.ACTIVE_DOSSIER_STATUSES`` — the ONE list, also iterated by
+# the root Depth:1 PROPFIND and by the drain). Closed/archived dossiers are
+# *drained*, not abruptly removed: the collection still responds (so an
+# enabled client can sync it down without a hard 404) but lists no live
+# resources — only the tombstones recorded on the close transition, which tell
+# DavX5 to delete its local copies. See services/dossier_dav.py.
 
 # The collection's advertised supported-calendar-component-set. Imported by
 # dav/__init__.py for the root Depth:1 listing: two hard-coded literals that
@@ -122,7 +123,7 @@ DOSSIER_COMPONENTS: tuple[str, ...] = ("VEVENT", "VTODO", "VJOURNAL")
 
 def _dossier_is_active(dossier: dict | None) -> bool:
     """True when the dossier's DAV collection should expose live resources."""
-    return bool(dossier) and dossier.get("status") in _ACTIVE_DOSSIER_STATUSES
+    return bool(dossier) and dossier.get("status") in ACTIVE_DOSSIER_STATUSES
 
 
 # ── Scope ────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from typing import Optional
 
 from flask import (
     Blueprint,
@@ -22,9 +23,8 @@ from dav.sync import (
     clear_tombstones,
     collection_for,
     delete_sync_state,
-    record_tombstones_bulk,
-    remove_tombstone,
 )
+from services import dossier_dav
 from pagination import (
     PAGE_SIZE,
     cursor_pagination,
@@ -91,6 +91,7 @@ from models.dossier import (
     delete_dossier,
     derive_prescription,
     get_dossier,
+    get_dossier_strict,
     list_dossiers,
     list_dossiers_page,
     normalize_forum,
@@ -105,6 +106,7 @@ from utils.template_fields import format_honoraires_parts, retention_date
 from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input
 from utils.format_fr import parse_cents_or_none
+from utils.logging_setup import log_unexpected
 
 dossiers_bp = Blueprint(
     "dossiers", __name__, url_prefix="/dossiers"
@@ -485,7 +487,13 @@ _LEAF_GROUP = {
 @dossiers_bp.route("/<dossier_id>")
 @login_required
 def dossier_detail(dossier_id: str) -> str:
-    """Render the dossier detail hub page."""
+    """Render the dossier detail hub page.
+
+    ``?message=`` / ``?erreur=`` / ``?avertissement=`` carry a CLOSED code
+    (:data:`_DETAIL_MESSAGES` and siblings) set by a redirect of this
+    blueprint — never text: an unknown code renders nothing, so a crafted
+    link cannot put words on the page.
+    """
     dossier = get_dossier(dossier_id)
     if not dossier:
         return redirect(url_for("dossiers.dossier_list"))
@@ -503,7 +511,41 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["dossier"] = dossier
     ctx["initial_tab"] = initial_tab
     ctx["initial_group"] = initial_group
+    ctx["banner_message"] = _DETAIL_MESSAGES.get(
+        request.args.get("message", ""), "")
+    ctx["banner_erreur"] = _DETAIL_ERRORS.get(
+        request.args.get("erreur", ""), "")
+    ctx["banner_avertissement"] = _DETAIL_WARNINGS.get(
+        request.args.get("avertissement", ""), "")
     return render_template("dossiers/detail.html", **ctx)
+
+
+# The detail page's banners, keyed by the closed codes this blueprint's
+# redirects set (dossier_update, dossier_dav_resync). Text lives HERE, the
+# query string carries only the key.
+_DETAIL_MESSAGES = {
+    "dav_resync": (
+        "Synchronisation du téléphone refaite : DavX5 la prendra en compte "
+        "à sa prochaine synchronisation."
+    ),
+}
+_DETAIL_ERRORS = {
+    "dav_resync": (
+        "La resynchronisation du téléphone n'a pas abouti. Rien n'est perdu "
+        "— les tâches, les notes et les audiences du dossier restent "
+        "intactes dans l'application. Réessayez dans un instant."
+    ),
+}
+_DETAIL_WARNINGS = {
+    "dav_fermeture": (
+        "La fermeture est enregistrée mais la synchronisation du téléphone "
+        "est incomplète — cliquez « Resynchroniser le téléphone »."
+    ),
+    "dav_reouverture": (
+        "La réouverture est enregistrée mais la synchronisation du "
+        "téléphone est incomplète — cliquez « Resynchroniser le téléphone »."
+    ),
+}
 
 
 def _apercu_card_context(dossier: dict) -> dict:
@@ -812,75 +854,6 @@ def dossier_edit(dossier_id: str) -> str:
     return render_template("dossiers/form.html", **ctx)
 
 
-_ACTIVE_DOSSIER_STATUSES = ("actif", "en_attente")
-
-
-def _sync_dossier_dav_visibility(
-    dossier_id: str, old_status: str, new_status: str
-) -> None:
-    """Drain or restore a dossier's DAV collection on a status transition.
-
-    A dossier's ``/dav/dossier-{id}/`` collection is advertised to DavX5 only
-    while the dossier is ``actif``/``en_attente``. When it is closed or
-    archived the collection leaves discovery; if DavX5 still holds the
-    dossier's tasks/notes when that happens, its sync errors (the stale
-    per-collection worker hits a collection that is gone while local rows still
-    reference it).
-
-    To make the teardown clean we record a tombstone for every task, note and
-    hearing and bump the collection CTag: DavX5's next sync then reports them
-    all as deleted and drops its local copies BEFORE the collection
-    disappears. Reopening a dossier removes those tombstones (and bumps the
-    CTag) so the items sync back.
-
-    Hearings belong here since dossier-linked ones moved into the per-dossier
-    collection: omitting them would leave stale court dates on the phone with
-    no server-side way to remove them once the collection stops being
-    advertised.
-
-    No task/note/hearing documents are touched — tombstones live in
-    ``dav_sync`` and are DAV markers only. The underlying records stay in
-    Firestore and in the web UI regardless of the dossier's status.
-    """
-    was_active = old_status in _ACTIVE_DOSSIER_STATUSES
-    is_active = new_status in _ACTIVE_DOSSIER_STATUSES
-    if was_active == is_active:
-        return  # Visibility unchanged — nothing to drain or restore.
-
-    from models.hearing import list_hearings
-    from models.note import list_notes
-
-    sync_name = f"dossier:{dossier_id}"
-    resource_ids = [t["id"] for t in list_tasks(dossier_id=dossier_id)]
-    # include_analyse=True: the analyse note must be drained/restored with
-    # the rest, or a closed dossier leaves it stranded on the phone.
-    resource_ids += [
-        n["id"]
-        for n in list_notes(dossier_id=dossier_id, include_analyse=True)
-    ]
-    resource_ids += [h["id"] for h in list_hearings(dossier_id=dossier_id)]
-
-    if is_active:
-        # Reopened: resources re-enter the collection — drop stale tombstones
-        # so one sync REPORT never reports an id as both live and deleted.
-        # Safe direction: remove_tombstone swallows per item, and a missed
-        # removal self-heals on the next write.
-        for rid in resource_ids:
-            remove_tombstone(sync_name, rid)
-    else:
-        # Closed/archived: tombstone every resource so DavX5 drains cleanly.
-        #
-        # BULK, not a loop. record_tombstone costs two serialized round trips
-        # each (it calls get_ctag inline), so a dossier holding a recurring
-        # series plus its tasks and notes reaches the gunicorn 60 s timeout —
-        # and this is the UNRECOVERABLE direction: the status write has
-        # already committed, the dossier has dropped out of the root PROPFIND
-        # listing, so if the bump never runs there is no server-side way left
-        # to clear those court dates off the phone.
-        record_tombstones_bulk(sync_name, resource_ids)
-    bump_ctag(sync_name)
-
-
 # Every trust entry, clearing and reversal rewrites the dossier document
 # (its three trust balances) and so regenerates its etag: an edit tab opened
 # before a trust movement is refused although none of its fields collided.
@@ -896,13 +869,38 @@ _TRUST_WRITES_COUNT = (
 @dossiers_bp.route("/<dossier_id>", methods=["POST"])
 @login_required
 def dossier_update(dossier_id: str) -> str:
-    """Handle edit form submission."""
-    existing = get_dossier(dossier_id)
-    old_status = existing.get("status", "") if existing else ""
+    """Handle edit form submission.
+
+    The save runs through ``services.dossier_dav.run_status_transition``:
+    when the status crosses the active boundary (closing, archiving,
+    reopening), the dossier's DavX5 membership is read BEFORE the save — an
+    unreadable one refuses it, nothing written, re-rendered at 200 — and
+    drained or restored after it. A drain or restore that could not finish
+    AFTER the status was written is not a refusal (the save happened): the
+    detail page opens with an amber banner and the « Resynchroniser le
+    téléphone » button.
+    """
+    old_status: Optional[str]
+    try:
+        existing = get_dossier_strict(dossier_id)
+        # "" for a dossier that does not exist — update_dossier refuses it.
+        old_status = (existing or {}).get("status", "")
+    except Exception:
+        # Unknown, never guessed: the service then applies the TARGET
+        # status's visibility whatever the old one was (a guessed « actif »
+        # would skip the drain of a dossier closed meanwhile).
+        log_unexpected("dossier update: status pre-read failed",
+                       dossier_id=dossier_id)
+        old_status = None
 
     expected = edit_conflict.submitted_etag()
     data = _form_data()
-    dossier, errors = update_dossier(dossier_id, data, expected_etag=expected)
+    result = dossier_dav.run_status_transition(
+        dossier_id, old_status, data.get("status", ""),
+        lambda: update_dossier(dossier_id, data, expected_etag=expected),
+        reconcile_always=False,
+    )
+    dossier, errors = result.doc, result.errors
 
     if errors:
         errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
@@ -924,24 +922,46 @@ def dossier_update(dossier_id: str) -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
-    # A status change to/from closed/archived changes the dossier's DAV
-    # collection visibility — drain or restore it so DavX5 syncs cleanly.
-    _sync_dossier_dav_visibility(
-        dossier_id, old_status, dossier.get("status", "")
-    )
+    # The status is written. When its DavX5 drain or restore could not
+    # finish, the detail page says so and offers the resync — a success
+    # banner would hide a phone left out of step, and a refusal would lie
+    # about a save that happened.
+    params: dict = {}
+    if not result.dav.complete:
+        params["avertissement"] = (
+            "dav_reouverture" if result.dav.direction == dossier_dav.RESTORE
+            else "dav_fermeture"
+        )
+    target = url_for("dossiers.dossier_detail", dossier_id=dossier_id,
+                     **params)
 
     if _is_htmx():
-        resp = redirect(
-            url_for("dossiers.dossier_detail", dossier_id=dossier_id)
-        )
-        resp.headers["HX-Redirect"] = url_for(
-            "dossiers.dossier_detail", dossier_id=dossier_id
-        )
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(
-        url_for("dossiers.dossier_detail", dossier_id=dossier_id)
-    )
+    return redirect(target)
+
+
+@dossiers_bp.route("/<dossier_id>/dav/resync", methods=["POST"])
+@login_required
+def dossier_dav_resync(dossier_id: str) -> str:
+    """« Resynchroniser le téléphone » — re-apply the dossier's DavX5
+    visibility for its CURRENT status (``services.dossier_dav``).
+
+    The repair of a drain or restore that stopped half-way, and harmless on
+    a dossier already in step (every write is idempotent; the CTag is
+    bumped). A plain form POST answered by a redirect — the outcome travels
+    as a closed code in the query string (``?message=`` / ``?erreur=``),
+    never as text, and always in 2xx after the redirect.
+    """
+    dav = dossier_dav.resync_dossier_dav_visibility(dossier_id)
+    if dav.error == dossier_dav.ERR_DOSSIER_NOT_FOUND:
+        return redirect(url_for("dossiers.dossier_list"))
+    params = ({"message": "dav_resync"} if dav.complete
+              else {"erreur": "dav_resync"})
+    return redirect(url_for("dossiers.dossier_detail", dossier_id=dossier_id,
+                            **params))
 
 
 # ── Delete ────────────────────────────────────────────────────────────────

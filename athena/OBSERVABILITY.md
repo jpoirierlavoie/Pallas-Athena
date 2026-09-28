@@ -62,9 +62,9 @@ Each helper emits through a dedicated logger so log-based metrics can filter by 
 
 `reason` should be a short machine-stable string (`"token_invalid"`, `"mfa_missing"`, `"unauthorized_email"`, `"rate_limit_exceeded"`) — never an email or token.
 
-### `log_dossier_event(event, dossier_id, **extra)` — logger `pallas.dossier`
+### `log_dossier_event(event, dossier_id, *, level=logging.INFO, **extra)` — logger `pallas.dossier`
 
-All emitted at INFO.
+All emitted at INFO, except `dossier_dav_visibility_incomplete` (ERROR — the `level` keyword, lot 4a).
 
 | `event` | Notes |
 |---|---|
@@ -79,6 +79,9 @@ All emitted at INFO.
 | `budget_exported` | A budget PDF was generated. Fields: `budget_id`, `version`, `variant` ∈ `estimation`\|`suivi` — never amounts |
 | `phase_reclassified` | A time entry's or disbursement's litigation phase was changed from the application (`routes/time_expenses`). Fields: `entity_type` ∈ `time_entry`\|`expense`, `entity_id`, `from_sous_phase`, `to_sous_phase`, `invoiced`. Emitted ONLY when the code actually changed — re-saving the same code writes nothing and logs nothing. **Codes and ids only**: never the description (which prints on the client's invoice) and never an amount. The connector's own path is covered by `mcp_write` / `mcp_phase_bulk` instead. `invoiced: true` is the interesting line — it is the one write the application allows past the billing freeze, and the phase is the only field it can touch |
 | `system_folder_adopted` | A dossier's legacy system folder — a ROOT folder named « Projets » or « Reçus du portail », created by name before system roles existed — was stamped with its `system_role` by `models/folder.ensure_system_folder` (lot 2A, T2). Emitted ONCE per dossier and role, ever: the adoption is permanent, and later generations find the folder by its role. Fields: `folder_id`, `role` ∈ `projets`\|`portail`, `legacy_candidates` — how many such root folders the dossier held; **`legacy_candidates > 1` flags a past fork** (the oldest was adopted, the others stay ordinary folders the lawyer may merge by hand). Never a folder name |
+| `dossier_status_changed` | Lot 4a (`services/dossier_dav.run_status_transition`): a dossier's status was WRITTEN with a new value. Fields: `status_from`, `status_from_known` (false when the caller's pre-read of the old status failed — the service then applied the target's visibility whatever it was), `status_to`, `via` (`models.provenance.current_via()` — `web` for the edit form), `dav_direction` ∈ `drain`\|`restore`\|`none`, `dav_resources` (member count the DAV write covered), `dav_complete`. A same-status save emits nothing. Statuses, ids and counts only — never a title |
+| `dossier_dav_visibility_incomplete` | **ERROR.** Lot 4a: a drain or restore of the dossier's DavX5 collection did not finish — AFTER a status write (the status stays written; nothing can un-write it) or during a resync. It means resources may be left on the phone (drain) or the phone may not re-sync (restore) until « Resynchroniser le téléphone » is clicked. Fields: `reason` ∈ `members_reread_failed` (the post-commit re-read failed — the pre-read set was drained, a resource created in the window may be missed) \| `write_failed` (a tombstone chunk failed; the CTag bump rides in the final chunk, so `dav_ctag_bumped` tells whether it went out) \| `status_unverified` (the post-write re-read of the stored status failed) \| `status_moving` (another transition kept crossing the boundary) \| `members_unreadable` / `dossier_unreadable` (a resync that wrote nothing); `dav_direction`, `dav_resources`, `dav_ctag_bumped`, `via`. Never a title. (A transition REFUSED before its commit because the members were unreadable logs through `log_unexpected` instead: nothing was written) |
+| `dossier_dav_resynced` | Lot 4a: `POST /dossiers/<id>/dav/resync` re-applied the visibility of the dossier's CURRENT status (`services/dossier_dav.resync_dossier_dav_visibility`). Fields: `dav_direction`, `dav_resources`, `dav_complete`, `via`. An incomplete resync ALSO emits `dossier_dav_visibility_incomplete` |
 
 ### `log_dav_operation(operation, collection_type, *, dossier_id=None, object_count=None, duration_ms=None, status_code=None, ctag_bumped=None, **extra)` — logger `pallas.dav`
 
@@ -435,6 +438,7 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `trust.reconcile` | Reconciliation completion (Phase K) | `trust.reconcile` with `account_id`, `cleared_count` |
 | `admin.transaction` | One administration write — create / reversal / card payment (August 2026) | `admin.transaction` with `direction`, `kind` — **never amounts, never supplier names** |
 | `admin.reconcile` | Administration reconciliation completion | `admin.reconcile` with `account_id`, `cleared_count` |
+| `dossier.dav_visibility` | One drain or restore of a dossier's DavX5 collection — its tombstone chunks and the CTag bump (lot 4a, `services/dossier_dav`) | `dossier.dav_visibility` with `dossier_id`, `direction` (`drain`\|`restore`), `resource_count` — ids and counts only |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |
 
 ### Standard attributes

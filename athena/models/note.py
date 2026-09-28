@@ -271,15 +271,7 @@ def list_notes(
     filter on purpose — no Firestore index.
     """
     try:
-        query = db.collection(COLLECTION)
-
-        if dossier_id:
-            query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
-
-        results = [_migrate_category(doc.to_dict()) for doc in query.stream()]
-
-        if not include_analyse:
-            results = [r for r in results if not r.get("is_analyse")]
+        results = _raw_notes(dossier_id, include_analyse=include_analyse)
 
         # Client-side filters
         if category and category in VALID_CATEGORIES:
@@ -304,6 +296,45 @@ def list_notes(
         return results
     except Exception:
         return []
+
+
+def _raw_notes(dossier_id: Optional[str], *, include_analyse: bool) -> list[dict]:
+    """The note rows of one dossier (every note when *dossier_id* is falsy),
+    migrated, the analyse note kept only when *include_analyse*.
+
+    THE query body :func:`list_notes` (fail-open) and
+    :func:`list_notes_strict` (propagates) share, so the two can never
+    disagree about who belongs to a dossier. Raises on a read failure.
+    """
+    query = db.collection(COLLECTION)
+    if dossier_id:
+        query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
+    results = [_migrate_category(doc.to_dict()) for doc in query.stream()]
+    if not include_analyse:
+        results = [r for r in results if not r.get("is_analyse")]
+    return results
+
+
+def list_notes_strict(dossier_id: str, *, include_analyse: bool) -> list[dict]:
+    """Every note of ONE dossier — a read failure PROPAGATES.
+
+    For a caller that WRITES on the strength of the answer: the DavX5 drain
+    of a closing dossier (``services/dossier_dav.dav_member_ids``) tombstones
+    exactly what this returns, and :func:`list_notes` answers a Firestore
+    blip with ``[]`` — a drain built on it tombstoned nothing and stranded
+    every note on the phone.
+
+    *include_analyse* is REQUIRED, with no default (the ``include_analyse``
+    lesson): a DAV caller must decide consciously, since the default of
+    :func:`list_notes` drops the « Théorie de la cause » note — which the
+    collection DOES list — and a drain on it would strand that one note.
+
+    An empty or blank *dossier_id* is REFUSED before any query: the shared
+    body reads EVERY note for a falsy id. Unordered.
+    """
+    if not isinstance(dossier_id, str) or not dossier_id.strip():
+        raise ValueError("list_notes_strict needs a dossier id")
+    return _raw_notes(dossier_id, include_analyse=include_analyse)
 
 
 # Bounded read caps for the default /notes/ list view (no search/category

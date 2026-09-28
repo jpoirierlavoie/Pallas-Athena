@@ -268,12 +268,7 @@ def list_tasks(
 ) -> list[dict]:
     """Return tasks, optionally filtered."""
     try:
-        query = db.collection(COLLECTION)
-
-        if dossier_id:
-            query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
-
-        results = [doc.to_dict() for doc in query.stream()]
+        results = _raw_tasks(dossier_id)
 
         # Client-side filters (Firestore single-field index limitation)
         if status_filter and status_filter in VALID_STATUSES:
@@ -288,6 +283,40 @@ def list_tasks(
         return sort_tasks_for_display(results)
     except Exception:
         return []
+
+
+def _raw_tasks(dossier_id: Optional[str]) -> list[dict]:
+    """The task rows of one dossier — every task when *dossier_id* is falsy.
+
+    THE query body :func:`list_tasks` (fail-open) and
+    :func:`list_tasks_strict` (propagates) share, so the two can never
+    disagree about who belongs to a dossier. Raises on a read failure; the
+    fail-open wrapper is the caller's choice, never this function's.
+    """
+    query = db.collection(COLLECTION)
+    if dossier_id:
+        query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
+    return [doc.to_dict() for doc in query.stream()]
+
+
+def list_tasks_strict(dossier_id: str) -> list[dict]:
+    """Every task of ONE dossier — a read failure PROPAGATES.
+
+    For a caller that WRITES on the strength of the answer: the DavX5 drain
+    of a closing dossier (``services/dossier_dav.dav_member_ids``) tombstones
+    exactly what this returns. :func:`list_tasks` answers a Firestore blip
+    with ``[]``, and a drain built on it tombstoned NOTHING, bumped the CTag
+    and let the collection leave discovery — every task stranded on the
+    phone for good, with no error anywhere.
+
+    An empty or blank *dossier_id* is REFUSED before any query: the shared
+    body reads the WHOLE collection for a falsy id, and a drain handed ``""``
+    would tombstone every task of the firm (the ``serie_id == ""`` lesson).
+    Unordered.
+    """
+    if not isinstance(dossier_id, str) or not dossier_id.strip():
+        raise ValueError("list_tasks_strict needs a dossier id")
+    return _raw_tasks(dossier_id)
 
 
 def list_tasks_for_note(note_id: str) -> list[dict]:

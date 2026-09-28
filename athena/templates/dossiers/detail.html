@@ -15,6 +15,32 @@
        }
      }">
 
+  {# Bandeaux d'arrivée : le texte est choisi CÔTÉ ROUTE dans une table
+     fermée (routes/dossiers._DETAIL_*) — la chaîne de requête ne porte
+     qu'une clé, jamais un texte affiché ici. #}
+  {% if banner_message %}
+  <div class="mb-6 px-4 py-3 text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg" role="status">
+    {{ banner_message }}
+  </div>
+  {% endif %}
+  {% if banner_erreur %}
+  <div class="mb-6 px-4 py-3 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg" role="alert">
+    {{ banner_erreur }}
+  </div>
+  {% endif %}
+  {# Purge (ou rétablissement) DavX5 restée incomplète APRÈS l'écriture du
+     statut : le statut est enregistré, le téléphone pas encore à jour. Le
+     bouton relance services/dossier_dav.resync_dossier_dav_visibility. #}
+  {% if banner_avertissement %}
+  <div role="alert" class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    <p class="font-semibold">{{ banner_avertissement }}</p>
+    <form method="post" action="{{ url_for('dossiers.dossier_dav_resync', dossier_id=dossier.id) }}" class="mt-1">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="font-medium underline">Resynchroniser le téléphone</button>
+    </form>
+  </div>
+  {% endif %}
+
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('dossiers.dossier_list') }}"
@@ -38,6 +64,18 @@
          class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('archive', 20) }}
       </a>
+      {# Toujours offert : sur un dossier fermé, repose la pierre tombale de chaque élément ;
+         sur un dossier ouvert, les rend au téléphone. Sans effet nuisible
+         sur un dossier déjà à jour (écritures idempotentes). #}
+      <form method="post" action="{{ url_for('dossiers.dossier_dav_resync', dossier_id=dossier.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                title="Resynchroniser le téléphone"
+                aria-label="Resynchroniser le téléphone"
+                class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+          {{ ms('smartphone', 20) }}
+        </button>
+      </form>
       <a href="{{ url_for('dossiers.dossier_edit', dossier_id=dossier.id) }}"
          title="Modifier"
          aria-label="Modifier"

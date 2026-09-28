@@ -847,6 +847,24 @@ def _suggest_next_file_number() -> str:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
+def _today_midnight_utc() -> datetime:
+    """Today on the MONTRÉAL calendar, stored at midnight UTC — the house
+    date-only convention, for the auto-stamped ``opened_date`` /
+    ``closed_date`` (lot 4a).
+
+    Both fields are DATE-ONLY values: rendered through ``strftime`` on the
+    Aperçu card and the form, emitted by ``mcp.tools.date_str``, and fed to
+    ``retention_date``. They used to be stamped with
+    ``datetime.now(timezone.utc)`` — a timestamp — so a dossier closed after
+    20:00 (19:00 in winter) read TOMORROW's date, and its retention date a
+    day late, with no error anywhere (the 2026-08-02 evening-band class,
+    fixed for trust in lot 0b by the same helper). A value the caller
+    supplies is kept as supplied.
+    """
+    t = deadlines.today_mtl()
+    return datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
+
+
 def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
@@ -882,7 +900,7 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     merged.update(
         {
             "id": dossier_id,
-            "opened_date": merged.get("opened_date") or now,
+            "opened_date": merged.get("opened_date") or _today_midnight_utc(),
             "vjournal_uid": vjournal_uid,
             "dav_href": f"/dav/journals/{dossier_id}.ics",
         }
@@ -891,8 +909,9 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
 
     # Closure date mirrors update_dossier: auto-stamp when a dossier is created
     # already closed/archived (unless the form supplied one); empty otherwise.
+    # Date-only — today in Montréal at midnight UTC, never `now`.
     if merged.get("status") in ("fermé", "archivé"):
-        merged["closed_date"] = merged.get("closed_date") or now
+        merged["closed_date"] = merged.get("closed_date") or _today_midnight_utc()
     else:
         merged["closed_date"] = None
 
@@ -1348,11 +1367,16 @@ def update_dossier(
 
     # Closure date: auto-determined when the dossier is closed/archived, but
     # user-editable. Respect a date supplied on the form; otherwise keep the
-    # existing one, falling back to `now` on the closing transition. An
-    # active/pending dossier is never closed, so it carries no closure date.
+    # existing one, falling back to TODAY (Montréal, date-only — never `now`,
+    # a timestamp that reads as tomorrow after 20:00) on the closing
+    # transition. An active/pending dossier is never closed, so it carries no
+    # closure date: reopening clears it (the model rule; the previous value
+    # is not kept anywhere).
     if merged.get("status") in ("fermé", "archivé"):
         if not merged.get("closed_date"):
-            merged["closed_date"] = existing.get("closed_date") or now
+            merged["closed_date"] = (
+                existing.get("closed_date") or _today_midnight_utc()
+            )
     else:
         merged["closed_date"] = None
 

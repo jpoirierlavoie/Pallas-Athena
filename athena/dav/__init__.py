@@ -108,7 +108,11 @@ def dav_root_propfind() -> Response:
             GENERAL_PATH,
             collection_display_name,
         )
-        from dav.sync import GENERAL_COLLECTION, get_ctags_bulk
+        from dav.sync import (
+            ACTIVE_DOSSIER_STATUSES,
+            GENERAL_COLLECTION,
+            get_ctags_bulk,
+        )
         from models.dossier import list_dossiers
 
         # -- Static collections (addressbook + \u00ab G\u00e9n\u00e9ral \u00bb) ----------------
@@ -127,11 +131,15 @@ def dav_root_propfind() -> Response:
 
         # Resolve active dossiers first so every collection's CTag can be
         # fetched in a single batched read instead of one get per dossier.
-        with firestore_span("query", "dossiers", filter="status=actif"):
-            actif = list_dossiers(status_filter="actif")
-        with firestore_span("query", "dossiers", filter="status=en_attente"):
-            en_attente = list_dossiers(status_filter="en_attente")
-        active_dossiers = actif + en_attente
+        # ONE query per status of dav.sync.ACTIVE_DOSSIER_STATUSES — the list
+        # the collection's own handlers and the drain (services/dossier_dav)
+        # read too, so discovery can never advertise a collection the drain
+        # treats as closed, nor hide one it treats as open (lot 4a: this
+        # listing used to hard-code its two statuses).
+        active_dossiers: list[dict] = []
+        for status in ACTIVE_DOSSIER_STATUSES:
+            with firestore_span("query", "dossiers", filter=f"status={status}"):
+                active_dossiers += list_dossiers(status_filter=status)
         add_attributes(**{"dav.dossier_count": len(active_dossiers)})
 
         seen_ids: set[str] = set()

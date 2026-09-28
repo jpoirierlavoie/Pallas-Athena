@@ -118,6 +118,7 @@ from typing import Any, Callable, Optional
 from google.api_core.exceptions import NotFound
 
 from dav.sync import (
+    ACTIVE_DOSSIER_STATUSES,
     bump_ctag,
     collection_for,
     record_tombstone,
@@ -3435,7 +3436,7 @@ def _write_result(
     # actif/en_attente dossiers, so a note on a closed file is stored and
     # visible in the web UI but never reaches the phone. Say so rather than
     # letting the user discover it.
-    dav_visible = status is None or status in ("actif", "en_attente")
+    dav_visible = status is None or status in ACTIVE_DOSSIER_STATUSES
     payload: dict[str, Any] = {
         "created" if created else "appended": True,
         "note": {
@@ -4012,7 +4013,7 @@ def _entity_write_result(
                 created=created,
             )
         status = dossier.get("status", "") if dossier is not None else None
-        dav_visible = status is None or status in ("actif", "en_attente")
+        dav_visible = status is None or status in ACTIVE_DOSSIER_STATUSES
         payload["ctag_bumped"] = bumped
         payload["dav_synced"] = bumped and dav_visible
         if relocating:
@@ -6997,9 +6998,9 @@ def _update_dossier_impl(args: dict) -> dict:
     if "status" in args:
         raise ToolArgumentError(
             "Le statut d'un dossier ne se change pas par le connecteur : la "
-            "fermeture exige la purge DavX5 du côté route "
-            "(routes/dossiers._sync_dossier_dav_visibility), que les modèles "
-            "n'appellent jamais. Un dossier fermé ici laisserait ses tâches, "
+            "fermeture exige la purge DavX5 du service "
+            "(services/dossier_dav), que les modèles n'appellent "
+            "jamais. Un dossier fermé ici laisserait ses tâches, "
             "ses notes et ses audiences sur le téléphone pour toujours. "
             "Fixez le statut à la création, ou fermez-le dans l'application."
         )
@@ -7423,7 +7424,7 @@ def _create_hearing_series_impl(args: dict) -> dict:
     first = occurrences[0]
     serie_id = str(first.get("serie_id") or "")
     status = dossier.get("status", "")
-    dav_visible = status in ("actif", "en_attente")
+    dav_visible = status in ACTIVE_DOSSIER_STATUSES
     warnings: list[str] = []
     if not dav_visible:
         warnings.append(
@@ -8193,7 +8194,7 @@ def _decide_payload(action: str, doc: dict, report: dict) -> dict:
     if bumped:
         dossier = _dossier_for(doc.get("dossier_id"))
         status = dossier.get("status", "") if dossier is not None else None
-        visible = status is None or status in ("actif", "en_attente")
+        visible = status is None or status in ACTIVE_DOSSIER_STATUSES
 
     warnings: list[str] = []
     service_warning = str(report.get("warning") or "")
@@ -10058,7 +10059,7 @@ def _dav_visible(dossier_id: str) -> bool:
     dossier = dossier_model.get_dossier(dossier_id) if dossier_id else None
     if dossier is None:
         return True
-    return dossier.get("status", "") in ("actif", "en_attente")
+    return dossier.get("status", "") in ACTIVE_DOSSIER_STATUSES
 
 
 def _step_brief(s: dict, today: date, protocol: dict) -> dict:
@@ -10199,7 +10200,7 @@ def _create_protocol_impl(args: dict) -> dict:
     bumped = False
     if report["tasks_created"]:
         bumped = _bump_task_collection(dossier_id)
-    visible = (dossier or {}).get("status", "") in ("actif", "en_attente")
+    visible = (dossier or {}).get("status", "") in ACTIVE_DOSSIER_STATUSES
     today = deadlines.today_mtl()
     steps = sorted(protocol.get("steps") or [],
                    key=lambda s: s.get("order", 0))
