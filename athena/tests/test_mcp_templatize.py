@@ -760,6 +760,9 @@ def _letter_with_properties(**props: str) -> bytes:
             'openxmlformats.org/package/2006/metadata/core-properties" '
             'xmlns:dc="http://purl.org/dc/elements/1.1/">'
             f"{body}</cp:coreProperties>"))
+        info = zipfile.ZipInfo("word/media/image1.png", (2024, 5, 6, 7, 8, 10))
+        info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(info, PNG)
     return buf.getvalue()
 
 
@@ -781,9 +784,20 @@ def test_a_templatized_copy_always_has_its_properties_emptied(world):
     result = _create(_SUB_JT)
     assert result["scrubbed_properties"] == ["dc:subject", "dc:creator"]
     assert not any("propriétés du document" in w for w in result["warnings"])
-    core = _entries(_stored_bytes(world, result["entity"]["id"]))[
-        "docProps/core.xml"]
+    stored = _entries(_stored_bytes(world, result["entity"]["id"]))
+    core = stored["docProps/core.xml"]
     assert b"Fraude" not in core and b"Tremblay" not in core
+    # Two rewrites (the scrub, then the substitutions), each through the
+    # entries' own ZipInfo: every part parses, the order is the source's,
+    # and every entry neither rewrote is the source's byte for byte.
+    source = _entries(letter)
+    assert list(stored) == list(source)
+    for name, raw in stored.items():
+        if name.endswith(".xml"):
+            ET.fromstring(raw)
+        if name not in ("docProps/core.xml", "word/document.xml"):
+            assert raw == source[name], name
+    assert stored["word/media/image1.png"] == PNG
     # `true` is merely redundant; an explicit `false` is refused BEFORE any
     # download — never silently overridden.
     assert _create(_SUB_JT, scrub_properties=True)["scrubbed_properties"] == [

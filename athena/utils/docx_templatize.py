@@ -27,7 +27,10 @@ literal, a ``{{…}}`` span the source already carries, parts the fill engine
 never reads). ``templatize`` refuses — returns
 ``data=None`` with the reason — unless every substitution's substituted
 count EQUALS its ``expected_occurrences`` (the ``import_invoice``
-expected-total doctrine): there is never a partial output.
+expected-total doctrine): there is never a partial output. An invalid
+substitution (a bad name, a duplicate literal) is an error of the REQUEST,
+never a reason to stop counting the valid ones — their reports are real
+counts on both entry points, and nothing is written while an error stands.
 
 What is rewritten, and what is only reported
 --------------------------------------------
