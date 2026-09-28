@@ -953,6 +953,25 @@ def test_an_invalid_substitution_is_refused_by_number(sub, fragment):
     assert fragment in result.errors[0]
 
 
+def test_an_invalid_substitution_never_zeroes_the_valid_ones():
+    """Review of lot 2B step 2: a request error used to stop the run before
+    anything was counted — every VALID sibling then read « substituted: 0 »
+    (a preview's lie). They are counted now, on both entry points; the
+    invalid one keeps its error, and templatize still writes nothing."""
+    data = _docx(_doc(_p(_r("Jean Tremblay et Jean Tremblay"))))
+    subs = [Sub("Jean {X}", "client.nom", None),
+            Sub("Jean Tremblay", "client.nom_complet", None)]
+    counted = tz.analyse(data, subs)
+    assert len(counted.errors) == 1 and "accolade" in counted.errors[0]
+    assert counted.substitutions[1].substituted == 2
+    assert counted.substitutions[0].substituted == 0
+    written = tz.templatize(data, [Sub("Jean {X}", "client.nom", 1),
+                                   Sub("Jean Tremblay", "client.nom_complet", 2)])
+    assert written.data is None and written.rewritten_parts == ()
+    assert len(written.errors) == 1
+    assert written.substitutions[1].substituted == 2
+
+
 def test_literals_equal_after_folding_are_refused_as_duplicates():
     data = _docx(_doc(_p(_r("l'Hôtel"))))
     result = tz.analyse(data, [Sub("l'Hôtel", "a", None), Sub("l\u2019Hôtel", "b", None)])

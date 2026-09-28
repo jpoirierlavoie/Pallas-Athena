@@ -1365,7 +1365,12 @@ def _run(docx_bytes: bytes, substitutions: Sequence[Substitution], *,
     budget = _Budget()
     with zf:
         parts, raw_targets, blockers = _read_parts(zf, budget)
-        if blockers or errors:
+        # A REQUEST error (one invalid substitution) does not stop the
+        # count: the valid substitutions are still scanned and reported, so
+        # a preview never reads « 0 » for a literal the letter holds just
+        # because a sibling carries a bad name. Nothing is written — the
+        # `errors` check below returns before any edit is applied.
+        if blockers:
             return TemplatizeResult(None, empty_reports, tuple(blockers),
                                     tuple(errors), tuple(warnings))
 

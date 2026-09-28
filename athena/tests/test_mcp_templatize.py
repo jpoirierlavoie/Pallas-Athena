@@ -294,7 +294,7 @@ def test_the_preview_writes_nothing_at_all(world):
     objects = _objects(world)
     world["db"].reset_logs()
     _preview(FULL)
-    _preview(FULL[:1], scrub_properties=True)
+    _preview(FULL[:1])
     assert world["db"].commits == []
     assert _objects(world) == objects and _templates(world) == {}
     assert world["db"].peek("documents/src") == before_doc
@@ -420,6 +420,65 @@ def test_a_text_box_whose_copies_differ_is_reported_under_the_caller_s_number(
     assert result["leak_scan"] is None and result["ready_to_create"] is False
 
 
+def test_a_zero_hit_literal_that_masked_a_shorter_one_is_explained(world):
+    """Review of step 2. « Marie‑Ève Tremblay » written with Word's
+    NON-BREAKING hyphen is found but never replaced (blocked_by_markup): it
+    still MASKS its range, so « Tremblay » counts 1, not 2. create_template
+    cannot take the full name (its count is 0), and without it « Tremblay »
+    finds 2 — the preview's second pass tripped on exactly that, and said
+    only « n'a pas pu être produit … les erreurs ci-dessus », with no error
+    above. It now names the real count under the CALLER's number."""
+    letter = _docx(
+        '<w:p><w:r><w:t>Marie</w:t><w:noBreakHyphen/>'
+        '<w:t xml:space="preserve">Ève Tremblay</w:t></w:r></w:p>'
+        + _p(_r("Merci, M. Tremblay.")))
+    _seed_source(world, letter)
+    result = _preview([
+        {"literal": "Marie-Ève Tremblay", "placeholder": "client.nom_complet"},
+        {"literal": "Inexistant", "placeholder": "client.prenom"},
+        {"literal": "Tremblay", "placeholder": "client.nom"}])
+    full, absent, short = result["substitutions"]
+    assert (full["substituted"], full["blocked_by_markup"]) == (0, 1)
+    assert absent["substituted"] == 0 and short["substituted"] == 1
+    explained = [e for e in result["errors"]
+                 if e.startswith("Substitution n° 3 ({{client.nom}}) : 2 ")]
+    # It names the pair that MASKED (n° 1), not the one that found nothing
+    # at all (n° 2), and never a number of the second pass's own list.
+    assert explained and "substitution(s) n° 1," in explained[0]
+    assert "n° 2" not in explained[0]
+    assert "relancez l'aperçu" in explained[0]
+    assert not any(e.startswith(("Substitution n° 1 ", "Substitution n° 2 "))
+                   for e in result["errors"])
+    assert result["ready_to_create"] is False
+    # Following that advice converges: the short literal alone reads 2, and
+    # create_template takes it at 2.
+    alone = _preview([{"literal": "Tremblay", "placeholder": "client.nom"}])
+    assert alone["substitutions"][0]["substituted"] == 2
+    assert alone["errors"] == []
+
+
+def test_an_invalid_sibling_never_zeroes_a_valid_substitution(world):
+    """Review of step 2: one invalid entry used to stop the engine before it
+    counted anything — every OTHER row read « substituted: 0 » and the scan
+    ran on the untouched source, reporting as « remaining » a number the
+    valid pair would have replaced. The valid pairs are counted now; the
+    invalid one is still an error, and nothing is ready."""
+    _seed_source(world)
+    result = _preview([
+        {"literal": "Jean Tremblay", "placeholder": "client nom"},   # invalid
+        {"literal": "2026-001", "placeholder": "dossier.reference_interne"}])
+    bad, good = result["substitutions"]
+    assert bad["classification"] is None and bad["substituted"] == 0
+    assert good["substituted"] == 2
+    assert {p["part"]: p["count"] for p in good["by_part"]} == {
+        "word/document.xml": 1, "word/footer1.xml": 1}
+    remaining = {r["identifier"] for r in result["leak_scan"]["residues"]}
+    assert "2026-001" not in remaining and "Jean Tremblay" in remaining
+    assert any(e.startswith("Substitution n° 1 : le nom de champ")
+               for e in result["errors"])
+    assert result["ready_to_create"] is False
+
+
 def test_both_copies_of_a_text_box_are_counted_once(world):
     _seed_source(world, _boxed_letter("Jean Tremblay", "Jean Tremblay"))
     row = _preview([{"literal": "Jean Tremblay",
@@ -429,19 +488,20 @@ def test_both_copies_of_a_text_box_are_counted_once(world):
 
 
 def test_what_is_left_in_place_is_counted_where_it_is(world):
+    """REWRITTEN on purpose (review of step 2): the properties are ALWAYS
+    emptied first on the templatized path — the preview counts the file as
+    create_template stores it, so the author no longer counts as « left in
+    place » (it will not be), while the footnote does."""
     letter = _docx(_p(_r("Monsieur Jean Tremblay")),
                    footnotes=_p(_r("Voir Jean Tremblay, 2025.")),
                    creator="Jean Tremblay")
     _seed_source(world, letter)
-    row = _preview(FULL[:1])["substitutions"][0]
+    result = _preview(FULL[:1])
+    row = result["substitutions"][0]
     assert row["substituted"] == 1
     left = {p["where"]: p["count"] for p in row["in_non_target_parts"]}
-    assert left == {"notes de bas de page": 1, "propriétés du document": 1}
-    # The scrub runs FIRST: the properties no longer count.
-    scrubbed = _preview(FULL[:1], scrub_properties=True)
-    left = {p["where"] for p in scrubbed["substitutions"][0]["in_non_target_parts"]}
-    assert left == {"notes de bas de page"}
-    assert scrubbed["scrubbed_properties"] == ["dc:creator"]
+    assert left == {"notes de bas de page": 1}
+    assert result["scrubbed_properties"] == ["dc:creator"]
 
 
 def test_an_invalid_field_name_and_a_passthrough_name_are_told_apart(world):
@@ -467,7 +527,6 @@ def test_an_invalid_field_name_and_a_passthrough_name_are_told_apart(world):
     ({"substitutions": [{"literal": "Jean", "placeholder": "x",
                          "expected_occurrences": True}]}, "un entier"),
     ({"document_id": "inconnu"}, "`document_id` : document introuvable"),
-    ({"scrub_properties": "oui"}, "vrai ou faux"),
 ])
 def test_the_preview_s_bad_calls_are_refused(world, args, needle):
     _seed_source(world)
@@ -686,21 +745,118 @@ def test_a_source_the_engine_refuses_writes_nothing(world):
     assert _templates(world) == {}
 
 
-def test_the_scrub_runs_before_the_substitutions(world):
-    letter = _docx(_p(_r("Monsieur Jean Tremblay")), creator="Jean Tremblay")
-    _seed_source(world, letter)
-    sub = [{"literal": "Jean Tremblay", "placeholder": "client.nom_complet",
+def _letter_with_properties(**props: str) -> bytes:
+    """A letter whose docProps/core.xml carries the given dc:/cp: values."""
+    body = "".join(f"<{k}>{v}</{k}>" for k, v in props.items())
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", _CT)
+        zf.writestr("word/document.xml",
+                    f"{_DECL}<w:document {_W}><w:body>"
+                    + _p(_r("Monsieur Jean Tremblay")) + "<w:sectPr/>"
+                    "</w:body></w:document>")
+        zf.writestr("docProps/core.xml", (
+            f'{_DECL}<cp:coreProperties xmlns:cp="http://schemas.'
+            'openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f"{body}</cp:coreProperties>"))
+    return buf.getvalue()
+
+
+_SUB_JT = [{"literal": "Jean Tremblay", "placeholder": "client.nom_complet",
             "expected_occurrences": 1}]
+
+
+def test_a_templatized_copy_always_has_its_properties_emptied(world):
+    """REWRITTEN on purpose (review of step 2 — the lot's design: the scrub is
+    « always applied here »). The scan reads names, numbers and addresses
+    only: a SUBJECT that says what the first matter was about is none of
+    them, and Word shows it on no page the lawyer rereads — it rode into
+    every document generated for another client while the scrub was
+    opt-in. Now it never reaches the template, with or without the flag."""
+    letter = _letter_with_properties(**{
+        "dc:subject": "Fraude fiscale alléguée — mise en demeure",
+        "dc:creator": "Jean Tremblay"})
+    _seed_source(world, letter)
+    result = _create(_SUB_JT)
+    assert result["scrubbed_properties"] == ["dc:subject", "dc:creator"]
+    assert not any("propriétés du document" in w for w in result["warnings"])
+    core = _entries(_stored_bytes(world, result["entity"]["id"]))[
+        "docProps/core.xml"]
+    assert b"Fraude" not in core and b"Tremblay" not in core
+    # `true` is merely redundant; an explicit `false` is refused BEFORE any
+    # download — never silently overridden.
+    assert _create(_SUB_JT, scrub_properties=True)["scrubbed_properties"] == [
+        "dc:subject", "dc:creator"]
+
+
+def test_a_scrub_that_cannot_run_is_reported_by_the_preview_refused_by_create(
+        world):
+    """The preview reports what create_template would refuse — here a
+    property holding markup the scrub cannot empty — instead of raising."""
+    _seed_source(world, _letter_with_properties(**{
+        "dc:title": "<b>Objet</b>"}))
+    result = _preview([{"literal": "Jean Tremblay",
+                        "placeholder": "client.nom_complet"}])
+    assert result["scrubbed_properties"] is None
+    assert tools.validate_args(OUTPUT_SCHEMAS["preview_templatize"],
+                               tools._jsonable(result)) == []
+    assert any("ne peut pas être effacée" in e for e in result["errors"])
+    assert result["substitutions"][0]["substituted"] == 1
+    assert result["ready_to_create"] is False
     exc = _refused(handlers.create_template, {
         "source_document_id": "src", "name": "Lettre type",
-        "category": "correspondance", "substitutions": sub})
-    assert "propriétés du document" in str(exc)
-    assert "scrub_properties true" in str(exc)
-    result = _create(sub, scrub_properties=True)
-    assert result["scrubbed_properties"] == ["dc:creator"]
-    assert not any("propriétés du document" in w for w in result["warnings"])
-    stored = _stored_bytes(world, result["entity"]["id"])
-    assert b"Tremblay" not in _entries(stored)["docProps/core.xml"]
+        "category": "correspondance", "substitutions": _SUB_JT})
+    assert "ne peut pas être effacée" in str(exc)
+    assert _templates(world) == {}
+
+
+def test_an_explicit_no_scrub_is_refused_on_the_templatized_path(
+        world, monkeypatch):
+    _seed_source(world)
+    monkeypatch.setattr(document_model, "get_document_bytes",
+                        lambda *a, **k: pytest.fail("downloaded"))
+    exc = _refused(handlers.create_template, {
+        "source_document_id": "src", "name": "Lettre type",
+        "category": "correspondance", "substitutions": FULL,
+        "scrub_properties": False})
+    assert "TOUJOURS" in str(exc) and "Rien n'a été créé." in str(exc)
+    assert _templates(world) == {}
+
+
+def test_a_property_the_scrub_cannot_reach_is_refused_with_the_word_remedy(
+        world):
+    """The residue hint tells the truth: after the scrub (always, here), a
+    name left in a property it does not touch (the keywords) is emptied in
+    Word — the old hint said « scrub_properties true les efface », which
+    had already run and could not."""
+    _seed_source(world, _letter_with_properties(**{
+        "cp:keywords": "Jean Tremblay"}))
+    exc = _refused(handlers.create_template, {
+        "source_document_id": "src", "name": "Lettre type",
+        "category": "correspondance", "substitutions": _SUB_JT})
+    assert exc.reason == "template_residue"
+    assert "Fichier › Informations › Propriétés" in str(exc)
+    assert "scrub_properties true" not in str(exc)
+
+
+def test_the_name_is_checked_against_the_literals_too(world, monkeypatch):
+    """Review of step 2: the template's NAME prints into the name of every
+    document generated from it. A literal the caller replaces is, by his own
+    account, text of the first matter — a nickname the identifier builder
+    never generates must not survive in the name either."""
+    letter = _docx(_p(_r("Cher Jojo,")))
+    _seed_source(world, letter)
+    monkeypatch.setattr(document_model, "get_document_bytes",
+                        lambda *a, **k: pytest.fail("downloaded"))
+    exc = _refused(handlers.create_template, {
+        "source_document_id": "src", "name": "Lettre à Jojo",
+        "category": "correspondance", "substitutions": [
+            {"literal": "Jojo", "placeholder": "client.prenom",
+             "expected_occurrences": 1}]})
+    assert exc.reason == "template_residue"
+    assert "`name`" in str(exc) and "« Jojo »" in str(exc)
+    assert _templates(world) == {}
 
 
 def test_the_name_is_still_checked_before_any_download(world, monkeypatch):
@@ -724,6 +880,43 @@ def test_a_same_key_retry_replays_and_never_creates_twice(world):
     assert again["entity"]["id"] == first["entity"]["id"]
     assert again["templatized"] == first["templatized"]
     assert len(_templates(world)) == 1
+
+
+def _package_with_app_company(company: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", _CT)
+        zf.writestr("word/document.xml",
+                    f"{_DECL}<w:document {_W}><w:body>"
+                    + _p(_r("Objet : {{objet_lettre}}")) + "<w:sectPr/>"
+                    "</w:body></w:document>")
+        zf.writestr("docProps/app.xml", (
+            f'{_DECL}<Properties xmlns="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/extended-properties">'
+            f"<Company>{company}</Company></Properties>"))
+    return buf.getvalue()
+
+
+def test_the_scrub_hint_is_offered_only_where_the_scrub_reaches(world):
+    """Review of step 2 — the unchanged path (lot 2A) shares the refusal
+    text: « scrub_properties true les efface » was offered for ANY residue
+    in docProps, including app.xml (which the scrub never touches) and
+    after the scrub had already run."""
+    _seed_source(world, _package_with_app_company("Jean Tremblay"))
+    for extra in ({}, {"scrub_properties": True}):
+        exc = _refused(handlers.create_template, {
+            "source_document_id": "src", "name": "Lettre type",
+            "category": "correspondance", **extra})
+        assert exc.reason == "template_residue"
+        assert "scrub_properties true" not in str(exc)
+        assert "Fichier › Informations › Propriétés" in str(exc)
+    # A core property, not yet scrubbed: the flag IS the remedy.
+    _seed_source(world, _docx(_p(_r("Objet : {{objet_lettre}}")),
+                              creator="Jean Tremblay"), doc_id="src2")
+    exc = _refused(handlers.create_template, {
+        "source_document_id": "src2", "name": "Lettre type",
+        "category": "correspondance"})
+    assert "scrub_properties true efface le titre" in str(exc)
 
 
 def test_without_substitutions_the_file_is_registered_unchanged(world):
@@ -785,6 +978,13 @@ def test_the_registry_declares_a_read_and_a_create():
     extra = {"document_id": "src", "substitutions": [
         {"literal": "Jean Tremblay", "placeholder": "x", "whole_word": True}]}
     assert tools.validate_args(preview["input_schema"], extra)
+    # The preview ALWAYS counts the file with its properties emptied, as
+    # create_template stores a templatized copy: no flag to pass, and one
+    # passed is refused rather than silently ignored.
+    assert "scrub_properties" not in preview["input_schema"]["properties"]
+    assert tools.validate_args(preview["input_schema"], {
+        "document_id": "src", "substitutions": FULL[:1],
+        "scrub_properties": False})
 
 
 def test_the_preview_is_advertised_read_only(monkeypatch):
@@ -801,7 +1001,7 @@ def test_the_texts_name_the_workflow():
     assert "ALL-CAPS variant needs its own substitution" in text
     # The family text goes through str.format: a brace written once there
     # would read « {field} » — no field syntax at all.
-    assert "replaced by its {{field}}:" in text
+    assert "replaced by its {{field}}, its document properties always "         "emptied:" in text
     templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
     assert "transformé en gabarit" in templates.checkbox_summary_fr
     consent = " ".join((_ATHENA / "templates" / "mcp" / "families"

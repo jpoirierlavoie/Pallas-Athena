@@ -1363,7 +1363,8 @@ def _scrubbed_properties() -> dict:
         "description": (
             "The document properties emptied (scrub_properties): their "
             "NAMES, never their values; [] = nothing to empty; null = not "
-            "asked (or a metadata edit)."),
+            "asked (or a metadata edit); templatizing: always run, null "
+            "only if it could not (see errors)."),
     }
 
 

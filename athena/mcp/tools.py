@@ -5448,8 +5448,10 @@ TOOLS: dict[str, dict] = {
             "is CASE-SENSITIVE: an ALL-CAPS variant of a name needs its own "
             "substitution, with an ALL-CAPS field name. Adjust and preview "
             "again until ready_to_create, then create_template with each "
-            "expected_occurrences = its `substituted`. Writes nothing, and "
-            "never returns the document's text — counts only."
+            "expected_occurrences = its `substituted`. Counts the file with "
+            "its document properties emptied, as create_template stores it. "
+            "Writes nothing, and never returns the document's text — counts "
+            "only."
         ),
         "input_schema": {
             "type": "object",
@@ -5459,14 +5461,6 @@ TOOLS: dict[str, dict] = {
                     "OWN dossier's identifiers are the ones checked."
                 ),
                 "substitutions": _substitutions_prop(expected_required=False),
-                "scrub_properties": {
-                    "type": "boolean",
-                    "description": (
-                        "Count as if the document properties were emptied "
-                        "first, as create_template would with it (default "
-                        "false)."
-                    ),
-                },
             },
             "required": ["document_id", "substitutions"],
             "additionalProperties": False,
@@ -5486,10 +5480,11 @@ TOOLS: dict[str, dict] = {
             "them, a templatized COPY: each literal becomes its {{field}} — "
             "all or nothing, every count exact (run preview_templatize "
             "first). scrub_properties first empties the file's title, "
-            "subject, author, last editor and description. Refused while the "
-            "stored file (after the substitutions, their literals included) "
-            "or `name` still carries the source dossier's names, numbers or "
-            "addresses: each residue is named; list it in accept_residual "
+            "subject, author, last editor and description — always, with "
+            "substitutions. Refused while the stored file (after the "
+            "substitutions, their literals included) or `name` (literals "
+            "included too) still carries the source dossier's names, numbers "
+            "or addresses: each residue is named; list it in accept_residual "
             "ONLY on the lawyer's word, and every accepted one is echoed "
             "back. A special kind (note_honoraires, note) is created NOT "
             "active: only the lawyer designates the active one, in the "
@@ -5547,7 +5542,8 @@ TOOLS: dict[str, dict] = {
                     "type": "boolean",
                     "description": (
                         "Empty the file's document properties first "
-                        "(default false)."
+                        "(default false; always done with `substitutions`, "
+                        "where false is refused)."
                     ),
                 },
                 "substitutions": _substitutions_prop(expected_required=True),

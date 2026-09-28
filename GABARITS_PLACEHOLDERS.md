@@ -577,9 +577,21 @@ connector it takes two calls, and nothing is written until the second.
   would never fill); so is one inside a Word field's result (Word regenerates
   it), inside a content control bound to data, one a soft or non-breaking
   hyphen interrupts, and one inside a `{{…}}` the letter already holds. Each
-  is listed by the preview; remove it in Word, or — for the document
-  properties — ask for `scrub_properties`, which empties them BEFORE the
-  substitutions are counted.
+  is listed by the preview; remove it in Word.
+- **The document properties are ALWAYS emptied** on a templatized copy —
+  title, subject, author, last editor and description, BEFORE the
+  substitutions are counted (the preview counts the same way;
+  `scrub_properties: false` is refused). The check reads names, numbers and
+  addresses only, and a subject saying what the first matter was about is
+  none of them — nor is it on any page the lawyer rereads. Any other
+  property (keywords, company, custom properties) is only checked: a name
+  left there is emptied in Word (Fichier › Informations › Propriétés).
+- **A longer literal that replaces nothing still claims its range.** « Marie‑Ève
+  Tremblay » written with Word's non-breaking hyphen is found but never
+  replaced (`blocked_by_markup`), and « Tremblay » inside it is not counted
+  while it is in the list. `create_template` cannot take a pair whose count is
+  0, so the preview says what « Tremblay » finds without it: drop that pair and
+  preview again.
 - **Refused sources:** tracked changes (accept or reject them in Word first),
   comments (delete them), a « Strict Open XML » file (save it as an ordinary
   « Document Word (.docx) »), a malformed or oversized file.

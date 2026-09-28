@@ -2245,8 +2245,8 @@ Notes:
   2. **Push the lot as ONE deploy** (Cloud Build runs the suite as the gate).
   3. **Re-add the connector and READ the « Gérer vos gabarits » block before
      ticking** « Autoriser les écritures »: a document « tel quel, ou
-     transformé en gabarit » (a COPY, all or nothing, each replacement counted
-     in advance), checked « tel qu'il sera enregistré, les textes que Claude
+     transformé en gabarit » (a COPY, its document properties always emptied,
+     all or nothing, each replacement counted in advance), checked « tel qu'il sera enregistré, les textes que Claude
      a demandé de remplacer compris », and « relisez un gabarit transformé
      avant de vous en servir » — the check reads names, numbers and
      addresses, never the rest of the text. Then `tools/list`: **71** tools
@@ -2264,12 +2264,12 @@ Notes:
         `preview_templatize` with the pairs it proposes (the client's name,
         the file number, the court number, the addresses…). Read the rows:
         each `substituted` count must match what the letter really holds,
-        `in_non_target_parts` names a footnote or the document properties,
-        and `leak_scan.residues` lists what would stay — an ALL-CAPS heading
-        the pairs missed shows up here as the literal itself (`origin:
-        substitution`).
-     b. **Adjust**, preview again, until `ready_to_create: true` (with
-        `scrub_properties: true` if the properties carry the client's name).
+        `in_non_target_parts` names a footnote (the title, subject, author,
+        last editor and description are ALWAYS emptied on this path, and
+        `scrubbed_properties` says which were), and `leak_scan.residues`
+        lists what would stay — an ALL-CAPS heading the pairs missed shows
+        up here as the literal itself (`origin: substitution`).
+     b. **Adjust**, preview again, until `ready_to_create: true`.
      c. **Create** (`create_template`, the same pairs, each
         `expected_occurrences` = its `substituted`). Try one deliberately
         WRONG count first: it must be refused « rien n'a été écrit » and
@@ -2296,8 +2296,9 @@ Notes:
   each `expected_occurrences` = `substituted`; matching is case-SENSITIVE
   (an ALL-CAPS variant is its own pair, with an ALL-CAPS field name); the
   field names are those `list_templates` shows for an existing gabarit (a
-  misspelt one classifies « passthrough »); what stays in footnotes, field
-  results and document properties is never replaced; a residue is accepted
+  misspelt one classifies « passthrough »); what stays in footnotes and
+  field results is never replaced, and the title, subject, author and
+  description are always emptied; a residue is accepted
   only on the lawyer's word; and the lawyer reads the new gabarit before it
   serves — the check never reads the rest of the letter's text.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for

@@ -12355,12 +12355,19 @@ def _residue_parts(parts) -> str:
     return ", ".join(_residue_part_labels(parts))
 
 
-def _residue_listing(scan) -> tuple[str, str]:
+def _residue_listing(scan, *, scrubbed: bool = False) -> tuple[str, str]:
     """``(listing, scrub hint)`` of a scan's residues — identifier, where,
     how often, the first :data:`_RESIDUES_LISTED_MAX` of them. The
-    identifiers are the DOSSIER's own data (get_dossier reads them), never
-    content the caller sent; accept_residual must name them exactly. Shared
-    by the upload ticket's refusal and the T10 template tools'."""
+    identifiers are the DOSSIER's own data (get_dossier reads them) — and,
+    on lot 2B's templatized path, the caller's OWN literals — never content
+    of the document; accept_residual must name them exactly. Shared by the
+    upload ticket's refusal and the T10 template tools'.
+
+    The hint tells the truth about what scrub_properties can do: it empties
+    five properties of ``docProps/core.xml`` and nothing else, so it is
+    offered only for a residue there, and only when the scrub has NOT
+    already run (*scrubbed*) — after it, or in ``app.xml``/``custom.xml``,
+    the property is emptied in Word."""
     listed = []
     for residue in scan.residues[:_RESIDUES_LISTED_MAX]:
         listed.append(
@@ -12368,19 +12375,28 @@ def _residue_listing(scan) -> tuple[str, str]:
             f"{_residue_parts(residue.parts)})")
     more = len(scan.residues) - len(listed)
     tail = f" — et {more} autre(s)" if more > 0 else ""
-    docprops = any(p.startswith("docProps/")
-                   for r in scan.residues for p in r.parts)
-    scrub = (
-        " Dans les propriétés du document, scrub_properties true les efface."
-        if docprops else ""
-    )
+    parts = {p for r in scan.residues for p in r.parts
+             if p.startswith("docProps/")}
+    if not parts:
+        scrub = ""
+    elif not scrubbed and "docProps/core.xml" in parts:
+        scrub = (
+            " Dans les propriétés du document, scrub_properties true efface "
+            "le titre, le sujet, l'auteur, le dernier modificateur et la "
+            "description ; toute autre propriété s'efface dans Word (Fichier › "
+            "Informations › Propriétés).")
+    else:
+        scrub = (
+            " Dans les propriétés du document que l'effacement automatique ne "
+            "touche pas (mots-clés, société, propriétés personnalisées…) : "
+            "effacez-les dans Word (Fichier › Informations › Propriétés).")
     return f"{'; '.join(listed)}{tail}", scrub
 
 
-def _residue_refusal(scan) -> str:
+def _residue_refusal(scan, *, scrubbed: bool = False) -> str:
     """The upload ticket's refusal naming each residue (see
     :func:`_residue_listing`)."""
-    listing, scrub = _residue_listing(scan)
+    listing, scrub = _residue_listing(scan, scrubbed=scrubbed)
     return (
         "Le fichier nomme encore le dossier dont il est tiré — un gabarit "
         "vaut pour tout le cabinet, et ceci s'imprimerait dans chaque "
@@ -12612,7 +12628,9 @@ def _scan_source_dossier(holder: _UploadHolder, data: bytes,
         raise _content_refused(holder, [str(exc)])
     if scan.residues:
         _settle_refused(holder, "identifiants_residuels")
-        raise ToolArgumentError(_residue_refusal(scan), reason="upload_residue")
+        raise ToolArgumentError(
+            _residue_refusal(scan, scrubbed=bool(params.get("scrub_properties"))),
+            reason="upload_residue")
     if scan.accepted:
         warnings.append(
             f"{len(scan.accepted)} identifiant(s) du dossier source restent "
@@ -13053,7 +13071,7 @@ def _template_name_accepted(name: str, identifiers: list, accept: list[str],
 def _template_file_checked(
     data: bytes, identifiers: list, accept: list[str], *, scrub: bool,
     dossier_id: str, name_accepted: tuple[str, ...], nothing: str,
-    templatized: bool = False,
+    templatized: bool = False, already_scrubbed: bool = False,
 ) -> tuple[bytes, Optional[list[str]], dict, list[str]]:
     """The file as it will be stored: validated as a template, scrubbed when
     asked, then scanned against the source dossier — fail CLOSED. Returns
@@ -13063,7 +13081,9 @@ def _template_file_checked(
 
     *templatized* (lot 2B): *data* is the RESULT of the substitutions and
     *identifiers* carries their literals too — the refusal then says what
-    stays behind after them and how to reach it."""
+    stays behind after them and how to reach it. *already_scrubbed*: the
+    caller emptied the core properties before (the templatized path always
+    does), so the refusal never offers scrub_properties as the remedy."""
     validation = validate_template(data)
     if validation.errors:
         raise ToolArgumentError(f"{' '.join(validation.errors)} {nothing}")
@@ -13079,7 +13099,8 @@ def _template_file_checked(
     except LeakScanError as exc:
         raise ToolArgumentError(f"{exc} {nothing}")
     if scan.residues:
-        listing, scrub_hint = _residue_listing(scan)
+        listing, scrub_hint = _residue_listing(
+            scan, scrubbed=scrub or already_scrubbed)
         if templatized:
             raise ToolArgumentError(
                 _templatized_residue_refusal(listing, scrub_hint, nothing),
@@ -13298,7 +13319,13 @@ def _scrubbed_source(data: bytes, scrub: bool, nothing: str
                      ) -> tuple[bytes, Optional[list[str]]]:
     """The core-properties scrub, BEFORE the substitutions: the engine then
     counts what the stored file will really hold (it reports a docProps
-    occurrence as left in place — which the scrub would have emptied)."""
+    occurrence as left in place — which the scrub would have emptied).
+
+    The templatized path ALWAYS scrubs (the lot's design: « always applied
+    here »): the scan reads only names, numbers and addresses, and a title,
+    subject or description saying what the FIRST matter was about would
+    otherwise ride along into every document generated for another client —
+    Word shows none of it in the page the lawyer rereads."""
     if not scrub:
         return data, None
     try:
@@ -13430,6 +13457,54 @@ def _preview_row(report) -> dict:
     }
 
 
+def _second_pass_errors(analysis, applied, kept: list[int],
+                        known: list[str]) -> list[str]:
+    """Why the preview's SECOND pass — the substitutions that found
+    something, at their counted figures — could not produce the result, in
+    the CALLER's numbering (the second pass numbers its own, shorter list:
+    its « Substitution n° k » is not the caller's k, so none of its numbered
+    errors is passed on as such).
+
+    Dropping a substitution that replaced nothing is NOT neutral: an
+    occurrence it FOUND but could not replace (cut by a non-breaking hyphen,
+    inside a field result) still masked its range, so a shorter literal
+    inside it — « Tremblay » in « Marie‑Ève Tremblay » — finds more once it
+    is gone. create_template cannot take the dropped one (its count would be
+    0), so the caller must learn the shorter literal's REAL count, under its
+    own number. A text box whose copies differ was already named by the
+    first pass, unless the unmasking created it."""
+    # The dropped ones that FOUND something (left in place) are the only
+    # ones that can have masked; an invalid or absent literal masks nothing.
+    zero = [(i, r) for i, r in enumerate(analysis.substitutions)
+            if r.substituted < 1]
+    dropped = ([str(i + 1) for i, r in zero if r.not_substituted > 0]
+               or [str(i + 1) for i, _r in zero])
+    out: list[str] = []
+    for position, report in enumerate(applied.substitutions):
+        if position >= len(kept):
+            break
+        caller = kept[position]
+        first = analysis.substitutions[caller]
+        label = f"Substitution n° {caller + 1} ({{{{{report.placeholder}}}}})"
+        if report.substituted != first.substituted:
+            out.append(
+                f"{label} : {report.substituted} occurrence(s) remplaçable(s) "
+                "sans la ou les substitution(s) n° " + ", ".join(dropped)
+                + ", qui ne remplacent rien — un texte plus long les masquait. "
+                "create_template ne peut pas recevoir une substitution sans "
+                "occurrence : retirez-la, puis relancez l'aperçu.")
+        elif first.fallback_consistent and not report.fallback_consistent:
+            out.append(
+                f"{label} : sans la ou les substitution(s) n° "
+                + ", ".join(dropped) + ", le texte n'apparaît pas le même "
+                "nombre de fois dans les deux versions d'une zone de texte : "
+                "retirez-la ou retapez la zone de texte dans Word, puis "
+                "relancez l'aperçu.")
+    out += [e for e in applied.errors
+            if not e.startswith("Substitution n°") and e not in known]
+    return out
+
+
 # ── preview_templatize (READ) ───────────────────────────────────────────
 
 def preview_templatize(args: dict) -> dict:
@@ -13439,28 +13514,38 @@ def preview_templatize(args: dict) -> dict:
     document_id = str(args.get("document_id") or "").strip()
     subs = _clean_substitutions(args.get("substitutions"),
                                 require_expected=False, nothing=nothing)
-    scrub = _clean_scrub_flag(args, nothing)
     _src, dossier_id, identifiers = _template_source(
         document_id, nothing, arg="document_id")
     data = _template_source_bytes(document_id, nothing, arg="document_id")
-    data, scrubbed = _scrubbed_source(data, scrub, nothing)
+    # ALWAYS, as create_template does on this path: the counts are those of
+    # the file as it will be stored. A scrub that cannot run (a property it
+    # cannot empty, an unreadable package) is REPORTED — create_template
+    # would refuse on it — and the engine still reads the file as it is.
+    scrubbed: Optional[list[str]] = None
+    scrub_error: Optional[str] = None
+    try:
+        scrubbed_doc = scrub_core_properties(data)
+    except LeakScanError as exc:
+        scrub_error = str(exc)
+    else:
+        data, scrubbed = scrubbed_doc.data, list(scrubbed_doc.emptied)
 
     analysis = docx_templatize.analyse(data, subs)
-    errors = list(analysis.errors)
+    errors = ([scrub_error] if scrub_error else []) + list(analysis.errors)
     warnings = list(analysis.warnings)
     # The would-be result: the substitutions that FOUND something, each at
-    # its own count (a caller's wrong expectation is already in `errors`).
-    # Dropping the ones that found nothing changes no other count — they
-    # masked nothing — so this second pass replaces exactly what the first
-    # counted. None found anything → the file is what it is now.
+    # its own count (a caller's wrong expectation is already in `errors`) —
+    # the only list create_template can take, expected_occurrences being
+    # ≥ 1. None found anything → the file is what it is now.
     after: Optional[bytes] = None
     if not analysis.blockers:
+        kept = [i for i, report in enumerate(analysis.substitutions)
+                if report.substituted >= 1]
         applicable = [
             docx_templatize.Substitution(
-                literal=sub.literal, placeholder=sub.placeholder,
-                expected_occurrences=report.substituted)
-            for sub, report in zip(subs, analysis.substitutions)
-            if report.substituted >= 1
+                literal=subs[i].literal, placeholder=subs[i].placeholder,
+                expected_occurrences=analysis.substitutions[i].substituted)
+            for i in kept
         ]
         if not applicable:
             after = data
@@ -13469,12 +13554,7 @@ def preview_templatize(args: dict) -> dict:
             if applied.data is not None:
                 after = applied.data
             else:
-                # The second pass numbers ITS list: a « Substitution n° k »
-                # there is not the caller's k — and the first pass already
-                # said it (a text box whose copies differ). Keep the rest.
-                errors += [e for e in applied.errors
-                           if not e.startswith("Substitution n°")
-                           and e not in errors]
+                errors += _second_pass_errors(analysis, applied, kept, errors)
                 errors.append(
                     "Le gabarit résultant n'a pas pu être produit : ce qui "
                     "resterait du dossier n'est pas contrôlé tant que les "
@@ -13571,11 +13651,27 @@ def _create_template_impl(args: dict) -> dict:
             raise ToolArgumentError(
                 f"{' '.join(request_errors)} {nothing}",
                 reason="templatize_refused")
+        # A templatized copy ALWAYS has its core properties emptied (see
+        # _scrubbed_source) — an explicit « false » is refused, never
+        # silently overridden.
+        if args.get("scrub_properties") is False:
+            raise ToolArgumentError(
+                "`scrub_properties` : un gabarit transformé a TOUJOURS ses "
+                "propriétés de document (titre, sujet, auteur, dernier "
+                "modificateur, description) effacées — omettez ce paramètre. "
+                f"{nothing}")
+        scrub = True
 
     # Everything judged before the template model is reached — in the
     # order that downloads nothing a cheaper check would have refused.
     src, dossier_id, identifiers = _template_source(source_id, nothing)
-    name_accepted = _template_name_accepted(name, identifiers, accept, nothing)
+    # The NAME prints into the name of every document generated from the
+    # template: on the templatized path it is checked against the caller's
+    # literals too — each one, by the caller's own account, text of the
+    # first matter (no carve-out: a name holds no field).
+    name_ids = (identifiers if subs is None
+                else _templatize_identifiers(identifiers, subs, ())[0])
+    name_accepted = _template_name_accepted(name, name_ids, accept, nothing)
     try:
         uid = storage_identity.owner_uid()      # fail closed, before the bytes
     except storage_identity.StorageIdentityUnavailable:
@@ -13598,7 +13694,8 @@ def _create_template_impl(args: dict) -> dict:
             identifiers, subs, validate_template(result.data).placeholders)
         data, _unscrubbed, leak, warnings = _template_file_checked(
             result.data, scan_ids, accept, scrub=False, dossier_id=dossier_id,
-            name_accepted=name_accepted, nothing=nothing, templatized=True)
+            name_accepted=name_accepted, nothing=nothing, templatized=True,
+            already_scrubbed=True)
         warnings = [*result.warnings, *warnings]
         templatized = _templatize_report(result)
     protection = _source_protection_warning(src)   # before the write

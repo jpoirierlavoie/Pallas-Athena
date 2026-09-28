@@ -2731,7 +2731,7 @@ def test_preview_templatize_conforms_ready_residual_and_blocked(monkeypatch):
     # A wrong expectation, an unknown literal and an invalid name — and the
     # residue the untouched file number leaves.
     residual = handlers.preview_templatize({
-        "document_id": "leaky", "scrub_properties": True, "substitutions": [
+        "document_id": "leaky", "substitutions": [
             {"literal": "Absent", "placeholder": "client.nom",
              "expected_occurrences": 2},
             {"literal": "Dossier", "placeholder": "pas un nom"}]})
