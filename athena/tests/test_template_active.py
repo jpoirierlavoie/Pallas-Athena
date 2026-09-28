@@ -320,8 +320,15 @@ def test_only_the_web_route_and_the_migration_script_designate():
         "routes/doc_templates.py": 1,
         "scripts/designer_gabarits_actifs.py": 1,
     }
+    # The disclosure registry is the ONE exception, since lot 2A T9: its
+    # NEVER « active_template » names the function as a STRING, in order to
+    # forbid it — tests/test_mcp_disclosure sweeps every connector module's
+    # syntax tree (and every service it reaches) for a reference to it, and
+    # excludes the registry for the same reason.
     for package in ("mcp", "services"):
         for path in (_ATHENA / package).rglob("*.py"):
+            if path.relative_to(_ATHENA).as_posix() == "mcp/disclosure.py":
+                continue
             assert "set_active_template" not in path.read_text(encoding="utf-8"), path
 
 

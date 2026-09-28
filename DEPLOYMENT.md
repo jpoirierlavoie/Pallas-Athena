@@ -2024,6 +2024,42 @@ Notes:
   `run_write` persistence hooks that keep the ticket's upload URL out of
   `mcp_idempotency` — all dormant until the MCP release: no route, form or
   tool changes, no Tailwind class, no new secret.
+- **The upload ticket's tools (lot 2A, step T9 — plan D4): `begin_upload` /
+  `finalize_upload`.** An MCP-visible change, so it ships inside the lot's
+  consent train (revoke the connector BEFORE pushing, re-add it after, check
+  `tools/list` and the byte budget — CLAUDE.md, plan « Consent train »).
+  Nothing to provision beyond T5 (the `mcp_upload_tickets` TTL and the
+  `staging/` lifecycle rule above — verify both are in place first): no
+  index, no secret, no Tailwind class. Two prerequisites only the lawyer can
+  do:
+
+  1. **claude.ai organisation settings → code execution → network egress:**
+     allow `storage.googleapis.com`. Without it `begin_upload` still opens
+     tickets, every PUT from the sandbox fails, and the tickets expire
+     harmlessly after their hour (their bytes never arrive; nothing is
+     filed). Optional hardening, if a firm-wide egress to that host is
+     unwanted: a Cloudflare Worker (for instance `depot.poirierlavoie.ca`)
+     forwarding ONLY `PUT`s to this bucket's resumable-session URIs — the
+     tool contract would not change, only the host `upload_url` names.
+  2. **Pilot on a scratch dossier** before relying on it: ask Claude to
+     compute the size and MD5 of an attached PDF, `begin_upload`, PUT,
+     `finalize_upload` — the document appears in the dossier, its category
+     « présumée » if one was given. Then check the refusals: a deliberately
+     WRONG `md5_base64` must be refused at finalize (« empreinte MD5 »), the
+     staging object gone (`gcloud storage ls gs://<bucket>/staging/<uid>/mcp/`
+     — read-only); a ticket left more than an hour must answer « expiré ».
+     For a gabarit, upload a letter FROM a dossier with `dossier_id`: its
+     parties' names must be refused by name until accepted
+     (`accept_residual`, a new ticket). **Manual Word check** (Change Impact
+     item 3): open a document generated from an uploaded template — and from
+     one uploaded with `scrub_properties` — without repair.
+
+  The upload URL is the ONE capability a tool output carries (CLAUDE.md,
+  Security Rules): it is never stored (`mcp_idempotency` keeps the result
+  without it) and never logged; `mcp_upload_opened` / `mcp_upload_finalized`
+  carry ids, codes and counts (OBSERVABILITY.md). A burst of
+  `mcp_upload_finalized` refusals with `reason: empreinte_differente` means
+  bytes other than the declared ones reached a session — look at it.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

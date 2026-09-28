@@ -334,14 +334,18 @@ FAMILIES: tuple[Family, ...] = (
         label="FILES",
         scope=SCOPE_WRITE,
         tools=("update_document", "move_documents", "manage_folder",
-               "fill_gabarit", "create_document"),
+               "fill_gabarit", "create_document",
+               "begin_upload", "finalize_upload"),
         consent_template="mcp/families/_files.html",
         checkbox_summary_fr=(
             "classer un document (nom, date, étiquettes, dossier de "
             "classement, catégorie présumée), organiser les dossiers de "
-            "classement (jamais les dossiers système) et produire de "
+            "classement (jamais les dossiers système), produire de "
             "nouveaux projets Word — depuis un gabarit, depuis un texte "
-            "rédigé par Claude, par copie d'un .docx du même dossier"
+            "rédigé par Claude, par copie d'un .docx du même dossier — et "
+            "téléverser un fichier, comme nouveau document ou comme gabarit "
+            "(nouveau, ou nouvelle version d'un gabarit, la précédente "
+            "conservée)"
         ),
         instructions_en=(
             "`update_document` REPLACES a document's filing fields you name "
@@ -368,7 +372,17 @@ FAMILIES: tuple[Family, ...] = (
             "ACTIVE (refused when none is), or copies a stored .docx within "
             "its OWN dossier — the copy keeping the source's category and "
             "protection level, presumed. Reuse across dossiers goes through "
-            "a gabarit, never a copy."
+            "a gabarit, never a copy. To bring an OUTSIDE file in, "
+            "`begin_upload` opens a one-hour write-only ticket — its "
+            "`upload_url`, the one link any result carries, is for a single "
+            "PUT from your code sandbox, never to be shown to the user — and "
+            "`finalize_upload` files the bytes only if their size and MD5 "
+            "are the ones you declared, as a NEW document or a template (a "
+            "new one, or a NEW version of one: the replaced version is kept); "
+            "a template taken from a dossier is refused while it still names "
+            "that dossier's parties or numbers, when you name it in "
+            "dossier_id — unless the lawyer accepts each residue. Refused or "
+            "expired bytes are discarded: they were never filed."
         ),
     ),
 )
@@ -581,14 +595,17 @@ NEVERS: tuple[Never, ...] = (
         # GCS verbs appear in no connector module nor any service it
         # reaches), and the two creators it reaches mint a fresh record and
         # write a NEW object, create-only (ingest's if_generation_match=0).
+        # T9 (finalize_upload) files an upload the same way: a NEW document
+        # under the id its ticket reserved, never an existing one.
         fr=(
             "modifier le <strong>fichier</strong> d'un document existant "
-            "— un projet ou une copie est toujours un nouveau document ; la "
-            "lecture de son contenu relève de l'accès en lecture ci-dessus"
+            "— un projet, une copie ou un fichier téléversé est toujours un "
+            "nouveau document ; la lecture de son contenu relève de l'accès "
+            "en lecture ci-dessus"
         ),
         en=(
             "It never changes an existing document's FILE: a generated "
-            "project or a copy is always a NEW document."
+            "project, a copy or an upload is always a NEW document."
         ),
         forbidden=(
             "upload_from_file", "upload_from_string", "upload_from_filename",
@@ -617,6 +634,26 @@ NEVERS: tuple[Never, ...] = (
         forbidden=(
             "confirmer_categorie", "confirmer_analyse", "update_analyse",
         ),
+    ),
+    Never(
+        key="active_template",
+        # Lot 2A (T9, decision D11): the first connector tools that write a
+        # template (finalize_upload creates one or installs a new version
+        # of one). The designation of THE note-d'honoraires and THE
+        # note-print template — printed on every client's invoice note —
+        # stays the lawyer's gesture in the application: a special kind is
+        # created NOT active, and a replacement never moves the
+        # designation (update_template writes only what changed).
+        fr=(
+            "<strong>désigner le gabarit actif</strong> des notes "
+            "d'honoraires ou de l'impression des notes — vous seul le "
+            "faites, dans l'application"
+        ),
+        en=(
+            "It never designates the ACTIVE note-d'honoraires or note-print "
+            "template: only the lawyer does, in the application."
+        ),
+        forbidden=("set_active_template",),
     ),
 )
 

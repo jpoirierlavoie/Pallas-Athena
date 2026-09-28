@@ -517,18 +517,37 @@ INLINE_FORMS: dict[str, tuple[tuple[str, ...], str]] = {
     ),
 }
 
+# {models module: why no web edit form of it can exist}. For a record the
+# connector rewrites that no page of the application shows or edits — so
+# no stale browser tab can erase what the connector wrote. Held to it: the
+# entity must still be reached, and NO routes/ module may import its model
+# (the day one does, a web form exists and this entry is false).
+NO_WEB_FORM: dict[str, str] = {
+    # Lot 2A (T9): finalize_upload settles its upload ticket (complete, the
+    # replacement's staged digest). The ticket is the connector's own
+    # protocol record: every transition is a holder-checked Firestore
+    # transaction (models/upload_ticket), and the application has no page
+    # for it.
+    "upload_ticket": (
+        "the connector's upload-ticket record: no web page shows or edits "
+        "it, and every transition is a holder-checked transaction"
+    ),
+}
+
 # ``upload``/``ingest``/``copy``/``ensure`` since lot 2A (T8): the
 # generations reach the document creators and the « Projets » ensure —
 # CREATORS (see _CREATOR_VERBS), except the ensure's adoption of a legacy
 # folder, which rewrites it.
+# ``open`` since lot 2A (T9): begin_upload opens its ticket through
+# models/upload_ticket.open_ticket — a CREATOR.
 _MUTATOR = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
     r"delete|toggle|complete|attach|link|unlink|import|add|upload|ingest|"
-    r"copy|ensure)_"
+    r"copy|ensure|open)_"
 )
 # Verbs that mint a NEW record and rewrite none — no stale web tab can
 # erase what they wrote, so they need no web form's etag.
-_CREATOR_VERBS = ("create_", "upload_", "ingest_", "copy_")
+_CREATOR_VERBS = ("create_", "upload_", "ingest_", "copy_", "open_")
 
 
 def _module_index(source: str) -> tuple[dict, dict, dict]:
@@ -651,6 +670,12 @@ def test_the_reach_is_derived_and_not_vacuous():
             ("folder", "ensure_system_folder")} <= reach["fill_gabarit"]
     assert {("document", "upload_document"),
             ("document", "copy_document")} <= reach["create_document"]
+    # Lot 2A (T9): the upload ticket — opened, then settled and filed.
+    assert ("upload_ticket", "open_ticket") in reach["begin_upload"]
+    assert {("upload_ticket", "complete_ticket"),
+            ("document", "ingest_blob_as_document"),
+            ("doc_template", "create_template"),
+            ("doc_template", "update_template")} <= reach["finalize_upload"]
     # Every write tool reaches at least one mutator: a handler the walker
     # cannot follow would otherwise vanish from the map in silence.
     assert all(reach.values()), [t for t, r in reach.items() if not r]
@@ -658,7 +683,7 @@ def test_the_reach_is_derived_and_not_vacuous():
 
 def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
     missing = (_edited_by_edit_tools() - set(_FORMS) - set(PENDING)
-               - set(INLINE_FORMS))
+               - set(INLINE_FORMS) - set(NO_WEB_FORM))
     assert not missing, (
         f"the connector edits {sorted(missing)} but no web edit form of it "
         "carries expected_etag — a stale browser tab would silently erase "
@@ -669,8 +694,27 @@ def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
 
 def test_every_record_a_write_tool_rewrites_has_its_web_form_or_its_lot():
     missing = (_modified_by_any_write() - set(_FORMS) - set(PENDING)
-               - set(INLINE_FORMS))
+               - set(INLINE_FORMS) - set(NO_WEB_FORM))
     assert not missing, sorted(missing)
+
+
+def test_a_record_without_a_web_form_really_has_none():
+    reached = _edited_by_edit_tools() | _modified_by_any_write()
+    for entity, reason in NO_WEB_FORM.items():
+        assert entity in reached and reason.strip(), entity
+        assert entity not in _FORMS and entity not in PENDING, entity
+        for path in sorted((_ATHENA / "routes").glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            imported = {
+                a.name for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "models"
+                for a in node.names
+            } | {
+                node.module.split(".", 1)[1] for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+                and (node.module or "").startswith("models.")
+            }
+            assert entity not in imported, (entity, path.name)
 
 
 def test_every_inline_form_is_reached_carries_its_version_and_is_proved():

@@ -521,10 +521,12 @@ def test_the_sweep_is_not_vacuous():
 # and models/document.copy_document), which noted no commit until then — a
 # failure after the upload (the payload builder) would have come back as a
 # refusal, and the retry saved a second document.
+# ``open`` since lot 2A (T9): begin_upload opens its ticket through
+# models/upload_ticket.open_ticket.
 _MUTATOR_VERB = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
     r"delete|toggle|complete|attach|link|add|unlink|ensure|upload|ingest|"
-    r"copy)_"
+    r"copy|open)_"
 )
 # Lot 1 completeness review: lot 1b's handlers reach models THROUGH the
 # service modules the web routes also use (``services/protocoles.py``,
@@ -552,6 +554,35 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     ),
     # A copy IS an ingestion of the source's object (a GCS rewrite).
     ("document", "copy_document"): (("document", "ingest_blob_as_document"),),
+    # Lot 2A (T9): finalize_upload replaces a template's file through it;
+    # every write (the version entry, the template's move to it) is the
+    # one transaction of _commit_update, which stamps and notes.
+    ("doc_template", "update_template"): (("doc_template", "_commit_update"),),
+    # Lot 2A (T9): begin_upload's write — the session opened first, then the
+    # ticket written by create_ticket, which stamps and notes.
+    ("upload_ticket", "open_ticket"): (("upload_ticket", "create_ticket"),),
+}
+# Lot 2A (T9). Names the verb regex catches that are NOT tool writes, each
+# with its reason — and each held to the OPPOSITE rule, so an exemption
+# cannot hide a real write:
+# * a function that writes NO record (no Firestore write call in its body):
+#   a pure check, or a Storage-only step;
+# * a BOOKKEEPING write stamps its record but must NOT note a commit —
+#   the tool refuses after it (« not uploaded yet », « different bytes »),
+#   and a noted commit would turn that refusal into « ENREGISTRÉE — NE PAS
+#   RÉESSAYER » (tests/test_upload_ticket pins the same split).
+_NO_RECORD_WRITES: dict[tuple[str, str], str] = {
+    ("document", "record_metadata_errors"): (
+        "judges a new record's metadata before an upload opens — the same "
+        "rules the creators apply, with no I/O"),
+    ("upload_ticket", "open_session"): (
+        "opens a GCS resumable-upload session for a ticket — no Firestore "
+        "record; open_ticket writes the ticket afterwards"),
+}
+_BOOKKEEPING_WRITES: dict[tuple[str, str], str] = {
+    ("upload_ticket", "record_staged_digest"): (
+        "records a replacement's SHA-256 on the ticket BEFORE the template "
+        "write, so a reclaim can recognise a replacement that landed"),
 }
 # Mutators that write THEMSELVES but stamp through ONE shared record
 # builder: the stamp is checked on the builder, and the mutator must call it
@@ -610,14 +641,19 @@ def _services_reached() -> list[pathlib.Path]:
     return [_SERVICES / f"{n}.py" for n in sorted(names)]
 
 
-def reached_mutators() -> set[tuple[str, str]]:
-    """``(models module, function)`` for every mutator the connector's
-    handlers reference — directly, or through a service module they
-    import."""
+def _raw_reached() -> set[tuple[str, str]]:
     found = _model_references(pathlib.Path(handlers.__file__))
     for path in _services_reached():
         found |= _model_references(path)
     return found
+
+
+def reached_mutators() -> set[tuple[str, str]]:
+    """``(models module, function)`` for every mutator the connector's
+    handlers reference — directly, or through a service module they
+    import — minus the declared non-writes (:data:`_NO_RECORD_WRITES`,
+    :data:`_BOOKKEEPING_WRITES`), which are held to their own rule."""
+    return _raw_reached() - set(_NO_RECORD_WRITES) - set(_BOOKKEEPING_WRITES)
 
 
 def _function(module: str, name: str) -> ast.FunctionDef:
@@ -734,6 +770,28 @@ def _assert_stamps_and_notes_its_commit(module: str, name: str) -> None:
     assert writes and max(c.lineno for c in commits) > max(writes), (
         f"models.{module}.{name}: note_commit must follow the last write"
     )
+
+
+def _write_calls(fn: ast.AST) -> list[int]:
+    return [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and (
+        (isinstance(n.func, ast.Attribute) and n.func.attr in _WRITE_ATTRS)
+        or (isinstance(n.func, ast.Name) and n.func.id.startswith("_txn"))
+    )]
+
+
+def test_the_declared_non_writes_are_reached_and_keep_their_own_rule():
+    reached = _raw_reached()
+    for (module, name), reason in _NO_RECORD_WRITES.items():
+        assert (module, name) in reached and reason.strip(), (module, name)
+        fn = _function(module, name)
+        assert not _write_calls(fn), f"{module}.{name} writes a record"
+        assert not _calls(fn, "note_commit"), f"{module}.{name}"
+    for (module, name), reason in _BOOKKEEPING_WRITES.items():
+        assert (module, name) in reached and reason.strip(), (module, name)
+        fn = _function(module, name)
+        assert not _calls(fn, "note_commit"), (
+            f"{module}.{name} notes a commit: a refusal after it would read "
+            "« ENREGISTRÉE »")
 
 
 @pytest.mark.parametrize(

@@ -683,6 +683,10 @@ def test_the_caller_sweep_finds_what_it_exists_for():
         "services/gabarits.py:save_generated",
         "routes/invoices.py:invoice_note_docx",
         "routes/reception.py:verser",
+        # Lot 2A T9: the upload ticket's two filings, each obtaining the
+        # owner uid itself (a released claim when it cannot).
+        "mcp/handlers.py:_finalize_document_upload",
+        "mcp/handlers.py:_create_uploaded_template",
     ):
         assert expected in callers, expected
 

@@ -769,6 +769,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # folder's name or parent (its create replaces nothing, but one tool
     # carries one hint, and under-warning is the wrong side).
     "update_document", "move_documents", "manage_folder",
+    # Lot 2A (T9) — finalize_upload's gabarit « replace » mode REPLACES a
+    # stored template's file (the version in force: every future letter is
+    # printed from it — the previous one is KEPT, restorable in the
+    # application). Its document branch replaces nothing; one tool carries
+    # one hint, and under-warning is the wrong side (review of lot 2).
+    "finalize_upload",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -920,6 +926,18 @@ PLACEHOLDER_NAME_MAX_CHARS = 64
 MARKDOWN_DOCUMENT_MAX_CHARS = 60_000
 DOCUMENT_TITLE_MAX_CHARS = 200
 _CREATE_DOCUMENT_SOURCES = ["markdown", "copy"]
+# Lot 2A (T9) — the upload ticket. Literals copied from the models (an
+# import would run firestore.Client() at load); tests/test_mcp_upload.py
+# pins each against its source.
+UPLOAD_FILENAME_MAX_CHARS = 200                    # models.upload_ticket.MAX_FILENAME_CHARS
+UPLOAD_DOCUMENT_MAX_BYTES = 200 * 1024 * 1024      # models.document.MAX_FILE_SIZE
+UPLOAD_TEMPLATE_MAX_BYTES = 10 * 1024 * 1024       # models.doc_template.MAX_TEMPLATE_SIZE
+UPLOAD_ACCEPT_MAX_ITEMS = 50                       # models.upload_ticket.MAX_LIST_ITEMS
+UPLOAD_ACCEPT_MAX_CHARS = 200                      # its per-item ceiling
+TEMPLATE_NAME_MAX_CHARS = 120                      # models.doc_template.NAME_MAX
+TEMPLATE_DESCRIPTION_MAX_CHARS = 2_000             # models.doc_template.DESCRIPTION_MAX
+_UPLOAD_PURPOSES = ["document", "gabarit"]
+_TEMPLATE_MODES = ["create", "replace"]
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
     "expert", "huissier", "notaire", "autre",
@@ -5125,6 +5143,201 @@ TOOLS: dict[str, dict] = {
         "handler": "create_document",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    # ── Lot 2A (T9) — FILES: the upload ticket (plan D4) ────────────────
+    # begin_upload's `upload_url` is the ONE capability URL a tool output
+    # carries (the documented exception to « no signed URL in output »):
+    # its persist/rehydrate hooks (mcp/handlers.py) keep it out of
+    # mcp_idempotency, and a replay re-opens a session for the SAME ticket.
+    "begin_upload": {
+        "title": "Ouvrir un téléversement",
+        "description": (
+            "WRITE — step 1 of bringing an outside file in: a one-hour, "
+            "WRITE-ONLY upload ticket. purpose \"document\": a new document "
+            "of dossier_id, its filing given NOW (folder_id — omitted = the "
+            "dossier root —, category stored PRESUMED, display_name, "
+            "document_date, tags). purpose \"gabarit\": template_mode "
+            "\"create\" (name, category, kind, description — a special kind "
+            "is never designated active) or \"replace\" (template_id + "
+            "expected_version from list_templates; the version in force is "
+            "kept). Declare the file's exact size_bytes and md5_base64. "
+            "upload_url is a capability: PUT the exact bytes to it from your "
+            "code sandbox in ONE request with its headers, use it only in "
+            "that code — never repeat it to the user —, then call "
+            "finalize_upload. Needs sandbox egress to storage.googleapis.com. "
+            "A template taken from a dossier: name that dossier_id, and its "
+            "names and numbers are refused (accept_residual on the lawyer's "
+            "word only)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "purpose": {
+                    "type": "string", "enum": _UPLOAD_PURPOSES,
+                    "description": "What the file becomes.",
+                },
+                "filename": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": UPLOAD_FILENAME_MAX_CHARS,
+                    "description": (
+                        "The file's name with its extension (PDF, Word, "
+                        "Excel, JPG, PNG, TIFF, ZIP, EML, MSG; .docx for a "
+                        "gabarit). No slash."
+                    ),
+                },
+                "size_bytes": {
+                    "type": "integer", "minimum": 1,
+                    "maximum": UPLOAD_DOCUMENT_MAX_BYTES,
+                    "description": (
+                        "The EXACT size in bytes (a gabarit: 10 MB at most)."
+                    ),
+                },
+                "md5_base64": {
+                    "type": "string", "minLength": 24, "maxLength": 24,
+                    "description": (
+                        "base64 of the raw 16-byte MD5 digest of the bytes "
+                        "(base64.b64encode(hashlib.md5(data).digest())) — "
+                        "never the hex form."
+                    ),
+                },
+                "dossier_id": _id(
+                    "document: REQUIRED, the dossier. gabarit: the dossier "
+                    "the file comes from, whose identifiers are then refused."
+                ),
+                "folder_id": _id(
+                    "document: a folder of the dossier (list_documents with "
+                    "include_folders); omitted or \"\" = the root."
+                ),
+                "category": {
+                    "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
+                    "description": (
+                        "document: stored PRESUMED. gabarit create: "
+                        "procédure, correspondance or autre (default)."
+                    ),
+                },
+                "display_name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": DOCUMENT_NAME_MAX_CHARS,
+                    "description": (
+                        "document: its name. Default: the file name."
+                    ),
+                },
+                "document_date": _date(
+                    "document: its OWN date, YYYY-MM-DD."
+                ),
+                "tags": {
+                    "type": "array",
+                    "maxItems": DOCUMENT_TAGS_MAX,
+                    "items": {
+                        "type": "string", "minLength": 1,
+                        "maxLength": DOCUMENT_TAG_MAX_CHARS,
+                        "description": "One tag, without a comma.",
+                    },
+                    "description": "document: its tags, none twice.",
+                },
+                "template_mode": {
+                    "type": "string", "enum": _TEMPLATE_MODES,
+                    "description": (
+                        "gabarit: REQUIRED — a new template, or a new file "
+                        "for an existing one."
+                    ),
+                },
+                "name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": TEMPLATE_NAME_MAX_CHARS,
+                    "description": "gabarit create: REQUIRED, its name.",
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": TEMPLATE_DESCRIPTION_MAX_CHARS,
+                    "description": "gabarit create: what it is for.",
+                },
+                "kind": {
+                    "type": "string", "enum": _TEMPLATE_KINDS,
+                    "description": (
+                        "gabarit create: default « gabarit ». A special kind "
+                        "is created NOT active."
+                    ),
+                },
+                "template_id": _id(
+                    "gabarit replace: REQUIRED, the template (list_templates)."
+                ),
+                "expected_version": {
+                    "type": "integer", "minimum": 1,
+                    "description": (
+                        "gabarit replace: REQUIRED, its version as read — "
+                        "refused if another version landed since."
+                    ),
+                },
+                "accept_residual": {
+                    "type": "array",
+                    "maxItems": UPLOAD_ACCEPT_MAX_ITEMS,
+                    "items": {
+                        "type": "string", "minLength": 1,
+                        "maxLength": UPLOAD_ACCEPT_MAX_CHARS,
+                        "description": (
+                            "One identifier exactly as a refusal named it."
+                        ),
+                    },
+                    "description": (
+                        "gabarit: residues the LAWYER accepts to keep in a "
+                        "firm-wide template."
+                    ),
+                },
+                "scrub_properties": {
+                    "type": "boolean",
+                    "description": (
+                        "gabarit: empty the file's title, subject, author, "
+                        "last editor and description first (default false)."
+                    ),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["purpose", "filename", "size_bytes", "md5_base64"],
+            "additionalProperties": False,
+        },
+        "handler": "begin_upload",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "finalize_upload": {
+        "title": "Verser un fichier téléversé",
+        "annotations": {
+            # A ticket already filed answers its stored result again and
+            # writes nothing — even without an idempotency_key.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — step 2: files the bytes PUT under ticket_id. They enter "
+            "only if their size and MD5 are exactly what begin_upload bound; "
+            "other bytes are refused and discarded. document → a NEW "
+            "document. gabarit → checked against the named dossier's "
+            "identifiers, then a new template or a NEW version of the one "
+            "named (the replaced version is kept). Nothing received yet → "
+            "refused, the ticket stays open: PUT, then call again. A ticket "
+            "already filed answers its result again. A refused, expired or "
+            "filed ticket never reopens: begin anew with a NEW "
+            "idempotency_key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticket_id": _id("The ticket_id begin_upload returned."),
+                **_write_protocol_props(),
+            },
+            "required": ["ticket_id"],
+            "additionalProperties": False,
+        },
+        "handler": "finalize_upload",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Everything is bound at begin_upload — a replacement's "
+            "expected_version included, re-checked in the template's own "
+            "transaction — and a ticket is claimed transactionally: one "
+            "finalizer at a time, with no etag to pass."
+        ),
     },
 }
 

@@ -3124,4 +3124,116 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "warnings": _arr(_str(), "French; empty when clean."),
         **_write_protocol_keys(),
     }),
+
+    # ── Lot 2A (T9) — FILES: the upload ticket (plan D4) ────────────────
+    # `upload_url` is the ONE capability URL any output carries — the
+    # documented exception, allowlisted by name in
+    # tests/test_mcp_framework_guards and by value in
+    # tests/test_mcp_output_schemas; never stored (the tool's persist hook
+    # strips it from mcp_idempotency). Nothing here names a file name, a
+    # storage path or an MD5.
+    "begin_upload": _obj({
+        "opened": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « upload_ticket »."),
+        "entity": _obj({
+            "id": _str("The ticket's id — same as ticket_id."),
+            "dossier_id": _str(
+                "The dossier bound to the ticket; \"\" for a gabarit with "
+                "no source dossier."),
+        }),
+        "ticket_id": _str("Pass it to finalize_upload."),
+        "purpose": {
+            "type": "string", "enum": ["document", "gabarit"],
+            "description": "What the file will become.",
+        },
+        "upload_url": _str(
+            "A resumable-upload session URI, WRITE-ONLY: PUT the exact bytes "
+            "to it, in one request, from your code sandbox. A capability — "
+            "use it only in that code, never repeat it to the user. A replay "
+            "of this call returns a FRESH one for the same ticket."),
+        "method": {"type": "string", "enum": ["PUT"]},
+        "headers": _obj({
+            "Content-Type": _str("The type the file is stored under."),
+            "Content-Length": _str("The declared size, in bytes."),
+        }, description="Send these headers with the PUT, and no other."),
+        "max_bytes": _int(
+            "The declared size: the service refuses any byte beyond it."),
+        "expires_at": _str(
+            "ISO-8601, Montréal: finalize_upload before this instant. A later "
+            "upload is never filed and is erased automatically."),
+        "instructions": _str("What to do next, in plain words."),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+    "finalize_upload": {
+        "type": "object",
+        "anyOf": [
+            _obj({
+                "finalized": {"type": "boolean", "enum": [True]},
+                "purpose": {"type": "string", "enum": ["document"]},
+                "ticket_id": _str(),
+                "entity_type": {"type": "string", "enum": ["document"]},
+                "entity": _document_write_entity(),
+                "file": _obj({
+                    "size_bytes": _int(),
+                    "file_type": _str(
+                        "The type the bytes were recognised as (sniffed, "
+                        "never the declared one)."),
+                }),
+                "already_finalized": _bool(
+                    "true = this ticket's file had ALREADY been filed (a "
+                    "repeat, or an interrupted finalization completed) — "
+                    "this call filed nothing new."),
+                "warnings": _arr(_str(), "French; empty when clean."),
+                **_write_protocol_keys(),
+            }, description="purpose document: the NEW document."),
+            _obj({
+                "finalized": {"type": "boolean", "enum": [True]},
+                "purpose": {"type": "string", "enum": ["gabarit"]},
+                "ticket_id": _str(),
+                "entity_type": {"type": "string", "enum": ["template"]},
+                "entity": _template_summary(),
+                "mode": {
+                    "type": "string", "enum": ["create", "replace"],
+                    "description": "What the ticket was opened for.",
+                },
+                "replaced_version": _nint(
+                    "replace: the version this file replaced — KEPT, "
+                    "restorable in the application; null for a creation, or "
+                    "when the file was identical to the version in force "
+                    "(nothing installed)."),
+                "leak_scan": {
+                    **_obj({
+                        "performed": _bool(
+                            "false = no source dossier was named: NOTHING "
+                            "was checked."),
+                        "accepted": _int(
+                            "Identifiers found and accepted (accept_residual)."),
+                        "unused_accept": _int(
+                            "accept_residual entries matching nothing found."),
+                        "skipped": _int(
+                            "Identifiers too short to check."),
+                        "parts_scanned": _int(),
+                    }),
+                    "type": ["object", "null"],
+                    "description": (
+                        "The identifier check of the source dossier; null "
+                        "when already_finalized (the first report is not "
+                        "kept)."),
+                },
+                "scrubbed_properties": {
+                    "type": ["array", "null"], "items": _str(),
+                    "description": (
+                        "The document properties emptied (scrub_properties): "
+                        "their NAMES, never their values; [] = nothing to "
+                        "empty; null = not asked, or already_finalized."),
+                },
+                "already_finalized": _bool(
+                    "true = this ticket's file had ALREADY been filed — this "
+                    "call installed nothing new."),
+                "warnings": _arr(_str(), "French; empty when clean."),
+                **_write_protocol_keys(),
+            }, description="purpose gabarit: the template as stored."),
+        ],
+    },
 }

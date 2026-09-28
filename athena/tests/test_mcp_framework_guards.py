@@ -487,6 +487,11 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "its rename and move REPLACE a folder's stored name or parent — "
         "every document filed below moves with it (lot 2A, T7)"
     ),
+    "finalize_upload": (
+        "its gabarit « replace » mode REPLACES the template file in force — "
+        "every future letter prints from it; the previous version is kept "
+        "(lot 2A, T9; review of lot 2)"
+    ),
 }
 
 
@@ -1346,11 +1351,24 @@ def _is_capability_name(key: str) -> bool:
 def _is_write_forbidden_name(key: str) -> bool:
     return key in _CONTENT_NAMES or _is_capability_name(key)
 
-# {tool: {property: reason}}. Empty today. The Lot 2 upload ticket (the one
-# documented exception to « no signed URL in output ») must be added HERE, by
-# name, with its justification — and with the persist/rehydrate hooks that
-# keep the URL out of mcp_idempotency.
-_OUTPUT_NAME_EXEMPTIONS: dict[str, dict[str, str]] = {}
+# {tool: {property: reason}}. The Lot 2 upload ticket (the one documented
+# exception to « no signed URL in output ») is added HERE, by name, with its
+# justification — and with the persist/rehydrate hooks that keep the URL out
+# of mcp_idempotency (test_an_exempted_capability_output_declares_its_
+# persistence_hooks). tests/test_mcp_output_schemas.py allowlists the SAME
+# single pair when it scans every real payload's VALUES.
+_OUTPUT_NAME_EXEMPTIONS: dict[str, dict[str, str]] = {
+    "begin_upload": {
+        "upload_url": (
+            "plan D4: a WRITE-only resumable-upload session URI for ONE "
+            "neutral staging object, capped at the declared size; "
+            "finalize_upload files its bytes only if their size and MD5 are "
+            "the declared ones, so a leaked URL cannot inject content. "
+            "Never stored: the persist hook strips it from mcp_idempotency, "
+            "and a replay re-opens a session for the same open ticket."
+        ),
+    },
+}
 
 
 def _property_names(schema) -> list[tuple[str, str]]:

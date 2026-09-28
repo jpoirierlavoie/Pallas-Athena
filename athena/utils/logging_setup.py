@@ -613,6 +613,14 @@ McpEvent = Literal[
     # `entity_id: None` (a batch has no single entity), so the counts live
     # here — the `mcp_phase_bulk` precedent. Never an id list, never a name.
     "mcp_documents_moved",
+    # Lot 2A (T9): the upload ticket. `mcp_upload_opened` — begin_upload
+    # opened a ticket (ticket_id, purpose, size_bytes, ext, template_mode,
+    # dossier_id). `mcp_upload_finalized` — a ticket SETTLED: filed
+    # (success; document_id | template_id, already_finalized) or refused
+    # (reason ∈ the ticket's refusal codes, `settled`). Never the upload
+    # URL, the MD5, a file name, nor an identifier the leak scan found.
+    "mcp_upload_opened",
+    "mcp_upload_finalized",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 SettingsEvent = Literal[

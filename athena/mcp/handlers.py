@@ -24,10 +24,20 @@ since lot 2A T8 NEW documents — a filled gabarit, a Markdown text printed
 on the active note template, a copy within its own dossier — with their
 bytes in Storage, written through ``services/gabarits`` and
 ``models/document`` (a new object, create-only); never an existing
-document's file, never ``notes_internes``), ``folders`` (lot 2A T7:
-created, renamed, moved — never a system folder; T8: « Projets » created on
-first use by a generation) and ``dossiers``. Storage is written only by
-those creators. ONE path reaches outside the practice's own stores:
+document's file, never ``notes_internes``; since lot 2A T9 an uploaded
+file, filed as a NEW document under the id its ticket reserved),
+``folders`` (lot 2A T7: created, renamed, moved — never a system folder;
+T8: « Projets » created on first use by a generation), ``doc_templates``
+(lot 2A T9, through the upload ticket only: a template created, or a NEW
+version of one with its write-once ``versions`` entry — never its « actif »
+designation), ``mcp_upload_tickets`` (the ticket's own record) and
+``dossiers``. Storage is written only by those creators — and, for the
+upload ticket, by ``models/upload_ticket``, which holds every Storage verb
+on its staging object (the session opened for the sandbox's PUT; the
+object consumed once the ticket settles). ``begin_upload``'s ``upload_url``
+is the ONE capability URL any output carries (plan D4 — never stored:
+its persist hook strips it from ``mcp_idempotency``). ONE path reaches
+outside the practice's own stores:
 ``decide_rendez_vous``'s refusal, through ``services/rendez_vous``, cancels
 the Outlook meeting of a pending Bookings request (Graph ``/cancel``, with
 the service's fixed text) — and a « never » of the registry forbids any
@@ -81,11 +91,18 @@ Serialization rules (§10.1):
   :func:`mcp.tools.iso_mtl`.
 """
 
+import base64
+import binascii
 import dataclasses
 import functools
+import hashlib
+import hmac
+import io
 import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Callable, Optional
+
+from google.api_core.exceptions import NotFound
 
 from dav.sync import (
     bump_ctag,
@@ -95,7 +112,7 @@ from dav.sync import (
     remove_tombstone,
 )
 from mcp import coverage, import_audit
-from mcp.write_support import run_write
+from mcp.write_support import register_persistence_hooks, run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import concurrency
@@ -113,7 +130,9 @@ from models import reference
 from models import task as task_model
 from models import time_entry as time_entry_model
 from models import trust as trust_model
+from models import upload_ticket as upload_ticket_model
 from security import TAG_RE, sanitize
+from services import docx_identifiers as identifiers_service
 from services import gabarit_champs as gabarit_service
 from services import gabarits as gabarit_writer
 from services import protocoles as protocol_service
@@ -125,6 +144,11 @@ from utils import (
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import extract_placeholders
+from utils.docx_leak_scan import (
+    LeakScanError,
+    scan_identifiers,
+    scrub_core_properties,
+)
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import log_hearing_series_event
 from utils.recours import PRESCRIPTION_LABELS, compute_class
@@ -11417,3 +11441,1206 @@ def _copy_stored_document(args: dict) -> dict:
         "protection": protection,
         "warnings": warnings,
     }
+
+
+# ── begin_upload / finalize_upload (WRITE) — the upload ticket ──────────
+#
+# Plan D4, lot 2A T9. An OUTSIDE file reaches Athéna in two calls: the
+# ticket binds everything first (destination, metadata, declared size and
+# MD5) and hands back a write-only resumable-upload URI — the ONE capability
+# a tool output carries (tests/test_mcp_framework_guards allowlists that
+# single (tool, key) pair) — then the sandbox PUTs the bytes, and
+# finalize_upload files them only if the stored object's OWN size and MD5
+# are the declared ones (the leaked-URL defence). The URI is never stored:
+# the persist hook below strips it from mcp_idempotency and a replay
+# re-opens a session for the SAME still-open ticket (rehydrate).
+#
+# Every Storage verb on the staging object lives in models/upload_ticket —
+# none here (the « document » and « delete » NEVERS sweep this module). The
+# staging object is consumed when the ticket SETTLES (versé, refusé,
+# expiré); a claim RELEASED for a retry (« not uploaded yet », a transient
+# failure) keeps it — the ticket is still open and those bytes are what the
+# retry files. The reserved ids make a stale claim safely reclaimable: a
+# second finalizer lands on the SAME document or template, never a second.
+# Documents and templates are not DAV-exposed: no CTag anywhere here.
+
+_UPLOAD_DOCUMENT_ARGS = frozenset({
+    "dossier_id", "folder_id", "category", "display_name", "document_date",
+    "tags",
+})
+_UPLOAD_GABARIT_ARGS = frozenset({
+    "template_mode", "dossier_id", "accept_residual", "scrub_properties",
+})
+_UPLOAD_CREATE_ARGS = frozenset({"name", "category", "kind", "description"})
+_UPLOAD_REPLACE_ARGS = frozenset({"template_id", "expected_version"})
+_UPLOAD_CONDITIONAL_ARGS = (
+    _UPLOAD_DOCUMENT_ARGS | _UPLOAD_GABARIT_ARGS | _UPLOAD_CREATE_ARGS
+    | _UPLOAD_REPLACE_ARGS
+)
+_NOTHING_OPENED = "Rien n'a été ouvert."
+_NOTHING_FILED = "Rien n'a été versé."
+_NEW_TICKET = (
+    "ouvrez un nouveau ticket (begin_upload, avec une NOUVELLE "
+    "idempotency_key) et téléversez de nouveau"
+)
+# English, like the tool descriptions: the next steps, for the model.
+_UPLOAD_INSTRUCTIONS = (
+    "PUT the exact bytes to upload_url in ONE request from your code "
+    "sandbox, with exactly these headers. Use the URL only inside that code "
+    "— never repeat or show it to the user. Then call finalize_upload with "
+    "this ticket_id before expires_at."
+)
+_UPLOAD_NOT_RECEIVED = (
+    "Aucun fichier n'a encore été reçu pour ce ticket : faites le PUT des "
+    "octets vers upload_url depuis votre bac à sable de code, puis rappelez "
+    "finalize_upload. Le ticket reste ouvert jusqu'à son échéance "
+    f"(expires_at). {_NOTHING_FILED}"
+)
+_UPLOAD_RETRY = (
+    "Le versement n'a pas pu aboutir pour le moment (stockage ou registre "
+    "momentanément indisponible) : rien n'a été versé, le fichier reçu est "
+    "conservé et le ticket reste ouvert. Rappelez finalize_upload dans un "
+    "instant."
+)
+_UPLOAD_DOSSIER_UNREADABLE = (
+    "Le dossier lié à ce ticket est introuvable ou illisible pour le moment "
+    f": {_NOTHING_FILED} Le fichier reçu est conservé et le ticket reste "
+    "ouvert — rappelez finalize_upload dans un instant."
+)
+_UPLOAD_SIZE_MISMATCH = (
+    "Le fichier reçu ne fait pas la taille déclarée à l'ouverture du ticket "
+    f": il a été refusé et effacé. {_NOTHING_FILED} Recalculez la taille et "
+    f"l'empreinte MD5 des octets exacts, puis {_NEW_TICKET}."
+)
+_UPLOAD_MD5_MISMATCH = (
+    "Le fichier reçu n'a pas l'empreinte MD5 déclarée à l'ouverture du "
+    f"ticket : il a été refusé et effacé. {_NOTHING_FILED} Recalculez "
+    f"l'empreinte des octets exacts, puis {_NEW_TICKET}."
+)
+_UPLOAD_ALREADY_FILED_GONE = (
+    "Ce ticket a déjà été versé, mais ce qu'il a produit n'existe plus "
+    "(supprimé depuis dans l'application) : rien n'a été versé de nouveau."
+)
+# Where a residue was found, in the words of the application's user.
+_PART_LABELS_FR = (
+    ("word/document.xml", "corps"),
+    ("word/header", "en-tête"),
+    ("word/footer", "pied de page"),
+    ("word/footnotes", "notes de bas de page"),
+    ("word/endnotes", "notes de fin"),
+    ("word/comments", "commentaires"),
+    ("docProps/", "propriétés du document"),
+    ("customXml/", "données liées"),
+)
+_RESIDUES_LISTED_MAX = 20
+
+
+def _upload_log_fields(fields: dict) -> dict:
+    """Ids only when id-shaped, counts and codes; never a URL, an MD5, a
+    file name or an identifier found in a file."""
+    clean: dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if key.endswith("_id"):
+            value = loggable_id(value)
+            if value is None:
+                continue
+        clean[key] = value
+    return clean
+
+
+def _log_upload_opened(**fields: Any) -> None:
+    """``mcp_upload_opened`` — never raises (it follows the ticket's commit)."""
+    try:
+        from utils.logging_setup import log_mcp_event
+
+        log_mcp_event("mcp_upload_opened", "success",
+                      tool="begin_upload", **_upload_log_fields(fields))
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp upload logging failed", exc_info=False)
+
+
+def _log_upload_finalized(outcome: str, **fields: Any) -> None:
+    """``mcp_upload_finalized`` — a ticket settled. Never raises: after a
+    filing, a raise would report a filed upload as a failure."""
+    try:
+        from utils.logging_setup import log_mcp_event
+
+        log_mcp_event("mcp_upload_finalized", outcome,
+                      tool="finalize_upload", **_upload_log_fields(fields))
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp upload logging failed", exc_info=False)
+
+
+def _upload_uid() -> str:
+    """The owner uid the staging object and the filed file live under —
+    fail CLOSED, before anything is opened or filed."""
+    try:
+        return storage_identity.owner_uid()
+    except storage_identity.StorageIdentityUnavailable:
+        raise ToolArgumentError(_STORAGE_UNAVAILABLE, reason="upload_retry")
+
+
+def _clean_upload_filename(raw: Any, purpose: str) -> str:
+    name = raw.strip() if isinstance(raw, str) else ""
+    if not name:
+        raise ToolArgumentError(f"`filename` est requis. {_NOTHING_OPENED}")
+    if "/" in name or "\\" in name or any(ord(c) < 32 for c in name):
+        raise ToolArgumentError(
+            "`filename` : ni barre oblique ni caractère de contrôle — le seul "
+            f"nom du fichier, avec son extension. {_NOTHING_OPENED}"
+        )
+    if not _survives_storage(name, len(name) + 1):
+        raise ToolArgumentError(
+            f"`filename` contient du texte entre chevrons. {_CHEVRON_ADVICE} "
+            f"{_NOTHING_OPENED}"
+        )
+    ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
+    if purpose == "gabarit" and ext != "docx":
+        raise ToolArgumentError(
+            "`filename` : un gabarit est un document Word (.docx). "
+            f"{_NOTHING_OPENED}"
+        )
+    if purpose == "document" and f".{ext}" not in document_model.ALLOWED_EXTENSIONS:
+        raise ToolArgumentError(
+            "`filename` : ce type de fichier n'est pas accepté — PDF, Word "
+            "(DOC/DOCX), Excel (XLS/XLSX), JPG, PNG, TIFF, ZIP, courriels "
+            f"(EML/MSG). {_NOTHING_OPENED}"
+        )
+    return name
+
+
+def _clean_upload_size(raw: Any, purpose: str) -> int:
+    gabarit = purpose == "gabarit"
+    cap = (doc_template_model.MAX_TEMPLATE_SIZE if gabarit
+           else document_model.MAX_FILE_SIZE)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ToolArgumentError(
+            "`size_bytes` : la taille exacte en octets, un entier positif. "
+            f"{_NOTHING_OPENED}"
+        )
+    if raw > cap:
+        raise ToolArgumentError(
+            "`size_bytes` : le fichier dépasse la taille maximale "
+            f"({cap // (1024 * 1024)} Mo pour un "
+            f"{'gabarit' if gabarit else 'document'}). {_NOTHING_OPENED}"
+        )
+    return raw
+
+
+def _clean_upload_md5(raw: Any) -> str:
+    """The declared MD5, canonical — base64 of 16 bytes, as GCS reports it."""
+    text = raw.strip() if isinstance(raw, str) else ""
+    digest = b""
+    if len(text) == 24:
+        try:
+            digest = base64.b64decode(text, validate=True)
+        except (binascii.Error, ValueError):
+            digest = b""
+    if len(digest) != 16:
+        hint = ""
+        if len(text) == 32 and all(c in "0123456789abcdefABCDEF" for c in text):
+            hint = " Celle reçue est la forme HEXADÉCIMALE : convertissez-la."
+        raise ToolArgumentError(
+            "`md5_base64` : attendu la base64 (24 caractères) des 16 octets "
+            "de l'empreinte MD5 des octets exacts — "
+            "base64.b64encode(hashlib.md5(data).digest()) —, jamais sa "
+            f"forme hexadécimale.{hint} {_NOTHING_OPENED}"
+        )
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _clean_accept_residual(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+        raise ToolArgumentError(
+            f"`accept_residual` doit être une liste de textes. {_NOTHING_OPENED}")
+    if len(raw) > upload_ticket_model.MAX_LIST_ITEMS:
+        raise ToolArgumentError(
+            f"`accept_residual` : {upload_ticket_model.MAX_LIST_ITEMS} "
+            f"identifiants au plus. {_NOTHING_OPENED}"
+        )
+    cleaned: list[str] = []
+    for position, item in enumerate(raw, start=1):
+        text = item.strip()
+        where = f"`accept_residual` (n° {position})"
+        if not text:
+            raise ToolArgumentError(f"{where} est vide. {_NOTHING_OPENED}")
+        if len(text) > 200 or not _survives_storage(text, 201):
+            raise ToolArgumentError(
+                f"{where} : 200 caractères au plus, sans chevrons. "
+                f"{_NOTHING_OPENED}"
+            )
+        if text in cleaned:
+            raise ToolArgumentError(
+                f"{where} figure déjà dans la liste. {_NOTHING_OPENED}")
+        cleaned.append(text)
+    return cleaned
+
+
+def _upload_dossier(args: dict) -> tuple[str, dict]:
+    """The dossier a ticket names — resolved now, fail closed."""
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    if not document_model.is_addressable_id(dossier_id):
+        raise ToolArgumentError(
+            "`dossier_id` : aucun dossier ne porte cet identifiant — prenez-le "
+            f"dans list_dossiers. {_NOTHING_OPENED}"
+        )
+    return _resolve_write_dossier(args, required=True)
+
+
+def _bound_document(args: dict) -> tuple[str, dict, list[str]]:
+    """The dossier and the metadata a document ticket binds — each value
+    judged NOW, exactly as the document model will, so the finalization
+    never refuses what begin accepted (the bytes would be lost with it)."""
+    if not str(args.get("dossier_id") or "").strip():
+        raise ToolArgumentError(
+            "`dossier_id` est requis : un document est versé dans un dossier. "
+            f"{_NOTHING_OPENED}"
+        )
+    dossier_id, _dossier = _upload_dossier(args)
+    metadata: dict[str, Any] = {}
+    warnings: list[str] = []
+    target = str(args.get("folder_id") or "").strip()
+    if target:
+        unknown = (
+            "`folder_id` : ce dossier de classement n'existe pas dans ce "
+            "dossier. Prenez son identifiant dans list_documents "
+            f"(include_folders) ; \"\" ou omis = la racine. {_NOTHING_OPENED}"
+        )
+        if not document_model.is_addressable_id(target):
+            raise ToolArgumentError(unknown)
+        try:
+            folders = folder_model.list_dossier_folders(dossier_id)
+        except Exception:
+            raise ToolArgumentError(
+                f"{FOLDER_READ_ERROR} {_NOTHING_OPENED}", reason="upload_retry")
+        if not any(f.get("id") == target for f in folders):
+            raise ToolArgumentError(unknown)
+        metadata["folder_id"] = target
+    if "category" in args:
+        category = args.get("category")
+        if category not in document_model.CATEGORY_CHOICES:
+            raise ToolArgumentError(
+                "`category` : valeur hors vocabulaire. Valeurs admises : "
+                + ", ".join(document_model.CATEGORY_CHOICES)
+                + f". {_NOTHING_OPENED}"
+            )
+        metadata["category"] = category
+    if "display_name" in args:
+        name = _clean_entity_text(
+            args.get("display_name") or "", "display_name",
+            limit=document_model.DISPLAY_NAME_MAX)
+        if not name:
+            raise ToolArgumentError(
+                f"« display_name » ne peut pas être vide. {_NOTHING_OPENED}")
+        metadata["display_name"] = name
+    document_date = _write_date(args, "document_date", required=False)
+    if document_date is not None:
+        metadata["document_date"] = document_date
+    if "tags" in args:
+        metadata["tags"] = _clean_document_tags(args.get("tags"))
+    errors = document_model.record_metadata_errors(metadata)
+    if errors:
+        raise ToolArgumentError(f"{' '.join(errors)} {_NOTHING_OPENED}")
+    return dossier_id, metadata, warnings
+
+
+def _bound_replacement(args: dict, warnings: list[str]) -> dict:
+    """The template a replacement names, at the version the caller read."""
+    template_id = str(args.get("template_id") or "").strip()
+    version = args.get("expected_version")
+    if not template_id:
+        raise ToolArgumentError(
+            f"`template_id` est requis pour un remplacement. {_NOTHING_OPENED}")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ToolArgumentError(
+            "`expected_version` est requis pour un remplacement : la version "
+            f"du gabarit telle que lue (list_templates). {_NOTHING_OPENED}"
+        )
+    unknown = (
+        "`template_id` : aucun gabarit ne porte cet identifiant — prenez-le "
+        f"dans list_templates. {_NOTHING_OPENED}"
+    )
+    if not document_model.is_canonical_uuid4(template_id):
+        raise ToolArgumentError(unknown)
+    try:
+        template = doc_template_model.get_template(template_id, strict=True)
+    except doc_template_model.TemplateReadError:
+        raise ToolArgumentError(
+            f"{TEMPLATE_READ_ERROR} {_NOTHING_OPENED}", reason="upload_retry")
+    if template is None:
+        raise ToolArgumentError(unknown)
+    stored = int(template.get("version") or 1)
+    if stored != version:
+        raise ToolArgumentError(
+            f"Le gabarit est à la version {stored}, pas {version} : une autre "
+            "version a été installée depuis votre lecture. Relisez-le "
+            "(list_templates avec template_id), puis rouvrez avec la bonne "
+            f"expected_version. {_NOTHING_OPENED}",
+            reason="stale_etag",
+        )
+    if doc_template_model.is_active(template):
+        kind = template.get("kind") or ""
+        warnings.append(
+            "Ce gabarit est le gabarit ACTIF des « "
+            f"{doc_template_model.ACTIVE_KIND_NAMES.get(kind, kind)} » : le "
+            "nouveau fichier s'imprimera sur chaque document de ce type. La "
+            "version actuelle restera conservée et rétablissable dans "
+            "l'application."
+        )
+    return {"template_id": template_id, "expected_version": version}
+
+
+def _bound_creation(args: dict, warnings: list[str]) -> dict:
+    """A new template's metadata — refused rather than altered."""
+    name = _clean_entity_text(args.get("name") or "", "name",
+                              limit=doc_template_model.NAME_MAX)
+    if not name:
+        raise ToolArgumentError(
+            f"`name` est requis pour un nouveau gabarit. {_NOTHING_OPENED}")
+    description = _clean_entity_text(
+        args.get("description") or "", "description",
+        limit=doc_template_model.DESCRIPTION_MAX)
+    category = args.get("category") or "autre"
+    if category not in doc_template_model.VALID_CATEGORIES:
+        raise ToolArgumentError(
+            "`category` : un gabarit est « procédure », « correspondance » ou "
+            f"« autre ». {_NOTHING_OPENED}"
+        )
+    kind = args.get("kind") or "gabarit"
+    if kind not in doc_template_model.VALID_KINDS:
+        raise ToolArgumentError(
+            f"`kind` : valeur hors vocabulaire. {_NOTHING_OPENED}")
+    if kind in doc_template_model.SPECIAL_KINDS:
+        warnings.append(
+            "Ce gabarit de type « "
+            f"{doc_template_model.KIND_LABELS.get(kind, kind)} » sera créé NON "
+            "actif : seul le juriste désigne le gabarit actif, dans "
+            "l'application (Gabarits)."
+        )
+    return {"name": name, "description": description, "category": category,
+            "kind": kind}
+
+
+def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
+    """The source dossier (optional) and the template parameters a gabarit
+    ticket binds — judged now, as the template model will."""
+    mode = args.get("template_mode")
+    if mode not in ("create", "replace"):
+        raise ToolArgumentError(
+            "`template_mode` est requis pour un gabarit : « create » (un "
+            "nouveau gabarit) ou « replace » (un nouveau fichier pour un "
+            f"gabarit existant). {_NOTHING_OPENED}"
+        )
+    foreign = (_UPLOAD_REPLACE_ARGS if mode == "create"
+               else _UPLOAD_CREATE_ARGS)
+    stray = sorted(k for k in foreign if k in args)
+    if stray:
+        raise ToolArgumentError(
+            f"Avec template_mode « {mode} », "
+            + ", ".join(f"`{k}`" for k in stray)
+            + " ne s'applique pas : retirez-le"
+            + (" (un remplacement de fichier ne change pas les métadonnées du "
+               "gabarit)" if mode == "replace" else "")
+            + f". {_NOTHING_OPENED}"
+        )
+    warnings: list[str] = []
+    dossier_id = ""
+    if str(args.get("dossier_id") or "").strip():
+        dossier_id, _dossier = _upload_dossier(args)
+    accept = _clean_accept_residual(args.get("accept_residual"))
+    if accept and not dossier_id:
+        raise ToolArgumentError(
+            "`accept_residual` n'a de sens qu'avec le dossier dont le fichier "
+            f"est tiré (dossier_id). {_NOTHING_OPENED}"
+        )
+    scrub = args.get("scrub_properties", False)
+    if not isinstance(scrub, bool):
+        raise ToolArgumentError(
+            f"`scrub_properties` est vrai ou faux. {_NOTHING_OPENED}")
+    params: dict[str, Any] = {"mode": mode, "accept_residual": accept,
+                              "scrub_properties": scrub}
+    if mode == "create":
+        params.update(_bound_creation(args, warnings))
+    else:
+        params.update(_bound_replacement(args, warnings))
+    if not dossier_id:
+        warnings.append(
+            "Aucun dossier source nommé (dossier_id) : les noms et numéros "
+            "d'un dossier ne seront PAS contrôlés dans ce gabarit. Si le "
+            "fichier vient d'un dossier, ouvrez un nouveau ticket en le "
+            "nommant."
+        )
+    return dossier_id, params, warnings
+
+
+def _begin_upload_payload(ticket: dict, url: str, warnings: list[str]) -> dict:
+    size = int(ticket.get("declared_size") or 0)
+    return {
+        "opened": True,
+        "entity_type": "upload_ticket",
+        "entity": {"id": ticket.get("id", ""),
+                   "dossier_id": ticket.get("dossier_id") or ""},
+        "ticket_id": ticket.get("id", ""),
+        "purpose": ticket.get("purpose", ""),
+        "upload_url": url,
+        "method": "PUT",
+        "headers": {
+            "Content-Type": upload_ticket_model.content_type_for(ticket),
+            "Content-Length": str(size),
+        },
+        "max_bytes": size,
+        "expires_at": iso_mtl(_as_utc(ticket.get("open_until"))) or "",
+        "instructions": _UPLOAD_INSTRUCTIONS,
+        "warnings": warnings,
+    }
+
+
+def begin_upload(args: dict) -> dict:
+    return run_write("begin_upload", args, lambda: _begin_upload_impl(args))
+
+
+def _begin_upload_impl(args: dict) -> dict:
+    purpose = args.get("purpose")
+    if purpose not in ("document", "gabarit"):
+        raise ToolArgumentError(
+            f"`purpose` doit valoir document ou gabarit. {_NOTHING_OPENED}")
+    allowed = (_UPLOAD_DOCUMENT_ARGS if purpose == "document"
+               else _UPLOAD_GABARIT_ARGS | _UPLOAD_CREATE_ARGS
+               | _UPLOAD_REPLACE_ARGS)
+    stray = sorted(k for k in _UPLOAD_CONDITIONAL_ARGS
+                   if k in args and k not in allowed)
+    if stray:
+        raise ToolArgumentError(
+            f"Avec purpose « {purpose} », "
+            + ", ".join(f"`{k}`" for k in stray)
+            + f" ne s'applique pas : retirez-le. {_NOTHING_OPENED}"
+        )
+    filename = _clean_upload_filename(args.get("filename"), purpose)
+    size = _clean_upload_size(args.get("size_bytes"), purpose)
+    md5 = _clean_upload_md5(args.get("md5_base64"))
+    data: dict[str, Any] = {
+        "purpose": purpose, "filename": filename,
+        "declared_size": size, "declared_md5_b64": md5,
+    }
+    if purpose == "document":
+        dossier_id, metadata, warnings = _bound_document(args)
+        data.update({"dossier_id": dossier_id, "bound_metadata": metadata})
+        if metadata.get("category"):
+            warnings.append(
+                "La catégorie sera PRÉSUMÉE jusqu'à ce que le juriste la "
+                "confirme dans l'application."
+            )
+    else:
+        dossier_id, params, warnings = _bound_template(args)
+        data.update({"dossier_id": dossier_id, "template_params": params})
+    uid = _upload_uid()
+    ticket, url, errors = upload_ticket_model.open_ticket(data, user_id=uid)
+    if ticket is None or url is None:
+        if set(errors) & set(upload_ticket_model.RETRYABLE_OPEN_ERRORS):
+            raise ToolArgumentError(" ".join(errors), reason="upload_retry")
+        raise ToolArgumentError(f"{' '.join(errors)} {_NOTHING_OPENED}")
+
+    # ── Committed (the ticket): nothing below may refuse. ──────────────
+    params = ticket.get("template_params") or {}
+    _log_upload_opened(
+        ticket_id=ticket.get("id"), purpose=purpose, size_bytes=size,
+        ext=ticket.get("ext") or "", dossier_id=ticket.get("dossier_id"),
+        template_mode=params.get("mode"),
+    )
+    return _begin_upload_payload(ticket, url, warnings)
+
+
+def _persist_begin_upload(payload: dict) -> dict:
+    """What mcp_idempotency may keep of a begin_upload result: everything
+    but the capability. The caller still received the full payload."""
+    return {k: v for k, v in payload.items() if k != "upload_url"}
+
+
+def _rehydrate_begin_upload(stored: dict) -> dict:
+    """A replayed begin_upload: a FRESH session for the SAME ticket while it
+    is still open — refused once it is claimed, settled or past its hour
+    (the message names a NEW idempotency_key: the same key would replay the
+    same closed ticket for 24 h), and refused when its bytes already
+    arrived (a new session on the create-only object could only fail)."""
+    ticket_id = str(stored.get("ticket_id") or "")
+    try:
+        ticket, reason = upload_ticket_model.get_open_ticket(ticket_id)
+    except upload_ticket_model.TicketStoreUnavailable as exc:
+        raise ToolArgumentError(str(exc), reason="upload_store_unavailable")
+    if reason or ticket is None:
+        raise ToolArgumentError(
+            upload_ticket_model.message_for(reason or "introuvable"),
+            reason="upload_ticket_closed",
+        )
+    if upload_ticket_model.staged_exists(ticket):
+        raise ToolArgumentError(
+            upload_ticket_model.ALREADY_RECEIVED_MESSAGE,
+            reason="upload_already_received",
+        )
+    try:
+        url = upload_ticket_model.open_session(ticket)
+    except upload_ticket_model.UploadSessionUnavailable as exc:
+        raise ToolArgumentError(str(exc), reason="upload_retry")
+    return {**stored, "upload_url": url}
+
+
+register_persistence_hooks(
+    "begin_upload",
+    persist=_persist_begin_upload,
+    rehydrate=_rehydrate_begin_upload,
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class _UploadHolder:
+    """This call's claim on a ticket."""
+
+    ticket: dict
+    claim_id: str
+
+    @property
+    def ticket_id(self) -> str:
+        return str(self.ticket.get("id") or "")
+
+    @property
+    def purpose(self) -> str:
+        return str(self.ticket.get("purpose") or "")
+
+    @property
+    def params(self) -> dict:
+        return dict(self.ticket.get("template_params") or {})
+
+
+def _release_upload(holder: _UploadHolder) -> None:
+    """Give the ticket back, bytes kept — a later finalize retries."""
+    upload_ticket_model.release_ticket(holder.ticket_id,
+                                       claim_id=holder.claim_id)
+
+
+def _settle_refused(holder: _UploadHolder, reason: str) -> None:
+    """Mark the ticket refusé for *reason* and consume its bytes — the
+    caller then raises its own refusal. When the ticket cannot be marked
+    (a store blip, a reclaim), the bytes are KEPT: the claim goes stale and
+    a later finalize re-runs the same checks and refuses again, where a
+    consumed object would read as « not uploaded yet »."""
+    settled = upload_ticket_model.refuse_ticket(
+        holder.ticket_id, claim_id=holder.claim_id, reason=reason)
+    if settled:
+        upload_ticket_model.discard_staging(holder.ticket)
+    _log_upload_finalized("refused", ticket_id=holder.ticket_id,
+                          purpose=holder.purpose, reason=reason,
+                          settled=bool(settled))
+
+
+def _complete_upload(holder: _UploadHolder, result: dict,
+                     warnings: list[str]) -> None:
+    """Close the ticket on what it produced, then consume its bytes.
+
+    Called after the filing COMMITTED, so it never refuses: a ticket that
+    cannot be closed keeps its bytes (a later finalize reclaims it and
+    finds the reserved destination filed), and the answer says so."""
+    done, _errors = upload_ticket_model.complete_ticket(
+        holder.ticket_id, claim_id=holder.claim_id, result=result)
+    if done is None:
+        warnings.append(
+            "Le fichier est versé, mais le ticket n'a pas pu être clos : ne "
+            "le finalisez pas de nouveau — l'appel rendrait ce même résultat."
+        )
+        return
+    upload_ticket_model.discard_staging(holder.ticket)
+
+
+def _uploaded_document_payload(ticket: dict, doc: dict, *, already: bool,
+                               warnings: list[str]) -> dict:
+    return {
+        "finalized": True,
+        "purpose": "document",
+        "ticket_id": ticket.get("id", ""),
+        "entity_type": "document",
+        "entity": _document_entity(doc),
+        "file": {"size_bytes": int(doc.get("file_size") or 0),
+                 "file_type": str(doc.get("file_type") or "")},
+        "already_finalized": already,
+        "warnings": warnings,
+    }
+
+
+def _replaced_version(ticket: dict, template: dict) -> Optional[int]:
+    """replace: the version this ticket's file replaced (kept), derived
+    from what was bound and what is stored; None when nothing was."""
+    params = ticket.get("template_params") or {}
+    if params.get("mode") != "replace":
+        return None
+    expected = int(params.get("expected_version") or 0)
+    if expected and int(template.get("version") or 1) == expected + 1:
+        return expected
+    return None
+
+
+def _uploaded_template_payload(
+    ticket: dict, template: dict, *, already: bool, leak_scan: Optional[dict],
+    scrubbed: Optional[list[str]], replaced_version: Optional[int],
+    warnings: list[str],
+) -> dict:
+    params = ticket.get("template_params") or {}
+    return {
+        "finalized": True,
+        "purpose": "gabarit",
+        "ticket_id": ticket.get("id", ""),
+        "entity_type": "template",
+        "entity": _template_row(template),
+        "mode": params.get("mode") or "create",
+        "replaced_version": replaced_version,
+        "leak_scan": leak_scan,
+        "scrubbed_properties": scrubbed,
+        "already_finalized": already,
+        "warnings": warnings,
+    }
+
+
+def _filed_answer(ticket: dict) -> dict:
+    """The answer of a ticket ALREADY versé — rebuilt from its stored
+    result and the record it names (structural idempotency: a repeat
+    without an idempotency_key still gets it, and writes nothing)."""
+    result = ticket.get("result") or {}
+    if ticket.get("purpose") == "document":
+        try:
+            doc = document_model.get_document_strict(
+                str(result.get("document_id") or ""))
+        except Exception:
+            raise ToolArgumentError(
+                "Lecture du document versé impossible — réessayez. Rien n'a "
+                "été versé de nouveau.", reason="upload_retry")
+        if doc is None:
+            raise ToolArgumentError(_UPLOAD_ALREADY_FILED_GONE)
+        return _uploaded_document_payload(ticket, doc, already=True,
+                                          warnings=[])
+    try:
+        template = doc_template_model.get_template(
+            str(result.get("template_id") or ""), strict=True)
+    except doc_template_model.TemplateReadError:
+        raise ToolArgumentError(
+            f"{TEMPLATE_READ_ERROR} Rien n'a été versé de nouveau.",
+            reason="upload_retry")
+    if template is None:
+        raise ToolArgumentError(_UPLOAD_ALREADY_FILED_GONE)
+    return _uploaded_template_payload(
+        ticket, template, already=True, leak_scan=None, scrubbed=None,
+        replaced_version=_replaced_version(ticket, template), warnings=[])
+
+
+def _replacement_landed(template: Optional[dict], expected: int,
+                        digest: str) -> bool:
+    """A replacement of THIS file already committed: the template moved to
+    the next version, and that version IS these bytes."""
+    if template is None or not digest:
+        return False
+    stored_sha = str(template.get("sha256") or "")
+    return (int(template.get("version") or 1) == expected + 1
+            and bool(stored_sha) and hmac.compare_digest(stored_sha, digest))
+
+
+def _already_filed(holder: _UploadHolder) -> Optional[dict]:
+    """The destination this ticket already produced — an interrupted
+    finalization (it filed, then died before closing the ticket) — or
+    ``None``. The reserved ids make the answer unambiguous: a document or a
+    template stored under THIS ticket's reserved id is its own. A
+    replacement has no id to reserve: it is recognised by the version it
+    moved to and the SHA-256 its finalizer recorded before writing.
+    Fail CLOSED: an unreadable destination releases the claim and refuses —
+    guessing « not filed » could file twice."""
+    ticket = holder.ticket
+    params = holder.params
+    try:
+        if holder.purpose == "document":
+            doc = document_model.get_document_strict(
+                str(ticket.get("reserved_document_id") or ""))
+            if (doc is not None
+                    and doc.get("dossier_id") == ticket.get("dossier_id")
+                    and int(doc.get("file_size") or 0)
+                    == int(ticket.get("declared_size") or -1)):
+                return {"document": doc}
+            return None
+        if params.get("mode") == "create":
+            template = doc_template_model.get_template(
+                str(ticket.get("reserved_template_id") or ""), strict=True)
+            return {"template": template} if template is not None else None
+        digest = str(ticket.get("staged_sha256") or "")
+        if not digest:
+            return None
+        template = doc_template_model.get_template(
+            str(params.get("template_id") or ""), strict=True)
+    except Exception:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    expected = int(params.get("expected_version") or 0)
+    if _replacement_landed(template, expected, digest):
+        return {"template": template}
+    return None
+
+
+def _residue_parts(parts) -> str:
+    labels: list[str] = []
+    for part in parts:
+        label = next((fr for prefix, fr in _PART_LABELS_FR
+                      if part.startswith(prefix)), None)
+        if label is None:
+            label = "liens" if part.endswith(".rels") else "autre partie"
+        if label not in labels:
+            labels.append(label)
+    return ", ".join(labels)
+
+
+def _residue_refusal(scan) -> str:
+    """The refusal naming each residue — identifier, where, how often. The
+    identifiers are the DOSSIER's own data (get_dossier reads them), never
+    content the caller sent; accept_residual must name them exactly."""
+    listed = []
+    for residue in scan.residues[:_RESIDUES_LISTED_MAX]:
+        listed.append(
+            f"« {residue.identifier} » ({residue.count} fois : "
+            f"{_residue_parts(residue.parts)})")
+    more = len(scan.residues) - len(listed)
+    tail = f" — et {more} autre(s)" if more > 0 else ""
+    docprops = any(p.startswith("docProps/")
+                   for r in scan.residues for p in r.parts)
+    scrub = (
+        " Dans les propriétés du document, scrub_properties true les efface."
+        if docprops else ""
+    )
+    return (
+        "Le fichier nomme encore le dossier dont il est tiré — un gabarit "
+        "vaut pour tout le cabinet, et ceci s'imprimerait dans chaque "
+        f"document futur : {'; '.join(listed)}{tail}. Le fichier a été refusé "
+        f"et effacé ; {_NOTHING_FILED} Retirez-les du document (ou remplacez-"
+        "les par des champs {{…}}), ou — SEULEMENT si le juriste accepte "
+        f"chacun d'eux — {_NEW_TICKET} en les listant, tels qu'écrits ici, "
+        f"dans accept_residual.{scrub}"
+    )
+
+
+def _neutral_template_filename(name: str) -> str:
+    """The template's OWN name as its file name — never the uploaded
+    file's, which may name a client (« Lettre à M. Tremblay.docx »)."""
+    cleaned = "".join(
+        ch if ch.isprintable() and ch not in "/\\" else "-"
+        for ch in (name or "")
+    ).strip() or "gabarit"
+    return f"{cleaned[:120]}.docx"
+
+
+def finalize_upload(args: dict) -> dict:
+    return run_write("finalize_upload", args,
+                     lambda: _finalize_upload_impl(args))
+
+
+def _finalize_upload_impl(args: dict) -> dict:
+    ticket_id = str(args.get("ticket_id") or "").strip()
+    if not document_model.is_canonical_uuid4(ticket_id):
+        raise ToolArgumentError(
+            upload_ticket_model.message_for("introuvable"),
+            reason="upload_ticket_closed")
+    try:
+        claim = upload_ticket_model.claim_ticket(ticket_id)
+    except upload_ticket_model.TicketStoreUnavailable as exc:
+        raise ToolArgumentError(str(exc), reason="upload_store_unavailable")
+    if claim.state == upload_ticket_model.DONE:
+        # The first finalizer may have closed the ticket and died before
+        # consuming its bytes: consume them now (idempotent).
+        upload_ticket_model.discard_staging(claim.ticket)
+        return _filed_answer(claim.ticket)
+    if not claim.holds:
+        if claim.reason == upload_ticket_model.REASON_EXPIRED and claim.ticket:
+            # Expired (now, or before): a late upload is never filed.
+            upload_ticket_model.discard_staging(claim.ticket)
+            _log_upload_finalized("refused", ticket_id=ticket_id,
+                                  purpose=claim.ticket.get("purpose"),
+                                  reason="expire", settled=True)
+        if claim.reason == upload_ticket_model.REASON_BUSY:
+            raise ToolArgumentError(claim.message, reason="upload_busy")
+        raise ToolArgumentError(claim.message, reason="upload_ticket_closed")
+
+    holder = _UploadHolder(claim.ticket, claim.claim_id)
+    _held_uid(holder)      # fail closed BEFORE any byte is read
+    filed = _already_filed(holder)
+    if filed is not None:
+        return _complete_filed(holder, filed)
+    try:
+        blob = upload_ticket_model.staged_blob(holder.ticket)
+    except NotFound:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_NOT_RECEIVED,
+                                reason="upload_not_received")
+    except Exception:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    mismatch = upload_ticket_model.staged_mismatch(holder.ticket, blob)
+    if mismatch == "taille_differente":
+        _settle_refused(holder, mismatch)
+        raise ToolArgumentError(_UPLOAD_SIZE_MISMATCH,
+                                reason="upload_bytes_mismatch")
+    if mismatch:
+        _settle_refused(holder, mismatch)
+        raise ToolArgumentError(_UPLOAD_MD5_MISMATCH,
+                                reason="upload_bytes_mismatch")
+    if holder.purpose == "document":
+        return _finalize_document_upload(holder, blob)
+    return _finalize_template_upload(holder, blob)
+
+
+def _complete_filed(holder: _UploadHolder, filed: dict) -> dict:
+    """Close a ticket whose destination was ALREADY filed (an interrupted
+    finalization) and answer with it."""
+    warnings: list[str] = []
+    ticket = holder.ticket
+    if "document" in filed:
+        doc = filed["document"]
+        _complete_upload(holder, {"document_id": doc["id"]}, warnings)
+        _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                              purpose="document", document_id=doc.get("id"),
+                              already_finalized=True)
+        return _uploaded_document_payload(ticket, doc, already=True,
+                                          warnings=warnings)
+    template = filed["template"]
+    _complete_upload(holder, {"template_id": template["id"],
+                              "version": int(template.get("version") or 1)},
+                     warnings)
+    _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                          purpose="gabarit", template_id=template.get("id"),
+                          already_finalized=True)
+    return _uploaded_template_payload(
+        ticket, template, already=True, leak_scan=None, scrubbed=None,
+        replaced_version=_replaced_version(ticket, template),
+        warnings=warnings)
+
+
+def _content_refused(holder: _UploadHolder, errors: list[str]) -> ToolArgumentError:
+    """Settle a ticket whose FILE the model refused, and word the refusal."""
+    _settle_refused(holder, "contenu_refuse")
+    return ToolArgumentError(
+        f"{' '.join(errors)} Le fichier téléversé a été refusé et effacé ; "
+        f"{_NOTHING_FILED} Corrigez-le, puis {_NEW_TICKET}.",
+        reason="upload_content_refused",
+    )
+
+
+def _held_uid(holder: _UploadHolder) -> str:
+    """The owner uid for a claimed ticket — its claim released when the
+    identity cannot be established (nothing filed; the bytes wait)."""
+    try:
+        return _upload_uid()
+    except ToolArgumentError:
+        _release_upload(holder)
+        raise
+
+
+def _finalize_document_upload(holder: _UploadHolder, blob) -> dict:
+    ticket = holder.ticket
+    try:
+        uid = _upload_uid()
+    except ToolArgumentError:
+        _release_upload(holder)
+        raise
+    dossier_id = str(ticket.get("dossier_id") or "")
+    dossier = dossier_model.get_dossier(dossier_id)
+    if dossier is None:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_DOSSIER_UNREADABLE,
+                                reason="upload_retry")
+    metadata = dict(ticket.get("bound_metadata") or {})
+    presumed = bool(metadata.get("category"))
+    doc, errors = document_model.ingest_blob_as_document(
+        blob, dossier_id, dossier.get("file_number", "") or "",
+        str(ticket.get("original_filename") or ""), metadata, uid,
+        document_id=str(ticket.get("reserved_document_id") or ""),
+        # D15: a category Claude chose is PRESUMED; without one, the
+        # record's default reads as the application's, like the portal's.
+        category_source="mcp" if presumed else "juriste",
+    )
+    if doc is None:
+        if set(errors) & set(document_model.RETRYABLE_INGEST_ERRORS):
+            _release_upload(holder)
+            raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+        raise _content_refused(holder, errors)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    warnings: list[str] = []
+    _complete_upload(holder, {"document_id": doc["id"]}, warnings)
+    if presumed:
+        warnings.append(
+            "La catégorie reste PRÉSUMÉE jusqu'à ce que le juriste la confirme "
+            "dans l'application."
+        )
+    _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                          purpose="document", document_id=doc.get("id"),
+                          dossier_id=dossier_id, already_finalized=False)
+    return _uploaded_document_payload(ticket, doc, already=False,
+                                      warnings=warnings)
+
+
+def _template_write_failed(holder: _UploadHolder,
+                           errors: list[str]) -> ToolArgumentError:
+    """A template model refusal: a store blip keeps the bytes for a retry;
+    a refusal of the file itself settles the ticket."""
+    if set(errors) & _TEMPLATE_RETRYABLE_ERRORS:
+        _release_upload(holder)
+        return ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    return _content_refused(holder, errors)
+
+
+def _scan_source_dossier(holder: _UploadHolder, data: bytes,
+                         warnings: list[str]) -> dict:
+    """The leak scan against the bound source dossier — FAIL CLOSED: a
+    scan that could not read every party releases the claim (nothing is
+    filed, the bytes wait), and a residue not accepted at begin_upload
+    settles the ticket, naming each one."""
+    params = holder.params
+    dossier = dossier_model.get_dossier(str(holder.ticket.get("dossier_id")))
+    if dossier is None:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_DOSSIER_UNREADABLE,
+                                reason="upload_retry")
+    try:
+        identifiers = identifiers_service.dossier_identifiers(dossier)
+    except identifiers_service.IdentifiersUnavailable:
+        _release_upload(holder)
+        raise ToolArgumentError(
+            "Le contrôle des identifiants n'a pas pu lire toutes les parties "
+            f"du dossier source : {_NOTHING_FILED} Le fichier reçu est "
+            "conservé et le ticket reste ouvert — rappelez finalize_upload "
+            "dans un instant.", reason="upload_retry")
+    try:
+        scan = scan_identifiers(
+            data, identifiers, accept=list(params.get("accept_residual") or []))
+    except LeakScanError as exc:
+        raise _content_refused(holder, [str(exc)])
+    if scan.residues:
+        _settle_refused(holder, "identifiants_residuels")
+        raise ToolArgumentError(_residue_refusal(scan), reason="upload_residue")
+    if scan.accepted:
+        warnings.append(
+            f"{len(scan.accepted)} identifiant(s) du dossier source restent "
+            "dans le gabarit, acceptés : ils s'imprimeront dans chaque "
+            "document tiré de ce gabarit."
+        )
+    if scan.unused_accept:
+        # A clean file with a stale acceptance is harmless — any residue
+        # present would have refused above — but the caller believes
+        # something is accepted that is not there.
+        warnings.append(
+            f"{len(scan.unused_accept)} entrée(s) d'accept_residual ne "
+            "correspondent à aucun identifiant trouvé dans le fichier."
+        )
+    return {"performed": True, "accepted": len(scan.accepted),
+            "unused_accept": len(scan.unused_accept),
+            "skipped": len(scan.skipped),
+            "parts_scanned": len(scan.parts_scanned)}
+
+
+def _finalize_template_upload(holder: _UploadHolder, blob) -> dict:
+    ticket = holder.ticket
+    params = holder.params
+    warnings: list[str] = []
+    try:
+        data = upload_ticket_model.read_staged_bytes(ticket, blob)
+    except upload_ticket_model.StagedBytesChanged:
+        _settle_refused(holder, "empreinte_differente")
+        raise ToolArgumentError(_UPLOAD_MD5_MISMATCH,
+                                reason="upload_bytes_mismatch")
+    except Exception:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+
+    scrubbed: Optional[list[str]] = None
+    if params.get("scrub_properties"):
+        try:
+            result = scrub_core_properties(data)
+        except LeakScanError as exc:
+            raise _content_refused(holder, [str(exc)])
+        data, scrubbed = result.data, list(result.emptied)
+
+    if ticket.get("dossier_id"):
+        leak = _scan_source_dossier(holder, data, warnings)
+    else:
+        leak = {"performed": False, "accepted": 0, "unused_accept": 0,
+                "skipped": 0, "parts_scanned": 0}
+        warnings.append(
+            "Aucun dossier source nommé : les noms et numéros d'un dossier "
+            "n'ont PAS été contrôlés dans ce gabarit."
+        )
+    if params.get("mode") == "create":
+        return _create_uploaded_template(holder, data, leak, scrubbed,
+                                         warnings)
+    return _replace_uploaded_template(holder, data, leak, scrubbed, warnings)
+
+
+def _template_file_warnings(template: dict) -> list[str]:
+    warnings: list[str] = []
+    fragmented = template.get("validation_warnings") or []
+    if fragmented:
+        warnings.append(
+            f"Word a fragmenté {len(fragmented)} champ(s) de ce gabarit : ils "
+            "ne se rempliront pas tant qu'ils n'auront pas été retapés d'un "
+            "seul trait dans Word (voir validation_warnings)."
+        )
+    if not template.get("placeholders"):
+        warnings.append(
+            "Ce gabarit ne contient aucun champ {{…}} : il s'imprimera tel "
+            "quel."
+        )
+    return warnings
+
+
+def _create_uploaded_template(holder: _UploadHolder, data: bytes,
+                              leak: dict, scrubbed: Optional[list[str]],
+                              warnings: list[str]) -> dict:
+    params = holder.params
+    kind = params.get("kind") or "gabarit"
+    try:
+        uid = _upload_uid()
+    except ToolArgumentError:
+        _release_upload(holder)
+        raise
+    template, errors = doc_template_model.create_template(
+        io.BytesIO(data), _neutral_template_filename(params.get("name", "")),
+        len(data),
+        {"name": params.get("name", ""),
+         "description": params.get("description", ""),
+         "category": params.get("category") or "autre", "kind": kind},
+        uid, template_id=str(holder.ticket.get("reserved_template_id") or ""),
+    )
+    if template is None:
+        raise _template_write_failed(holder, errors)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    _complete_upload(holder, {"template_id": template["id"], "version": 1},
+                     warnings)
+    if kind in doc_template_model.SPECIAL_KINDS:
+        warnings.append(
+            "Ce gabarit de type « "
+            f"{doc_template_model.KIND_LABELS.get(kind, kind)} » n'est PAS le "
+            "gabarit actif : seul le juriste le désigne, dans l'application "
+            "(Gabarits)."
+        )
+    warnings.extend(_template_file_warnings(template))
+    _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                          purpose="gabarit", template_id=template.get("id"),
+                          template_mode="create", already_finalized=False)
+    return _uploaded_template_payload(
+        holder.ticket, template, already=False, leak_scan=leak,
+        scrubbed=scrubbed, replaced_version=None, warnings=warnings)
+
+
+def _install_replacement(holder: _UploadHolder, data: bytes, current: dict,
+                         digest: str) -> tuple[dict, bool]:
+    """Write the new version of *current* — the digest recorded FIRST, so
+    a reclaim can recognise this replacement if it lands and this call
+    dies before closing the ticket. ``(template, changed)``."""
+    params = holder.params
+    template_id = str(params.get("template_id") or "")
+    expected = int(params.get("expected_version") or 0)
+    try:
+        recorded = upload_ticket_model.record_staged_digest(
+            holder.ticket_id, claim_id=holder.claim_id, sha256=digest)
+    except upload_ticket_model.TicketStoreUnavailable:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    if not recorded:
+        # Reclaimed by another finalizer meanwhile: it holds the ticket.
+        raise ToolArgumentError(upload_ticket_model.message_for("en_cours"),
+                                reason="upload_busy")
+    template, errors, changed = doc_template_model.update_template(
+        template_id, {}, io.BytesIO(data),
+        _neutral_template_filename(current.get("name", "")), len(data),
+        expected_version=expected,
+    )
+    if template is not None:
+        return template, changed
+    if concurrency.STALE_ETAG_ERROR not in errors:
+        raise _template_write_failed(holder, errors)
+    try:
+        again = doc_template_model.get_template(template_id, strict=True)
+    except doc_template_model.TemplateReadError:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    if _replacement_landed(again, expected, digest):
+        return again, True
+    _settle_refused(holder, "contenu_refuse")
+    raise ToolArgumentError(
+        "Une autre version du gabarit a été installée pendant le versement : "
+        f"le fichier téléversé a été effacé ; {_NOTHING_FILED} Relisez le "
+        f"gabarit (list_templates), puis {_NEW_TICKET}.", reason="stale_etag")
+
+
+def _replace_uploaded_template(holder: _UploadHolder, data: bytes,
+                               leak: dict, scrubbed: Optional[list[str]],
+                               warnings: list[str]) -> dict:
+    params = holder.params
+    template_id = str(params.get("template_id") or "")
+    expected = int(params.get("expected_version") or 0)
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        current = doc_template_model.get_template(template_id, strict=True)
+    except doc_template_model.TemplateReadError:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    if current is None:
+        raise _content_refused(holder, [
+            "Le gabarit à remplacer n'existe plus."])
+    if _replacement_landed(current, expected, digest):
+        template, changed = current, True
+    elif int(current.get("version") or 1) != expected:
+        stored = int(current.get("version") or 1)
+        _settle_refused(holder, "contenu_refuse")
+        raise ToolArgumentError(
+            f"Le gabarit est passé à la version {stored} depuis l'ouverture "
+            f"du ticket (version attendue : {expected}) : ce fichier aurait "
+            "remplacé une version que personne n'a relue. Le fichier "
+            f"téléversé a été effacé ; {_NOTHING_FILED} Relisez le gabarit "
+            f"(list_templates), puis {_NEW_TICKET} avec la bonne "
+            "expected_version.", reason="stale_etag")
+    else:
+        template, changed = _install_replacement(holder, data, current, digest)
+
+    # ── Committed (or identical): nothing below may refuse. ────────────
+    version = int(template.get("version") or 1)
+    _complete_upload(holder, {"template_id": template_id, "version": version},
+                     warnings)
+    replaced = expected if changed and version == expected + 1 else None
+    if replaced is None:
+        warnings.append(
+            "Le fichier téléversé est identique à la version en vigueur "
+            f"(v{version}) : aucune nouvelle version n'a été créée."
+        )
+    else:
+        warnings.append(
+            f"La version {replaced} est conservée : le juriste peut la "
+            "rétablir dans l'application (Gabarits)."
+        )
+    warnings.extend(_template_file_warnings(template))
+    _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                          purpose="gabarit", template_id=template_id,
+                          template_mode="replace", version=version,
+                          already_finalized=False)
+    return _uploaded_template_payload(
+        holder.ticket, template, already=False, leak_scan=leak,
+        scrubbed=scrubbed, replaced_version=replaced, warnings=warnings)
+
+
+# A template write that failed on the STORE, not on the file: the bytes are
+# kept for a retry (the claim is released). Everything else the template
+# model refuses is about the file itself, and settles the ticket.
+_TEMPLATE_RETRYABLE_ERRORS = frozenset({
+    doc_template_model.UPLOAD_ERROR,
+    doc_template_model.SAVE_ERROR,
+    doc_template_model.READ_ERROR,
+    doc_template_model.VERSION_IN_PROGRESS_ERROR,
+})

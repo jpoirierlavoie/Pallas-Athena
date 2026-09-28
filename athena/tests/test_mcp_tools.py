@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 66  # 28 lectures + 38 ecritures
+    assert len(tools.TOOLS) == 68  # 28 lectures + 40 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -329,6 +329,10 @@ _IDEMPOTENT_WRITES = frozenset({
     # than answering it (the create_protocol rule), and one tool carries
     # one hint.
     "update_document", "move_documents",
+    # Lot 2A (T9). A ticket already versé answers its stored result again
+    # and writes nothing — structurally, even without a key. NOT here:
+    # begin_upload, whose second call without a key opens a second ticket.
+    "finalize_upload",
 })
 
 
@@ -374,6 +378,10 @@ def test_write_tools_set_is_pinned():
         # un fichier au dossier, toujours un NOUVEAU document (un gabarit
         # rempli, un texte mis en forme, une copie dans son propre dossier).
         "fill_gabarit", "create_document",
+        # Lot 2A, etape T9 — FICHIERS : le ticket de televersement, un
+        # fichier exterieur verse comme NOUVEAU document ou comme gabarit
+        # (nouveau, ou nouvelle version — la precedente conservee).
+        "begin_upload", "finalize_upload",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -404,6 +412,9 @@ def test_edit_tools_set_is_pinned():
         # Lot 2A (T7) — FILES: each REPLACES a stored value (a document's
         # filing fields, a row's folder, a folder's name or parent).
         "update_document", "move_documents", "manage_folder",
+        # Lot 2A (T9) — its gabarit « replace » mode REPLACES the template
+        # file in force (the previous version kept).
+        "finalize_upload",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 

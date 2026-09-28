@@ -10,6 +10,7 @@ exact payload that becomes ``structuredContent`` — ``tools._jsonable(...)``
 branch.
 """
 
+import json
 import os
 import re
 import sys
@@ -28,6 +29,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
+    import mcp.write_support as write_support
     from mcp.output_schemas import OUTPUT_SCHEMAS
     from models import concurrency
 
@@ -36,11 +38,55 @@ DT = datetime(2026, 7, 2, 14, 30, tzinfo=UTC)
 DATE_ONLY = datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
 
 
+# The ONE (tool, top-level key) pair whose VALUE may be a capability URL —
+# begin_upload's resumable-upload session URI (plan D4, lot 2A T9). The same
+# single pair tests/test_mcp_framework_guards exempts by NAME; the value
+# scan below holds every other real payload to « no signed URL, no storage
+# path, no session URI » — whatever key it would hide under.
+_CAPABILITY_VALUE_ALLOWLIST = frozenset({("begin_upload", "upload_url")})
+
+
+def _capability_leak(tool: str, payload) -> bool:
+    """True when *payload* — outside the allowlisted pair — carries a
+    capability: a key named like one, a signed-URL or session marker, or a
+    Cloud Storage host."""
+    scanned = payload
+    if isinstance(payload, dict):
+        scanned = {k: v for k, v in payload.items()
+                   if (tool, k) not in _CAPABILITY_VALUE_ALLOWLIST}
+    if write_support.capability_in(scanned):
+        return True
+    return "storage.googleapis.com" in json.dumps(
+        scanned, ensure_ascii=False, default=str)
+
+
 def _conforms(tool: str, payload) -> None:
-    """Validate what structuredContent would carry against the contract."""
+    """Validate what structuredContent would carry against the contract —
+    and scan its VALUES for a capability (lot 2A, T9)."""
     clean = tools._jsonable(payload)
     errors = tools.validate_args(OUTPUT_SCHEMAS[tool], clean)
     assert errors == [], f"{tool}: {errors}"
+    assert not _capability_leak(tool, clean), f"{tool}: a capability in the payload"
+
+
+def test_the_value_scan_bites_outside_its_one_allowlisted_pair():
+    url = "https://storage.googleapis.com/upload/b/o?upload_id=ADPy-secret"
+    assert not _capability_leak("begin_upload", {"upload_url": url})
+    assert _capability_leak("create_document", {"upload_url": url})
+    assert _capability_leak("begin_upload", {"note": url})
+    assert _capability_leak("list_documents", {"items": [{"link": (
+        "https://x/o?X-Goog-Signature=abc")}]})
+    assert _capability_leak("get_note", {"a": {"storage_path": "users/x"}})
+    assert not _capability_leak("get_note", {"conference_uri": "https://meet"})
+
+
+def test_the_value_allowlist_is_the_name_exemption():
+    from tests import test_mcp_framework_guards as guards
+
+    assert _CAPABILITY_VALUE_ALLOWLIST == {
+        (tool, key) for tool, props in guards._OUTPUT_NAME_EXEMPTIONS.items()
+        for key in props
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2479,3 +2525,83 @@ def test_create_document_conforms_on_both_sources(monkeypatch):
                                           "document_id": "prot"})
     _conforms("create_document", protected)
     assert protected["protection"]["niveau_protection"] == 3
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 2A (T9) — the upload ticket
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _upload_world(monkeypatch):
+    import base64
+    import hashlib
+
+    fake, ids = _generation_world(monkeypatch)
+    from models import doc_template as tpl_model
+
+    bucket = tpl_model.storage.bucket()
+
+    def md5(data: bytes) -> str:
+        return base64.b64encode(hashlib.md5(data).digest()).decode()
+
+    return fake, ids, bucket, md5
+
+
+def test_begin_upload_conforms_on_both_purposes(monkeypatch):
+    _fake, ids, _bucket, md5 = _upload_world(monkeypatch)
+    pdf = b"%PDF-1.7 " + bytes(200)
+    document = handlers.begin_upload({
+        "purpose": "document", "dossier_id": "d1", "filename": "a.pdf",
+        "size_bytes": len(pdf), "md5_base64": md5(pdf),
+        "category": "preuve"})
+    _conforms("begin_upload", document)
+    assert "upload_id=" in document["upload_url"]
+    gabarit = handlers.begin_upload({
+        "purpose": "gabarit", "template_mode": "replace",
+        "template_id": ids["gabarit"], "expected_version": 1,
+        "filename": "x.docx", "size_bytes": 1000,
+        "md5_base64": md5(b"x")})
+    _conforms("begin_upload", gabarit)
+    assert gabarit["entity"]["dossier_id"] == ""
+
+
+def test_finalize_upload_conforms_on_every_branch(monkeypatch):
+    import io
+    import zipfile
+
+    _fake, _ids, bucket, md5 = _upload_world(monkeypatch)
+    pdf = b"%PDF-1.7 " + bytes(200)
+    opened = handlers.begin_upload({
+        "purpose": "document", "dossier_id": "d1", "filename": "a.pdf",
+        "size_bytes": len(pdf), "md5_base64": md5(pdf)})
+    bucket.complete_session(opened["upload_url"], pdf)
+    document = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    _conforms("finalize_upload", document)
+    assert document["purpose"] == "document"
+    replay = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    _conforms("finalize_upload", replay)
+    assert replay["already_finalized"] is True
+
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats'
+            '.org/package/2006/content-types"><Default Extension="xml" '
+            'ContentType="application/xml"/></Types>'))
+        zf.writestr("word/document.xml", (
+            f'<?xml version="1.0"?><w:document {w}><w:body><w:p><w:r>'
+            "<w:t>{{objet_lettre}}</w:t></w:r></w:p></w:body></w:document>"))
+    docx = buf.getvalue()
+    opened = handlers.begin_upload({
+        "purpose": "gabarit", "template_mode": "create", "name": "Modèle",
+        "dossier_id": "d1", "scrub_properties": True, "filename": "m.docx",
+        "size_bytes": len(docx), "md5_base64": md5(docx)})
+    bucket.complete_session(opened["upload_url"], docx)
+    gabarit = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    _conforms("finalize_upload", gabarit)
+    assert gabarit["leak_scan"]["performed"] is True
+    assert gabarit["scrubbed_properties"] == []
+    gabarit_replay = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    _conforms("finalize_upload", gabarit_replay)
+    assert gabarit_replay["leak_scan"] is None
