@@ -12725,7 +12725,8 @@ def _replace_uploaded_template(holder: _UploadHolder, data: bytes,
     if current is None:
         raise _content_refused(holder, [
             "Le gabarit à remplacer n'existe plus."])
-    if _replacement_landed(current, expected, digest):
+    landed = _replacement_landed(current, expected, digest)
+    if landed:
         template, changed = current, True
     elif int(current.get("version") or 1) != expected:
         stored = int(current.get("version") or 1)
@@ -12755,6 +12756,28 @@ def _replace_uploaded_template(holder: _UploadHolder, data: bytes,
             f"La version {replaced} est conservée : le juriste peut la "
             "rétablir dans l'application (Gabarits)."
         )
+        # The same NEW-FILE warnings update_template gives (completeness
+        # critic of lot 2A — the T10 review's parity finding): a new file
+        # for the ACTIVE template prints at once on every document of its
+        # kind, a field the previous version printed may be gone, and an
+        # active note-print template without {{note.contenu}} prints notes
+        # WITHOUT their text from this moment. Pure over the records read.
+        active = doc_template_model.is_active(template)
+        if active:
+            kind = template.get("kind") or ""
+            warnings.append(
+                "Ce gabarit est le gabarit ACTIF des « "
+                f"{doc_template_model.ACTIVE_KIND_NAMES.get(kind, kind)} » : "
+                f"la version {version} s'imprime dès maintenant sur chaque "
+                "document de ce type. Sa désignation n'a pas changé."
+            )
+        if not landed:
+            # The version BEFORE this upload is known only when this call
+            # installed it (a landed replay holds the new version alone).
+            warnings += _dropped_fields_warning(current, template)
+        warnings += _special_kind_file_warnings(
+            template.get("kind") or "gabarit", _template_placeholders(template),
+            active_kept_version=replaced if active else None)
     warnings.extend(_template_file_warnings(template))
     _log_upload_finalized("success", ticket_id=holder.ticket_id,
                           purpose="gabarit", template_id=template_id,

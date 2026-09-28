@@ -872,6 +872,48 @@ def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(worl
     assert "<strong>désigne</strong> jamais le gabarit actif" in flat
 
 
+def _replace_through_ticket(world, template_id: str, new: bytes) -> dict:
+    opened = handlers.begin_upload({
+        "purpose": "gabarit", "template_mode": "replace",
+        "template_id": template_id, "expected_version": 1,
+        "filename": "x.docx", "size_bytes": len(new), "md5_base64": _md5(new)})
+    _put(world, opened, new)
+    return handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+
+
+def test_a_new_file_for_the_active_template_says_it_prints_now(world):
+    """Critique de complétude du lot 2A (parité relevée par la revue de
+    T10) : update_template disait, pour un nouveau fichier du gabarit
+    ACTIF, qu'il s'imprime dès maintenant, quels champs il perd, et qu'une
+    « Note (impression) » sans {{note.contenu}} imprime désormais des notes
+    SANS leur texte. Le même remplacement par le ticket ne disait rien de
+    tout cela. Échoue sur le gestionnaire d'avant."""
+    data = _docx("Note : {{note.contenu}} {{note.titre}}")
+    tpl, errors = tpl_model.create_template(
+        io.BytesIO(data), "n.docx", len(data),
+        {"name": "Impression", "category": "autre", "kind": "note"}, UID)
+    assert errors == []
+    _active, errors = tpl_model.set_active_template(
+        tpl["id"], par="juriste", expected_etag=None)
+    assert errors == []
+
+    done = _replace_through_ticket(world, tpl["id"], _docx("Note : {{note.titre}}"))
+
+    assert done["replaced_version"] == 1 and done["entity"]["active"] is True
+    text = " ".join(done["warnings"])
+    assert "gabarit ACTIF" in text and "s'imprime dès maintenant" in text
+    assert "SANS son texte" in text and "rétablir la version 1" in text
+    assert "ne figurent plus" in text and "{{note.contenu}}" in text
+
+
+def test_a_new_file_for_an_ordinary_template_names_only_what_it_loses(world):
+    done = _replace_through_ticket(world, world["template"],
+                                   _docx("Version deux, sans champ"))
+    text = " ".join(done["warnings"])
+    assert "ACTIF" not in text and "SANS son texte" not in text
+    assert "ne figurent plus" in text and "{{objet_lettre}}" in text
+
+
 def test_a_replayed_replacement_reports_what_it_did_not_what_came_after(world):
     """Review of T9: the replay rebuilt « replaced_version » from the
     template's CURRENT version, so a later replacement (v2 → v3) made the
