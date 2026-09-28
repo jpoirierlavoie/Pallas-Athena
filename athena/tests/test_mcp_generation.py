@@ -780,6 +780,28 @@ def test_the_inherited_level_is_never_announced_as_confirmable(world):
     assert errors == ["Aucune analyse à confirmer."]
 
 
+def test_the_texts_say_which_half_of_a_copy_is_presumed(world):
+    """Regression (review of T11): INSTRUCTIONS said « the copy keeping the
+    source's category and protection level, presumed », and the consent
+    « … de l'original, à confirmer » — but a category the LAWYER set stays
+    his on the copy (models.document.copy_category_source: no « Confirmer »
+    button), and the inherited level has nothing to confirm (the test
+    above: it is verified by qualifying the copy). The consent had kept the
+    very wording T8's review removed from the tool's warning."""
+    _seed_source(world)                       # a category the lawyer set
+    result = handlers.create_document({"source": "copy", "document_id": "src"})
+    copy = world["db"].peek(f"documents/{result['entity']['id']}")
+    assert copy["category_source"] == "juriste"
+    text = endpoint.INSTRUCTIONS
+    assert "category and protection level, presumed" not in text
+    assert "its category, presumed unless the lawyer had set it" in text
+    consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
+                        / "_files.html").read_text(encoding="utf-8").split())
+    assert "de l'original, à confirmer" not in consent
+    assert "à vérifier en qualifiant la copie" in consent
+    assert "sauf si vous l'aviez posée vous-même" in consent
+
+
 def test_a_copy_never_leaves_its_dossier(world):
     _seed_source(world)
     before = _documents(world["db"])

@@ -1290,8 +1290,10 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   the new surface could reach, so the switch need not be armed. Either order
   works; the one that fails is re-consenting while the switch is armed.
 - **The upload ticket needs an organisation setting of claude.ai** (lot 2A,
-  plan D4): `begin_upload` hands Claude a one-hour, WRITE-only upload link,
-  and only the code sandbox can PUT the bytes to it — so the claude.ai
+  plan D4): `begin_upload` hands Claude a WRITE-only upload link whose
+  ticket files bytes for one hour only (the GCS session itself outlives it;
+  a late PUT is never filed and the `staging/` rule sweeps it), and only the
+  code sandbox can PUT the bytes to it — so the claude.ai
   organisation must allow code-execution network egress to
   `storage.googleapis.com` (§15 « Lot 2A », step 7). Without it the tickets
   open, every PUT fails, and they expire unused: nothing is ever filed.
@@ -2118,10 +2120,13 @@ Notes:
      « Autoriser les écritures »: a « Classer vos documents » block (a
      category Claude sets stays « présumée » until you confirm it; never
      « Projets » nor « Reçus du portail »), « Produire des projets Word » (a
-     filled gabarit ALWAYS in « Projets »), « Téléverser un fichier » (a
-     one-hour, write-only link that transits the conversation, and the
+     filled gabarit ALWAYS in « Projets »; a copy's protection level
+     presumed, and its category presumed unless you had set it),
+     « Téléverser un fichier » (a write-only link that transits the
+     conversation, a file filed only within the hour, and the
      `storage.googleapis.com` prerequisite), a separate « Gérer vos
-     gabarits » block (a replaced file kept and restorable; the active note
+     gabarits » block (a replaced file kept and restorable; a NEW name given
+     to an existing gabarit checked against NO dossier; the active note
      templates are designated by you alone — though a new file for the
      active one prints at once); and, in the « jamais » list, « modifier le
      fichier d'un document existant », « remplacer le fichier d'un gabarit
@@ -2186,7 +2191,16 @@ Notes:
   … nom affiché, nom de fichier, description, étiquettes » (SKILL.md
   INVENTAIRE row and `references/outils.md` twice): the fields are the
   analysis summary, `notes_internes` and `genere_depuis`, never a
-  « description ». Add: the upload ticket (compute size and MD5 in the
+  « description ». Incomplete rather than false, to extend the same day:
+  SKILL.md « Les trois sémantiques d'écriture » (« Remplace ce qu'on
+  nomme » lacks `update_document`, `update_template` and `manage_folder`'s
+  rename and move, and no row says that `fill_gabarit`, `create_document`
+  and `finalize_upload` always make a NEW document); `references/outils.md`
+  — its pagination table (`list_templates` pages by offset) and its
+  provenance bullet (a generated or copied document says « par Claude
+  (connecteur) » in `genere_depuis`); `references/vocabulaires.md` (the
+  template kinds and categories, `manage_folder`'s actions, `begin_upload`'s
+  purposes and template modes). Add: the upload ticket (compute size and MD5 in the
   sandbox, one PUT, never show the link, egress to storage.googleapis.com,
   `finalize_upload` answering a filed ticket again rather than a new
   ticket); `fill_gabarit`'s discipline (read `list_templates` with
@@ -2195,9 +2209,13 @@ Notes:
   your own, `markdown: true` only for internal structure, never « {{ » or
   « }} », always into « Projets »); `create_document`'s two sources and its
   refusal when no note-print template is designated; the presumed category
-  and its « Confirmer » in the application; the leak scan of a template
-  taken from a dossier (`accept_residual` on the lawyer's word only); and
-  that the active note templates are the lawyer's to designate.
+  and its « Confirmer » in the application (a copy's category presumed
+  only when the lawyer had not set it; its protection level presumed, to
+  verify by qualifying the copy); the leak scan of a template taken from a
+  dossier (`accept_residual` on the lawyer's word only) — and that a
+  RENAME is checked against no dossier, so a party's name never goes into
+  a template's name; and that the active note templates are the lawyer's
+  to designate.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

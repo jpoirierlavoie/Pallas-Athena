@@ -537,6 +537,35 @@ def test_values_already_stored_write_nothing(world):
     assert world["db"].peek(f"doc_templates/{tid}") == before
 
 
+def test_a_rename_is_checked_against_no_dossier_and_the_texts_say_so(world):
+    """Regression (review of T11): INSTRUCTIONS and the consent said a
+    template was refused while « it or the template's name » named the
+    source dossier — true only of a template being CREATED (create_template,
+    begin_upload create). A RENAME through update_template has no source
+    dossier to scan against: the name is stored as given — here a client's
+    surname, which then prints in every generated document's name, for any
+    client. The texts now say so rather than promise a check that never
+    runs; this pins both halves, so a scan added later must move the texts
+    with it."""
+    tid = world["template"]
+    result = _update(world, name="Lettre Tremblay")
+    assert result["changed_fields"] == ["name"]
+    assert result["leak_scan"] is None
+    assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre Tremblay"
+    text = endpoint.INSTRUCTIONS
+    assert "refused while it or the template's name" not in text
+    assert "the name of a template it CREATES" in text
+    assert ("A name you give a template that exists is checked against no "
+            "dossier") in text
+    assert "a new name is checked against NO dossier" in (
+        tools.TOOLS["update_template"]["description"])
+    consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
+                        / "_templates.html").read_text(encoding="utf-8").split())
+    assert "lui ou le nom du gabarit nomme" not in consent
+    assert ("Le nouveau nom donné à un gabarit existant n'est contrôlé contre "
+            "<strong>aucun</strong> dossier") in consent
+
+
 def test_a_stale_expected_etag_is_refused_and_nothing_written(world):
     tid = world["template"]
     before = dict(world["db"].peek(f"doc_templates/{tid}"))

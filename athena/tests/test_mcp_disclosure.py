@@ -153,8 +153,23 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "change jamais sans vous",
     "filename, description, tags",
     "names, description and tags",
+    # Review of T11. A template's NAME is scanned only when a template is
+    # CREATED — a rename has no source dossier to be checked against. A
+    # copy's category stays the LAWYER's when he set it, and its inherited
+    # protection level has nothing to confirm (it is verified by qualifying
+    # the copy). The upload link is not « valid one hour »: the GCS session
+    # outlives the ticket — what lasts the hour is the FILING.
+    "refused while it or the template's name",
+    "lui ou le nom du gabarit nomme",
+    "category and protection level, presumed",
+    "niveau de protection de l'original, à confirmer",
+    "lien de dépôt valable une heure",
+    "le lien expire sans effet",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
+    # Review of T11: NO template may be designated (a fresh store, or before
+    # scripts.designer_gabarits_actifs ran) — « at most one », never « one ».
+    r"(?<!at most )\bone of each is active",
     r"\bsignée\b",                         # « signée Claude »
     r"ne peut plus les modifier(?!, sauf)",       # the phase stays reclassifiable
     r"nothing here can modify them afterwards(?! except)",

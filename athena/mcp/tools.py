@@ -1850,9 +1850,10 @@ TOOLS: dict[str, dict] = {
             "« [CHAMP MANQUANT : name] », a data gap to report, not to "
             "write around. Values are NEVER returned — read get_dossier or "
             "get_partie for the data. Kinds note_honoraires and note are "
-            "filled by their own flow (their fields: flow_fields); ONE of "
-            "each is active, designated by the lawyer in the application — "
-            "nothing here changes it."
+            "filled by their own flow (their fields: flow_fields); at most "
+            "ONE of each is active, designated by the lawyer in the "
+            "application — none designated, that flow refuses; nothing "
+            "here changes it."
         ),
         "input_schema": {
             "type": "object",
@@ -5445,7 +5446,8 @@ TOOLS: dict[str, dict] = {
             "WRITE — corrects ONE template, in one of two calls. METADATA: "
             "name, description, category, kind — an omitted field is "
             "untouched; the kind of the ACTIVE template of a special kind "
-            "cannot change. Or a new FILE: source_document_id (a .docx "
+            "cannot change; a new name is checked against NO dossier. Or a "
+            "new FILE: source_document_id (a .docx "
             "already in a dossier) + expected_version from list_templates — "
             "installed as a NEW version, the one in force KEPT and "
             "restorable in the application; refused while the file names "
