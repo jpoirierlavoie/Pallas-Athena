@@ -11381,8 +11381,11 @@ def _copy_stored_document(args: dict) -> dict:
         warnings.append(
             f"Le document source est protégé au niveau {level} "
             f"(« {_NIVEAU_LABELS_FR.get(level, '')} ») : la copie porte ce "
-            "niveau, PRÉSUMÉ — le juriste le confirme ou le corrige dans "
-            "l'application."
+            "niveau, PRÉSUMÉ — repris de l'original, la copie n'est pas "
+            "qualifiée, et il n'y a donc rien à « confirmer » tel quel : le "
+            "juriste le vérifie en qualifiant la copie dans l'application "
+            "(Modifier), et une analyse de la copie ne pourra que le "
+            "maintenir ou le relever."
         )
     if copy.get("category_source") == "mcp":
         warnings.append(

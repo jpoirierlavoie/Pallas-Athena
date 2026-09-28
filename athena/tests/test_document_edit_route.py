@@ -217,6 +217,10 @@ def test_a_copy_s_inherited_protection_shows_and_survives_an_untouched_save(
 
     detail = client.get("/documents/doc1").get_data(as_text=True)
     assert "Secret professionnel" in html_module.unescape(detail)
+    # Review of T8: the level is the ORIGINAL's, never a qualification of
+    # the copy — and the only confirm path refuses a seed. The page says
+    # where it comes from instead of presenting it as determined.
+    assert "repris de l'original" in html_module.unescape(detail)
     resp = client.post("/documents/doc1/edit",
                        data=_posted_back(client, tags="urgent"))
 
@@ -225,6 +229,16 @@ def test_a_copy_s_inherited_protection_shows_and_survives_an_untouched_save(
     assert stored["tags"] == ["urgent"]
     assert stored["analyse"] == seed
     assert db.peek_collection(f"{PATH}/analyses") == {}
+
+
+def test_an_analysed_document_never_reads_as_a_copy(client, db):
+    """The « repris de l'original » mention belongs to a copy's seed only —
+    an analysed document's level is its own analysis's."""
+    _analysed(db)
+    detail = html_module.unescape(
+        client.get("/documents/doc1").get_data(as_text=True))
+    assert "Secret professionnel" in detail
+    assert "repris de l'original" not in detail
 
 
 def test_analysis_values_typed_without_a_sub_nature_are_said_not_saved(

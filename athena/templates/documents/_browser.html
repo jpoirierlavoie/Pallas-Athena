@@ -320,6 +320,9 @@
                         0: ('bg-green-100 text-green-700', 'Public')} %}
         <span class="inline-flex px-2 py-0.5 text-[10px] font-medium rounded-full {{ prot.get(niv, ('bg-gray-100 text-gray-600', ''))[0] }}">
           {{ prot.get(niv, ('', 'Non déterminé'))[1] }}
+          {%- if (d.analyse or {}).declenche_par == 'copie' %}
+          <span class="ml-1 opacity-60" title="Niveau repris du document d'origine (copie) — présumé, à vérifier">?</span>
+          {%- endif %}
         </span>
         {%- endif %}
         <span class="text-xs text-gray-500">{{ d._file_size_fmt }}</span>

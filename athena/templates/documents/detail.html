@@ -81,6 +81,13 @@
                 title="Régime de protection — il commande ce qui peut être transmis">
             {{ prot.get(niv, ('','Non déterminé'))[1] }}
           </span>
+          {#- Lot 2A (T8) : le niveau d'une COPIE est repris de l'original, pas
+              qualifié — rien ne le dirait sinon (la carte d'analyse ne
+              s'affiche qu'avec une sous-nature). Il tombe quand le juriste
+              qualifie la copie. #}
+          {%- if (document.analyse or {}).declenche_par == 'copie' %}
+          <span class="text-xs text-gray-400" title="Niveau repris du document d'origine (copie) — présumé : à vérifier en qualifiant la copie (Modifier)">repris de l'original</span>
+          {%- endif %}
           {%- endif %}
           {%- if document.category_source == 'analyse'
                  and not (document.analyse or {}).confirme %}

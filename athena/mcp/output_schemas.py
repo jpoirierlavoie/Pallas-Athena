@@ -3111,7 +3111,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_obj({
                 "niveau_protection": _int(
                     "0 public … 3 secret professionnel — inherited from the "
-                    "source, PRESUMED until the lawyer confirms it."),
+                    "source, PRESUMED until the lawyer qualifies the copy; "
+                    "an analysis of the copy can only keep or raise it."),
                 "label": _str("The level's French label."),
                 "privileges": _arr(_str()),
             }, description=(

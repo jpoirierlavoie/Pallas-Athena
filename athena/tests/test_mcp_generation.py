@@ -763,6 +763,23 @@ def test_a_copy_inherits_the_protection_and_says_so(world):
     assert any("niveau 3" in w and "PRÉSUMÉ" in w for w in result["warnings"])
 
 
+def test_the_inherited_level_is_never_announced_as_confirmable(world):
+    """Regression (review of T8): the warning said « le juriste le confirme
+    … dans l'application », but a seed has no sub-nature and the only
+    confirm path refuses it (« Aucune analyse à confirmer. »). Claude would
+    have sent the lawyer looking for a button that does not exist."""
+    champ, _ = document_model._analyse_derivee(
+        {"sous_nature": "CORR_CLIENT", "privileges": ["SECRET_PROFESSIONNEL"]},
+        document={})
+    _seed_source(world, analyse=champ, category_source="analyse")
+    result = handlers.create_document({"source": "copy", "document_id": "src"})
+    warning = next(w for w in result["warnings"] if "niveau 3" in w)
+    assert "le confirme" not in warning and "qualifiant la copie" in warning
+    copy = world["db"].peek(f"documents/{result['entity']['id']}")
+    _stored, errors = document_model.confirmer_analyse(copy["id"], par="j")
+    assert errors == ["Aucune analyse à confirmer."]
+
+
 def test_a_copy_never_leaves_its_dossier(world):
     _seed_source(world)
     before = _documents(world["db"])
