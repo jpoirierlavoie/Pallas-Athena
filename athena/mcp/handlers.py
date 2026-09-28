@@ -10907,6 +10907,10 @@ def _fill_gabarit_impl(args: dict) -> dict:
             required_slots=classification.slots_required,
             refuse_ambiguous=True,
         )
+        # FAIL CLOSED on the parties' reads: this call files a document
+        # nobody sees before it is saved, so a party record that did not
+        # load must refuse — never print « [CHAMP MANQUANT] » in its place.
+        gabarit_service.require_parties_read(slots)
     except gabarit_writer.GenerationRefused as exc:
         raise _generation_refused(exc, source=source, template_id=template_id,
                                   dossier_id=dossier_id)

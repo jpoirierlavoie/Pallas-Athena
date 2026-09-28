@@ -384,6 +384,61 @@ def test_the_slots_are_strict(world):
     _nothing_generated(world, before)
 
 
+def _fail_open_bulk(*_a, **_k):
+    """``models.partie.get_parties_bulk`` on a Firestore error: ``{}``."""
+    return {}
+
+
+def _fail_open_partie(*_a, **_k):
+    """``models.partie.get_partie`` on a Firestore error: ``None``."""
+    return None
+
+
+@pytest.mark.parametrize("reader, broken", [
+    ("get_parties_bulk", _fail_open_bulk),
+    ("get_partie", _fail_open_partie),
+])
+def test_a_party_read_that_failed_refuses_never_files_a_blank_intitule(
+    world, monkeypatch, reader, broken,
+):
+    """Critique de complétude du lot 2A (constat des revues de T4 et de T8,
+    resté ouvert) : les deux lecteurs de parties échouent OUVERTS, et
+    ``fill_gabarit`` versait alors au dossier une procédure dont l'intitulé
+    avait perdu les noms et les adresses de ses parties — en l'annonçant
+    « données manquantes au dossier ». Le connecteur ne voit pas ce qu'il
+    verse : il refuse, rien n'est écrit, « Projets » compris. Échoue sur le
+    gestionnaire d'avant (un document est versé)."""
+    from services import gabarit_champs as service
+
+    before = _documents(world["db"])
+    monkeypatch.setattr(service, reader, broken)
+    message = _refused(handlers.fill_gabarit, {
+        "template_id": world["gabarit"], "dossier_id": "d1", "client_id": "c1",
+        "blocs": [{"nom": "FAITS", "contenu": "Un."}]})
+    assert "n'a pas pu être lue" in message and "réessayez" in message
+    assert "Rien n'a été généré" in message
+    _nothing_generated(world, before)
+
+
+def test_the_web_popup_keeps_reading_a_failed_party_as_missing(world, monkeypatch):
+    """The fail-closed rule is the CONNECTOR's: the web popup shows every
+    resolved value before anything is generated, so its resolution stays
+    fail-open, as it always was (resolve_slots' contract, unchanged)."""
+    from services import gabarit_champs as service
+
+    real_bulk = service.get_parties_bulk
+    monkeypatch.setattr(service, "get_parties_bulk", _fail_open_bulk)
+    slots = service.resolve_slots("d1", "c1")
+    assert slots.parties == {} and slots.client is not None
+    with pytest.raises(service.GenerationRefused) as excinfo:
+        service.require_parties_read(slots)
+    assert excinfo.value.reason == "parties_unreadable"
+    # Every party loaded → no refusal; a dossier-less resolution → none.
+    monkeypatch.setattr(service, "get_parties_bulk", real_bulk)
+    service.require_parties_read(service.resolve_slots("d1", "c1"))
+    service.require_parties_read(service.resolve_slots(""))
+
+
 @pytest.mark.parametrize("blocs, needle", [
     ([{"nom": "dossier.titre", "contenu": "x"}], "remplit elle-même"),
     ([{"nom": "objet_lettre", "contenu": "x"}], "`champs_manuels`"),

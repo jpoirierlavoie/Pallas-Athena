@@ -232,6 +232,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # values_from_submission. Aucun écrivain : le balayage
 │   │   │                           # des « jamais » lit un service atteint EN ENTIER, et
 │   │   │                           # list_templates n'importe que cette moitié
+│   │   │                           # (+ require_parties_read : fill_gabarit REFUSE quand
+│   │   │                           # une partie du dossier n'a pas pu être lue — la
+│   │   │                           # fenêtre web garde sa lecture ouverte, elle MONTRE)
 │   │   ├── protocoles.py           # Lot 1a (L2) : la porte des routes protocoles (et du
 │   │   │                           # connecteur au lot 1b) — création depuis le dossier,
 │   │   │                           # tâches liées sur DEMANDE seulement, et

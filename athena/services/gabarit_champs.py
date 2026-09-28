@@ -281,6 +281,50 @@ def _dossier_slot(
     return _first_id(entries)
 
 
+PARTIES_UNREADABLE = (
+    "La fiche d'une partie du dossier n'a pas pu être lue : réessayez dans "
+    "un instant. Si le refus persiste, une partie inscrite au dossier est "
+    "introuvable — le juriste doit vérifier les parties du dossier. Rien "
+    "n'a été généré."
+)
+
+
+def require_parties_read(slots: SlotResolution) -> None:
+    """Refuse (``parties_unreadable``) when a party the DOSSIER lists did
+    not load — the bulk read behind the role-scoped blocks, or a client /
+    opposing-party slot's own read.
+
+    Both readers fail OPEN (``get_parties_bulk`` to ``{}``, ``get_partie``
+    to ``None``), which :func:`resolve_slots` accepts on purpose: the web
+    popup SHOWS every resolved value before anything is generated, and a
+    field that resolves to nothing prints the visible « [CHAMP MANQUANT] »
+    marker. A surface that files a document it never shows — the connector
+    — must call this instead: without it, one transient read error filed a
+    procedure whose intitulé lost its parties' names and addresses, and the
+    result called that « données manquantes au dossier » (reviews of lot 2A
+    T4 and T8; the completeness critic). The same fail-closed rule
+    ``services.docx_identifiers.dossier_identifiers`` applies to the same
+    bulk read. A party a dossier lists cannot be deleted (the partie FK
+    check fails closed), so a refusal that persists means a record the
+    lawyer must look at, never a routine case.
+    """
+    if not slots.dossier:
+        return
+    listed = _entry_ids(slots.clients) + _entry_ids(slots.opposing_parties)
+    loaded = slots.parties or {}
+    unread = any(pid not in loaded for pid in listed)
+    # A slot the dossier vouches for resolves to its first entry (or the
+    # named one): an empty record there is a read that failed, not a choice.
+    unread = unread or (
+        bool(_first_id(slots.clients)) and slots.client is None
+    ) or (
+        bool(_first_id(slots.opposing_parties)) and slots.adverse is None
+    )
+    if unread:
+        raise GenerationRefused(
+            "parties_unreadable", PARTIES_UNREADABLE, field="dossier_id")
+
+
 # ── 2. Auto values ───────────────────────────────────────────────────────
 
 

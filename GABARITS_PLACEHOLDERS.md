@@ -352,7 +352,11 @@ A passthrough name is also what **Claude** may write, through the connector's
 « resolved » flag — **never a value** — its MANUAL fields with their options,
 and its BLOCS (names exact). An auto field that does not resolve prints
 `[CHAMP MANQUANT : name]`: it is a gap in the dossier to report or fix there,
-not something to write around in a bloc.
+not something to write around in a bloc. A **party the dossier lists that cannot be read**
+(a transient Firestore error) is NOT such a gap: `fill_gabarit` then
+refuses and files nothing — « réessayez » — rather than printing the
+markers in place of the intitulé's names and addresses. (The web popup
+keeps printing them: it shows every value before generating.)
 
 - **Only the passthrough names are Claude's.** The auto fields are resolved by
   the server from the dossier and its parties (a bloc named like one is
