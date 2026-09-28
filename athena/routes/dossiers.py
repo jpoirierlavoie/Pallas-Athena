@@ -541,11 +541,44 @@ _DETAIL_WARNINGS = {
         "La fermeture est enregistrée mais la synchronisation du téléphone "
         "est incomplète — cliquez « Resynchroniser le téléphone »."
     ),
+    "dav_archivage": (
+        "L'archivage est enregistré mais la synchronisation du téléphone "
+        "est incomplète — cliquez « Resynchroniser le téléphone »."
+    ),
     "dav_reouverture": (
         "La réouverture est enregistrée mais la synchronisation du "
         "téléphone est incomplète — cliquez « Resynchroniser le téléphone »."
     ),
+    # The old status could not be read before the save: the service applied
+    # the saved status's visibility, but whether the save CLOSED, reopened
+    # or merely edited the dossier is unknown — so the banner names none.
+    "dav_enregistrement": (
+        "Le dossier est enregistré mais la synchronisation du téléphone "
+        "est incomplète — cliquez « Resynchroniser le téléphone »."
+    ),
 }
+
+
+def _dav_warning_code(old_status: Optional[str], saved_status: str) -> str:
+    """The amber banner's code for a save whose DavX5 write stayed
+    incomplete — named after what the SAVE did, never after the direction
+    the service ended on.
+
+    Archiving is not a closing (« La fermeture est enregistrée » on an
+    archived dossier said something that did not happen), and an unknown
+    old status (a failed pre-read) cannot be called a closing or a
+    reopening either: an active dossier merely edited during a blip got
+    « La réouverture est enregistrée ».
+    """
+    if old_status is None or (
+            dossier_dav.is_active(old_status)
+            == dossier_dav.is_active(saved_status)):
+        return "dav_enregistrement"
+    if dossier_dav.is_active(saved_status):
+        return "dav_reouverture"
+    if saved_status == "archivé":
+        return "dav_archivage"
+    return "dav_fermeture"
 
 
 def _apercu_card_context(dossier: dict) -> dict:
@@ -880,6 +913,11 @@ def dossier_update(dossier_id: str) -> str:
     detail page opens with an amber banner and the « Resynchroniser le
     téléphone » button.
     """
+    if not dossier_id.strip():
+        # A crafted « /dossiers/%20 »: the service refuses a blank id with a
+        # ValueError (its readers would read the WHOLE collection), which
+        # surfaced as a 500. No dossier bears such an id — the list.
+        return redirect(url_for("dossiers.dossier_list"))
     old_status: Optional[str]
     try:
         existing = get_dossier_strict(dossier_id)
@@ -928,10 +966,8 @@ def dossier_update(dossier_id: str) -> str:
     # about a save that happened.
     params: dict = {}
     if not result.dav.complete:
-        params["avertissement"] = (
-            "dav_reouverture" if result.dav.direction == dossier_dav.RESTORE
-            else "dav_fermeture"
-        )
+        params["avertissement"] = _dav_warning_code(
+            old_status, str((dossier or {}).get("status") or ""))
     target = url_for("dossiers.dossier_detail", dossier_id=dossier_id,
                      **params)
 
@@ -955,6 +991,9 @@ def dossier_dav_resync(dossier_id: str) -> str:
     as a closed code in the query string (``?message=`` / ``?erreur=``),
     never as text, and always in 2xx after the redirect.
     """
+    if not dossier_id.strip():
+        # The service raises ValueError on a blank id (a 500): the list.
+        return redirect(url_for("dossiers.dossier_list"))
     dav = dossier_dav.resync_dossier_dav_visibility(dossier_id)
     if dav.error == dossier_dav.ERR_DOSSIER_NOT_FOUND:
         return redirect(url_for("dossiers.dossier_list"))

@@ -262,6 +262,70 @@ def test_a_restore_that_fails_says_reouverture(client, db, dossier):
     assert "La réouverture est enregistrée" in page
 
 
+def test_an_archiving_whose_drain_fails_says_archivage_not_fermeture(
+        client, db, dossier):
+    """Régression (revue 4a) — un archivage dont la purge échouait
+    s'annonçait « La fermeture est enregistrée » : le bandeau disait une
+    chose qui n'avait pas eu lieu."""
+    did = dossier["id"]
+    remove = _fail_dav_commits(db, did)
+    resp = client.post(f"/dossiers/{did}", data=_form(db, did, "archivé"))
+    remove()
+    assert db.peek(f"dossiers/{did}")["status"] == "archivé"
+    assert "avertissement=dav_archivage" in resp.headers["Location"]
+    page = client.get(resp.headers["Location"]).get_data(as_text=True)
+    assert ("L&#39;archivage est enregistré" in page
+            or "L'archivage est enregistré" in page)
+    assert "La fermeture est enregistrée" not in page
+
+
+def test_an_unknown_old_status_never_claims_a_reopening(client, db, dossier):
+    """Régression (revue 4a) — la pré-lecture du statut échoue (inconnu,
+    jamais deviné), le dossier ACTIF est simplement modifié, et le
+    rétablissement qui suit échoue : le bandeau annonçait « La réouverture
+    est enregistrée » pour un dossier que personne n'avait rouvert."""
+    did = dossier["id"]
+    form = _form(db, did, "actif")
+    server = db._fake_server
+    real = server.batch_get_documents
+    failed = []
+
+    def fail_first_dossier_read(request, metadata=None, **kwargs):
+        names = [server.doc_rel(n) for n in request["documents"]]
+        if not failed and f"dossiers/{did}" in names:
+            failed.append(1)
+            raise gexc.ServiceUnavailable("injected pre-read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    server.batch_get_documents = fail_first_dossier_read
+    remove = _fail_dav_commits(db, did)
+    try:
+        resp = client.post(f"/dossiers/{did}", data=form)
+    finally:
+        remove()
+        server.batch_get_documents = real
+    assert failed == [1]
+    assert resp.status_code == 302
+    assert "avertissement=dav_enregistrement" in resp.headers["Location"]
+    assert db.peek(f"dossiers/{did}")["status"] == "actif"
+    page = client.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "Le dossier est enregistré mais la synchronisation" in page
+    assert "réouverture est enregistrée" not in page
+
+
+@pytest.mark.parametrize("path", ["/dossiers/%20", "/dossiers/%20/dav/resync"])
+def test_a_blank_dossier_id_goes_to_the_list_never_a_500(client, db, path):
+    """Régression (revue 4a) — le service refuse un id blanc par une
+    ValueError (ses lecteurs liraient TOUTE la collection) : une URL
+    fabriquée « /dossiers/%20 » répondait 500. Rien n'est écrit."""
+    db.reset_logs()
+    resp = client.post(path, data={"status": "fermé", "title": "x",
+                                   "file_number": "1"})
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/dossiers/")
+    assert db.commits == []
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. « Resynchroniser le téléphone »
 # ══════════════════════════════════════════════════════════════════════
