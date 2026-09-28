@@ -11,11 +11,19 @@ newest one is authoritative and the older ones stay readable. The reason is
 deontological, not technical (spec §10): the duty to inform the client of
 the foreseeable cost — and of anything likely to change it — requires
 proving WHEN that information was given. An overwritten budget destroys
-that proof. Versioning is Python-side (``_next_version`` = 1 + max), NOT a
-transactional counter: the single-user deployment's worst case is a
-double-submit minting two docs with the same version number — never a data
-loss (append-only) — and ``get_latest_budget`` stays deterministic through
-the ``(version, created_at)`` tie-break.
+that proof.
+
+Versioning is a TRANSACTIONAL per-dossier counter since lot 3a (step 2),
+``counters/budget-{dossier_id}`` — the invoice/trust/admin counter pattern.
+It used to be Python-side (1 + the max of a non-transactional read): two
+parallel saves (a double-submit, a second tab, the connector's future
+``create_budget_version``) both read the same history and minted two
+documents under ONE version number, and a « based on version N » check on
+top of it would have meant nothing. :func:`create_budget` now reads the
+counter AND the dossier's stored versions inside ONE transaction, refuses
+a stale ``base_version``, and writes the new version and the counter
+together. ``get_latest_budget`` keeps its ``(version, created_at)``
+tie-break for the duplicates minted before.
 
 Phase is DERIVED from the sub-code prefix, never stored per line (the
 prefix IS the relationship — the phases.py doctrine). ADM and HOR are
@@ -30,6 +38,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db, provenance
 from security import sanitize
@@ -39,6 +48,12 @@ from utils.logging_setup import log_unexpected
 logger = logging.getLogger(__name__)
 
 COLLECTION = "budgets"
+COUNTERS_COLLECTION = "counters"
+
+# The keys a caller may give a new version; the rest (id, version, the
+# provenance stamp) is the model's. Anything else a caller sends is IGNORED
+# — never stored.
+_CREATE_KEYS = ("dossier_id", "hourly_rate", "note", "lines")
 
 # Consumption alert threshold (spec §10: the trigger of the deontological
 # duty to inform the client BEFORE the envelope is exceeded). Computed on
@@ -323,44 +338,124 @@ VERSION_READ_ERROR = (
 )
 
 
-def create_budget(data: dict) -> tuple[Optional[dict], list[str]]:
+# The save's refusal when a newer version was minted since the caller read
+# the budget (lot 3a) — a fixed sentence, so a caller recognises it
+# (:func:`is_version_conflict`) without parsing French.
+BASE_VERSION_CONFLICT = (
+    "Une version plus récente de ce budget a été enregistrée entre-temps — "
+    "dans un autre onglet ou par le connecteur. Rien n'a été enregistré : "
+    "relisez la version actuelle, puis enregistrez de nouveau."
+)
+BASE_VERSION_INVALID = "Version de référence du budget invalide."
+DOSSIER_ID_INVALID = "Un dossier doit être associé au budget."
+
+
+class _Refused(Exception):
+    """A refusal raised inside the save's transaction — nothing written."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__(errors[0] if errors else "")
+        self.errors = errors
+
+
+class _ReadFailed(Exception):
+    """The counter or the stored versions could not be read."""
+
+
+def is_version_conflict(errors) -> bool:
+    """True when a :func:`create_budget` error list is the stale-base refusal."""
+    return BASE_VERSION_CONFLICT in list(errors or ())
+
+
+def _counter_ref(dossier_id: str):
+    return db.collection(COUNTERS_COLLECTION).document(f"budget-{dossier_id}")
+
+
+def create_budget(
+    data: dict, *, base_version: Optional[int] = None,
+) -> tuple[Optional[dict], list[str]]:
     """Mint a NEW immutable version. Returns (doc, errors).
 
-    The version number is read through the STRICT reader: a failed read
-    REFUSES the save. It used to go through the fail-open
-    ``list_budget_versions``, which turned a read blip into « no history »
-    and minted a duplicate version 1 — one that sorts BELOW the real latest
-    (``(version, created_at)`` DESC), so the save reported success and the
-    new budget never showed. The ``except`` guarding that call was dead
-    code, since the reader never raised."""
-    merged = {**_default_doc(), **_sanitize_data(data)}
+    ONE transaction (lot 3a, step 2), reads before writes:
+
+    1. the per-dossier counter ``counters/budget-{dossier_id}`` and the
+       dossier's stored versions — the current version is the higher of
+       the two (the stored versions cover every version minted before the
+       counter existed, and any an old instance mints during a rolling
+       deploy). A read failure REFUSES (:data:`VERSION_READ_ERROR`): a
+       version number minted from a failed read would be a duplicate — the
+       lot 0b rule, now inside the transaction;
+    2. *base_version* given and not the current version →
+       :data:`BASE_VERSION_CONFLICT`, nothing written: the caller built its
+       budget on an older version (a stale tab, a concurrent save, the
+       connector). ``None`` asserts nothing — the web page rendered before
+       its form carried the field. ``0`` means « no budget yet »;
+    3. the validation (lines, rate, dossier);
+    4. the new version (current + 1) and the counter, written together.
+
+    Two parallel saves on the same base: the first commits, the second's
+    transaction aborts on the counter it read, and its retry sees the new
+    version and refuses (with a base) or takes the next number (without) —
+    never two documents under one number.
+
+    Only the keys of :data:`_CREATE_KEYS` are taken from *data*; the version
+    and the provenance stamp (``created_via`` included — the path actually
+    writing) are the model's.
+    """
+    if base_version is not None and (
+        isinstance(base_version, bool) or not isinstance(base_version, int)
+        or base_version < 0
+    ):
+        return None, [BASE_VERSION_INVALID]
+    fields = {k: data[k] for k in _CREATE_KEYS if k in (data or {})}
+    merged = {**_default_doc(), **_sanitize_data(fields)}
     lines, line_errors = _normalize_lines(merged.get("lines") or [])
     merged["lines"] = lines
 
-    dossier_id = str(merged.get("dossier_id") or "")
+    dossier_id = str(merged.get("dossier_id") or "").strip()
+    if not dossier_id or "/" in dossier_id:
+        return None, line_errors + [DOSSIER_ID_INVALID]
+    merged["dossier_id"] = dossier_id
+    counter_ref = _counter_ref(dossier_id)
+    budget_id = str(uuid.uuid4())
+    budget_ref = db.collection(COLLECTION).document(budget_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        try:
+            snap = counter_ref.get(transaction=transaction)
+            stored = _list_budget_versions_strict(
+                dossier_id, transaction=transaction)
+        except Exception as exc:
+            raise _ReadFailed() from exc
+        seq = int((snap.to_dict() or {}).get("seq") or 0) if snap.exists else 0
+        current = max(seq, _next_version(stored) - 1)
+        if base_version is not None and base_version != current:
+            raise _Refused([BASE_VERSION_CONFLICT])
+
+        doc = dict(merged)
+        doc["version"] = current + 1
+        errors = line_errors + _validate(doc)
+        if errors:
+            raise _Refused(errors)
+        now = datetime.now(timezone.utc)
+        doc.update({"id": budget_id, **provenance.create_fields(now)})
+        transaction.set(counter_ref, {"seq": current + 1, "updated_at": now})
+        transaction.create(budget_ref, doc)
+        return doc
+
     try:
-        existing = _list_budget_versions_strict(dossier_id)
-    except Exception:
+        doc = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
+    except _ReadFailed:
         log_unexpected("budget version read failed", dossier_id=dossier_id)
         return None, [VERSION_READ_ERROR]
-    merged["version"] = _next_version(existing)
-
-    errors = line_errors + _validate(merged)
-    if errors:
-        return None, errors
-
-    now = datetime.now(timezone.utc)
-    budget_id = str(uuid.uuid4())
-    merged.update({
-        "id": budget_id,
-        **provenance.create_fields(now),
-    })
-    try:
-        db.collection(COLLECTION).document(budget_id).set(merged)
     except Exception:
         log_unexpected("budget write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-    return merged, []
+    provenance.note_commit(COLLECTION, budget_id)
+    return doc, []
 
 
 def get_budget(budget_id: str) -> Optional[dict]:
@@ -373,11 +468,13 @@ def get_budget(budget_id: str) -> Optional[dict]:
     return None
 
 
-def _list_budget_versions_strict(dossier_id: str) -> list[dict]:
+def _list_budget_versions_strict(
+    dossier_id: str, *, transaction=None,
+) -> list[dict]:
     """All versions of a dossier's budget, newest first — PROPAGATES a read
-    error. The reader for a SAVE (``create_budget``): a version number
-    minted from a failed read would be a duplicate. Display paths use the
-    fail-open :func:`list_budget_versions`.
+    error. The reader for a SAVE (``create_budget``, through its
+    *transaction*): a version number minted from a failed read would be a
+    duplicate. Display paths use the fail-open :func:`list_budget_versions`.
 
     ``where dossier_id ==`` + PYTHON sort on (version, created_at) DESC —
     deliberately no Firestore order_by, so no composite index. The
@@ -389,7 +486,7 @@ def _list_budget_versions_strict(dossier_id: str) -> list[dict]:
     query = db.collection(COLLECTION).where(
         filter=FieldFilter("dossier_id", "==", dossier_id)
     )
-    rows = [doc.to_dict() for doc in query.stream()]
+    rows = [doc.to_dict() for doc in query.stream(transaction=transaction)]
     rows.sort(
         key=lambda b: (
             int(b.get("version") or 0),

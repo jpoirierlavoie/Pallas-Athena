@@ -512,6 +512,10 @@ DossierEvent = Literal[
     "court_file_parsed",
     "budget_saved",
     "budget_exported",
+    # Lot 3a (étape 2) : un enregistrement de budget refusé parce qu'une
+    # version plus récente a été enregistrée depuis que le formulaire a été
+    # rendu. Numéros de version seulement.
+    "budget_version_conflict",
     # Reclassement de phase (août 2026). La SEULE écriture que
     # l'application accepte sur une ligne déjà facturée — donc la seule
     # dont une trace vaut d'être gardée, même si la phase ne porte aucun

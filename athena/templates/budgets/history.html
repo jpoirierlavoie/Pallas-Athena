@@ -33,6 +33,7 @@
         <tr class="hover:bg-gray-50">
           <td class="px-3 py-2 whitespace-nowrap {{ 'font-semibold text-gray-900' if loop.first else 'text-gray-700' }}">
             v{{ b.version }}{% if loop.first %} <span class="text-xs font-medium text-indigo-600">courante</span>{% endif %}
+            {% if b.created_via == 'mcp' %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">créée par Claude</span>{% endif %}
           </td>
           <td class="px-3 py-2 whitespace-nowrap text-gray-700">{{ (b.created_at | to_mtl).strftime('%Y-%m-%d %H:%M') if b.created_at else '—' }}</td>
           <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ '%.2f'|format(b.totals.hours)|replace('.', ',') }}</td>

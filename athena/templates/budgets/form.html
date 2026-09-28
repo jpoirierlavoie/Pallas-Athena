@@ -69,6 +69,9 @@
     {% if latest %}· la version {{ latest.version }} sera conservée : l'enregistrement crée la version {{ latest.version + 1 }}{% endif %}
   </p>
 
+  {% from "components/_edit_conflict.html" import conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
     <ul class="text-sm text-red-700 space-y-1">
@@ -80,6 +83,12 @@
   <form method="post" action="{{ url_for('budgets.budget_create') }}" class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="dossier_id" value="{{ dossier.id }}">
+    {# The version this form was built on (lot 3a): the save is refused if
+       another one was recorded since. Absent when the page re-renders a
+       submission that carried none (a page older than the field). #}
+    {% if base_version is not none %}
+    <input type="hidden" name="base_version" value="{{ base_version }}">
+    {% endif %}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
     <input type="hidden" name="lines_json" :value="payload()">
 
