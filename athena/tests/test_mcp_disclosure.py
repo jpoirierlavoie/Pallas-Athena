@@ -193,6 +193,11 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # reaches every one of them, to release it.
     "only tools that reach a row already carried",
     "only writes that reach a row already carried",
+    # Completeness review of lot 3: CORRECT said a move makes « both
+    # dossiers' budget actuals change » — false for a NON-BILLABLE time
+    # entry, which budget.aggregate_actuals never counts (the handler's own
+    # move warning already said so; INSTRUCTIONS generalised past it).
+    "both dossiers' budget actuals change",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -825,3 +830,11 @@ def test_the_lot_3b_texts_say_what_billing_does():
     assert "a void — BILL — releases the row instead" in (
         reclassify.instructions_en)
     assert "WHILE it stays carried to an invoice" in endpoint.INSTRUCTIONS
+
+    # Completeness review of lot 3: the move (CORRECT, `dossier_id`) says
+    # what the budget really does — a non-billable time entry counts in NO
+    # budget (budget.aggregate_actuals skips it), exactly as the handler's
+    # own move warning says (_move_warnings).
+    correct = next(f for f in disclosure.FAMILIES if f.key == "correct")
+    assert "non-billable time counts in no budget" in correct.instructions_en
+    assert "non-billable time counts in no budget" in endpoint.INSTRUCTIONS

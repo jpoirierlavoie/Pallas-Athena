@@ -2487,7 +2487,8 @@ Notes:
   `create_budget_version` (`base_version`, `merge` keeping what a line does
   not name, `replace` making the lines the whole budget); and the move of
   an un-invoiced entry by `update_time_entry` / `update_expense` with
-  `dossier_id` (its amount and phase kept, both budgets moving).
+  `dossier_id` (its amount and phase kept; its share of the budget actuals
+  follows it — a non-billable time entry counts in no budget).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

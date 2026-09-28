@@ -586,6 +586,12 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     # The repair path exists and must be named: voiding releases every
     # source. The old copy called the freeze permanent, which was false.
     assert "<strong>annulez la facture</strong> — ici ou dans l'application" in flat
+    # Completeness review of lot 3: a moved entry's budget effect is said
+    # as budget.aggregate_actuals computes it — its share follows it, and a
+    # non-billable time entry counts in NO budget. « le budget des deux
+    # dossiers en tient compte » implied both budgets always move.
+    assert "le temps non facturable ne compte dans aucun budget" in flat
+    assert "le budget des deux dossiers en tient compte" not in flat
     # Lot 0a (disclosure step) — three sentences of this screen were false.
     # Voiding does NOT free the number; only the notes, tasks and events the
     # connector CREATES carry a dated mention (every write is journaled and
