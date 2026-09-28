@@ -4515,7 +4515,8 @@ TOOLS: dict[str, dict] = {
         "description": (
             "Read a stored document's TEXT LAYER — the reading companion of "
             "list_documents (take document_id from there, or from the entity "
-            "a file write returned; a template is not a document). PDF and "
+            "of a write that created a document; a template is not one). PDF "
+            "and "
             ".docx "
             "only; a scanned or image-only page has NO text layer and is "
             "reported honestly (has_text false, listed in "

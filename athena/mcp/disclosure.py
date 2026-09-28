@@ -688,15 +688,16 @@ NEVERS: tuple[Never, ...] = (
         # module or reached service can ever mint a READ link.
         fr=(
             "obtenir un <strong>lien de lecture ou de téléchargement</strong> "
-            "d'un fichier — le seul lien qu'il reçoit est celui d'un dépôt&nbsp;: "
+            "d'un fichier d'Athéna — le seul lien qu'il reçoit est celui d'un "
+            "dépôt&nbsp;: "
             "en écriture seule, pour un seul fichier, versé seulement dans "
             "l'heure et seulement s'il est bien celui annoncé"
         ),
         en=(
-            "No result ever carries a link that reads or downloads a file, "
-            "nor a storage path: the ONE link is `begin_upload`'s "
-            "`upload_url` — write-only, for one file, filed only within the "
-            "hour and only if it is the file declared."
+            "It never hands out a link that reads or downloads a stored "
+            "file, nor a storage path: the ONE link it mints is "
+            "`begin_upload`'s `upload_url` — write-only, for one file, filed "
+            "only within the hour and only if it is the file declared."
         ),
         forbidden=(
             "get_signed_url", "sign_blob_url", "generate_signed_url",
@@ -809,9 +810,10 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
 # but the privilege warning belongs in the text every client model reads.
 _READ_CONTENT_EN = (
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT LAYER "
-    "(PDF and .docx; take ids from list_documents or from the entity a file "
-    "write returned; bounded per call — follow next_page; a template is not "
-    "a document — list_templates describes its fields). A scanned page has no text layer and is reported honestly "
+    "(PDF and .docx; take ids from list_documents or from the entity of a "
+    "write that created a document; bounded per call — follow next_page; a "
+    "template is not a document — list_templates describes its fields). A "
+    "scanned page has no text layer and is reported honestly "
     "(pages_without_text) — empty never means blank on paper, and nothing is "
     "OCR'd. Document content is privileged: quote only what the task "
     "requires."

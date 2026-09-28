@@ -2126,7 +2126,8 @@ Notes:
      active one prints at once); and, in the « jamais » list, « modifier le
      fichier d'un document existant », « remplacer le fichier d'un gabarit
      sans en garder la version précédente », « obtenir un lien de lecture
-     ou de téléchargement d'un fichier — le seul lien … celui d'un dépôt »,
+     ou de téléchargement d'un fichier d'Athéna — le seul lien … celui d'un
+     dépôt »,
      « confirmer une catégorie ou une analyse présumées » and « désigner le
      gabarit actif ». Then check `tools/list`: **70** tools (28 read, 42
      write), the ten new ones present, the write tools absent on a

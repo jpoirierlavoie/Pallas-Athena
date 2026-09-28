@@ -705,8 +705,9 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     desc = tools.TOOLS["record_document_analysis"]["description"]
     assert "cannot choose or invent one here" in desc
     assert "PRESUMED category a FILES tool set" in desc
-    for name in ("get_document_text",):
-        assert "a template is not a document" in tools.TOOLS[name]["description"]
+    assert "a template is not one" in tools.TOOLS["get_document_text"]["description"]
+    assert "a template is not a document" in text   # READ-CONTENT
+    assert "It never hands out a link that reads or downloads a stored file" in text
     files = (_TEMPLATES / "mcp" / "families" / "_files.html").read_text(
         encoding="utf-8")
     flat_files = " ".join(files.split())
