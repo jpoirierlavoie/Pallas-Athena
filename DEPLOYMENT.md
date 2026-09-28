@@ -1289,6 +1289,12 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   pointer): with every token revoked BEFORE the push, nothing holds a grant
   the new surface could reach, so the switch need not be armed. Either order
   works; the one that fails is re-consenting while the switch is armed.
+- **The upload ticket needs an organisation setting of claude.ai** (lot 2A,
+  plan D4): `begin_upload` hands Claude a one-hour, WRITE-only upload link,
+  and only the code sandbox can PUT the bytes to it — so the claude.ai
+  organisation must allow code-execution network egress to
+  `storage.googleapis.com` (§15 « Lot 2A », step 7). Without it the tickets
+  open, every PUT fails, and they expire unused: nothing is ever filed.
 - The consent screen has room for a **second, separate box**, « Autoriser la
   comptabilité » (scope `athena:comptabilite`). It appears only when
   `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**
@@ -2066,6 +2072,131 @@ Notes:
   carry ids, codes and counts (OBSERVABILITY.md). A burst of
   `mcp_upload_finalized` refusals with `reason: empreinte_differente` means
   bytes other than the declared ones reached a session — look at it.
+- **Lot 2A — files, templates and the upload ticket through the connector
+  (ONE consent train: the lot's commits — branch `mcp-ecriture-lot2`, with
+  any earlier lot of that stack not yet deployed — in ONE push).**
+  Ten new tools — the FILES family (`update_document`, `move_documents`,
+  `manage_folder`, `fill_gabarit`, `create_document`, `begin_upload`,
+  `finalize_upload`), the TEMPLATES family (`create_template`,
+  `update_template`) and one read, `list_templates` — plus the model
+  hardening they rely on (the T1-T5 items above: documents, folders, active
+  templates and versions, the generation service, the ticket store). The
+  scope is frozen at issuance and a new READ tool reaches the token in force
+  the moment it deploys, so this is a consent train, never an ordinary
+  deploy. **In this order** — each step is a precondition of the next:
+  1. **The index file first** (the TTL fieldOverride of
+     `mcp_upload_tickets.expire_at`, garbage collection only — no composite
+     index in this lot):
+     `firebase deploy --only firestore:indexes --project $PROJECT`, then the
+     read-only
+     `gcloud firestore fields ttls list --collection-group=mcp_upload_tickets --project=$PROJECT --format="value(ttlConfig.state)"`
+     until it reads `ACTIVE`.
+  2. **The designation of the active gabarits, against production, from a
+     checkout of THIS branch** (the script ships with the change it
+     prepares — `main` only has it after the push, one step too late):
+     `python -m scripts.designer_gabarits_actifs` (simulation), then
+     `--apply`, then the simulation again — every kind « déjà désigné », no
+     « [!] » line (the exact recipe, ADC and inline variables, never
+     `ENV=production`, is the T3 item above). The old code ignores the
+     field, so there is no outage window; deploying BEFORE it opens one —
+     every note d'honoraires and note print refuses until it runs. Re-run
+     the simulation right before step 5 (an edit of a note template in
+     between moves the old code's pick).
+  3. **Verify the canonical bucket's `staging/` 7-day lifecycle rule —
+     read-only** (§6.6's command, or `python -m scripts.provision
+     --project=$PROJECT`, row `cycle-de-vie-staging`). The ticket relies on
+     it to erase a file PUT after its hour closed; a missing rule costs
+     storage, never a wrongly filed document.
+  4. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
+     claude.ai** — BEFORE pushing. `MCP_WRITE_ENABLED` stays `"true"`: no
+     token exists to abuse, and re-consenting while it is `"false"` yields a
+     read-only grant without a word.
+  5. **Push the lot as ONE deploy** (Cloud Build runs the suite as the
+     gate). Pushing its commits one by one would put new tools under the old
+     consent text, and the T3 reader switch ahead of step 2's designation.
+  6. **Re-add the connector and READ the new screen before ticking**
+     « Autoriser les écritures »: a « Classer vos documents » block (a
+     category Claude sets stays « présumée » until you confirm it; never
+     « Projets » nor « Reçus du portail »), « Produire des projets Word » (a
+     filled gabarit ALWAYS in « Projets »), « Téléverser un fichier » (a
+     one-hour, write-only link that transits the conversation, and the
+     `storage.googleapis.com` prerequisite), a separate « Gérer vos
+     gabarits » block (a replaced file kept and restorable; the active note
+     templates are designated by you alone — though a new file for the
+     active one prints at once); and, in the « jamais » list, « modifier le
+     fichier d'un document existant », « remplacer le fichier d'un gabarit
+     sans en garder la version précédente », « obtenir un lien de lecture
+     ou de téléchargement d'un fichier — le seul lien … celui d'un dépôt »,
+     « confirmer une catégorie ou une analyse présumées » and « désigner le
+     gabarit actif ». Then check `tools/list`: **70** tools (28 read, 42
+     write), the ten new ones present, the write tools absent on a
+     read-only grant, and `MCP_WRITE_ENABLED=false` hiding them. The byte
+     budget is the deploy gate's `tests/test_mcp_descriptor_budget.py`
+     (about 204 KB of its 280 KB cap; `update_partie` the largest at
+     7.8 KB of 8) — a red build there means a description to TRIM, never a
+     cap to raise.
+  7. **claude.ai organisation settings → code execution → network egress:
+     allow `storage.googleapis.com`** (an organisation admin's step). It is
+     not per-bucket: any sandbox run could then PUT to ANY Cloud Storage
+     bucket. If that is unwanted, the optional hardening is a Cloudflare
+     Worker (for instance `depot.poirierlavoie.ca`) forwarding ONLY `PUT`s
+     to this bucket's resumable-session URIs — the tool contract does not
+     change, only the host `upload_url` names (and the allowlist then names
+     only that host). Without either, every PUT fails and the tickets
+     expire unused.
+  8. **Pilot the upload ticket on a SCRATCH dossier** — the T9 item's
+     recipe: a PDF whose size and MD5 the sandbox computes, `begin_upload`,
+     PUT, `finalize_upload` (the document appears, « présumée » if a
+     category was given); a deliberately WRONG `md5_base64` never files
+     anything (either GCS refuses the PUT and `finalize_upload` answers
+     « Aucun fichier n'a encore été reçu », or the PUT lands and is refused
+     « empreinte MD5 » with the staging object gone — note which); a ticket
+     left more than an hour answers « expiré »; a gabarit uploaded from a
+     dossier with `dossier_id` is refused on its parties' names until
+     accepted.
+  9. **Word checks** (Change Impact item 3 — the fill engine's outputs must
+     open WITHOUT repair; no test can see Word's repair prompt): open a
+     `fill_gabarit` result whose blocs sit in a NUMBERED paragraph (Word's
+     numbers, once each, renumbering when a paragraph is inserted), one with
+     a `markdown: true` bloc (no double numbering), a `create_document`
+     Markdown result (headings, a table), a `create_document` copy, a
+     template installed by `update_template` and one « Rétabli » on its
+     page, and a document generated from each of those two.
+
+  Then update BOTH copies of the claude.ai skill `pallas-athena` the same
+  day. What lot 2A makes false there (on top of the lot 1 list above):
+  « 49 outils : 27 en lecture, 22 en écriture » / « Aucun des 49 outils » /
+  « Les 49 outils » (now 70: 28 + 42); « la catégorie d'un document et son
+  niveau de protection sont dérivés, jamais choisis » (règle 2) and, in
+  `references/vocabulaires.md`, « Catégorie de document … en écriture elle
+  est dérivée » — a category `update_document`, `create_document` or
+  `begin_upload` sets is PRESUMED and only for a document WITHOUT an
+  analysis, an analysis replacing it; « Il n'existe aucun paramètre de
+  catégorie, à dessein » (le cliquet de protection) — true of
+  `record_document_analysis` only; the INSCRIPTION row « pour un document :
+  `record_document_analysis` » (a document's filing is `update_document`
+  and `move_documents`, a new one `fill_gabarit`, `create_document` or the
+  upload ticket, a gabarit `create_template` / `update_template` or the
+  ticket); in `references/outils.md`, the family table without FILES and
+  TEMPLATES, family B without `list_templates`, family C « aucune de ces
+  écritures n'est annulable » and family D without `update_document` /
+  `move_documents` / `manage_folder` / `update_template`; and — false since
+  2026-08-31, which this lot's text sweep caught — « `query` ne touche que
+  … nom affiché, nom de fichier, description, étiquettes » (SKILL.md
+  INVENTAIRE row and `references/outils.md` twice): the fields are the
+  analysis summary, `notes_internes` and `genere_depuis`, never a
+  « description ». Add: the upload ticket (compute size and MD5 in the
+  sandbox, one PUT, never show the link, egress to storage.googleapis.com,
+  `finalize_upload` answering a filed ticket again rather than a new
+  ticket); `fill_gabarit`'s discipline (read `list_templates` with
+  `template_id` and the `dossier_id` first, write only the blocs and manual
+  fields, plain paragraphs separated by a blank line with no numbering of
+  your own, `markdown: true` only for internal structure, never « {{ » or
+  « }} », always into « Projets »); `create_document`'s two sources and its
+  refusal when no note-print template is designated; the presumed category
+  and its « Confirmer » in the application; the leak scan of a template
+  taken from a dossier (`accept_residual` on the lawyer's word only); and
+  that the active note templates are the lawyer's to designate.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

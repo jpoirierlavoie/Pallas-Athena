@@ -334,7 +334,25 @@ Deliberately **not resolved and not prompted** — these survive as literal
 ### Through the connector (`fill_gabarit`, lot 2A, September 2026)
 
 A passthrough name is also what **Claude** may write, through the connector's
-`fill_gabarit` — a *bloc*. Everything else stays the application's:
+`fill_gabarit` — a *bloc*. Everything else stays the application's.
+
+**What a call can supply — and nothing else:**
+
+| Argument | What it is | Limits |
+|---|---|---|
+| `template_id` | The gabarit. **Kind « gabarit » only** — a « Note d'honoraires » or « Note (impression) » template is refused: they have their own flows (the invoice's « Note d'honoraires (Word) » in the application; the connector's `create_document` for a note print, §7) | — |
+| `dossier_id` | **Required.** Its data fills every auto field, and the document is saved as a NEW document in ITS « Projets » folder — **always there**, never another folder, never a download | — |
+| `client_id` / `adverse_id` | The « client » / « adverse » slots — a party **on that dossier**, needed when the dossier has several and the gabarit reads the slot (never guessed, never the first one by default) | — |
+| `destinataire_id` | The « destinataire » slot — any contact; no default | — |
+| `blocs` | `[{nom, contenu, markdown?}]` — the passthrough names only | ≤ 12 blocs, ≤ 20 000 characters each, 60 000 in all |
+| `champs_manuels` | `[{nom, valeur}]` — the §4 fields; an option list is enforced, and the « (aucune mention) » option prints nothing | ≤ 12, ≤ 2 000 characters each |
+
+**Read the template first.** `list_templates` with `template_id` (and the
+`dossier_id`, plus the slot ids) lists the gabarit's AUTO fields with a
+« resolved » flag — **never a value** — its MANUAL fields with their options,
+and its BLOCS (names exact). An auto field that does not resolve prints
+`[CHAMP MANQUANT : name]`: it is a gap in the dossier to report or fix there,
+not something to write around in a bloc.
 
 - **Only the passthrough names are Claude's.** The auto fields are resolved by
   the server from the dossier and its parties (a bloc named like one is
@@ -350,6 +368,21 @@ A passthrough name is also what **Claude** may write, through the connector's
   `{{note.contenu}}`: alone in its paragraph, in the body. Otherwise it prints
   as plain text, Markdown sigils visible, and the tool says so
   (`blocs_demoted`).
+
+**Word's numbers or computed numbers — pick by the path, never both:**
+
+| | Plain bloc (the default) | `markdown: true` |
+|---|---|---|
+| Who numbers | **Word** — the host paragraph's numbering applies to each paragraph the blank lines separate | **The converter** — a Markdown ordered list (`1.`, `2.`) is numbered as TEXT, computed at generation |
+| The host's numbering | Inherited, once per paragraph | Neutralized (« numbering removed » — never inherited, so nothing is numbered twice) |
+| After the lawyer edits in Word | The numbers renumber themselves, and continue the list the host paragraph belongs to | They are plain text: an inserted or removed item does NOT renumber, and each Markdown list is numbered on its own |
+| Use it for | Numbered allegations, conclusions — anything the lawyer will renumber | Internal structure: headings, bold, a bullet list, a table |
+
+Writing « 1. » yourself in a plain bloc placed in a numbered paragraph prints
+the number TWICE (Word's, then yours). One limit, shared with §7: numbering
+carried by the paragraph's Word STYLE alone (« Liste numérotée » / « List
+Number », with no number applied on the paragraph itself) is still inherited
+by a `markdown: true` bloc — give that paragraph an ordinary style.
 - **A bloc or a manual value can never contain `{{` or `}}`** — the engine
   would read `{{dossier.demandeur}}` inside it as a field and print the
   dossier's data there. It is refused, not escaped. A **Markdown** bloc (and
@@ -483,8 +516,8 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
 - The other `note.*` fields are ordinary scalars and work anywhere.
 - **The connector prints on this same template** (`create_document`, source
   « markdown », lot 2A): Claude's Markdown as `{{note.contenu}}`, its title as
-  `{{note.titre}}`, saved as a NEW document in « Projets » (the web print stays
-  a download). Only the template the lawyer designated **active** is used —
+  `{{note.titre}}`, saved as a NEW document in « Projets » unless Claude names
+  another folder of the dossier (the web print stays a download). Only the template the lawyer designated **active** is used —
   none designated, it refuses; and where `{{note.contenu}}` cannot take
   formatting it REFUSES rather than store a document full of Markdown sigils;
   where it is not in the BODY at all (only in a header or footer, or split by

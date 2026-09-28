@@ -64,6 +64,7 @@ If you spot any secret in this repository (current files or git history), please
 - **Rate limiting:** `flask-limiter` on `/auth/login`.
 - **Input handling:** All user input is sanitized via `security.sanitize()` and length-capped per field.
 - **Storage:** Firebase Storage URLs are signed with 15-minute expiry; raw bucket URLs are never exposed.
+- **MCP connector — no link to read a file:** no tool result carries a signed URL or a storage path, with ONE documented exception (lot 2A, plan D4): `begin_upload` returns a WRITE-only resumable-upload session for one neutral staging object. It cannot read or list anything, it is never stored (not in the ticket, not in the idempotency cache, not in logs), and the bytes are filed only within the ticket's hour and only if their size and MD5 are the ones declared at opening — any other upload is refused and discarded, so a leaked link cannot inject content. The link transits the claude.ai conversation, and using it requires the claude.ai organisation to allow code-execution egress to `storage.googleapis.com` (not per-bucket — see DEPLOYMENT.md §15 « Lot 2A » for the optional Cloudflare Worker that narrows it).
 
 ## Credential rotation
 
