@@ -1169,6 +1169,63 @@ def _template_summary() -> dict:
     }, optional=_PROVENANCE_KEYS)
 
 
+# ── Lot 2A (T7) — FILES: the document and folder edits ──────────────────
+
+_CATEGORY_SOURCE_ENUM = ("juriste", "analyse", "mcp")
+
+
+def _document_write_entity() -> dict:
+    """A document AS STORED after update_document — filing fields only.
+
+    Never ``notes_internes`` (the lawyer's text, which this tool cannot
+    write and has no business echoing into a 24-hour idempotency record),
+    never a filename, a path or a URL. ``etag`` is optional, the
+    :func:`_written_etag` rule for a replayed result."""
+    return _obj({
+        "id": _str("The document's id."),
+        "dossier_id": _str(),
+        "display_name": _str(),
+        "category": _str(),
+        "category_source": {
+            "type": "string", "enum": list(_CATEGORY_SOURCE_ENUM),
+            "description": (
+                "Who posed `category`: « mcp » = this connector, PRESUMED "
+                "until the lawyer confirms it; « analyse » = derived from a "
+                "recorded analysis; « juriste » = the lawyer (or a legacy "
+                "document)."),
+        },
+        "category_presumee": _bool(
+            "true = `category` is PRESUMED (category_source « analyse » or "
+            "« mcp »), not the lawyer's determination."),
+        "tags": _arr(_str()),
+        "document_date": _nstr("YYYY-MM-DD; null = not dated."),
+        "folder_id": _nstr("null = the dossier root."),
+        "etag": _str(
+            "The document's etag AS STORED after this call — the next "
+            "edit's expected_etag, without re-reading."),
+    }, optional=("etag",))
+
+
+def _folder_write_entity() -> dict:
+    """A folder AS STORED after manage_folder. ``etag`` optional, as above."""
+    return _obj({
+        "id": _str("The folder's id."),
+        "dossier_id": _str(),
+        "name": _str(),
+        "parent_folder_id": _nstr("null = at the dossier root."),
+        "path": _nstr(
+            "« Parent / Enfant ». null = the tree could not be re-read "
+            "after the write (the write stands; list_documents with "
+            "include_folders shows it)."),
+        "system_role": _str(
+            "« projets » | « portail » for a system folder (never "
+            "renamed or moved); \"\" otherwise."),
+        "etag": _str(
+            "The folder's etag AS STORED after this call — the next "
+            "rename/move's expected_etag."),
+    }, optional=("etag",))
+
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -2905,4 +2962,75 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "required": ["recorded", "document_id", "analyse", "warnings"],
     },
 
+    # ── Lot 2A (T7) — FILES ─────────────────────────────────────────────
+    "update_document": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « document »."),
+        "entity": _document_write_entity(),
+        "changed_fields": _arr(_str(), (
+            "The fields this call changed; [] = every value sent was "
+            "already stored, and nothing was written.")),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+    "move_documents": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "dossier_id": _str(),
+        "target": _obj({
+            "folder_id": _nstr("null = the dossier root."),
+            "path": _str("« Parent / Enfant »; \"\" = the dossier root."),
+            "system_role": _str(
+                "« projets » | « portail » when the target is a system "
+                "folder (filing INTO one is allowed); \"\" otherwise."),
+        }),
+        "requested": _int("Ids received — always len(results)."),
+        "moved": _int("Rows refiled by this call."),
+        "unchanged": _int(
+            "Rows already in the target: NOTHING was written for them, "
+            "which is what makes a repeat safe."),
+        "refused": _int("Rows refused, each with its `reason`."),
+        "results": _arr(
+            _obj({
+                "document_id": _str("The id, echoed."),
+                "outcome": {
+                    "type": "string",
+                    "enum": ["moved", "unchanged", "refused"],
+                    "description": "What happened to THIS row.",
+                },
+                "reason": _nstr(
+                    "French; null unless outcome is « refused »."),
+                "previous_folder_id": _nstr(
+                    "Where the document was filed before; null = the "
+                    "dossier root, or a refused row (never read)."),
+                "etag": _nstr(
+                    "The document's etag as stored after this call; null "
+                    "on a refused row."),
+            }, optional=("etag",)),
+            "One row per requested id, SAME ORDER as the request.",
+        ),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+    "manage_folder": _obj({
+        "action": {
+            "type": "string", "enum": ["create", "rename", "move"],
+            "description": "The action asked.",
+        },
+        "outcome": {
+            "type": "string",
+            "enum": ["created", "reused", "renamed", "moved", "unchanged"],
+            "description": (
+                "« reused » = create with if_exists « reuse » found the "
+                "name taken and returned that folder, untouched; "
+                "« unchanged » = the folder already had that name or "
+                "parent, nothing written."),
+        },
+        "entity_type": _str("Always « folder »."),
+        "entity": _folder_write_entity(),
+        "changed_fields": _arr(_str(), (
+            "The folder fields this call set or changed; [] when nothing "
+            "was written.")),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
 }

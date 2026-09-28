@@ -609,6 +609,10 @@ McpEvent = Literal[
     # helper cannot emit ERROR) — the ERROR with the traceback is the
     # `unexpected` line run_write logs beside it. Ids and counts only.
     "mcp_write_partial",
+    # Lot 2A (T7): move_documents refiled a batch. `mcp_write` fires with
+    # `entity_id: None` (a batch has no single entity), so the counts live
+    # here — the `mcp_phase_bulk` precedent. Never an id list, never a name.
+    "mcp_documents_moved",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 SettingsEvent = Literal[

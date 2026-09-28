@@ -338,10 +338,23 @@ def _calls_of(name: str) -> dict[str, int]:
 
 def test_the_category_confirmation_has_one_caller_the_web_route():
     """D15: only the lawyer confirms Claude's category — the connector can
-    never reach the function, directly or through a service."""
+    never reach the function, directly or through a service.
+
+    Rewritten deliberately in lot 2A (T7): the disclosure registry now
+    NAMES the function — as a string, in the « confirm » NEVER — precisely
+    to forbid it; tests/test_mcp_disclosure then sweeps every other
+    connector module's syntax tree for any reference. The registry is the
+    one module exempted here, and the promise must be there."""
+    from mcp import disclosure
+
     assert _calls_of("confirmer_categorie") == {"routes/documents.py": 1}
     for path in (_ATHENA / "mcp").rglob("*.py"):
+        rel = "mcp/" + path.relative_to(_ATHENA / "mcp").as_posix()
+        if rel in disclosure.SWEEP_EXCLUDED:
+            continue
         assert "confirmer_categorie" not in path.read_text(encoding="utf-8")
+    assert any("confirmer_categorie" in never.forbidden
+               for never in disclosure.NEVERS)
 
 
 def test_no_route_reads_the_dead_session_key():

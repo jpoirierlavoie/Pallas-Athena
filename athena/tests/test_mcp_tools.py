@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 61  # 28 lectures + 33 ecritures
+    assert len(tools.TOOLS) == 64  # 28 lectures + 36 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -323,6 +323,12 @@ _IDEMPOTENT_WRITES = frozenset({
     # create_hearing_series, a second call without the key being a second
     # series.
     "decide_rendez_vous",
+    # Lot 2A (T7). Values already stored write nothing (update_document), a
+    # row already filed there is « unchanged » (move_documents). NOT here:
+    # manage_folder — its create refuses a second identical call rather
+    # than answering it (the create_protocol rule), and one tool carries
+    # one hint.
+    "update_document", "move_documents",
 })
 
 
@@ -360,6 +366,10 @@ def test_write_tools_set_is_pinned():
         # une serie, decider d'une demande Bookings (le premier effet
         # sortant du connecteur).
         "update_hearing", "create_hearing_series", "decide_rendez_vous",
+        # Lot 2A, etape T7 — FICHIERS : classer un document (nom, date,
+        # etiquettes, dossier de classement, categorie presumee), en
+        # deplacer plusieurs, organiser les dossiers de classement.
+        "update_document", "move_documents", "manage_folder",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -387,6 +397,9 @@ def test_edit_tools_set_is_pinned():
         # …and the decision on a Bookings request, whose refusal is the
         # connector's one outbound effect.
         "decide_rendez_vous",
+        # Lot 2A (T7) — FILES: each REPLACES a stored value (a document's
+        # filing fields, a row's folder, a folder's name or parent).
+        "update_document", "move_documents", "manage_folder",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 

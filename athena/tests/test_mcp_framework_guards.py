@@ -483,6 +483,10 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "refusal cancels the client's Outlook meeting, which notifies him "
         "(lot 1b, L7; plan D10)"
     ),
+    "manage_folder": (
+        "its rename and move REPLACE a folder's stored name or parent — "
+        "every document filed below moves with it (lot 2A, T7)"
+    ),
 }
 
 

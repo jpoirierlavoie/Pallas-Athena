@@ -625,6 +625,17 @@ def _expected_etag_required_when(readers: tuple[str, ...], when: str) -> dict:
     return prop
 
 
+def _expected_etag_only_for(readers: tuple[str, ...], which: str) -> dict:
+    """``expected_etag`` for a tool whose OTHER calls have no version to
+    present (manage_folder's create): the text names the calls it applies
+    to first, and the handler refuses it on the others."""
+    prop = _expected_etag_prop(readers)
+    prop["expected_etag"]["description"] = (
+        f"{which} only. " + prop["expected_etag"]["description"]
+    )
+    return prop
+
+
 def _offset() -> dict:
     """Offset paging for the fully-materialized list tools (G07)."""
     return {
@@ -752,6 +763,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # meeting: the one write here whose effect leaves the building
     # (OUTBOUND_TOOLS below).
     "update_hearing", "decide_rendez_vous",
+    # Lot 2A (T7) — FILES. update_document REPLACES a document's filing
+    # fields (its name, date, tags, folder, a presumed category) — none kept;
+    # move_documents REPLACES each row's folder; manage_folder REPLACES a
+    # folder's name or parent (its create replaces nothing, but one tool
+    # carries one hint, and under-warning is the wrong side).
+    "update_document", "move_documents", "manage_folder",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -871,6 +888,24 @@ _TEMPLATE_CATEGORIES = ["procédure", "correspondance", "autre"]
 # How many folders list_documents(include_folders) returns — a dossier holds
 # tens; the cap only bounds a pathological tree (folders_truncated says so).
 FOLDER_TREE_MAX = 200
+# Lot 2A (T7) — the document and folder edits. Literals copied from the
+# models (an import would run firestore.Client() at load);
+# tests/test_mcp_file_writes.py pins each against its model constant.
+DOCUMENT_NAME_MAX_CHARS = 300      # models.document.DISPLAY_NAME_MAX
+DOCUMENT_TAG_MAX_CHARS = 200       # models.document.TAG_MAX
+# BELOW models.document.TAGS_MAX_ITEMS (30): the connector's list is the
+# lawyer's filing vocabulary, and twenty is already more than a screen shows.
+DOCUMENT_TAGS_MAX = 20
+DOCUMENT_MOVE_MAX = 50             # models.document.MOVE_BULK_MAX
+FOLDER_NAME_MAX_CHARS = 100        # models.folder.MAX_NAME_LENGTH
+# The categories an EDIT may set: the vocabulary minus the legacy
+# « procès_verbal », still readable and filterable but no longer offered at
+# entry (models.document.CATEGORY_CHOICES).
+_DOCUMENT_CATEGORY_CHOICES = [c for c in _DOCUMENT_CATEGORIES if c != "procès_verbal"]
+# A document's etag is on its list_documents row; a folder's on the
+# list_documents `folders` tree (include_folders).
+_DOCUMENT_ETAG_READERS = ("list_documents",)
+_FOLDER_ETAG_READERS = ("list_documents",)
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
     "expert", "huissier", "notaire", "autre",
@@ -4692,6 +4727,192 @@ TOOLS: dict[str, dict] = {
             "overwrite cannot under-protect."
         ),
         "handler": "record_document_analysis",
+    },
+    # ── Lot 2A (T7) — FILES: the document and folder edits ─────────────
+    "update_document": {
+        "title": "Classer un document",
+        "annotations": {
+            # Values already stored write nothing: a repeat is a no-op.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — REPLACES the filing fields you name on one document (an "
+            "omitted field is untouched): display_name, document_date, tags, "
+            "folder_id (refiles it), category. Never its file, and never "
+            "notes_internes — the lawyer's own text. A category you set is "
+            "stored PRESUMED until the lawyer confirms it in the "
+            "application; on a document that carries an analysis the "
+            "category derives from it and is refused here (use "
+            "record_document_analysis). Values already stored write nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": _id(
+                    "The document (UUIDv4), from list_documents."
+                ),
+                "display_name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": DOCUMENT_NAME_MAX_CHARS,
+                    "description": (
+                        "New display name, in French. Text between angle "
+                        "brackets is refused, never stripped."
+                    ),
+                },
+                "document_date": _date(
+                    "The document's OWN date, YYYY-MM-DD; \"\" clears it. A "
+                    "malformed date is refused, never read as a clearing."
+                ),
+                "tags": {
+                    "type": "array",
+                    "maxItems": DOCUMENT_TAGS_MAX,
+                    "items": {
+                        "type": "string", "minLength": 1,
+                        "maxLength": DOCUMENT_TAG_MAX_CHARS,
+                        "description": "One tag, without a comma.",
+                    },
+                    "description": (
+                        "The COMPLETE new tag list — it replaces the stored "
+                        "one; [] clears it. No comma in a tag (the "
+                        "application splits tags on commas), none twice."
+                    ),
+                },
+                "folder_id": _id(
+                    "Refile into this folder of the SAME dossier (id from "
+                    "list_documents with include_folders), or \"\" for the "
+                    "dossier root."
+                ),
+                "category": {
+                    "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
+                    "description": (
+                        "The category, stored PRESUMED (category_source "
+                        "« mcp »). Refused on an analysed document."
+                    ),
+                },
+                **_expected_etag_prop(_DOCUMENT_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["document_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_document",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _DOCUMENT_ETAG_READERS,
+    },
+    "move_documents": {
+        "title": "Déplacer des documents",
+        "annotations": {
+            # A second identical call finds every row already filed there:
+            # « unchanged », nothing written.
+            "idempotentHint": True,
+        },
+        "description": (
+            f"WRITE — refile up to {DOCUMENT_MOVE_MAX} documents of ONE "
+            "dossier into one folder, or its root, in a single atomic write. "
+            "`results` answers each id IN REQUEST ORDER: moved, unchanged "
+            "(already there — nothing written) or refused with its reason (an "
+            "unknown id, another dossier's document); a refused row blocks "
+            "none of the others. An unknown target folder, an id named twice "
+            "or an unreadable store refuses the whole call — nothing moves."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier the documents belong to (UUIDv4)."
+                ),
+                "document_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": DOCUMENT_MOVE_MAX,
+                    "items": {
+                        "type": "string", "minLength": 1, "maxLength": 64,
+                        "description": "A document id, from list_documents.",
+                    },
+                    "description": (
+                        "The documents to refile, each once. The report "
+                        "follows this order."
+                    ),
+                },
+                "folder_id": _id(
+                    "The target folder of this dossier (list_documents with "
+                    "include_folders), or \"\" for the dossier root."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "document_ids", "folder_id"],
+            "additionalProperties": False,
+        },
+        "handler": "move_documents",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "A batch carries no per-row token; ONE transaction reads every "
+            "row and the target folder, so a write landing meanwhile re-runs "
+            "it on fresh data — and it writes folder_id alone."
+        ),
+    },
+    "manage_folder": {
+        "title": "Organiser les dossiers de classement",
+        "description": (
+            "WRITE — one folder of a dossier's filing tree. action \"create\": "
+            "name, and parent_folder_id (\"\" or omitted = dossier root); a "
+            "name already taken there is refused — or, with if_exists "
+            "\"reuse\", that folder is returned. \"rename\": folder_id + name. "
+            "\"move\": folder_id + parent_folder_id (\"\" = root); never into "
+            "itself or a subfolder, 5 levels deep at most. The system folders "
+            "« Projets » and « Reçus du portail » are the application's: never "
+            "renamed, moved or recreated here, and their names are reserved "
+            "at the root. A name is refused, never altered (no « / », "
+            "« \\ », angle brackets or control character). Nothing is ever "
+            "deleted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string", "enum": ["create", "rename", "move"],
+                    "description": "What to do.",
+                },
+                "dossier_id": _id(
+                    "The dossier whose filing tree changes (UUIDv4)."
+                ),
+                "folder_id": _id(
+                    "rename / move: the folder, from list_documents with "
+                    "include_folders. Refused with create."
+                ),
+                "name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": FOLDER_NAME_MAX_CHARS,
+                    "description": "create / rename: the name, in French.",
+                },
+                "parent_folder_id": _id(
+                    "create: where (\"\" or omitted = the dossier root). "
+                    "move: the new parent, REQUIRED (\"\" = the root)."
+                ),
+                "if_exists": {
+                    "type": "string", "enum": ["refuse", "reuse"],
+                    "description": (
+                        "create only: when that name is already taken there, "
+                        "\"refuse\" (default) or \"reuse\" — the existing "
+                        "folder is returned, untouched."
+                    ),
+                },
+                **_expected_etag_only_for(
+                    _FOLDER_ETAG_READERS, "rename / move"),
+                **_write_protocol_props(),
+            },
+            "required": ["action", "dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "manage_folder",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _FOLDER_ETAG_READERS,
     },
 }
 

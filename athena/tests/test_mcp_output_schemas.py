@@ -2267,3 +2267,102 @@ def test_list_hearings_conforms_in_its_two_selection_modes(monkeypatch):
     serie = handlers.list_hearings({"serie_id": "s1"})
     _conforms("list_hearings", serie)
     assert serie["mode"] == "serie" and serie["window"]["from"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 2A (T7) — FILES: update_document, move_documents, manage_folder,
+# every outcome run through the REAL handler on the shared fake store
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _files_world(monkeypatch):
+    import sys
+
+    from models import document as document_model
+    from models import folder as folder_model
+    from tests._fake_firestore import install
+
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.") or n in ("dav.sync",
+                                                    "mcp.write_support"))
+               and getattr(m, "db", None) is not None]
+    fake = install(monkeypatch, *modules)
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001",
+                              "title": "T", "status": "actif"})
+    base = {"dossier_id": "d1", "order": 0, "created_at": DT,
+            "updated_at": DT, "system_role": ""}
+    fake.seed("folders/f1", {**base, "id": "f1", "name": "Pièces",
+                             "parent_folder_id": None, "etag": "e-f1"})
+    fake.seed("folders/f2", {**base, "id": "f2", "name": "Expertises",
+                             "parent_folder_id": "f1", "etag": "e-f2"})
+    projets = folder_model.system_folder_id("d1", "projets")
+    fake.seed(f"folders/{projets}", {**base, "id": projets, "name": "Projets",
+                                     "parent_folder_id": None,
+                                     "system_role": "projets", "etag": "e-p"})
+    for did, folder in (("a", None), ("b", "f1")):
+        fake.seed(f"documents/{did}", {
+            **document_model._default_doc(), "id": did, "dossier_id": "d1",
+            "display_name": f"Pièce {did}", "category": "autre",
+            "folder_id": folder, "created_at": DT, "updated_at": DT,
+            "etag": f"e-{did}"})
+    return fake, projets
+
+
+def test_update_document_conforms_on_write_presumed_category_and_noop(monkeypatch):
+    _files_world(monkeypatch)
+    written = handlers.update_document({
+        "document_id": "a", "display_name": "Rapport", "tags": ["x"],
+        "document_date": "2026-02-10", "folder_id": "f2",
+        "expected_etag": "e-a"})
+    _conforms("update_document", written)
+    assert written["changed_fields"] == [
+        "display_name", "document_date", "tags", "folder_id"]
+
+    presumed = handlers.update_document({"document_id": "a",
+                                         "category": "preuve"})
+    _conforms("update_document", presumed)
+    assert presumed["entity"]["category_presumee"] is True
+
+    noop = handlers.update_document({"document_id": "a",
+                                     "display_name": "Rapport"})
+    _conforms("update_document", noop)
+    assert noop["changed_fields"] == []
+
+
+def test_move_documents_conforms_on_every_row_outcome(monkeypatch):
+    _fake, projets = _files_world(monkeypatch)
+    mixed = handlers.move_documents({
+        "dossier_id": "d1", "document_ids": ["a", "b", "inconnu"],
+        "folder_id": "f1"})
+    _conforms("move_documents", mixed)
+    assert {r["outcome"] for r in mixed["results"]} == {
+        "moved", "unchanged", "refused"}
+    to_system = handlers.move_documents({
+        "dossier_id": "d1", "document_ids": ["a"], "folder_id": projets})
+    _conforms("move_documents", to_system)
+    to_root = handlers.move_documents({
+        "dossier_id": "d1", "document_ids": ["a", "b"], "folder_id": ""})
+    _conforms("move_documents", to_root)
+    assert to_root["target"]["folder_id"] is None
+
+
+def test_manage_folder_conforms_on_every_outcome(monkeypatch):
+    _files_world(monkeypatch)
+    created = handlers.manage_folder({"action": "create", "dossier_id": "d1",
+                                      "name": "Correspondance"})
+    _conforms("manage_folder", created)
+    reused = handlers.manage_folder({"action": "create", "dossier_id": "d1",
+                                     "name": "Pièces", "if_exists": "reuse"})
+    _conforms("manage_folder", reused)
+    renamed = handlers.manage_folder({"action": "rename", "dossier_id": "d1",
+                                      "folder_id": "f2", "name": "Experts"})
+    _conforms("manage_folder", renamed)
+    moved = handlers.manage_folder({"action": "move", "dossier_id": "d1",
+                                    "folder_id": "f2", "parent_folder_id": ""})
+    _conforms("manage_folder", moved)
+    unchanged = handlers.manage_folder({"action": "move", "dossier_id": "d1",
+                                        "folder_id": "f2",
+                                        "parent_folder_id": ""})
+    _conforms("manage_folder", unchanged)
+    assert [r["outcome"] for r in (created, reused, renamed, moved, unchanged)] == [
+        "created", "reused", "renamed", "moved", "unchanged"]

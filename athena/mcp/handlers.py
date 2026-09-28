@@ -16,9 +16,12 @@ are ``notes`` (with their write-once ``revisions`` subcollection, lot 1b),
 ``tasks``, ``hearings``, ``protocols`` (with their ``steps`` subcollection,
 lot 1b), ``timeentries``, ``expenses``, ``parties``, ``invoices`` (with its
 ``lineitems`` subcollection, and the ``invoiced`` flips import_invoice
-causes on the two billing collections), ``documents`` (its ``analyse``
-cache, the DERIVED ``category`` and an append-only ``analyses`` journal
-entry — never the file, its name or its folder) and ``dossiers``. ONE path
+causes on the two billing collections), ``documents`` (since lot 2A T7
+its filing fields — display name, date, tags, folder and a PRESUMED
+category set outside any analysis —, plus its ``analyse`` cache, the
+DERIVED ``category`` and an append-only ``analyses`` journal entry; never
+the file, never ``notes_internes``), ``folders`` (lot 2A T7: created,
+renamed, moved — never a system folder) and ``dossiers``. ONE path
 reaches outside Firestore: ``decide_rendez_vous``'s refusal, through
 ``services/rendez_vous``, cancels the Outlook meeting of a pending Bookings
 request (Graph ``/cancel``, with the service's fixed text) — the connector's
@@ -131,6 +134,8 @@ from mcp.tools import (
     CONCURRENCY_OPTIONAL,
     CONTENT_MAX_CHARS,
     CONCURRENCY_REQUIRED,
+    DOCUMENT_MOVE_MAX,
+    DOCUMENT_TAGS_MAX,
     DOCUMENT_TEXT_MAX_CHARS,
     FOLDER_TREE_MAX,
     PHASE_BULK_MAX,
@@ -139,6 +144,7 @@ from mcp.tools import (
     date_str,
     format_cents,
     iso_mtl,
+    loggable_id,
 )
 
 # Bounded superset size for Python-side post-filtering (§10.1): never more
@@ -10081,3 +10087,536 @@ def _analyse_warnings(champ: dict, existing: dict) -> list[str]:
         "geste pouvant la lever."
     )
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 2A (T7) — FILES: update_document, move_documents, manage_folder
+# ══════════════════════════════════════════════════════════════════════
+#
+# Documents and folders are NOT DAV-exposed: no CTag anywhere here, and the
+# payloads declare no ctag key (a sync that does not exist is never claimed).
+# The models hold the rules — every write below is ONE transaction that
+# reads what it writes (models/document.update_metadata, move_documents_bulk,
+# models/folder.create_folder/rename_folder/move_folder) — and the handlers
+# repeat the guards a caller can trip, in French, naming the field, never
+# quoting what was sent.
+
+_DOCUMENT_SUBJECT = "Ce document a été modifié"
+_FOLDER_SUBJECT = "Ce dossier de classement a été modifié"
+_DOCUMENT_EDIT_KEYS = (
+    "display_name", "document_date", "tags", "folder_id", "category",
+)
+_DOCUMENT_NOT_FOUND = (
+    "Document introuvable. Prenez son identifiant dans list_documents — "
+    "rien n'a été modifié."
+)
+_DOCUMENT_ANALYSED_CATEGORY = (
+    "`category` refusé : ce document porte une analyse, et sa catégorie en "
+    "DÉRIVE. Pour la changer, enregistrez une nouvelle analyse "
+    "(record_document_analysis) — ou laissez le juriste la corriger dans "
+    "l'application. Rien n'a été modifié."
+)
+_DOCUMENT_FOLDER_UNKNOWN = (
+    "`folder_id` refusé : ce dossier de classement n'existe pas dans le "
+    "dossier du document. Prenez son identifiant dans list_documents "
+    "(include_folders) ; \"\" désigne la racine. Rien n'a été modifié."
+)
+
+
+def _read_document(document_id: str) -> dict:
+    """The document an edit is about — « introuvable » only when the store
+    SAID so (``get_document`` answers ``None`` on a read error too), and a
+    slashed id never reaches the store (``is_addressable_id``: it would name
+    a record deeper in the tree)."""
+    if not document_model.is_addressable_id(document_id):
+        raise ToolArgumentError(_DOCUMENT_NOT_FOUND)
+    try:
+        doc = document_model.get_document_strict(document_id)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture du document impossible — réessayez. Rien n'a été "
+            "modifié."
+        )
+    if doc is None:
+        raise ToolArgumentError(_DOCUMENT_NOT_FOUND)
+    return doc
+
+
+def _clean_document_tags(raw: Any) -> list[str]:
+    """The tag list as it will be STORED — or a refusal naming the rule.
+
+    Refused rather than repaired: a comma (the application's form splits
+    tags on commas, so the next web save would cut the tag in two), an
+    empty tag, a tag named twice, over-length, text the sanitizer would
+    strip. Edge spaces are trimmed — exactly what the form stores."""
+    if not isinstance(raw, list) or not all(isinstance(t, str) for t in raw):
+        raise ToolArgumentError("`tags` doit être une liste de textes.")
+    if len(raw) > DOCUMENT_TAGS_MAX:
+        raise ToolArgumentError(
+            f"`tags` : {DOCUMENT_TAGS_MAX} étiquettes au plus ({len(raw)} "
+            "reçues)."
+        )
+    tags: list[str] = []
+    for position, item in enumerate(raw, start=1):
+        tag = item.strip()
+        where = f"`tags` (étiquette n° {position})"
+        if not tag:
+            raise ToolArgumentError(
+                f"{where} : une étiquette vide n'est pas acceptée.")
+        if "," in tag:
+            raise ToolArgumentError(
+                f"{where} : une virgule n'est pas acceptée — l'application "
+                "sépare les étiquettes sur les virgules et la couperait en "
+                "deux au prochain enregistrement. Envoyez deux étiquettes."
+            )
+        if len(tag) > document_model.TAG_MAX:
+            raise ToolArgumentError(
+                f"{where} : {document_model.TAG_MAX} caractères au plus.")
+        if not _survives_storage(tag, document_model.TAG_MAX):
+            raise ToolArgumentError(
+                f"{where} : du texte entre chevrons serait supprimé à "
+                f"l'enregistrement. {_CHEVRON_ADVICE}"
+            )
+        if tag in tags:
+            raise ToolArgumentError(
+                f"{where} : cette étiquette figure déjà dans la liste.")
+        tags.append(tag)
+    return tags
+
+
+def _document_entity(doc: dict) -> dict:
+    source = _category_source(doc)
+    return {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id") or "",
+        "display_name": doc.get("display_name", "") or "",
+        "category": doc.get("category", "") or "",
+        "category_source": source,
+        "category_presumee": source in ("analyse", "mcp"),
+        "tags": list(doc.get("tags") or []),
+        "document_date": date_str(_as_utc(doc.get("document_date"))),
+        "folder_id": doc.get("folder_id") or None,
+        # The document AS STORED after this call — the next edit's etag.
+        "etag": concurrency.etag_of(doc),
+    }
+
+
+def _document_edit_payload(
+    doc: dict, *, changed: list[str], warnings: list[str],
+) -> dict:
+    if not changed:
+        warnings = warnings + [
+            "Toutes les valeurs envoyées étaient déjà enregistrées : rien "
+            "n'a été modifié."
+        ]
+    return {
+        "updated": True,
+        "entity_type": "document",
+        "entity": _document_entity(doc),
+        "changed_fields": changed,
+        "warnings": warnings,
+    }
+
+
+# ── update_document (WRITE) ─────────────────────────────────────────────
+
+def update_document(args: dict) -> dict:
+    return run_write(
+        "update_document", args, lambda: _update_document_impl(args))
+
+
+def _update_document_impl(args: dict) -> dict:
+    document_id = (args.get("document_id") or "").strip()
+    if not document_id:
+        raise ToolArgumentError("`document_id` est requis.")
+    existing = _read_document(document_id)
+    if not any(key in args for key in _DOCUMENT_EDIT_KEYS):
+        raise ToolArgumentError(
+            "Aucun champ à modifier : nommez au moins display_name, "
+            "document_date, tags, folder_id ou category. Les notes internes "
+            "— le texte du juriste — ne s'écrivent pas ici."
+        )
+
+    # EXPLICIT whitelist, presence-based: an absent key is left alone, a
+    # present one replaces. Never notes_internes (the lawyer's field), never
+    # a provenance key — the schema refuses them, and the payload is built
+    # key by key so no argument can reach the model unnamed.
+    data: dict[str, Any] = {}
+    if "display_name" in args:
+        name = _clean_entity_text(
+            args.get("display_name") or "", "display_name",
+            limit=document_model.DISPLAY_NAME_MAX)
+        if not name:
+            raise ToolArgumentError("« display_name » ne peut pas être vide.")
+        data["display_name"] = name
+    if "document_date" in args:
+        # "" clears; anything else must be a real YYYY-MM-DD — a typo is
+        # refused, never read as « clear the date ».
+        data["document_date"] = _write_date(
+            args, "document_date", required=False)
+    if "tags" in args:
+        data["tags"] = _clean_document_tags(args.get("tags"))
+    if "category" in args:
+        category = args.get("category")
+        if category not in document_model.CATEGORY_CHOICES:
+            raise ToolArgumentError(
+                "`category` : valeur hors vocabulaire. Valeurs admises : "
+                + ", ".join(document_model.CATEGORY_CHOICES)
+                + ". Rien n'a été modifié."
+            )
+        data["category"] = category
+    moving = "folder_id" in args
+    target = ((args.get("folder_id") or "").strip() or None) if moving else None
+    if target is not None and not document_model.is_addressable_id(target):
+        raise ToolArgumentError(_DOCUMENT_FOLDER_UNKNOWN)
+
+    # What would CHANGE — computed by the model's own comparison, so a value
+    # already stored is not a change here either (a date posted back as
+    # YYYY-MM-DD, a category equal to the read-migrated default).
+    diff = set(document_model._changed_metadata(existing, data))
+    if moving and (existing.get("folder_id") or None) != target:
+        diff.add("folder_id")
+    changed = [k for k in _DOCUMENT_EDIT_KEYS if k in diff]
+    if not changed:
+        return _document_edit_payload(existing, changed=[], warnings=[])
+    if "category" in changed and document_model.has_analysis(existing):
+        raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
+
+    expected = _expected_etag(
+        args, existing, tool="update_document", subject=_DOCUMENT_SUBJECT)
+    kwargs: dict[str, Any] = {"expected_etag": expected, "source": "mcp"}
+    if moving:
+        kwargs["folder_id"] = target
+    updated, errors, _wrote = document_model.update_metadata(
+        document_id, data, **kwargs)
+    _raise_if_stale(
+        errors, tool="update_document", subject=_DOCUMENT_SUBJECT,
+        reread=lambda: document_model.get_document(document_id),
+    )
+    if errors:
+        # The model's words, rephrased where the connector has a better
+        # remedy to name (an analysis landed meanwhile; the folder vanished).
+        if document_model.MCP_CATEGORY_ON_ANALYSED in errors:
+            raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
+        if document_model.TARGET_FOLDER_NOT_FOUND in errors:
+            raise ToolArgumentError(_DOCUMENT_FOLDER_UNKNOWN)
+        raise ToolArgumentError("; ".join(errors))
+
+    warnings: list[str] = []
+    if "category" in changed and _category_source(existing) == "juriste":
+        warnings.append(
+            f"La catégorie « {existing.get('category') or ''} » était "
+            "enregistrée comme un choix du juriste ; la nouvelle reste "
+            "PRÉSUMÉE jusqu'à ce qu'il la confirme dans l'application."
+        )
+    return _document_edit_payload(updated, changed=changed, warnings=warnings)
+
+
+# ── move_documents (WRITE) ──────────────────────────────────────────────
+
+def move_documents(args: dict) -> dict:
+    return run_write(
+        "move_documents", args, lambda: _move_documents_impl(args))
+
+
+def _move_documents_impl(args: dict) -> dict:
+    dossier_id, _dossier = _resolve_write_dossier(args, required=True)
+    raw = args.get("document_ids")
+    if not isinstance(raw, list) or not raw:
+        raise ToolArgumentError(
+            "`document_ids` doit nommer au moins un document.")
+    if len(raw) > DOCUMENT_MOVE_MAX:
+        raise ToolArgumentError(
+            f"`document_ids` : {DOCUMENT_MOVE_MAX} documents au plus par "
+            f"appel ({len(raw)} reçus). Découpez le déplacement."
+        )
+    ids: list[str] = []
+    seen: dict[str, int] = {}
+    for position, item in enumerate(raw, start=1):
+        doc_id = str(item or "").strip()
+        if not doc_id:
+            raise ToolArgumentError(
+                f"`document_ids` (position {position}) : identifiant vide.")
+        if doc_id in seen:
+            # The WHOLE call: one row named twice has no single outcome to
+            # report. Positions, never the id — it is the caller's string.
+            raise ToolArgumentError(
+                f"`document_ids` nomme deux fois le même document (positions "
+                f"{seen[doc_id]} et {position}). Un déplacement nomme chaque "
+                "document une seule fois : retirez le doublon et renvoyez la "
+                "liste. Rien n'a été déplacé."
+            )
+        seen[doc_id] = position
+        ids.append(doc_id)
+
+    target = (args.get("folder_id") or "").strip() or None
+    path, role = "", ""
+    if target is not None:
+        # Read the tree FIRST — fail closed — to name the target and its
+        # role; the model re-checks the folder inside its transaction.
+        try:
+            folders = folder_model.list_dossier_folders(dossier_id)
+        except Exception:
+            raise ToolArgumentError(
+                FOLDER_READ_ERROR + " Rien n'a été déplacé.")
+        folder = next((f for f in folders if f.get("id") == target), None)
+        if folder is None:
+            raise ToolArgumentError(
+                "`folder_id` : ce dossier de classement n'existe pas dans ce "
+                "dossier. Prenez son identifiant dans list_documents "
+                "(include_folders) ; \"\" désigne la racine. Rien n'a été "
+                "déplacé."
+            )
+        path = _folder_paths(folders).get(target, folder.get("name") or "")
+        role = folder_model.system_roles(folders).get(target, "")
+
+    rows, errors = document_model.move_documents_bulk(dossier_id, ids, target)
+    if errors:
+        if errors == [document_model.TARGET_FOLDER_NOT_FOUND]:
+            raise ToolArgumentError(
+                "`folder_id` : ce dossier de classement vient de disparaître. "
+                "Relisez l'arborescence (list_documents, include_folders). "
+                "Rien n'a été déplacé."
+            )
+        raise ToolArgumentError(" ".join(errors))
+
+    results = []
+    counts = {"moved": 0, "unchanged": 0, "refused": 0}
+    for row in rows:
+        counts[row["outcome"]] += 1
+        doc = row.get("doc")
+        results.append({
+            "document_id": row["id"],
+            "outcome": row["outcome"],
+            "reason": row["reason"],
+            "previous_folder_id": row.get("previous_folder_id"),
+            "etag": concurrency.etag_of(doc) if doc is not None else None,
+        })
+    warnings: list[str] = []
+    if counts["refused"]:
+        warnings.append(
+            f"{counts['refused']} document(s) refusé(s) — voir `reason`. "
+            "Corrigez la liste et renvoyez ces documents avec une NOUVELLE "
+            "idempotency_key : rejouer la même clé rendrait ce rapport tel "
+            "quel."
+        )
+    # The audit line of a batch: `mcp_write` fires with entity_id: None.
+    # COUNTS ONLY, and after the commit it must never raise — the endpoint's
+    # last-resort `except` would report a committed move as a failure.
+    try:
+        from utils.logging_setup import log_mcp_event
+
+        shaped = loggable_id(dossier_id)
+        log_mcp_event(
+            "mcp_documents_moved", "success",
+            requested=len(rows), moved=counts["moved"],
+            unchanged=counts["unchanged"], refused=counts["refused"],
+            **({"dossier_id": shaped} if shaped else {}),
+        )
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp_documents_moved logging failed")
+    return {
+        "updated": True,
+        "dossier_id": dossier_id,
+        "target": {"folder_id": target, "path": path, "system_role": role},
+        "requested": len(rows),
+        "moved": counts["moved"],
+        "unchanged": counts["unchanged"],
+        "refused": counts["refused"],
+        "results": results,
+        "warnings": warnings,
+    }
+
+
+# ── manage_folder (WRITE) ───────────────────────────────────────────────
+
+_FOLDER_ACTIONS = ("create", "rename", "move")
+# The arguments each action takes — any other one is REFUSED, never ignored:
+# a parent silently dropped from a rename (or a name from a move) would
+# answer a question the caller did not ask.
+_FOLDER_ACTION_ARGS = {
+    "create": ("name", "parent_folder_id", "if_exists"),
+    "rename": ("folder_id", "name", "expected_etag"),
+    "move": ("folder_id", "parent_folder_id", "expected_etag"),
+}
+_FOLDER_REQUIRED_ARGS = {
+    "create": ("name",),
+    "rename": ("folder_id", "name"),
+    "move": ("folder_id", "parent_folder_id"),
+}
+_FOLDER_ARGS = ("folder_id", "name", "parent_folder_id", "if_exists",
+                "expected_etag")
+_FOLDER_NOT_FOUND = (
+    "Dossier de classement introuvable dans ce dossier. Prenez son "
+    "identifiant dans list_documents (include_folders) — rien n'a été "
+    "modifié."
+)
+
+
+def _folder_entity(folder: dict, path: Optional[str]) -> dict:
+    return {
+        "id": folder.get("id", ""),
+        "dossier_id": folder.get("dossier_id", "") or "",
+        "name": folder.get("name", "") or "",
+        "parent_folder_id": folder.get("parent_folder_id") or None,
+        "path": path,
+        "system_role": str(folder.get("system_role") or ""),
+        # The folder AS STORED after this call — the next edit's etag.
+        "etag": concurrency.etag_of(folder),
+    }
+
+
+def _folder_path(folders: list[dict], folder: dict) -> Optional[str]:
+    """*folder*'s « Parent / Enfant » over *folders*, with *folder* as it
+    stands NOW substituted in (a rename or a move just written) — pure.
+    ``None`` for a folder no root reaches (a parent cycle)."""
+    pool = [folder if f.get("id") == folder.get("id") else f for f in folders]
+    if not any(f.get("id") == folder.get("id") for f in pool):
+        pool.append(folder)
+    return _folder_paths(pool).get(folder.get("id") or "")
+
+
+def _folder_payload(
+    action: str, outcome: str, folder: dict, path: Optional[str], *,
+    changed: list[str], warnings: Optional[list[str]] = None,
+) -> dict:
+    return {
+        "action": action,
+        "outcome": outcome,
+        "entity_type": "folder",
+        "entity": _folder_entity(folder, path),
+        "changed_fields": changed,
+        "warnings": list(warnings or []),
+    }
+
+
+def _read_tree(dossier_id: str) -> list[dict]:
+    """The dossier's folders, fail CLOSED: an outage is never « no folder »."""
+    try:
+        return folder_model.list_dossier_folders(dossier_id)
+    except Exception:
+        raise ToolArgumentError(FOLDER_READ_ERROR + " Rien n'a été modifié.")
+
+
+def manage_folder(args: dict) -> dict:
+    return run_write("manage_folder", args, lambda: _manage_folder_impl(args))
+
+
+def _manage_folder_impl(args: dict) -> dict:
+    action = args.get("action")
+    if action not in _FOLDER_ACTIONS:
+        raise ToolArgumentError("`action` doit valoir create, rename ou move.")
+    stray = [k for k in _FOLDER_ARGS
+             if k in args and k not in _FOLDER_ACTION_ARGS[action]]
+    if stray:
+        raise ToolArgumentError(
+            f"Avec action « {action} », "
+            + ", ".join(f"`{k}`" for k in stray)
+            + " ne s'applique pas : retirez-le. Rien n'a été modifié."
+        )
+    missing = [k for k in _FOLDER_REQUIRED_ARGS[action] if k not in args]
+    if missing:
+        raise ToolArgumentError(
+            f"Avec action « {action} », "
+            + ", ".join(f"`{k}`" for k in missing) + " est requis."
+        )
+    dossier_id, _dossier = _resolve_write_dossier(args, required=True)
+    if action == "create":
+        return _create_folder(args, dossier_id)
+    return _edit_folder(args, dossier_id, action)
+
+
+def _create_folder(args: dict, dossier_id: str) -> dict:
+    name = args.get("name")
+    parent = (args.get("parent_folder_id") or "").strip() or None
+    reuse = args.get("if_exists") == "reuse"
+    folder, errors = folder_model.create_folder(dossier_id, name, parent)
+    if errors == [folder_model.DUPLICATE_HERE]:
+        if not reuse:
+            raise ToolArgumentError(
+                folder_model.DUPLICATE_HERE + " Pour le reprendre tel quel, "
+                "renvoyez l'appel avec if_exists « reuse ». Rien n'a été créé."
+            )
+        folders = _read_tree(dossier_id)
+        found = folder_model.find_folder_named(folders, parent, name)
+        if found is None:
+            raise ToolArgumentError(
+                "Le dossier de ce nom vient de changer. Relisez "
+                "l'arborescence (list_documents, include_folders), puis "
+                "réessayez. Rien n'a été créé."
+            )
+        return _folder_payload(
+            "create", "reused", found, _folder_path(folders, found),
+            changed=[],
+        )
+    if errors:
+        raise ToolArgumentError(" ".join(errors) + " Rien n'a été créé.")
+    # The path, best effort: the folder is COMMITTED — a failed re-read must
+    # never turn it into a refusal (the endpoint would report a created
+    # folder as a failure, and a retry would then refuse the duplicate).
+    try:
+        path = _folder_path(
+            folder_model.list_dossier_folders(dossier_id), folder)
+    except Exception:
+        path = None
+    return _folder_payload(
+        "create", "created", folder, path,
+        changed=["name", "parent_folder_id"],
+    )
+
+
+def _edit_folder(args: dict, dossier_id: str, action: str) -> dict:
+    folder_id = (args.get("folder_id") or "").strip()
+    folders = _read_tree(dossier_id)
+    existing = next((f for f in folders if f.get("id") == folder_id), None)
+    if existing is None:
+        raise ToolArgumentError(_FOLDER_NOT_FOUND)
+    if folder_model.is_system_folder(existing, folders):
+        # The model's rule, repeated so the refusal comes before any etag
+        # talk: a system folder is the application's, whatever the version.
+        raise ToolArgumentError(
+            folder_model.SYSTEM_FOLDER_LOCKED.format(
+                name=existing.get("name") or "")
+            + " Rien n'a été modifié."
+        )
+    if action == "rename":
+        name = (args.get("name") or "").strip()
+        if (existing.get("name") or "") == name:
+            return _folder_payload(
+                "rename", "unchanged", existing,
+                _folder_path(folders, existing), changed=[],
+                warnings=["Ce dossier porte déjà ce nom : rien n'a été "
+                          "modifié."],
+            )
+        expected = _expected_etag(
+            args, existing, tool="manage_folder", subject=_FOLDER_SUBJECT)
+        folder, errors, _changed = folder_model.rename_folder(
+            dossier_id, folder_id, name, expected_etag=expected)
+        field = "name"
+    else:
+        parent = (args.get("parent_folder_id") or "").strip() or None
+        if (existing.get("parent_folder_id") or None) == parent:
+            return _folder_payload(
+                "move", "unchanged", existing,
+                _folder_path(folders, existing), changed=[],
+                warnings=["Ce dossier est déjà à cet emplacement : rien n'a "
+                          "été modifié."],
+            )
+        expected = _expected_etag(
+            args, existing, tool="manage_folder", subject=_FOLDER_SUBJECT)
+        folder, errors, _changed = folder_model.move_folder(
+            dossier_id, folder_id, parent, expected_etag=expected)
+        field = "parent_folder_id"
+    _raise_if_stale(
+        errors, tool="manage_folder", subject=_FOLDER_SUBJECT,
+        reread=lambda: folder_model.get_folder(dossier_id, folder_id),
+    )
+    if errors:
+        raise ToolArgumentError(" ".join(errors) + " Rien n'a été modifié.")
+    outcome = "renamed" if action == "rename" else "moved"
+    return _folder_payload(
+        action, outcome, folder, _folder_path(folders, folder),
+        changed=[field],
+    )

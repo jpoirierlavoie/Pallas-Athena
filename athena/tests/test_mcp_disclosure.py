@@ -130,6 +130,13 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # ... and the divergence warning named the client as the mover, while
     # D10 now sends the LAWYER to Outlook to reschedule.
     "le client a déplacé ou annulé ce rendez-vous",
+    # Lot 2A (T7): update_document writes a document's name, date, tags,
+    # folder and a presumed category; manage_folder writes the filing tree.
+    # The « document » NEVER that said otherwise was narrowed to the FILE.
+    "its name and its folder are read-only",
+    "the one thing you can write is its analysis",
+    "seule son analyse s'y inscrit",
+    "son nom ou son dossier de classement",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

@@ -58,6 +58,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import document as document_model
     from models import dossier as dossier_model
     from models import expense as expense_model
+    from models import folder as folder_model
     from models import hearing as hearing_model
     from models import note as note_model
     from models import partie as partie_model
@@ -712,8 +713,10 @@ def _e2e_db(monkeypatch):
     # snapshot through that module's OWN client reference.
     # hearing_model too (lot 1b, L7): update_hearing and decide_rendez_vous
     # write calendar events through their model.
+    # folder_model too (lot 2A, T7): manage_folder reads and writes the
+    # filing tree through its model.
     return install(monkeypatch, *_MODULES, protocol_model, revision_model,
-                   hearing_model, dav_sync, write_support)
+                   hearing_model, folder_model, dav_sync, write_support)
 
 
 def _closed_task(db):
@@ -780,6 +783,17 @@ def _contains(fragment: str):
     return lambda stored: fragment in stored
 
 
+def _folder(db):
+    """A folder of a real dossier, born through the REAL creator. The tool
+    is addressed by the folder AND its dossier (and an action): the factory
+    returns (row id, the argument dict)."""
+    did = _dossier(db)
+    folder, errors = folder_model.create_folder(did, "Pièces")
+    assert errors == [], errors
+    return folder["id"], {"folder_id": folder["id"], "dossier_id": did,
+                          "action": "rename"}
+
+
 # tool → (collection, factory, id key, arguments, (field, stored value))
 _HANDLER_CASES = {
     "update_partie": ("parties", _partie, "partie_id",
@@ -823,6 +837,12 @@ _HANDLER_CASES = {
                            {"action": "confirmer", "lier_partie": False,
                             "idempotency_key": "cle-decision-e2e"},
                            ("confirmation", "")),
+    # Lot 2A (T7) — the document and folder edits.
+    "update_document": ("documents", _document, "document_id",
+                        {"display_name": "Mise en demeure"},
+                        ("display_name", "Mise en demeure")),
+    "manage_folder": ("folders", _folder, None,
+                      {"name": "Expertises"}, ("name", "Expertises")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -863,6 +883,8 @@ _HANDLER_GETTERS = {
     "update_protocol_step": (protocol_model, "get_protocol_strict"),
     "update_hearing": (hearing_model, "get_hearing_strict"),
     "decide_rendez_vous": (hearing_model, "get_hearing_strict"),
+    "update_document": (document_model, "get_document_strict"),
+    "manage_folder": (folder_model, "list_dossier_folders"),
 }
 
 

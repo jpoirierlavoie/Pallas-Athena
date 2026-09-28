@@ -500,6 +500,23 @@ PENDING: dict[str, str] = {
 }
 _LOTS = ("Lot 1", "Lot 2", "Lot 3", "Lot 4", "Lot 5")
 
+# {models module: (the web routes that edit it, the test proving the stale
+# refusal end to end)} — for an entity whose web edit is not a page of its
+# own but a form INSIDE a listing: the folder rename of the documents
+# browser (lot 2A, T2). Its refusal travels on the listing's 2xx
+# « ?erreur= » banner (htmx never swaps a 4xx), not through the edit-page
+# cycle the FormCase harness drives, so it is proved by its own test —
+# which must exist — and by the checks below (the form carries the version,
+# every such route hands it to the model). Lot 2A (T7) made it REQUIRED:
+# manage_folder renames and moves folders.
+INLINE_FORMS: dict[str, tuple[tuple[str, ...], str]] = {
+    "folder": (
+        ("folder_rename", "folder_move"),
+        "tests/test_folder_delete_route.py::"
+        "test_un_renommage_sur_une_page_perimee_est_refuse_dans_la_banniere",
+    ),
+}
+
 _MUTATOR = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
     r"delete|toggle|complete|attach|link|unlink|import|add)_"
@@ -615,7 +632,8 @@ def test_the_reach_is_derived_and_not_vacuous():
 
 
 def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
-    missing = _edited_by_edit_tools() - set(_FORMS) - set(PENDING)
+    missing = (_edited_by_edit_tools() - set(_FORMS) - set(PENDING)
+               - set(INLINE_FORMS))
     assert not missing, (
         f"the connector edits {sorted(missing)} but no web edit form of it "
         "carries expected_etag — a stale browser tab would silently erase "
@@ -625,8 +643,45 @@ def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
 
 
 def test_every_record_a_write_tool_rewrites_has_its_web_form_or_its_lot():
-    missing = _modified_by_any_write() - set(_FORMS) - set(PENDING)
+    missing = (_modified_by_any_write() - set(_FORMS) - set(PENDING)
+               - set(INLINE_FORMS))
     assert not missing, sorted(missing)
+
+
+def test_every_inline_form_is_reached_carries_its_version_and_is_proved():
+    """An INLINE_FORMS entry is a claim: the entity is edited by the
+    connector, each of its web routes hands the submitted version to the
+    model, the listing's form carries it, and a named test proves the
+    refusal against the real route and store. Each half is checked, so the
+    entry cannot outlive what it claims."""
+    reached = _edited_by_edit_tools() | _modified_by_any_write()
+    tree = ast.parse(pathlib.Path(documents_routes.__file__).read_text(
+        encoding="utf-8"))
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for entity, (route_names, proof) in INLINE_FORMS.items():
+        assert entity in reached, f"{entity}: no connector write reaches it"
+        assert entity not in _FORMS and entity not in PENDING, entity
+        for name in route_names:
+            fn = functions[name]
+            passes = [
+                node for node in ast.walk(fn)
+                if isinstance(node, ast.Call)
+                and any(k.arg == "expected_etag" for k in node.keywords)
+            ]
+            assert passes and all(
+                "submitted_etag" in ast.unparse(next(
+                    k.value for k in node.keywords if k.arg == "expected_etag"))
+                for node in passes
+            ), name
+        path, _, test_name = proof.partition("::")
+        proof_tree = ast.parse((_ATHENA / path).read_text(encoding="utf-8"))
+        assert test_name in {n.name for n in ast.walk(proof_tree)
+                             if isinstance(n, ast.FunctionDef)}, proof
+    browser = (_ATHENA / "templates" / "documents" / "_browser.html").read_text(
+        encoding="utf-8")
+    rename = browser[browser.index("folder_rename"):]
+    rename = rename[:rename.index("</form>")]
+    assert "name=\"expected_etag\" value=\"{{ f.etag or '' }}\"" in rename
 
 
 def test_pending_only_shrinks_and_names_a_lot():

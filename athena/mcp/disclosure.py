@@ -319,13 +319,42 @@ FAMILIES: tuple[Family, ...] = (
             "`record_document_analysis` records a document's qualification. "
             "You supply a `sous_nature` from the closed table "
             "(`get_reference_vocabulary`) and the `privileges` you identify; "
-            "the CODE derives the nature, the family, the protection level "
-            "and the document's category — never you. A level can only ever "
+            "the CODE derives from them the nature, the family, the "
+            "protection level and the document's category — you never pick "
+            "those here. A level can only ever "
             "RISE: a re-analysis retaining fewer privileges keeps the stored "
             "level and flags the divergence, because under-protecting "
             "privileged material is a professional fault while "
             "over-protecting merely costs time. Only the lawyer, in the "
             "application, can lower one or confirm a qualification."
+        ),
+    ),
+    Family(
+        key="files",
+        label="FILES",
+        scope=SCOPE_WRITE,
+        tools=("update_document", "move_documents", "manage_folder"),
+        consent_template="mcp/families/_files.html",
+        checkbox_summary_fr=(
+            "classer un document (nom, date, étiquettes, dossier de "
+            "classement, catégorie présumée) et organiser les dossiers de "
+            "classement — jamais les dossiers système"
+        ),
+        instructions_en=(
+            "`update_document` REPLACES a document's filing fields you name "
+            "— display name, date, tags, folder — never its file and never "
+            "notes_internes, the lawyer's own text. It may also set the "
+            "category of a document that carries NO analysis: stored "
+            "PRESUMED, shown « présumée » until the lawyer confirms it in the "
+            "application (an analysed document's category is "
+            "`record_document_analysis`'s). `move_documents` refiles several "
+            "documents of one dossier into one folder in one atomic write, "
+            "answering each id. `manage_folder` creates, renames or moves a "
+            "folder of the filing tree; the system folders « Projets » and "
+            "« Reçus du portail » belong to the application and are never "
+            "renamed, moved or recreated here (filing documents INTO them is "
+            "allowed). Ids and etags come from `list_documents` "
+            "(include_folders for the tree)."
         ),
     ),
 )
@@ -530,21 +559,42 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="document",
+        # Lot 2A (T7) lifted a document's name, date, tags, folder and a
+        # PRESUMED category (the FILES family). What stays forbidden is the
+        # FILE: its bytes, and any new file entering a dossier
+        # (upload_document / ingest_blob_as_document — and « Projets »,
+        # which only a generation creates).
         fr=(
-            "modifier le <strong>fichier</strong> d'un document, son nom ou "
-            "son dossier de classement — seule son analyse s'y inscrit, "
-            "et la lecture de son contenu relève de l'accès en lecture "
-            "ci-dessus"
+            "modifier le <strong>fichier</strong> d'un document ou en "
+            "verser un nouveau au dossier — la lecture de son contenu "
+            "relève de l'accès en lecture ci-dessus"
         ),
         en=(
-            "On a document the ONE thing you can write is its analysis; "
-            "its file, its name and its folder are read-only here."
+            "It never changes a document's FILE and never adds a new file "
+            "to a dossier."
         ),
         forbidden=(
-            "update_metadata", "move_document", "move_documents_bulk",
-            "upload_document", "ingest_blob_as_document", "update_analyse",
-            "confirmer_analyse", "create_folder", "rename_folder",
-            "move_folder", "ensure_system_folder",
+            "upload_document", "ingest_blob_as_document",
+            "ensure_system_folder",
+        ),
+    ),
+    Never(
+        key="confirm",
+        # Split from « document » by lot 2A (T7): a category Claude sets is
+        # PRESUMED (D15), exactly like an analysis, and the ONE way out of
+        # « présumée » is the lawyer's own gesture — confirmer_categorie,
+        # confirmer_analyse, or his edit of the analysis (update_analyse:
+        # « éditer, c'est confirmer »).
+        fr=(
+            "<strong>confirmer</strong> une catégorie ou une analyse "
+            "présumées — vous seul le faites, dans l'application"
+        ),
+        en=(
+            "It never confirms a presumed category or analysis: only the "
+            "lawyer does, in the application."
+        ),
+        forbidden=(
+            "confirmer_categorie", "confirmer_analyse", "update_analyse",
         ),
     ),
 )
