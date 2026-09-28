@@ -2109,6 +2109,11 @@ Notes:
      --project=$PROJECT`, row `cycle-de-vie-staging`). The ticket relies on
      it to erase a file PUT after its hour closed; a missing rule costs
      storage, never a wrongly filed document.
+     **Verified on the live `athena-pallas` bucket on 2026-09-28**
+     (`staging/` age 7, plus the versioning rule deleting non-current
+     objects after 180 days); the output is in the probe corpus
+     (`tests/fixtures/gcloud/production.json`). Re-check only if the
+     bucket's lifecycle is ever edited.
   4. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
      claude.ai** — BEFORE pushing. `MCP_WRITE_ENABLED` stays `"true"`: no
      token exists to abuse, and re-consenting while it is `"false"` yields a

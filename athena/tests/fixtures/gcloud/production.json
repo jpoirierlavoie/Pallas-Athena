@@ -38,5 +38,9 @@
   "ttl-firestore": {
     "ok": true,
     "stdout": "ACTIVE"
+  },
+  "cycle-de-vie-staging": {
+    "ok": true,
+    "stdout": "{\n  \"lifecycle_config\": {\n    \"rule\": [\n      {\n        \"action\": {\n          \"type\": \"Delete\"\n        },\n        \"condition\": {\n          \"daysSinceNoncurrentTime\": 180,\n          \"isLive\": false\n        }\n      },\n      {\n        \"action\": {\n          \"type\": \"Delete\"\n        },\n        \"condition\": {\n          \"age\": 7,\n          \"matchesPrefix\": [\n            \"staging/\"\n          ]\n        }\n      }\n    ]\n  }\n}"
   }
 }

@@ -300,11 +300,10 @@ def test_the_plan_marks_the_irreversible_steps():
 # passage la règle qui compte. Relever sa sortie (DEPLOYMENT.md §15, la
 # commande en lecture seule), la verser au corpus, puis la retirer d'ici :
 # le test suivant refuse une entrée périmée.
-_CORPUS_EN_ATTENTE = {
-    # Lot 2A, étape T5 (2026-09-27) : le cycle de vie `staging/` du seau
-    # canonique, dont dépend le ticket de téléversement du connecteur.
-    "cycle-de-vie-staging",
-}
+_CORPUS_EN_ATTENTE: set = set()
+# Vide depuis le 2026-09-28 : « cycle-de-vie-staging » (lot 2A, étape T5) a
+# été relevé ce jour-là sur le seau canonique vivant par la commande en
+# lecture seule de la sonde, et versé au corpus tel quel.
 
 
 def test_the_recorded_production_corpus_replays_to_PRESENT():
