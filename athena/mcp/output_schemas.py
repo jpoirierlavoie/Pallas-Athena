@@ -1319,7 +1319,9 @@ def _templatize_preview_row() -> dict:
     names and the caller's own field name; never the document's text, never
     the literal (its index names it)."""
     return _obj({
-        "index": _int("Its position in your list, from 0."),
+        "index": _int(
+            "Its position in your list, from 0 — the French messages "
+            "number from 1 (« n° 1 » is index 0)."),
         "placeholder": _str(
             'The field name, normalized; "" when invalid (see errors).'),
         "classification": {
@@ -3445,7 +3447,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "substitution_count": _int(),
                 "substituted_total": _int(),
                 "substitutions": _arr(_obj({
-                    "index": _int("Its position in your list, from 0."),
+                    "index": _int(
+                        "Its position in your list, from 0 — the French "
+                        "messages number from 1 (« n° 1 » is index 0)."),
                     "placeholder": _str("The field name inserted."),
                     "classification": _str("auto | manual | passthrough."),
                     "substituted": _int(

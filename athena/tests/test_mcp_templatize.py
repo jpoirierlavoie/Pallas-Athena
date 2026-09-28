@@ -518,6 +518,31 @@ def test_an_invalid_field_name_and_a_passthrough_name_are_told_apart(world):
                for w in result["warnings"])
 
 
+def test_a_message_s_number_is_its_row_s_index_plus_one(world):
+    """Completeness review of lot 2B: the rows count from 0 (`index`) while
+    every French message numbers from 1 (« Substitution n° 1 »). Both schemas
+    now say so; this pins that the two conventions really are offset by one
+    — the second entry, invalid, is row index 1 and message « n° 2 », so a
+    caller adjusting the pair a message names never edits its neighbour."""
+    _seed_source(world)
+    result = _preview([
+        {"literal": "2026-001", "placeholder": "dossier.reference_interne"},
+        {"literal": "Jean Tremblay", "placeholder": "client nom"},   # invalid
+    ])
+    rows = result["substitutions"]
+    assert [r["index"] for r in rows] == [0, 1]
+    assert rows[1]["classification"] is None and rows[1]["placeholder"] == ""
+    assert any(e.startswith("Substitution n° 2 : le nom de champ")
+               for e in result["errors"])
+    assert not any(e.startswith("Substitution n° 1 ") for e in result["errors"])
+    row_schema = OUTPUT_SCHEMAS["preview_templatize"]["properties"][
+        "substitutions"]["items"]
+    created = OUTPUT_SCHEMAS["create_template"]["properties"]["templatized"][
+        "properties"]["substitutions"]["items"]
+    for schema in (row_schema, created):
+        assert "« n° 1 » is index 0" in schema["properties"]["index"]["description"]
+
+
 @pytest.mark.parametrize("args, needle", [
     ({"substitutions": "Jean"}, "doit être une liste"),
     ({"substitutions": []}, "au moins une"),
@@ -1026,6 +1051,20 @@ def test_the_texts_name_the_workflow():
     desc = tools.TOOLS["preview_templatize"]["description"]
     assert "CASE-SENSITIVE" in desc and "Writes nothing" in desc
     assert "preview_templatize" in tools.TOOLS["create_template"]["description"]
+    # Completeness review of lot 2B: the upload ticket files a gabarit
+    # UNtemplatized (finalize_upload takes no substitutions), so the route
+    # to templatize an outside letter is named — and it exists: a ticket of
+    # purpose « document » files it in its dossier, where the two tools
+    # below read it.
+    assert ("never templatized there: to TEMPLATIZE one, file it first as a "
+            "document of its dossier (purpose document)") in text
+    assert "substitutions" not in tools.TOOLS["finalize_upload"]["input_schema"][
+        "properties"]
+    assert "substitutions" not in tools.TOOLS["begin_upload"]["input_schema"][
+        "properties"]
+    purposes = tools.TOOLS["begin_upload"]["input_schema"]["properties"][
+        "purpose"]["enum"]
+    assert "document" in purposes
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -555,6 +555,12 @@ connector it takes two calls, and nothing is written until the second.
    One count that differs refuses the **whole** call — the letter may have
    changed since, or a pair was edited — and nothing is created.
 
+A letter not yet in Athéna is first **filed as a document of its dossier**
+(the upload ticket, purpose `document`), then previewed and templatized there:
+the ticket files a gabarit only as it is, never templatized. The preview's
+rows count from 0 (`index`) while its French messages number from 1
+(« Substitution n° 1 » is row 0).
+
 ### Rules that bite (templatizing)
 
 - **Matching is case-SENSITIVE.** « Jean Tremblay » in a sentence and

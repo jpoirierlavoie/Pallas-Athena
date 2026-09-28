@@ -2299,8 +2299,11 @@ Notes:
   misspelt one classifies « passthrough »); what stays in footnotes and
   field results is never replaced, and the title, subject, author and
   description are always emptied; a residue is accepted
-  only on the lawyer's word; and the lawyer reads the new gabarit before it
-  serves — the check never reads the rest of the letter's text.
+  only on the lawyer's word; an OUTSIDE letter is filed first as a document
+  of its dossier (`begin_upload` purpose document) and templatized there —
+  the upload ticket never templatizes; the preview's rows count from 0 while
+  its French messages number from 1; and the lawyer reads the new gabarit
+  before it serves — the check never reads the rest of the letter's text.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

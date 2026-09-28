@@ -797,6 +797,38 @@ def test_an_output_check_failure_refuses_rather_than_ship(monkeypatch):
     assert result.errors[0].startswith("La vérification du document produit a échoué")
 
 
+def test_a_result_pushed_past_the_template_cap_says_so():
+    """Completeness review of lot 2B: a source just under 10 MB — here a
+    STORED, incompressible image — is accepted, but a field name is longer
+    than the text it replaces, so the RESULT crosses the fill engine's
+    10 MB cap. The engine refused (right) with « gabarit invalide » and
+    nothing else, and the preview then said only that no result could be
+    produced. The reason is now named; nothing is still written, and the
+    request itself stays valid (the analysis counts it)."""
+    from utils.docx_fill import MAX_COMPRESSED_BYTES
+
+    document = _doc(_p(_r("Monsieur Jean Tremblay")))
+
+    def package(pad: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml", CONTENT_TYPES)
+            zf.writestr("word/document.xml", document)
+            info = zipfile.ZipInfo("word/media/image1.png")
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, os.urandom(pad))
+        return buf.getvalue()
+
+    data = package(MAX_COMPRESSED_BYTES - len(package(0)) - 2)
+    assert len(data) <= MAX_COMPRESSED_BYTES
+    subs = [Sub("Jean Tremblay", "client.nom_complet", 1)]
+    assert tz.analyse(data, subs).substitutions[0].substituted == 1
+    result = tz.templatize(data, subs)
+    assert result.data is None and not result.blockers
+    assert "taille maximale de 10 Mo" in result.errors[0]
+    assert result.errors[0].endswith("rien n'a été écrit.")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 8 bis. Le lexer n'est pas un parseur (revue de l'étape 1)
 #

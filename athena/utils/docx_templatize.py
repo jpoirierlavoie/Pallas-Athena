@@ -1571,7 +1571,13 @@ def _check_output(output: bytes, rewritten: dict[str, bytes],
             return f"XML mal formé dans {part}"
     validation = validate_template(output)
     if validation.errors:
-        return "gabarit invalide"
+        # The fill engine's own reasons, which are fixed French sentences
+        # (a cap, a missing member — never document text). Without them the
+        # likeliest failure read « gabarit invalide » and nothing more: a
+        # source just under 10 MB whose field names, longer than the texts
+        # they replace, push the RESULT over the template cap.
+        return "gabarit invalide — " + " ".join(
+            e.rstrip(".") for e in validation.errors)
     names = {n for inserted in part_inserted.values() for n in inserted}
     for name in sorted(names):
         if name not in validation.placeholders:
