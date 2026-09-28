@@ -42,6 +42,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.dossiers as dossiers_routes
 
 from flask import Flask  # noqa: E402
+from markupsafe import escape  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
@@ -357,6 +358,78 @@ def test_a_stale_form_is_refused_at_200_with_its_figures_kept(fake, client, monk
     assert _versions(fake) == [1, 2]
     assert seen == [("budget_version_conflict", "dos1",
                      {"base_version": 1, "current_version": 2})]
+
+
+def test_a_conflict_whose_reread_fails_never_names_a_false_version(
+    fake, client, monkeypatch,
+):
+    """Régression (revue du lot 3a, étape 2) — quand la relecture de
+    l'historique ÉCHOUAIT après le refus (lecture d'affichage, ouverte), le
+    bandeau affirmait « La version en vigueur est la v0 : enregistrer
+    créera la v1 » sur un budget qui en comptait deux, et le formulaire
+    repartait sur une base 0. Il dit maintenant que la version en vigueur
+    n'a pas pu être relue, et garde la base SOUMISE — toujours dépassée,
+    donc l'enregistrement suivant est encore refusé, jamais béni."""
+    _seed_version(fake, "b1", 1, 1)
+    _seed_version(fake, "b2", 2, 2)
+    real = budget_model._list_budget_versions_strict
+    display_reads: list = []
+
+    def _strict(dossier_id, *, transaction=None):
+        if transaction is None:            # the banner's re-read, not the save's
+            display_reads.append(dossier_id)
+            raise RuntimeError("firestore indisponible")
+        return real(dossier_id, transaction=transaction)
+
+    monkeypatch.setattr(budget_model, "_list_budget_versions_strict", _strict)
+
+    resp = client.post("/budgets/", data=_form(base_version="1"))
+
+    assert display_reads                    # the re-read is what failed
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "Cet élément a été modifié entre-temps." in html
+    assert "v0" not in html and "créera la v1" not in html
+    assert str(escape(budgets_routes.CURRENT_VERSION_UNREADABLE)) in html
+    assert _BASE_INPUT.findall(html) == ["1"]
+    assert _versions(fake) == [1, 2]
+
+
+def test_a_conflict_seed_is_always_valid_json(fake, client):
+    """Régression (revue du lot 3a, étape 2) — le re-rendu d'un conflit
+    reprenait les heures SOUMISES sans les borner : une ligne forgée à
+    ``NaN`` (ou ``Infinity``, ou négative) repartait dans le bloc JSON du
+    formulaire, que ``JSON.parse`` du navigateur refuse — le composant
+    entier mourait. Seules les valeurs que le formulaire peut produire
+    reviennent ; l'enregistrement suivant revalide tout."""
+    _seed_version(fake, "b1", 1, 1)
+    _seed_version(fake, "b2", 2, 2)
+    lines = (
+        '[{"sous_phase": "PRE-01", "hours": NaN, "frais": ""},'
+        ' {"sous_phase": "PRE-02", "hours": Infinity, "frais": ""},'
+        ' {"sous_phase": "PRE-03", "hours": -2, "frais": ""},'
+        ' {"sous_phase": "PRE-04", "hours": 4.5, "frais": "-10,00"},'
+        ' {"sous_phase": "PRE-99", "hours": 1.25, "frais": "12,00"}]'
+    )
+
+    resp = client.post("/budgets/", data=_form(base_version="1", lines_json=lines))
+
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    raw = re.search(
+        r'<script type="application/json" id="budget-initial">(.*?)</script>',
+        html, re.S).group(1)
+
+    def _refuse_constant(name):             # what the browser's JSON.parse does
+        raise ValueError(f"non-JSON constant {name}")
+
+    seed = json.loads(raw, parse_constant=_refuse_constant)
+    pre = {r["sous_phase"]: r for g in seed["groups"] if g["phase"] == "PRE"
+           for r in g["lines"]}
+    assert pre["PRE-99"]["hours"] == 1.25 and pre["PRE-99"]["frais"] == "12,00"
+    for code in ("PRE-01", "PRE-02", "PRE-03", "PRE-04"):
+        assert pre[code]["hours"] == 0 and pre[code]["frais"] == "", code
+    assert _versions(fake) == [1, 2]
 
 
 def test_the_resubmitted_form_saves_the_next_version(fake, client):

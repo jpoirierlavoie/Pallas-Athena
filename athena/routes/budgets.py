@@ -16,6 +16,7 @@ the field existed skips the check; a malformed value is a French 400.
 """
 
 import json
+import math
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
@@ -53,6 +54,16 @@ BASE_VERSION_MALFORMED = (
     "Requête invalide : la version du budget transmise par le formulaire "
     "est illisible. Rien n'a été enregistré — rechargez la page, puis "
     "refaites la modification."
+)
+
+
+# The banner's note when the history could not be RE-READ after the refusal
+# (the display read fails open): the version in force is unknown, so the
+# page names none — and the form keeps the submitted, stale base, whose next
+# save is refused again rather than blessed.
+CURRENT_VERSION_UNREADABLE = (
+    "La version en vigueur n'a pas pu être relue : ouvrez l'historique (ou "
+    "rechargez la page) pour la voir, puis enregistrez de nouveau."
 )
 
 
@@ -104,7 +115,12 @@ def _submitted_as_version(data: dict) -> dict:
         try:
             hours = float(line.get("hours") or 0)
             frais = int(line.get("frais_cents") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            continue
+        # A finite, non-negative figure — what the form's own inputs can
+        # produce. A NaN or an infinity would reach the page's JSON block,
+        # which the browser's JSON.parse refuses (the whole form dies).
+        if not math.isfinite(hours) or hours < 0 or frais < 0:
             continue
         lines.append({"sous_phase": code, "hours": hours, "frais_cents": frais})
     return {"lines": lines, "hourly_rate": int(data.get("hourly_rate") or 0)}
@@ -271,15 +287,24 @@ def budget_create() -> str:
             "budget_version_conflict", dossier_id,
             base_version=base_version, current_version=current,
         )
-        conflict = edit_conflict.conflict_context(
-            latest,
-            compare_url=url_for("budgets.budget_history", dossier_id=dossier_id),
-            note=(
+        if latest:
+            note = (
                 f"La version en vigueur est la v{current} : enregistrer "
                 f"créera la v{current + 1}, qui deviendra la version de "
                 f"référence — la v{current} reste consultable dans "
                 "l'historique."
-            ),
+            )
+            next_base = current
+        else:
+            # The re-read failed open: a conflict proves a version exists,
+            # so « v0 » would be false. Name none, and keep the SUBMITTED
+            # base — still stale, so the next save is refused again.
+            note = CURRENT_VERSION_UNREADABLE
+            next_base = base_version
+        conflict = edit_conflict.conflict_context(
+            latest,
+            compare_url=url_for("budgets.budget_history", dossier_id=dossier_id),
+            note=note,
         )
         return render_template(
             "budgets/form.html",
@@ -288,7 +313,7 @@ def budget_create() -> str:
             seed=_form_seed(dossier, _submitted_as_version(data)),
             errors=[],
             conflict=conflict,
-            base_version=current,
+            base_version=next_base,
             note_value=data["note"],
             return_to=return_to,
         )
