@@ -483,6 +483,30 @@ def test_the_live_write_path_runs_end_to_end(monde, monkeypatch):
     assert t.validate_args(o.OUTPUT_SCHEMAS["record_document_analysis"], r) == []
 
 
+def test_a_connector_analysis_names_its_analyser(monde, monkeypatch):
+    """Le cache ET l'entrée du journal disent QUI a analysé.
+
+    Le gestionnaire lisait `args.get("_modele")` — un argument qu'aucun
+    schéma n'admet (`additionalProperties: false`) —, si bien que chaque
+    analyse du connecteur était journalisée avec un modèle VIDE, en silence
+    (critique de complétude du lot 2A, ligne « handlers » du devis). Échoue
+    sur le code d'avant : `modele == ""`."""
+    h = _handlers()
+    monkeypatch.setattr(h.document_model, "get_document",
+                        lambda i: dict(monde["store"].get(i) or {}) or None)
+    monkeypatch.setattr(h.document_model, "record_analyse",
+                        doc.record_analyse)
+    monkeypatch.setattr(h.dossier_model, "get_dossier", lambda i: None)
+
+    h.record_document_analysis(dict(_ARGS))
+
+    assert monde["store"]["doc-1"]["analyse"]["modele"] == "connecteur MCP"
+    # The journal entry IS the analysis it records, keyed by its id.
+    [entree] = monde["journaux"]["doc-1"][doc.ANALYSES_SUBCOLLECTION].values()
+    assert entree["modele"] == "connecteur MCP"
+    assert entree["declenche_par"] == "mcp"
+
+
 def test_a_broken_log_line_never_fails_a_committed_write(monde, monkeypatch):
     """Rien de ce qui SUIT un commit ne peut faire échouer l'écriture.
 

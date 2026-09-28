@@ -10005,6 +10005,15 @@ _ANALYSE_INPUTS = (
 )
 
 
+# What the analysis cache and its journal entry record as the analyser
+# (`analyse.modele`, shown « (connecteur MCP) » on the edit form). A
+# CONSTANT: the handler used to read `args.get("_modele")`, an argument no
+# schema admits (`additionalProperties: false`), so every connector
+# analysis was journaled with an EMPTY model, silently (lot 2 design,
+# handlers row; completeness critic of lot 2A).
+_ANALYSIS_MODEL_LABEL = "connecteur MCP"
+
+
 def record_document_analysis(args: dict) -> dict:
     return run_write(
         "record_document_analysis",
@@ -10046,7 +10055,7 @@ def _record_document_analysis_impl(args: dict) -> dict:
         document_id,
         sortie,
         declenche_par="mcp",
-        modele=str(args.get("_modele") or ""),
+        modele=_ANALYSIS_MODEL_LABEL,
         dossier=dossier,
     )
     if erreurs or updated is None:
