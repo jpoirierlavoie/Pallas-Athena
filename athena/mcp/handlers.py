@@ -10649,7 +10649,11 @@ def _edit_folder(args: dict, dossier_id: str, action: str) -> dict:
 # Order in every path: every refusal a caller can trip (the arguments, the
 # template, the slots, the values, the folder, the Storage identity) comes
 # BEFORE the first write, so a refused call writes nothing — the « Projets »
-# folder included. The save is the commit point (the models note it);
+# folder included. Two failures come later, after « Projets » was ensured:
+# the save itself failing, and a copy's source object found missing at the
+# model's reload. Those leave only « Projets », created on first use — an
+# IDEMPOTENT write a retry reproduces (models/provenance), so the call stays
+# a refusal a retry may repeat. The save is the commit point (the models note it);
 # nothing after it may refuse. Refusals name the field, never quote what
 # was sent, and log the fill's machine reason as `generation_failed`
 # (log_template_event), beside the endpoint's `mcp_write_refused`.
