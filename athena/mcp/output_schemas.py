@@ -3263,8 +3263,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "leak_scan": {
                     **_obj({
                         "performed": _bool(
-                            "false = no source dossier was named: NOTHING "
-                            "was checked."),
+                            "false = the ticket DECLARED aucun_dossier_source "
+                            "(no source dossier): NOTHING was checked."),
                         "accepted": _int(
                             "Identifiers found and accepted (accept_residual)."),
                         "unused_accept": _int(

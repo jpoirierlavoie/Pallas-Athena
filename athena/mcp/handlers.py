@@ -11487,6 +11487,7 @@ _UPLOAD_DOCUMENT_ARGS = frozenset({
 })
 _UPLOAD_GABARIT_ARGS = frozenset({
     "template_mode", "dossier_id", "accept_residual", "scrub_properties",
+    "aucun_dossier_source",
 })
 _UPLOAD_CREATE_ARGS = frozenset({"name", "category", "kind", "description"})
 _UPLOAD_REPLACE_ARGS = frozenset({"template_id", "expected_version"})
@@ -11495,6 +11496,15 @@ _UPLOAD_CONDITIONAL_ARGS = (
     | _UPLOAD_REPLACE_ARGS
 )
 _NOTHING_OPENED = "Rien n'a été ouvert."
+# The echo of a DECLARED absence of source dossier (aucun_dossier_source) —
+# at begin_upload and again at finalize_upload: the caller's word, never a
+# check. Fixups of lot 2A.
+_NO_SOURCE_WARNING = (
+    "Aucun dossier source, par déclaration (aucun_dossier_source) : les "
+    "noms, numéros et adresses d'un dossier ne sont PAS contrôlés dans ce "
+    "gabarit ni dans son nom. S'il vient en fait d'un dossier, n'allez pas "
+    "plus loin : ouvrez un nouveau ticket qui nomme ce dossier."
+)
 _NOTHING_FILED = "Rien n'a été versé."
 _NEW_TICKET = (
     "ouvrez un nouveau ticket (begin_upload, avec une NOUVELLE "
@@ -11923,7 +11933,31 @@ def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
     warnings: list[str] = []
     dossier_id = ""
     dossier: dict = {}
-    if str(args.get("dossier_id") or "").strip():
+    # Fixups of lot 2A: the source dossier is named, or its absence is
+    # DECLARED — the scan is never skipped because an argument was simply
+    # left out (it used to be, silently, even when the ticket replaced the
+    # file of the ACTIVE note-d'honoraires template).
+    named = bool(str(args.get("dossier_id") or "").strip())
+    no_source = args.get("aucun_dossier_source", False)
+    if not isinstance(no_source, bool):
+        raise ToolArgumentError(
+            f"`aucun_dossier_source` est vrai ou faux. {_NOTHING_OPENED}")
+    if named and no_source:
+        raise ToolArgumentError(
+            "`dossier_id` et `aucun_dossier_source` se contredisent : nommez "
+            "le dossier dont le fichier est tiré, OU déclarez qu'il n'en "
+            f"vient d'aucun. {_NOTHING_OPENED}"
+        )
+    if not named and not no_source:
+        raise ToolArgumentError(
+            "Pour un gabarit, nommez le dossier dont le fichier est tiré "
+            "(`dossier_id` — ses parties, numéros et adresses y seront "
+            "cherchés et refusés), ou, SEULEMENT si le fichier ne vient "
+            "d'aucun dossier, déclarez-le : `aucun_dossier_source: true` — "
+            "rien ne sera alors contrôlé. Dans le doute, demandez au "
+            f"juriste. {_NOTHING_OPENED}"
+        )
+    if named:
         dossier_id, dossier = _upload_dossier(args)
     accept = _clean_accept_residual(args.get("accept_residual"))
     if accept and not dossier_id:
@@ -11936,20 +11970,16 @@ def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
         raise ToolArgumentError(
             f"`scrub_properties` est vrai ou faux. {_NOTHING_OPENED}")
     params: dict[str, Any] = {"mode": mode, "accept_residual": accept,
-                              "scrub_properties": scrub}
+                              "scrub_properties": scrub,
+                              "aucun_dossier_source": no_source}
     if mode == "create":
         params.update(_bound_creation(args, warnings))
         if dossier_id:
             _check_template_name(dossier, params["name"], accept, warnings)
     else:
         params.update(_bound_replacement(args, warnings))
-    if not dossier_id:
-        warnings.append(
-            "Aucun dossier source nommé (dossier_id) : les noms et numéros "
-            "d'un dossier ne seront PAS contrôlés dans ce gabarit. Si le "
-            "fichier vient d'un dossier, ouvrez un nouveau ticket en le "
-            "nommant."
-        )
+    if no_source:
+        warnings.append(_NO_SOURCE_WARNING)
     return dossier_id, params, warnings
 
 
@@ -12599,12 +12629,22 @@ def _finalize_template_upload(holder: _UploadHolder, blob) -> dict:
 
     if ticket.get("dossier_id"):
         leak = _scan_source_dossier(holder, data, warnings)
-    else:
+    elif params.get("aucun_dossier_source") is True:
         leak = {"performed": False, "accepted": 0, "unused_accept": 0,
                 "skipped": 0, "parts_scanned": 0}
-        warnings.append(
-            "Aucun dossier source nommé : les noms et numéros d'un dossier "
-            "n'ont PAS été contrôlés dans ce gabarit."
+        warnings.append(_NO_SOURCE_WARNING)
+    else:
+        # A ticket that neither names a source dossier nor declares none —
+        # the ticket model refuses to open one since the fixups of lot 2A;
+        # one stored before is never filed unchecked (fail CLOSED).
+        _settle_refused(holder, "sans_dossier_source")
+        raise ToolArgumentError(
+            "Ce ticket ne nomme pas le dossier dont le gabarit est tiré et "
+            "ne déclare pas qu'il n'en vient d'aucun : il n'est pas versé "
+            f"sans ce contrôle, et le fichier a été effacé. {_NOTHING_FILED} "
+            f"{_NEW_TICKET[0].upper()}{_NEW_TICKET[1:]} en nommant "
+            "dossier_id, ou avec aucun_dossier_source: true.",
+            reason="upload_residue",
         )
     if params.get("mode") == "create":
         return _create_uploaded_template(holder, data, leak, scrubbed,

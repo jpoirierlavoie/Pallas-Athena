@@ -184,9 +184,12 @@ def test_a_template_ticket_reserves_a_template_id_only_to_create_one(fake):
 
     replacing = _open(fake, _gabarit_data("replace"))
     assert replacing["reserved_template_id"] == ""
+    # Changed deliberately (fixups of lot 2A): the ticket also binds the
+    # DECLARATION that a gabarit comes from no dossier (False here).
     assert replacing["template_params"] == {
         "mode": "replace", "template_id": TEMPLATE_ID, "expected_version": 3,
-        "accept_residual": [], "scrub_properties": False}
+        "accept_residual": [], "scrub_properties": False,
+        "aucun_dossier_source": False}
 
 
 def test_the_declared_md5_is_stored_in_its_canonical_spelling(fake):
@@ -262,11 +265,31 @@ def test_a_template_ticket_refuses_rather_than_mangles(fake, over, fragment):
     assert fake.peek_collection(ut.COLLECTION) == {}
 
 
-def test_a_template_ticket_may_have_no_dossier(fake):
-    """Without a dossier the leak scan cannot run — the handler decides
-    what that means; the record allows it."""
-    ticket = _open(fake, _gabarit_data(dossier_id=""))
-    assert ticket["dossier_id"] == ""
+def test_a_template_ticket_without_a_dossier_must_declare_it(fake):
+    """REWRITTEN deliberately (fixups of lot 2A). It pinned « the record
+    allows it »: a gabarit ticket with no dossier — hence no leak scan at
+    all, even replacing the ACTIVE note-d'honoraires template's file — was
+    opened as long as the argument was simply left out. The model now asks
+    for one of the two: the source dossier, or the declaration that there
+    is none (``aucun_dossier_source``) — never both, never neither."""
+    ticket, errors = ut.create_ticket(_gabarit_data(dossier_id=""),
+                                      user_id=REAL_UID, now=NOW)
+    assert ticket is None and any("déclare expressément" in e for e in errors)
+    for mode in ("create", "replace"):
+        data = _gabarit_data(mode, dossier_id="")
+        data["template_params"]["aucun_dossier_source"] = True
+        declared = _open(fake, data)
+        assert declared["dossier_id"] == ""
+        assert declared["template_params"]["aucun_dossier_source"] is True
+    both = _gabarit_data()
+    both["template_params"]["aucun_dossier_source"] = True
+    ticket, errors = ut.create_ticket(both, user_id=REAL_UID, now=NOW)
+    assert ticket is None and any("pas les deux" in e for e in errors)
+    typed = _gabarit_data(dossier_id="")
+    typed["template_params"]["aucun_dossier_source"] = "oui"
+    ticket, errors = ut.create_ticket(typed, user_id=REAL_UID, now=NOW)
+    assert ticket is None and any("vrai ou faux" in e for e in errors)
+    assert sum(1 for _ in fake.peek_collection(ut.COLLECTION)) == 2
 
 
 @pytest.mark.parametrize("bad", ["", None, "unknown", "a/b", 42])

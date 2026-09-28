@@ -203,6 +203,9 @@ REFUSAL_REASONS = (
     "empreinte_differente",     # its MD5 is not the declared one
     "contenu_refuse",           # the ingestion or template write refused it
     "identifiants_residuels",   # the leak scan found unaccepted residues
+    "sans_dossier_source",      # a gabarit naming no source dossier and not
+                                # declaring none (a ticket stored before the
+                                # fixups of lot 2A — never filed unchecked)
 )
 
 # What a claim answered.
@@ -306,6 +309,7 @@ _METADATA_KEYS = frozenset({
 _TEMPLATE_KEYS = frozenset({
     "mode", "name", "category", "kind", "description", "template_id",
     "expected_version", "accept_residual", "scrub_properties",
+    "aucun_dossier_source",
 })
 _TEMPLATE_CREATE_ONLY = frozenset({"name", "category", "kind", "description"})
 _TEMPLATE_REPLACE_ONLY = frozenset({"template_id", "expected_version"})
@@ -523,6 +527,14 @@ def _clean_template_params(value: Any, errors: list[str]) -> dict:
         errors.append("« scrub_properties » est vrai ou faux.")
         scrub = False
     out["scrub_properties"] = scrub
+    # Fixups of lot 2A: a gabarit either names the dossier its file comes
+    # from (the leak scan runs against it) or DECLARES it comes from none —
+    # never a silent skip. Judged against the dossier in create_ticket.
+    no_source = value.get("aucun_dossier_source", False)
+    if not isinstance(no_source, bool):
+        errors.append("« aucun_dossier_source » est vrai ou faux.")
+        no_source = False
+    out["aucun_dossier_source"] = no_source
     return out
 
 
@@ -613,6 +625,18 @@ def create_ticket(
             errors.append("Un gabarit ne porte pas de métadonnées de document.")
         template_params = _clean_template_params(
             data.get("template_params"), errors)
+        if template_params:
+            declared = template_params.get("aucun_dossier_source") is True
+            if dossier_id.strip() and declared:
+                errors.append(
+                    "Un gabarit nomme son dossier source OU déclare n'en "
+                    "venir d'aucun — pas les deux.")
+            elif not dossier_id.strip() and not declared:
+                errors.append(
+                    "Un gabarit nomme le dossier dont son fichier est tiré, "
+                    "ou déclare expressément n'en venir d'aucun : sans l'un "
+                    "ni l'autre, ses identifiants ne seraient contrôlés "
+                    "contre rien, en silence.")
 
     uid = ""
     try:

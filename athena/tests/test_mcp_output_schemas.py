@@ -2558,6 +2558,7 @@ def test_begin_upload_conforms_on_both_purposes(monkeypatch):
     assert "upload_id=" in document["upload_url"]
     gabarit = handlers.begin_upload({
         "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True,          # fixups of lot 2A
         "template_id": ids["gabarit"], "expected_version": 1,
         "filename": "x.docx", "size_bytes": 1000,
         "md5_base64": md5(b"x")})
@@ -2605,6 +2606,16 @@ def test_finalize_upload_conforms_on_every_branch(monkeypatch):
     gabarit_replay = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
     _conforms("finalize_upload", gabarit_replay)
     assert gabarit_replay["leak_scan"] is None
+    # Fixups of lot 2A: the DECLARED absence of source dossier — the one
+    # way a gabarit is filed unchecked, and the report says so.
+    declared = handlers.begin_upload({
+        "purpose": "gabarit", "template_mode": "create", "name": "Modèle 2",
+        "aucun_dossier_source": True, "filename": "m2.docx",
+        "size_bytes": len(docx), "md5_base64": md5(docx)})
+    bucket.complete_session(declared["upload_url"], docx)
+    unchecked = handlers.finalize_upload({"ticket_id": declared["ticket_id"]})
+    _conforms("finalize_upload", unchecked)
+    assert unchecked["leak_scan"]["performed"] is False
 
 
 # ══════════════════════════════════════════════════════════════════════

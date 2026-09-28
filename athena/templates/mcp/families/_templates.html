@@ -3,7 +3,8 @@
    update_template corrects one or installs a new version of its file from
    such a .docx), split from FILES at T11. A template can also come from an
    outside file through the upload ticket (FILES, just above), and its
-   leak check is then made against the dossier Claude names only. A
+   leak check is then made against the dossier Claude names — REQUIRED
+   since the fixups of lot 2A, unless he declares aucun_dossier_source. A
    replaced file is always KEPT (NEVER « template_version »), and the
    active special template is designated by the lawyer alone (NEVER
    « active_template »). #}
@@ -18,9 +19,10 @@
   <strong>toujours</strong> contrôlé contre le dossier de ce document&nbsp;:
   il est refusé tant que lui — ou le nom du nouveau gabarit qu'il crée —
   nomme encore les parties, les numéros ou les adresses de ce dossier, sauf
-  si vous acceptez chacun d'eux. Un fichier téléversé ne l'est que si Claude
-  nomme le dossier dont il est tiré&nbsp;; sans dossier nommé, rien n'est
-  contrôlé, et le résultat le dit. Le nouveau nom donné à un gabarit
+  si vous acceptez chacun d'eux. Un fichier téléversé l'est contre le dossier
+  que Claude doit nommer — sauf s'il déclare expressément que le fichier ne
+  vient d'<strong>aucun</strong> dossier&nbsp;: rien n'est alors contrôlé, et
+  le résultat le dit. Le nouveau nom donné à un gabarit
   existant n'est contrôlé contre <strong>aucun</strong> dossier, alors qu'il
   paraît dans le nom de chaque document tiré de ce gabarit, pour tout
   client. Le document d'origine n'est jamais modifié.

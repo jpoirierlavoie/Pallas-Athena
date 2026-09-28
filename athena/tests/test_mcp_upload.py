@@ -163,6 +163,10 @@ def _begin_gabarit(world, data: bytes, **over) -> dict:
     args = {"purpose": "gabarit", "template_mode": "create",
             "name": "Lettre type", "filename": "Lettre à M. Tremblay.docx",
             "size_bytes": len(data), "md5_base64": _md5(data)}
+    # Fixups of lot 2A: a gabarit names its source dossier OR declares it
+    # comes from none — the helper declares it when the test names none.
+    if "dossier_id" not in over:
+        args["aucun_dossier_source"] = True
     args.update(over)
     return handlers.begin_upload(args)
 
@@ -260,7 +264,10 @@ def test_a_document_opening_refuses_and_writes_nothing(world, over, fragment):
 _GABARIT_BASE = {"purpose": "gabarit", "template_mode": "create",
                  "name": "Lettre type", "filename": "lettre.docx",
                  "size_bytes": len(CLEAN_LETTER),
-                 "md5_base64": _md5(CLEAN_LETTER)}
+                 "md5_base64": _md5(CLEAN_LETTER),
+                 # Fixups of lot 2A: every refusal below is reached PAST the
+                 # source-dossier rule, which has its own tests.
+                 "aucun_dossier_source": True}
 
 
 @pytest.mark.parametrize("over, fragment", [
@@ -287,6 +294,9 @@ def _replace_args(world, **over) -> dict:
             "template_id": world["template"], "expected_version": 1,
             "filename": "x.docx", "size_bytes": len(CLEAN_LETTER),
             "md5_base64": _md5(CLEAN_LETTER)}
+    # Fixups of lot 2A: the source dossier, or the declaration of none.
+    if "dossier_id" not in over:
+        args["aucun_dossier_source"] = True
     args.update(over)
     return args
 
@@ -742,13 +752,95 @@ def test_a_replacement_keeps_its_name_and_is_not_name_checked(world):
     assert opened["opened"] is True
 
 
-def test_without_a_source_dossier_the_scan_is_said_not_to_have_run(world):
+def test_a_declared_absence_of_source_dossier_is_echoed_at_both_steps(world):
+    """Rewritten deliberately (fixups of lot 2A): the scan is skipped ONLY
+    on the caller's DECLARATION (`aucun_dossier_source: true`), and that
+    declaration is echoed — at the opening and again at the filing — as
+    the caller's word, never as a check."""
     opened = _begin_gabarit(world, LEAKY_LETTER)
-    assert any("PAS" in w for w in opened["warnings"])
+    assert any("par déclaration (aucun_dossier_source)" in w
+               and "PAS contrôlés" in w for w in opened["warnings"])
+    assert _ticket(world, opened["ticket_id"])["template_params"][
+        "aucun_dossier_source"] is True
     _put(world, opened, LEAKY_LETTER)
     done = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
     assert done["leak_scan"]["performed"] is False
-    assert any("n'ont PAS été contrôlés" in w for w in done["warnings"])
+    assert any("par déclaration (aucun_dossier_source)" in w
+               for w in done["warnings"])
+
+
+@pytest.mark.parametrize("mode", ["create", "replace"])
+def test_a_gabarit_ticket_naming_no_source_dossier_is_refused_unless_declared(
+    world, mode,
+):
+    """Fixups of lot 2A — FAILS on the old handler, which opened the ticket
+    and filed the template with NO leak scan when dossier_id was simply
+    left out."""
+    args = (dict(_GABARIT_BASE) if mode == "create"
+            else _replace_args(world))
+    args.pop("aucun_dossier_source")
+    with pytest.raises(ToolArgumentError,
+                       match="aucun_dossier_source: true") as exc:
+        handlers.begin_upload(args)
+    assert "Rien n'a été ouvert" in str(exc.value)
+    assert world["db"].peek_collection(ut.COLLECTION) == {}
+    for bad in (False, "oui"):
+        with pytest.raises(ToolArgumentError):
+            handlers.begin_upload({**args, "aucun_dossier_source": bad})
+    with pytest.raises(ToolArgumentError, match="se contredisent"):
+        handlers.begin_upload({**args, "dossier_id": "d1",
+                               "aucun_dossier_source": True})
+    assert world["db"].peek_collection(ut.COLLECTION) == {}
+
+
+def test_replacing_the_active_template_s_file_always_names_its_source(world):
+    """The case the critic named: the ACTIVE note-d'honoraires template's
+    file, replaced through the ticket, with no dossier and no declaration —
+    refused before anything opens."""
+    data = _docx("Note : {{facture.numero}}")
+    tpl, errors = tpl_model.create_template(
+        io.BytesIO(data), "n.docx", len(data),
+        {"name": "Note d'honoraires", "category": "autre",
+         "kind": "note_honoraires"}, UID)
+    assert errors == []
+    tpl_model.set_active_template(tpl["id"], par="juriste", expected_etag=None)
+    new = _docx("Note v2 : {{facture.numero}}")
+    with pytest.raises(ToolArgumentError, match="aucun_dossier_source"):
+        handlers.begin_upload({
+            "purpose": "gabarit", "template_mode": "replace",
+            "template_id": tpl["id"], "expected_version": 1,
+            "filename": "n.docx", "size_bytes": len(new),
+            "md5_base64": _md5(new)})
+    assert world["db"].peek_collection(ut.COLLECTION) == {}
+
+
+def test_a_document_ticket_takes_no_source_declaration(world):
+    with pytest.raises(ToolArgumentError, match="ne s'applique pas"):
+        _begin_document(world, aucun_dossier_source=True)
+    assert world["db"].peek_collection(ut.COLLECTION) == {}
+
+
+def test_a_stored_ticket_with_neither_dossier_nor_declaration_is_never_filed(
+    world,
+):
+    """A ticket opened before the fixups (no declaration bound, no dossier)
+    reaching finalize is refused and settled — fail CLOSED, never filed
+    unchecked. FAILS on the old handler, which filed it."""
+    opened = _begin_gabarit(world, LEAKY_LETTER)
+    ticket = _ticket(world, opened["ticket_id"])
+    params = dict(ticket["template_params"])
+    params.pop("aucun_dossier_source")
+    world["db"].seed(f"{ut.COLLECTION}/{opened['ticket_id']}",
+                     {**ticket, "template_params": params})
+    _put(world, opened, LEAKY_LETTER)
+    before = set(_templates(world))
+    with pytest.raises(ToolArgumentError, match="aucun_dossier_source") as exc:
+        handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert exc.value.reason == "upload_residue"
+    after = _ticket(world, opened["ticket_id"])
+    assert after["status"] == ut.STATUS_REFUSED
+    assert after["refusal_reason"] == "sans_dossier_source"
+    assert set(_templates(world)) == before
 
 
 def test_an_unreadable_party_fails_the_scan_closed(world):
@@ -821,7 +913,8 @@ def test_a_replacement_installs_a_new_version_and_keeps_the_old(world):
     before = world["db"].peek(f"doc_templates/{tid}")
     new = _docx("Version deux : {{objet_lettre}}")
     opened = handlers.begin_upload({
-        "purpose": "gabarit", "template_mode": "replace", "template_id": tid,
+        "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True, "template_id": tid,
         "expected_version": 1, "filename": "Lettre Tremblay.docx",
         "size_bytes": len(new), "md5_base64": _md5(new)})
     _put(world, opened, new)
@@ -855,6 +948,7 @@ def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(worl
     new = _docx("Note v2 : {{facture.numero}}")
     opened = handlers.begin_upload({
         "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True,
         "template_id": tpl["id"], "expected_version": 1, "filename": "n.docx",
         "size_bytes": len(new), "md5_base64": _md5(new)})
     assert any("ACTIF" in w for w in opened["warnings"])
@@ -875,6 +969,7 @@ def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(worl
 def _replace_through_ticket(world, template_id: str, new: bytes) -> dict:
     opened = handlers.begin_upload({
         "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True,
         "template_id": template_id, "expected_version": 1,
         "filename": "x.docx", "size_bytes": len(new), "md5_base64": _md5(new)})
     _put(world, opened, new)
@@ -921,7 +1016,8 @@ def test_a_replayed_replacement_reports_what_it_did_not_what_came_after(world):
     tid = world["template"]
     new = _docx("Version deux : {{objet_lettre}}")
     opened = handlers.begin_upload({
-        "purpose": "gabarit", "template_mode": "replace", "template_id": tid,
+        "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True, "template_id": tid,
         "expected_version": 1, "filename": "x.docx",
         "size_bytes": len(new), "md5_base64": _md5(new)})
     _put(world, opened, new)
@@ -941,7 +1037,8 @@ def test_a_replacement_refuses_a_version_that_moved_since(world):
     tid = world["template"]
     new = _docx("Version deux : {{objet_lettre}}")
     opened = handlers.begin_upload({
-        "purpose": "gabarit", "template_mode": "replace", "template_id": tid,
+        "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True, "template_id": tid,
         "expected_version": 1, "filename": "x.docx",
         "size_bytes": len(new), "md5_base64": _md5(new)})
     other = _docx("Autre main : {{objet_lettre}}")
@@ -962,7 +1059,8 @@ def test_an_identical_replacement_installs_nothing(world):
     same = world["bucket"].objects[
         world["db"].peek(f"doc_templates/{tid}")["storage_path"]].data
     opened = handlers.begin_upload({
-        "purpose": "gabarit", "template_mode": "replace", "template_id": tid,
+        "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True, "template_id": tid,
         "expected_version": 1, "filename": "x.docx",
         "size_bytes": len(same), "md5_base64": _md5(same)})
     _put(world, opened, same)
@@ -979,7 +1077,8 @@ def test_a_landed_replacement_is_recognised_on_reclaim(world):
     tid = world["template"]
     new = _docx("Version deux : {{objet_lettre}}")
     opened = handlers.begin_upload({
-        "purpose": "gabarit", "template_mode": "replace", "template_id": tid,
+        "purpose": "gabarit", "template_mode": "replace",
+        "aucun_dossier_source": True, "template_id": tid,
         "expected_version": 1, "filename": "x.docx",
         "size_bytes": len(new), "md5_base64": _md5(new)})
     _put(world, opened, new)

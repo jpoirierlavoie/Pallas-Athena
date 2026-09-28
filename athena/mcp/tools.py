@@ -5174,9 +5174,11 @@ TOOLS: dict[str, dict] = {
             "code sandbox in ONE request with its headers, use it only in "
             "that code — never repeat it to the user —, then call "
             "finalize_upload. Needs sandbox egress to storage.googleapis.com. "
-            "A template taken from a dossier: name that dossier_id, and its "
-            "names and numbers are refused (accept_residual on the lawyer's "
-            "word only)."
+            "A gabarit REQUIRES dossier_id — the dossier its file comes "
+            "from, whose names and numbers are then refused (accept_residual "
+            "on the lawyer's word only) — or aucun_dossier_source: true, "
+            "ONLY for a file from no dossier: nothing is then checked, and "
+            "the result says so."
         ),
         "input_schema": {
             "type": "object",
@@ -5211,7 +5213,8 @@ TOOLS: dict[str, dict] = {
                 },
                 "dossier_id": _id(
                     "document: REQUIRED, the dossier. gabarit: the dossier "
-                    "the file comes from, whose identifiers are then refused."
+                    "the file comes from, whose identifiers are then refused "
+                    "— or aucun_dossier_source."
                 ),
                 "folder_id": _id(
                     "document: a folder of the dossier (list_documents with "
@@ -5304,6 +5307,15 @@ TOOLS: dict[str, dict] = {
                         "last editor and description first (default false)."
                     ),
                 },
+                "aucun_dossier_source": {
+                    "type": "boolean",
+                    "description": (
+                        "gabarit, without dossier_id: true DECLARES the file "
+                        "comes from no dossier — nothing is checked. Never "
+                        "for a file drawn from a matter; if unsure, ask the "
+                        "lawyer."
+                    ),
+                },
                 **_write_protocol_props(),
             },
             "required": ["purpose", "filename", "size_bytes", "md5_base64"],
@@ -5324,8 +5336,9 @@ TOOLS: dict[str, dict] = {
             "WRITE — step 2: files the bytes PUT under ticket_id. They enter "
             "only if their size and MD5 are exactly what begin_upload bound; "
             "other bytes are refused and discarded. document → a NEW "
-            "document. gabarit → checked against the named dossier's "
-            "identifiers, then a new template or a NEW version of the one "
+            "document. gabarit → checked against the source dossier named "
+            "at begin_upload (nothing checked only when aucun_dossier_source "
+            "was declared), then a new template or a NEW version of the one "
             "named (the replaced version is kept). Nothing received yet → "
             "refused, the ticket stays open: PUT, then call again. A ticket "
             "already filed answers its result again — never upload that "
