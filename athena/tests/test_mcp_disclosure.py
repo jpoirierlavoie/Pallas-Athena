@@ -137,6 +137,11 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "the one thing you can write is its analysis",
     "seule son analyse s'y inscrit",
     "son nom ou son dossier de classement",
+    # Lot 2A (T8): fill_gabarit and create_document ADD a new document to a
+    # dossier. The « document » NEVER that said otherwise was narrowed to an
+    # EXISTING document's file.
+    "never adds a new file to a dossier",
+    "en verser un nouveau au dossier",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

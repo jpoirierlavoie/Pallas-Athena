@@ -19,13 +19,18 @@ lot 1b), ``timeentries``, ``expenses``, ``parties``, ``invoices`` (with its
 causes on the two billing collections), ``documents`` (since lot 2A T7
 its filing fields — display name, date, tags, folder and a PRESUMED
 category set outside any analysis —, plus its ``analyse`` cache, the
-DERIVED ``category`` and an append-only ``analyses`` journal entry; never
-the file, never ``notes_internes``), ``folders`` (lot 2A T7: created,
-renamed, moved — never a system folder) and ``dossiers``. ONE path
-reaches outside Firestore: ``decide_rendez_vous``'s refusal, through
-``services/rendez_vous``, cancels the Outlook meeting of a pending Bookings
-request (Graph ``/cancel``, with the service's fixed text) — the connector's
-only call outside Firestore, and a « never » of the registry forbids any
+DERIVED ``category`` and an append-only ``analyses`` journal entry; and
+since lot 2A T8 NEW documents — a filled gabarit, a Markdown text printed
+on the active note template, a copy within its own dossier — with their
+bytes in Storage, written through ``services/gabarits`` and
+``models/document`` (a new object, create-only); never an existing
+document's file, never ``notes_internes``), ``folders`` (lot 2A T7:
+created, renamed, moved — never a system folder; T8: « Projets » created on
+first use by a generation) and ``dossiers``. Storage is written only by
+those creators. ONE path reaches outside the practice's own stores:
+``decide_rendez_vous``'s refusal, through ``services/rendez_vous``, cancels
+the Outlook meeting of a pending Bookings request (Graph ``/cancel``, with
+the service's fixed text) — and a « never » of the registry forbids any
 other. (An edited event's copy in the lawyer's own Outlook calendar follows
 through the 10-minute mirror cron, never through this code.)
 
@@ -108,15 +113,18 @@ from models import reference
 from models import task as task_model
 from models import time_entry as time_entry_model
 from models import trust as trust_model
-from security import sanitize
+from security import TAG_RE, sanitize
 from services import gabarit_champs as gabarit_service
+from services import gabarits as gabarit_writer
 from services import protocoles as protocol_service
 from services import rendez_vous as rendez_vous_service
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, deadlines, pdf_text, phases, recurrence, taxonomie,
+    analyse_blocs, deadlines, pdf_text, phases, recurrence,
+    storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
+from utils.docx_fill import extract_placeholders
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import log_hearing_series_event
 from utils.recours import PRESCRIPTION_LABELS, compute_class
@@ -127,6 +135,11 @@ from utils.template_fields import (
     is_uppercase_name,
     selected_address,
 )
+from utils.note_docx import (
+    RICH_FIELD,
+    assemble_note_print_values,
+    build_note_context,
+)
 from utils.validators import format_phone_display
 
 from mcp.tools import (
@@ -136,8 +149,10 @@ from mcp.tools import (
     CONCURRENCY_REQUIRED,
     DOCUMENT_MOVE_MAX,
     DOCUMENT_TAGS_MAX,
+    DOCUMENT_TITLE_MAX_CHARS,
     DOCUMENT_TEXT_MAX_CHARS,
     FOLDER_TREE_MAX,
+    MARKDOWN_DOCUMENT_MAX_CHARS,
     PHASE_BULK_MAX,
     TOOLS,
     ToolArgumentError,
@@ -10620,3 +10635,741 @@ def _edit_folder(args: dict, dossier_id: str, action: str) -> dict:
         action, outcome, folder, _folder_path(folders, folder),
         changed=[field],
     )
+
+
+# ── fill_gabarit / create_document (WRITE) — lot 2A, step T8 ───────────
+#
+# The first connector writes that ADD A FILE to a dossier — always a NEW
+# document, never a change to a stored one (the « document » NEVER): a
+# gabarit filled on the dossier, Markdown printed on the ACTIVE note-print
+# template, or a GCS-side copy of a stored .docx within its OWN dossier.
+# The bytes are built by the fill engine or copied by GCS; nothing is
+# uploaded from the caller. Documents are not DAV-exposed: no CTag.
+#
+# Order in every path: every refusal a caller can trip (the arguments, the
+# template, the slots, the values, the folder, the Storage identity) comes
+# BEFORE the first write, so a refused call writes nothing — the « Projets »
+# folder included. The save is the commit point (the models note it);
+# nothing after it may refuse. Refusals name the field, never quote what
+# was sent, and log the fill's machine reason as `generation_failed`
+# (log_template_event), beside the endpoint's `mcp_write_refused`.
+
+_GENERATED_BY = "par Claude (connecteur)"
+_NOTHING_GENERATED = "Rien n'a été généré."
+_NOTHING_CREATED = "Rien n'a été créé."
+_GABARIT_FLOWS_FR = {
+    "note_honoraires": (
+        "se remplit depuis la facture, dans l'application (« Note "
+        "d'honoraires (Word) »)"
+    ),
+    "note": (
+        "imprime une note, dans l'application — pour mettre en forme un "
+        "texte, utilisez create_document (source « markdown »)"
+    ),
+}
+_STORAGE_UNAVAILABLE = (
+    "L'identité de stockage du cabinet n'a pas pu être établie : rien n'a "
+    "été écrit. Réessayez dans un instant."
+)
+# A plain bloc paragraph opening on a number the gabarit's own Word
+# numbering would double. Anchored, fixed classes — linear (CWE-1333).
+_SELF_NUMBERED_RE = re.compile(r"\s*\d{1,4}[.)]\s")
+_NIVEAU_LABELS_FR = {
+    0: "Public", 1: "Confidentiel", 2: "Privilégié", 3: "Secret professionnel",
+}
+# The note.* fields a Markdown document has no value for — printed empty.
+_NOTE_FIELDS_WITHOUT_VALUE = ("note.categorie", "note.date_maj")
+
+
+def _log_generation(event: str, source: str, **fields: Any) -> None:
+    """A generation line — ids only when id-shaped, never a value; it must
+    never raise (after the commit, a raise would report a saved document
+    as a failure)."""
+    try:
+        from utils.logging_setup import log_template_event
+
+        clean = {k: v for k, v in fields.items() if v is not None}
+        for key in ("template_id", "dossier_id", "saved_document_id",
+                    "source_document_id"):
+            if key in clean:
+                clean[key] = loggable_id(clean[key])
+                if clean[key] is None:
+                    del clean[key]
+        log_template_event(event, source=source, **clean)
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp generation logging failed")
+
+
+def _generation_refused(
+    exc: "gabarit_writer.GenerationRefused", *, source: str,
+    template_id: str = "", dossier_id: str = "",
+) -> ToolArgumentError:
+    """A service refusal, logged under its machine reason and phrased for a
+    surface without a window."""
+    _log_generation("generation_failed", source, reason=exc.reason,
+                    template_id=template_id, dossier_id=dossier_id)
+    if exc.reason in ("dossier_not_found", "slot_foreign", "slot_unknown",
+                      "slot_ambiguous"):
+        return _gabarit_refusal(exc, dossier_id=dossier_id)
+    message = exc.message
+    if "Rien n'a été" not in message:
+        message = f"{message} {_NOTHING_GENERATED}"
+    return ToolArgumentError(message)
+
+
+def _owner_uid(source: str, **log: Any) -> str:
+    """The Storage identity a connector write files under — the authorized
+    user's uid (``utils.storage_identity.owner_uid``), fail CLOSED, asked
+    BEFORE anything is written."""
+    try:
+        return storage_identity.owner_uid()
+    except storage_identity.StorageIdentityUnavailable:
+        _log_generation("generation_failed", source,
+                        reason="storage_user_unresolved", **log)
+        raise ToolArgumentError(_STORAGE_UNAVAILABLE)
+
+
+def _folder_row(folder: Optional[dict]) -> dict:
+    if not folder:
+        return {"id": None, "name": "", "system_role": ""}
+    return {
+        "id": folder.get("id") or None,
+        "name": str(folder.get("name") or ""),
+        "system_role": str(folder.get("system_role") or ""),
+    }
+
+
+def _left_in_document(filled: bytes) -> Optional[list[str]]:
+    """The placeholders still literal in *filled* — None when it cannot be
+    re-read (never a refusal: the document is saved by then)."""
+    try:
+        return extract_placeholders(filled)
+    except Exception:
+        return None
+
+
+def _clean_markdown_text(raw: Any, where: str) -> str:
+    """Autolinks normalized, then REFUSED if anything else would not survive
+    the tag stripper — the note writes' rule (``_clean_note_text``), for a
+    text that goes through bleach on its way to Word."""
+    text = _normalize_markdown(raw if isinstance(raw, str) else "")
+    if TAG_RE.search(text):
+        raise ToolArgumentError(
+            f"{where} contient du texte entre chevrons, que la mise en forme "
+            f"retirerait sans le dire. {_CHEVRON_ADVICE} {_NOTHING_GENERATED}"
+        )
+    return text
+
+
+def _read_fillable_template(template_id: str, source: str) -> dict:
+    """The gabarit to fill — read strictly, of kind « gabarit »."""
+    if not template_id or "/" in template_id:
+        _log_generation("generation_failed", source,
+                        reason="template_not_found")
+        raise ToolArgumentError(
+            "`template_id` : aucun gabarit ne porte cet identifiant — "
+            f"prenez-le dans list_templates. {_NOTHING_GENERATED}"
+        )
+    try:
+        template = doc_template_model.get_template(template_id, strict=True)
+    except doc_template_model.TemplateReadError:
+        _log_generation("generation_failed", source,
+                        reason="template_read_failed", template_id=template_id)
+        raise ToolArgumentError(f"{TEMPLATE_READ_ERROR} {_NOTHING_GENERATED}")
+    if template is None:
+        _log_generation("generation_failed", source,
+                        reason="template_not_found", template_id=template_id)
+        raise ToolArgumentError(
+            "`template_id` : aucun gabarit ne porte cet identifiant — "
+            f"prenez-le dans list_templates. {_NOTHING_GENERATED}"
+        )
+    kind = template.get("kind") or "gabarit"
+    if kind != "gabarit":
+        _log_generation("generation_failed", source, reason="kind_refused",
+                        template_id=template_id)
+        raise ToolArgumentError(
+            f"Ce gabarit {_GABARIT_FLOWS_FR.get(kind, 'a son propre flux')} : "
+            "fill_gabarit ne remplit que les gabarits ordinaires. "
+            f"{_NOTHING_GENERATED}"
+        )
+    return {**template, "placeholders": _template_placeholders(template)}
+
+
+def _clean_bloc_entries(raw: Any) -> list[dict]:
+    """The blocs as the service will judge them — a Markdown bloc's text
+    normalized and chevron-checked first (the service owns the rest)."""
+    if not isinstance(raw, list):
+        raise ToolArgumentError("`blocs` doit être une liste.")
+    cleaned = []
+    for position, entry in enumerate(raw, start=1):
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        if entry.get("markdown") and isinstance(entry.get("contenu"), str):
+            entry["contenu"] = _clean_markdown_text(
+                entry["contenu"], f"Le bloc n° {position}")
+        cleaned.append(entry)
+    return cleaned
+
+
+def _bloc_warnings(fill: "gabarit_writer.ConnectorValues", blocs: list) -> list[str]:
+    warnings: list[str] = []
+    texts = {str(b.get("nom")): str(b.get("contenu") or "") for b in blocs}
+    for name in fill.blocs_plain:
+        text = texts.get(name, "").replace("\r\n", "\n")
+        chunks = [c for c in text.split("\n\n") if c.strip()]
+        if any(_SELF_NUMBERED_RE.match(c) for c in chunks):
+            warnings.append(
+                f"Le bloc « {name} » ouvre un paragraphe sur un numéro : si "
+                "le gabarit numérote déjà ce bloc, les numéros seront "
+                "doublés — envoyez les paragraphes sans numéro."
+            )
+        if "\n" in text and "\n\n" not in text:
+            warnings.append(
+                f"Le bloc « {name} » contient des retours de ligne simples : "
+                "chacun devient une espace. Séparez les paragraphes par une "
+                "LIGNE VIDE."
+            )
+    return warnings
+
+
+# ── fill_gabarit (WRITE) ────────────────────────────────────────────────
+
+def fill_gabarit(args: dict) -> dict:
+    return run_write("fill_gabarit", args, lambda: _fill_gabarit_impl(args))
+
+
+def _fill_gabarit_impl(args: dict) -> dict:
+    source = "mcp_gabarit"
+    template_id = str(args.get("template_id") or "").strip()
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    if not dossier_id:
+        # SPEC H.4 D2: there is nowhere to put the result — this connector
+        # has no download path, and a document without a dossier is none.
+        raise ToolArgumentError(
+            "`dossier_id` est requis : le document est versé au dossier, "
+            "dans « Projets » — ce connecteur n'a aucune voie de "
+            "téléchargement. N'omettez pas dossier_id pour contourner une "
+            f"autre erreur. {_NOTHING_GENERATED}"
+        )
+    template = _read_fillable_template(template_id, source)
+    classification = classify_placeholders(template["placeholders"])
+    try:
+        # STRICT: a slot that is not on the dossier is refused — never the
+        # web popup's silent swap for the first party — and a slot the
+        # gabarit reads must be NAMED when the dossier offers several.
+        slots = gabarit_service.resolve_slots(
+            dossier_id,
+            str(args.get("client_id") or ""),
+            str(args.get("adverse_id") or ""),
+            str(args.get("destinataire_id") or ""),
+            required_slots=classification.slots_required,
+            refuse_ambiguous=True,
+        )
+    except gabarit_writer.GenerationRefused as exc:
+        raise _generation_refused(exc, source=source, template_id=template_id,
+                                  dossier_id=dossier_id)
+    blocs = _clean_bloc_entries(args.get("blocs") or [])
+    manuels = args.get("champs_manuels") or []
+    if not isinstance(manuels, list):
+        raise ToolArgumentError("`champs_manuels` doit être une liste.")
+    # The auto values are the SERVER's, resolved on the slots — never a
+    # value the caller supplied (SPEC H.4 D1).
+    resolved = gabarit_service.resolve_auto_values(template, slots)
+    try:
+        fill = gabarit_writer.values_for_connector(
+            template, resolved, blocs=blocs,
+            manuels=[dict(m) if isinstance(m, dict) else {} for m in manuels])
+    except gabarit_writer.GenerationRefused as exc:
+        raise _generation_refused(exc, source=source, template_id=template_id,
+                                  dossier_id=dossier_id)
+    uid = _owner_uid(source, template_id=template_id, dossier_id=dossier_id)
+    data = doc_template_model.template_file_bytes(template)
+    if data is None:
+        raise _generation_refused(
+            gabarit_writer.GenerationRefused(
+                "template_file_unavailable",
+                "Le fichier du gabarit est introuvable — le juriste doit le "
+                "téléverser de nouveau dans Gabarits."),
+            source=source, template_id=template_id, dossier_id=dossier_id)
+    try:
+        filled, demoted = gabarit_writer.fill(
+            data, fill.values, rich_values=fill.rich_values or None,
+            template_id=template_id)
+    except gabarit_writer.GenerationRefused as exc:
+        raise _generation_refused(exc, source=source, template_id=template_id,
+                                  dossier_id=dossier_id)
+
+    today = _today_mtl()
+    display, out_name = gabarit_writer.output_names(template, slots.dossier, today)
+    try:
+        doc, folder = gabarit_writer.save_generated(
+            dossier=slots.dossier, filled=filled, uid=uid,
+            display_name=display, filename=out_name,
+            category=template.get("category") or "autre",
+            genere_depuis=(
+                f"{gabarit_writer.generated_from(template)} — "
+                f"{_GENERATED_BY}, le {today.isoformat()}"),
+            tags=("gabarit",),
+        )
+    except gabarit_writer.GenerationRefused as exc:
+        raise _generation_refused(exc, source=source, template_id=template_id,
+                                  dossier_id=dossier_id)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    left = _left_in_document(filled)
+    demoted_blocs = [n for n in fill.blocs_markdown if n in demoted]
+    supplied = set(fill.blocs_plain) | set(fill.blocs_markdown)
+    left_list = list(left) if left is not None else list(fill.blocs_open)
+    stuck = [n for n in left_list if n in supplied or n in fill.values]
+    warnings = _bloc_warnings(fill, blocs)
+    for name in demoted_blocs:
+        warnings.append(
+            f"Le bloc « {name} » n'a pas pu recevoir la mise en forme "
+            "Markdown (son paragraphe dans le gabarit est partagé ou porte "
+            "un saut de section) : il est imprimé en texte brut, symboles "
+            "Markdown visibles."
+        )
+    if stuck:
+        warnings.append(
+            "Resté(s) tel(s) quel(s) dans le document, à compléter dans "
+            f"Word : {_names_list(stuck)} — le champ est fragmenté par Word "
+            "(voir validation_warnings du gabarit) ou placé en en-tête ou "
+            "pied de page, où la mise en forme Markdown ne va pas."
+        )
+    if fill.auto_missing:
+        warnings.append(
+            "Données manquantes au dossier, imprimées « [CHAMP MANQUANT : …] » "
+            f": {_names_list(fill.auto_missing)} — à signaler au juriste."
+        )
+    if fill.manual_missing:
+        warnings.append(
+            "Champs manuels sans valeur, imprimés « [À COMPLÉTER : …] » : "
+            f"{_names_list(fill.manual_missing)}."
+        )
+    if left is None:
+        warnings.append(
+            "Le document produit n'a pas pu être relu pour lister ce qui "
+            "reste à compléter : blocs_left_verbatim ne liste que les blocs "
+            "non rédigés."
+        )
+    _log_generation(
+        "document_generated", source, template_id=template_id,
+        dossier_id=slots.dossier_id, saved_document_id=doc.get("id"),
+        field_count=len(fill.values) + len(fill.rich_values),
+        missing_count=len(fill.auto_missing) + len(fill.manual_missing),
+        bloc_count=len(supplied), demoted_count=len(demoted_blocs),
+    )
+    return {
+        "created": True,
+        "entity_type": "document",
+        "entity": _document_entity(doc),
+        "document_id": doc.get("id", ""),
+        "display_name": doc.get("display_name", "") or "",
+        "folder": _folder_row(folder),
+        "gabarit": {
+            "id": template.get("id", "") or template_id,
+            "name": template.get("name", "") or "",
+            "version": int(template.get("version") or 1),
+        },
+        "fields": {
+            "auto_resolved": len(fill.auto_resolved),
+            "auto_missing": list(fill.auto_missing),
+            "manual_missing": list(fill.manual_missing),
+            "blocs_filled": [n for n in fill.blocs_plain + fill.blocs_markdown
+                             if n not in demoted_blocs and n not in stuck],
+            "blocs_demoted": demoted_blocs,
+            "blocs_left_verbatim": left_list,
+        },
+        "warnings": warnings,
+    }
+
+
+def _names_list(names) -> str:
+    return ", ".join(f"« {n} »" for n in names)
+
+
+# ── create_document (WRITE) ─────────────────────────────────────────────
+
+_CREATE_DOCUMENT_ARGS = {
+    "markdown": ("dossier_id", "title", "markdown", "category",
+                 "document_date", "folder_id"),
+    "copy": ("document_id", "dossier_id", "display_name", "folder_id"),
+}
+_CREATE_DOCUMENT_REQUIRED = {
+    "markdown": ("dossier_id", "title", "markdown"),
+    "copy": ("document_id",),
+}
+_CREATE_DOCUMENT_ALL = ("dossier_id", "title", "markdown", "category",
+                        "document_date", "folder_id", "document_id",
+                        "display_name")
+_NO_ACTIVE_NOTE_TEMPLATE = (
+    "Aucun gabarit « Note (impression) » n'est désigné comme actif : le "
+    "juriste doit en désigner un dans Gabarits (l'application ne retient "
+    "jamais le plus récent à sa place). " + _NOTHING_CREATED
+)
+
+
+def create_document(args: dict) -> dict:
+    return run_write("create_document", args,
+                     lambda: _create_document_impl(args))
+
+
+def _create_document_impl(args: dict) -> dict:
+    source = args.get("source")
+    if source not in _CREATE_DOCUMENT_ARGS:
+        raise ToolArgumentError("`source` doit valoir markdown ou copy.")
+    stray = [k for k in _CREATE_DOCUMENT_ALL
+             if k in args and k not in _CREATE_DOCUMENT_ARGS[source]]
+    if stray:
+        raise ToolArgumentError(
+            f"Avec source « {source} », "
+            + ", ".join(f"`{k}`" for k in stray)
+            + f" ne s'applique pas : retirez-le. {_NOTHING_CREATED}"
+        )
+    missing = [k for k in _CREATE_DOCUMENT_REQUIRED[source] if k not in args]
+    if missing:
+        raise ToolArgumentError(
+            f"Avec source « {source} », "
+            + ", ".join(f"`{k}`" for k in missing) + " est requis."
+        )
+    if source == "markdown":
+        return _create_markdown_document(args)
+    return _copy_stored_document(args)
+
+
+def _target_folder(args: dict, dossier_id: str) -> Any:
+    """Where the new document goes: « Projets » when folder_id is omitted
+    (the service's PROJETS sentinel), the dossier root for "", else that
+    folder of the dossier — read fail-CLOSED, before anything is written."""
+    if "folder_id" not in args:
+        return gabarit_writer.PROJETS
+    target = str(args.get("folder_id") or "").strip()
+    if not target:
+        return None
+    unknown = (
+        "`folder_id` : ce dossier de classement n'existe pas dans ce "
+        "dossier. Prenez son identifiant dans list_documents "
+        "(include_folders) ; \"\" désigne la racine, et l'omettre, "
+        f"« Projets ». {_NOTHING_CREATED}"
+    )
+    if not document_model.is_addressable_id(target):
+        raise ToolArgumentError(unknown)
+    try:
+        folders = folder_model.list_dossier_folders(dossier_id)
+    except Exception:
+        raise ToolArgumentError(f"{FOLDER_READ_ERROR} {_NOTHING_CREATED}")
+    folder = next((f for f in folders if f.get("id") == target), None)
+    if folder is None:
+        raise ToolArgumentError(unknown)
+    return folder
+
+
+def _clean_generated_text(raw: Any, field: str, limit: int, *,
+                          markdown: bool) -> str:
+    """A text Claude wrote for a generated document, as it will be FILLED —
+    or a refusal: blank, over-long, « {{ »/« }} » (the engine would read
+    them as a field), a control character (the engine strips it in
+    silence), and for Markdown the chevrons the formatter would drop."""
+    text = raw if isinstance(raw, str) else ""
+    if not text.strip():
+        raise ToolArgumentError(f"`{field}` est vide. {_NOTHING_CREATED}")
+    # The length FIRST — measured on the text as it will be filled (the
+    # Markdown with its autolinks normalized, the title trimmed).
+    text = _normalize_markdown(text) if markdown else text.strip()
+    if not markdown and ("\n" in text or "\r" in text):
+        # A title is ONE line: the fill prints a newline as a space, and the
+        # document's name would carry it as it is.
+        raise ToolArgumentError(
+            f"`{field}` tient sur une seule ligne : retirez les retours de "
+            f"ligne. {_NOTHING_CREATED}"
+        )
+    if len(text.replace("\r\n", "\n")) > limit:
+        raise ToolArgumentError(
+            f"`{field}` dépasse {limit} caractères. {_NOTHING_CREATED}")
+    if TAG_RE.search(text):
+        # The Markdown goes through bleach, the title through the stored
+        # display name's sanitizer: either would drop a « <…> » run in
+        # silence.
+        raise ToolArgumentError(
+            f"`{field}` contient du texte entre chevrons, qui serait retiré "
+            f"sans le dire. {_CHEVRON_ADVICE} {_NOTHING_CREATED}"
+        )
+    if "{{" in text or "}}" in text:
+        raise ToolArgumentError(
+            f"`{field}` contient « {{{{ » ou « }}}} » : le gabarit les lirait "
+            "comme un champ à remplir et y imprimerait des données du "
+            f"dossier. Retirez-les. {_NOTHING_CREATED}"
+        )
+    if any(ord(ch) < 32 and ch not in "\t\n\r" for ch in text):
+        raise ToolArgumentError(
+            f"`{field}` contient un caractère de contrôle invisible : "
+            f"retirez-le. {_NOTHING_CREATED}"
+        )
+    return text
+
+
+def _create_markdown_document(args: dict) -> dict:
+    source = "mcp_markdown"
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    title = _clean_generated_text(args.get("title"), "title",
+                                  DOCUMENT_TITLE_MAX_CHARS, markdown=False)
+    body = _clean_generated_text(args.get("markdown"), "markdown",
+                                 MARKDOWN_DOCUMENT_MAX_CHARS, markdown=True)
+    category = args.get("category")
+    if category is not None and category not in document_model.CATEGORY_CHOICES:
+        raise ToolArgumentError(
+            "`category` : valeur hors vocabulaire. Valeurs admises : "
+            + ", ".join(document_model.CATEGORY_CHOICES) + f". {_NOTHING_CREATED}"
+        )
+    document_date = _write_date(args, "document_date", required=False)
+    folder = _target_folder(args, dossier_id)
+
+    try:
+        template = doc_template_model.get_active_template("note")
+    except doc_template_model.TemplateReadError:
+        _log_generation("generation_failed", source,
+                        reason="template_read_failed", dossier_id=dossier_id)
+        raise ToolArgumentError(
+            "La désignation du gabarit « Note (impression) » n'a pas pu "
+            f"être lue — réessayez dans un moment. {_NOTHING_CREATED}"
+        )
+    if template is None:
+        _log_generation("generation_failed", source,
+                        reason="no_note_print_template", dossier_id=dossier_id)
+        raise ToolArgumentError(_NO_ACTIVE_NOTE_TEMPLATE)
+    template_id = template.get("id", "")
+    placeholders = _template_placeholders(template)
+    if RICH_FIELD not in placeholders:
+        _log_generation("generation_failed", source,
+                        reason="note_field_missing", template_id=template_id,
+                        dossier_id=dossier_id)
+        raise ToolArgumentError(
+            "Le gabarit « Note (impression) » actif ne porte pas "
+            f"« {{{{{RICH_FIELD}}}}} » (écrit exactement ainsi) : il n'a "
+            "nulle part où imprimer le texte. Le juriste doit l'y placer, "
+            f"seul dans son paragraphe. {_NOTHING_CREATED}"
+        )
+    uid = _owner_uid(source, template_id=template_id, dossier_id=dossier_id)
+    data = doc_template_model.template_file_bytes(template)
+    if data is None:
+        _log_generation("generation_failed", source,
+                        reason="template_file_unavailable",
+                        template_id=template_id, dossier_id=dossier_id)
+        raise ToolArgumentError(
+            "Le fichier du gabarit « Note (impression) » actif est "
+            "introuvable — le juriste doit le téléverser de nouveau. "
+            f"{_NOTHING_CREATED}"
+        )
+
+    today = _today_mtl()
+    now = datetime.now(timezone.utc)
+    note = {
+        "title": title, "content": body, "category": "",
+        "dossier_file_number": dossier.get("file_number", "") or "",
+        "dossier_title": dossier.get("title", "") or "",
+        "created_at": now, "updated_at": now,
+    }
+    ctx = build_note_context(note, dossier=dossier, firm=cabinet_dict(),
+                             today=today)
+    values = assemble_note_print_values(
+        {**template, "placeholders": placeholders}, ctx)
+    try:
+        filled, demoted = gabarit_writer.fill(
+            data, values, rich_values=ctx.rich_values, template_id=template_id)
+    except gabarit_writer.GenerationRefused as exc:
+        _log_generation("generation_failed", source, reason=exc.reason,
+                        template_id=template_id, dossier_id=dossier_id)
+        raise ToolArgumentError(f"{exc.message} {_NOTHING_CREATED}")
+    if RICH_FIELD in demoted:
+        # Refused rather than stored: a document full of raw Markdown sigils
+        # is not the formatted text Claude would announce.
+        _log_generation("generation_failed", source, reason="rich_demoted",
+                        template_id=template_id, dossier_id=dossier_id)
+        raise ToolArgumentError(
+            "Le gabarit « Note (impression) » actif ne peut pas recevoir un "
+            f"texte mis en forme : « {{{{{RICH_FIELD}}}}} » n'y est pas seul "
+            "dans son paragraphe (ou ce paragraphe porte un saut de "
+            "section). Le juriste doit corriger le gabarit. "
+            f"{_NOTHING_CREATED}"
+        )
+
+    presumed = category is not None
+    display, out_name = gabarit_writer.projet_names(dossier, title, today)
+    try:
+        doc, landed = gabarit_writer.save_generated(
+            dossier=dossier, filled=filled, uid=uid,
+            display_name=display, filename=out_name,
+            category=(category if presumed
+                      else template.get("category") or "autre"),
+            category_source="mcp" if presumed else "juriste",
+            genere_depuis=(
+                f"Rédigé {_GENERATED_BY} le {today.isoformat()} — gabarit "
+                f"« {template.get('name', '')} » "
+                f"v{int(template.get('version') or 1)}"),
+            document_date=document_date,
+            folder=folder,
+        )
+    except gabarit_writer.GenerationRefused as exc:
+        _log_generation("generation_failed", source, reason=exc.reason,
+                        template_id=template_id, dossier_id=dossier_id)
+        message = exc.message
+        if "Rien n'a été" not in message:
+            message = f"{message} {_NOTHING_CREATED}"
+        raise ToolArgumentError(message)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    warnings: list[str] = []
+    empty = [n for n in placeholders if n.lower() in _NOTE_FIELDS_WITHOUT_VALUE]
+    if empty:
+        warnings.append(
+            f"Le gabarit imprime {_names_list(empty)} : un texte rédigé n'a "
+            "ni catégorie de note ni date de modification — le champ sort "
+            "vide."
+        )
+    if presumed:
+        warnings.append(
+            "La catégorie reste PRÉSUMÉE jusqu'à ce que le juriste la "
+            "confirme dans l'application."
+        )
+    _log_generation(
+        "document_generated", source, template_id=template_id,
+        dossier_id=dossier_id, saved_document_id=doc.get("id"),
+        field_count=len(values), content_chars=len(body),
+    )
+    return {
+        "created": True,
+        "source": "markdown",
+        "entity_type": "document",
+        "entity": _document_entity(doc),
+        "folder": _folder_row(landed),
+        "template": {
+            "id": template_id,
+            "name": template.get("name", "") or "",
+            "version": int(template.get("version") or 1),
+        },
+        "source_document_id": None,
+        "protection": None,
+        "warnings": warnings,
+    }
+
+
+def _copy_stored_document(args: dict) -> dict:
+    source = "mcp_copy"
+    document_id = str(args.get("document_id") or "").strip()
+    not_found = (
+        "`document_id` : document introuvable. Prenez son identifiant dans "
+        f"list_documents. {_NOTHING_CREATED}"
+    )
+    if not document_model.is_addressable_id(document_id):
+        raise ToolArgumentError(not_found)
+    try:
+        src = document_model.get_document_strict(document_id)
+    except Exception:
+        raise ToolArgumentError(
+            f"Lecture du document impossible — réessayez. {_NOTHING_CREATED}")
+    if src is None:
+        raise ToolArgumentError(not_found)
+    filename = str(src.get("filename") or "")
+    if src.get("file_type") != _DOCX_MIME or not filename.lower().endswith(".docx"):
+        raise ToolArgumentError(
+            "Seul un document Word (.docx) se copie ici : celui-ci est d'un "
+            f"autre format. {_NOTHING_CREATED}"
+        )
+    dossier_id = str(src.get("dossier_id") or "")
+    asked = str(args.get("dossier_id") or "").strip()
+    if asked and asked != dossier_id:
+        # A copy never leaves its dossier: moving one client's privileged
+        # file into another's is the leak the gabarit identifier scan
+        # exists for — the model takes no target dossier at all.
+        raise ToolArgumentError(
+            "Une copie reste dans le dossier de son document : `dossier_id` "
+            "désigne un autre dossier. Pour réutiliser ce document ailleurs, "
+            "passez par un gabarit rempli pour l'autre dossier — jamais une "
+            "copie, qui y emporterait les noms et les numéros du premier. "
+            f"{_NOTHING_CREATED}"
+        )
+    if dossier_model.get_dossier(dossier_id) is None:
+        raise ToolArgumentError(
+            "Le dossier de ce document est introuvable ou illisible pour le "
+            f"moment — réessayez. {_NOTHING_CREATED}"
+        )
+    display_name = None
+    if "display_name" in args:
+        display_name = _clean_entity_text(
+            args.get("display_name") or "", "display_name",
+            limit=document_model.DISPLAY_NAME_MAX)
+        if not display_name:
+            raise ToolArgumentError("« display_name » ne peut pas être vide.")
+    folder = _target_folder(args, dossier_id)
+    # The uid BEFORE « Projets » is touched: a copy that could not be filed
+    # writes nothing at all.
+    uid = _owner_uid(source, dossier_id=dossier_id,
+                     source_document_id=document_id)
+    if folder is gabarit_writer.PROJETS:
+        try:
+            folder = gabarit_writer.ensure_projets(dossier_id)
+        except gabarit_writer.GenerationRefused as exc:
+            _log_generation("generation_failed", source, reason=exc.reason,
+                            dossier_id=dossier_id,
+                            source_document_id=document_id)
+            raise ToolArgumentError(f"{exc.message} {_NOTHING_CREATED}")
+    today = _today_mtl()
+    name = str(src.get("display_name") or filename)
+    if TAG_RE.search(name):
+        name = document_id
+    copy, errors = document_model.copy_document(
+        document_id, user_id=uid, folder_id=(folder or {}).get("id"),
+        display_name=display_name,
+        genere_depuis=(f"Copie de « {name[:200]} » — {_GENERATED_BY}, le "
+                       f"{today.isoformat()}"),
+    )
+    if errors or copy is None:
+        _log_generation("generation_failed", source, reason="copy_refused",
+                        dossier_id=dossier_id, source_document_id=document_id)
+        raise ToolArgumentError(" ".join(errors) if errors else (
+            f"La copie a échoué — réessayez. {_NOTHING_CREATED}"))
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    seed = copy.get("analyse") or {}
+    level = seed.get("niveau_protection")
+    protection = None
+    warnings: list[str] = []
+    if isinstance(level, int) and not isinstance(level, bool):
+        protection = {
+            "niveau_protection": level,
+            "label": _NIVEAU_LABELS_FR.get(level, ""),
+            "privileges": list(seed.get("privileges") or []),
+        }
+        warnings.append(
+            f"Le document source est protégé au niveau {level} "
+            f"(« {_NIVEAU_LABELS_FR.get(level, '')} ») : la copie porte ce "
+            "niveau, PRÉSUMÉ — le juriste le confirme ou le corrige dans "
+            "l'application."
+        )
+    if copy.get("category_source") == "mcp":
+        warnings.append(
+            "La catégorie de la copie reste PRÉSUMÉE : sur l'original, elle "
+            "n'était pas une détermination du juriste."
+        )
+    if (src.get("notes_internes") or "").strip():
+        warnings.append(
+            "Les notes internes du document source ne sont pas recopiées : "
+            "elles portent sur l'original."
+        )
+    _log_generation(
+        "document_generated", source, dossier_id=dossier_id,
+        saved_document_id=copy.get("id"), source_document_id=document_id,
+        protection_level=level if protection else None,
+    )
+    return {
+        "created": True,
+        "source": "copy",
+        "entity_type": "document",
+        "entity": _document_entity(copy),
+        "folder": _folder_row(folder),
+        "template": None,
+        "source_document_id": document_id,
+        "protection": protection,
+        "warnings": warnings,
+    }

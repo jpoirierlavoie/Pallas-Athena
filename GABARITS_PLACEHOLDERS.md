@@ -331,6 +331,32 @@ Deliberately **not resolved and not prompted** — these survive as literal
 - **Any unknown name** — anything not matching the catalog *or the manual
   fields* (both case-insensitively, the catalog also via a flat alias).
 
+### Through the connector (`fill_gabarit`, lot 2A, September 2026)
+
+A passthrough name is also what **Claude** may write, through the connector's
+`fill_gabarit` — a *bloc*. Everything else stays the application's:
+
+- **Only the passthrough names are Claude's.** The auto fields are resolved by
+  the server from the dossier and its parties (a bloc named like one is
+  refused, never overridden); the manual fields are set through their own
+  list, their options enforced. Names are compared **exactly** — the case
+  counts here, as `list_templates` reports them.
+- **A bloc's paragraphs are separated by a BLANK LINE**; a single newline
+  becomes a space. Each paragraph is a clone of the host paragraph, so a
+  `{{FAITS}}` alone in a **numbered** paragraph yields real, continuous Word
+  numbers — which is why a bloc should carry **no numbering of its own**.
+- **`markdown: true`** sends a bloc through the formatted path of §7 (the host
+  paragraph's own numbering neutralized). It needs the same host as
+  `{{note.contenu}}`: alone in its paragraph, in the body. Otherwise it prints
+  as plain text, Markdown sigils visible, and the tool says so
+  (`blocs_demoted`).
+- **A bloc or a manual value can never contain `{{` or `}}`** — the engine
+  would read `{{dossier.demandeur}}` inside it as a field and print the
+  dossier's data there. It is refused, not escaped.
+- A bloc Claude does not write stays `{{name}}` for Word, and the result says
+  which (`blocs_left_verbatim`, read back from the produced file — a field
+  Word fragmented is listed there too).
+
 ---
 
 ## 6. Note d'honoraires only (`kind="note_honoraires"`)
@@ -452,6 +478,14 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
   itself) is still inherited — give that paragraph an ordinary style.
 - Never put `{{note.contenu}}` in a header/footer — it is left verbatim there.
 - The other `note.*` fields are ordinary scalars and work anywhere.
+- **The connector prints on this same template** (`create_document`, source
+  « markdown », lot 2A): Claude's Markdown as `{{note.contenu}}`, its title as
+  `{{note.titre}}`, saved as a NEW document in « Projets » (the web print stays
+  a download). Only the template the lawyer designated **active** is used —
+  none designated, it refuses; and where `{{note.contenu}}` cannot take
+  formatting it REFUSES rather than store a document full of Markdown sigils.
+  A drafted text has no note category nor modification date:
+  `{{note.categorie}}` and `{{note.date_maj}}` print empty there.
 
 ---
 

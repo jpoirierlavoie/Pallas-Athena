@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 64  # 28 lectures + 36 ecritures
+    assert len(tools.TOOLS) == 66  # 28 lectures + 38 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -370,6 +370,10 @@ def test_write_tools_set_is_pinned():
         # etiquettes, dossier de classement, categorie presumee), en
         # deplacer plusieurs, organiser les dossiers de classement.
         "update_document", "move_documents", "manage_folder",
+        # Lot 2A, etape T8 — FICHIERS : les premieres ecritures qui VERSENT
+        # un fichier au dossier, toujours un NOUVEAU document (un gabarit
+        # rempli, un texte mis en forme, une copie dans son propre dossier).
+        "fill_gabarit", "create_document",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 

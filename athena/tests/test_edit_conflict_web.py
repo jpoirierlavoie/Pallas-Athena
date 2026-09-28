@@ -517,21 +517,37 @@ INLINE_FORMS: dict[str, tuple[tuple[str, ...], str]] = {
     ),
 }
 
+# ``upload``/``ingest``/``copy``/``ensure`` since lot 2A (T8): the
+# generations reach the document creators and the « Projets » ensure —
+# CREATORS (see _CREATOR_VERBS), except the ensure's adoption of a legacy
+# folder, which rewrites it.
 _MUTATOR = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
-    r"delete|toggle|complete|attach|link|unlink|import|add)_"
+    r"delete|toggle|complete|attach|link|unlink|import|add|upload|ingest|"
+    r"copy|ensure)_"
 )
+# Verbs that mint a NEW record and rewrite none — no stale web tab can
+# erase what they wrote, so they need no web form's etag.
+_CREATOR_VERBS = ("create_", "upload_", "ingest_", "copy_")
 
 
 def _module_index(source: str) -> tuple[dict, dict, dict]:
     """(module-level name → node, models alias → module, services alias →
-    service module) of a source."""
+    service module) of a source. A mutator imported BY NAME
+    (``from models.X import verb_…`` — services/gabarits, lot 2A T8) is
+    indexed as ``top[name] = ("model", X)``: the walker records it where it
+    is referenced."""
     tree = ast.parse(source)
     aliases, services, top = {}, {}, {}
     for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module == "models":
             for a in node.names:
                 aliases[a.asname or a.name] = a.name
+        elif (isinstance(node, ast.ImportFrom)
+              and (node.module or "").startswith("models.")):
+            for a in node.names:
+                if _MUTATOR.match(a.name):
+                    top[a.asname or a.name] = ("model", node.module.split(".", 1)[1])
         elif isinstance(node, ast.ImportFrom) and node.module == "services":
             for a in node.names:
                 services[a.asname or a.name] = a.name
@@ -570,6 +586,9 @@ def _handler_reach() -> dict[str, set[tuple[str, str]]]:
             if (module, name) in seen or name not in top:
                 continue
             seen.add((module, name))
+            if isinstance(top[name], tuple):        # a by-name model mutator
+                found.add((top[name][1], name))
+                continue
             for sub in ast.walk(top[name]):
                 if isinstance(sub, ast.Name) and sub.id in top:
                     stack.append(sub.id)
@@ -600,7 +619,7 @@ def _modified_by_any_write() -> set[str]:
     ``complete_task`` are not edits in the MCP-hint sense, yet a stale web
     tab over the record they wrote would erase that write (review, Lot 0)."""
     return {module for pairs in _handler_reach().values()
-            for module, verb in pairs if not verb.startswith("create_")}
+            for module, verb in pairs if not verb.startswith(_CREATOR_VERBS)}
 
 
 _FORMS: dict[str, set[str]] = {}
@@ -626,6 +645,12 @@ def test_the_reach_is_derived_and_not_vacuous():
             ("hearing", "unlink_hearing")} <= reach["update_hearing"]
     assert ("hearing", "set_bookings_confirmation") in (
         reach["decide_rendez_vous"])
+    # Lot 2A (T8): the generations, through services/gabarits (by-name
+    # imports) and the model's copy.
+    assert {("document", "upload_document"),
+            ("folder", "ensure_system_folder")} <= reach["fill_gabarit"]
+    assert {("document", "upload_document"),
+            ("document", "copy_document")} <= reach["create_document"]
     # Every write tool reaches at least one mutator: a handler the walker
     # cannot follow would otherwise vanish from the map in silence.
     assert all(reach.values()), [t for t, r in reach.items() if not r]

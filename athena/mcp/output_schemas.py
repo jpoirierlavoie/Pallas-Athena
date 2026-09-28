@@ -1226,6 +1226,32 @@ def _folder_write_entity() -> dict:
     }, optional=("etag",))
 
 
+def _generated_folder() -> dict:
+    """Where a generated or copied document landed (lot 2A, T8)."""
+    return _obj({
+        "id": _nstr("The folder's id; null = the dossier root."),
+        "name": _str("« Projets » by default; \"\" at the dossier root."),
+        "system_role": _str(
+            "« projets » for the system folder the application files "
+            "generated documents in; \"\" otherwise."),
+    })
+
+
+def _template_ref(*, nullable: bool = False) -> dict:
+    """The template a generation filled — the version whose bytes it
+    printed (models/doc_template.template_file_bytes)."""
+    schema = _obj({
+        "id": _str(),
+        "name": _str(),
+        "version": _int("The version of the file that was filled."),
+    }, description=(
+        "The active note-print template printed on; null for a copy."
+        if nullable else "The gabarit filled."))
+    if nullable:
+        schema["type"] = ["object", "null"]
+    return schema
+
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -3030,6 +3056,70 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "changed_fields": _arr(_str(), (
             "The folder fields this call set or changed; [] when nothing "
             "was written.")),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+
+    # ── Lot 2A (T8) — FILES: new Word documents, never a changed one ────
+    # Names and counts only — never a value the fill resolved, never the
+    # text written (the result is kept 24 h in mcp_idempotency), never a
+    # filename, a path or a URL.
+    "fill_gabarit": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « document »."),
+        "entity": _document_write_entity(),
+        "document_id": _str("The NEW document — same as entity.id."),
+        "display_name": _str("« REF - YYYY-MM-DD - Projet Nom »."),
+        "folder": _generated_folder(),
+        "gabarit": _template_ref(),
+        "fields": _obj({
+            "auto_resolved": _int(
+                "Fields the application filled from the dossier, its "
+                "parties, the firm and the date."),
+            "auto_missing": _arr(_str(), (
+                "Auto fields with no data: printed « [CHAMP MANQUANT : "
+                "name] » — a gap to report to the lawyer.")),
+            "manual_missing": _arr(_str(), (
+                "Manual fields with no value nor default: printed « [À "
+                "COMPLÉTER : name] ».")),
+            "blocs_filled": _arr(_str(), "The blocs this call wrote."),
+            "blocs_demoted": _arr(_str(), (
+                "Markdown blocs whose paragraph could not take Word "
+                "formatting: printed as plain text, Markdown sigils "
+                "visible.")),
+            "blocs_left_verbatim": _arr(_str(), (
+                "Placeholders still literal « {{name}} » in the document — "
+                "the blocs nobody wrote, and any field Word fragmented — for "
+                "the lawyer to complete in Word.")),
+        }),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+    "create_document": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "source": {
+            "type": "string", "enum": ["markdown", "copy"],
+            "description": "What the document was made from.",
+        },
+        "entity_type": _str("Always « document »."),
+        "entity": _document_write_entity(),
+        "folder": _generated_folder(),
+        "template": _template_ref(nullable=True),
+        "source_document_id": _nstr(
+            "copy: the document copied; null for markdown."),
+        "protection": {
+            **_obj({
+                "niveau_protection": _int(
+                    "0 public … 3 secret professionnel — inherited from the "
+                    "source, PRESUMED until the lawyer confirms it."),
+                "label": _str("The level's French label."),
+                "privileges": _arr(_str()),
+            }, description=(
+                "copy: the protection the copy inherited from its source; "
+                "null when the source carried none (and always for "
+                "markdown).")),
+            "type": ["object", "null"],
+        },
         "warnings": _arr(_str(), "French; empty when clean."),
         **_write_protocol_keys(),
     }),

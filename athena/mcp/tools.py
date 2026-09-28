@@ -906,6 +906,20 @@ _DOCUMENT_CATEGORY_CHOICES = [c for c in _DOCUMENT_CATEGORIES if c != "procès_v
 # list_documents `folders` tree (include_folders).
 _DOCUMENT_ETAG_READERS = ("list_documents",)
 _FOLDER_ETAG_READERS = ("list_documents",)
+# Lot 2A (T8) — the generations. Literals copied from their sources
+# (services/gabarit_champs and models/document import the Firestore client
+# at load); tests/test_mcp_generation.py pins each against its source.
+BLOCS_MAX_ITEMS = 12                  # services.gabarit_champs.BLOCS_MAX_ITEMS
+CHAMPS_MANUELS_MAX_ITEMS = 12         # …CHAMPS_MANUELS_MAX_ITEMS
+BLOC_MAX_CHARS = 20_000               # …BLOC_MAX_CHARS
+BLOCS_TOTAL_MAX_CHARS = 60_000        # …BLOCS_TOTAL_MAX_CHARS
+CHAMP_MANUEL_MAX_CHARS = 2_000        # …CHAMP_MANUEL_MAX_CHARS
+PLACEHOLDER_NAME_MAX_CHARS = 64
+# A Markdown document is a whole text, not a bloc — bounded, like the blocs
+# of one call, well under the 1 MB /mcp body cap.
+MARKDOWN_DOCUMENT_MAX_CHARS = 60_000
+DOCUMENT_TITLE_MAX_CHARS = 200
+_CREATE_DOCUMENT_SOURCES = ["markdown", "copy"]
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
     "expert", "huissier", "notaire", "autre",
@@ -4913,6 +4927,204 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_OPTIONAL,
         "etag_readers": _FOLDER_ETAG_READERS,
+    },
+    # ── Lot 2A (T8) — FILES: new Word documents, never a changed one ────
+    "fill_gabarit": {
+        "title": "Remplir un gabarit",
+        "description": (
+            "WRITE — fill a gabarit (kind « gabarit ») for ONE dossier and "
+            "save the .docx as a NEW document in its « Projets » folder. "
+            "Call list_templates with template_id (and this dossier_id) "
+            "first: supply only the blocs and manual fields it reports, "
+            "names exact; every other field is filled by the application "
+            "from the dossier, its parties and the firm — never by you. "
+            "Write allegations as plain paragraphs separated by a BLANK "
+            "LINE, unnumbered: each inherits the gabarit's own Word "
+            "numbering (a single newline becomes a space). markdown true "
+            "only for internal formatting (headings, bold, a table). A text "
+            "holding « {{ » or « }} » is refused. The result is a draft, "
+            "never sent; a retry without idempotency_key saves a second one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "template_id": _id(
+                    "The gabarit (UUIDv4), from list_templates — kind "
+                    "« gabarit » only."
+                ),
+                "dossier_id": _id(
+                    "REQUIRED: the dossier whose data fills the gabarit and "
+                    "whose « Projets » receives the document (no download "
+                    "path here)."
+                ),
+                "client_id": _id(
+                    "The « client » slot: one of THIS dossier's clients "
+                    "(get_dossier). Needed when it has several and the "
+                    "gabarit reads client.*."
+                ),
+                "adverse_id": _id(
+                    "The « adverse » slot: one of THIS dossier's opposing "
+                    "parties. Same rule as client_id."
+                ),
+                "destinataire_id": _id(
+                    "The addressee (any contact, list_parties). No default."
+                ),
+                "blocs": {
+                    "type": "array",
+                    "maxItems": BLOCS_MAX_ITEMS,
+                    "description": (
+                        "The content blocks, one per bloc name. A bloc you "
+                        "omit stays « {{name}} » for the lawyer to write in "
+                        "Word."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "nom": {
+                                "type": "string", "minLength": 1,
+                                "maxLength": PLACEHOLDER_NAME_MAX_CHARS,
+                                "description": (
+                                    "The bloc's name without braces, exactly "
+                                    "as list_templates reports it (case "
+                                    "counts)."
+                                ),
+                            },
+                            "contenu": {
+                                "type": "string", "minLength": 1,
+                                "maxLength": BLOC_MAX_CHARS,
+                                "description": (
+                                    "The text, in French. Paragraphs "
+                                    "separated by a blank line."
+                                ),
+                            },
+                            "markdown": {
+                                "type": "boolean",
+                                "description": (
+                                    "true = Word formatting from Markdown "
+                                    "(headings, bold, lists, tables). "
+                                    "Default false; never for numbered "
+                                    "allegations."
+                                ),
+                            },
+                        },
+                        "required": ["nom", "contenu"],
+                        "additionalProperties": False,
+                    },
+                },
+                "champs_manuels": {
+                    "type": "array",
+                    "maxItems": CHAMPS_MANUELS_MAX_ITEMS,
+                    "description": (
+                        "The manual fields list_templates reports. Omitted "
+                        "→ its default, else « [À COMPLÉTER : name] »."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "nom": {
+                                "type": "string", "minLength": 1,
+                                "maxLength": PLACEHOLDER_NAME_MAX_CHARS,
+                                "description": (
+                                    "The field's name without braces, exact."
+                                ),
+                            },
+                            "valeur": {
+                                "type": "string",
+                                "maxLength": CHAMP_MANUEL_MAX_CHARS,
+                                "description": (
+                                    "Its value — one of its option values "
+                                    "when list_templates lists options."
+                                ),
+                            },
+                        },
+                        "required": ["nom", "valeur"],
+                        "additionalProperties": False,
+                    },
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["template_id", "dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "fill_gabarit",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "create_document": {
+        "title": "Créer un document Word",
+        "description": (
+            "WRITE — add a NEW Word document to a dossier; an existing "
+            "document is never changed. source \"markdown\": your Markdown "
+            "(title + markdown), printed on the note-print template the "
+            "lawyer designated ACTIVE — refused when none is; a `category` "
+            "you give is stored PRESUMED. source \"copy\": a copy of a "
+            "stored .docx (document_id), in ITS OWN dossier only — reuse "
+            "across dossiers goes through a gabarit; the copy keeps the "
+            "source's category and protection level. Both land in "
+            "« Projets » unless folder_id names another folder (\"\" = the "
+            "dossier root). A retry without idempotency_key creates a "
+            "second document."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string", "enum": _CREATE_DOCUMENT_SOURCES,
+                    "description": "What the document is made from.",
+                },
+                "dossier_id": _id(
+                    "markdown: REQUIRED, the dossier. copy: optional — if "
+                    "given, it must be the source's own dossier."
+                ),
+                "title": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": DOCUMENT_TITLE_MAX_CHARS,
+                    "description": (
+                        "markdown: REQUIRED, the title (French) — the "
+                        "template's {{note.titre}} and the document's name."
+                    ),
+                },
+                "markdown": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": MARKDOWN_DOCUMENT_MAX_CHARS,
+                    "description": (
+                        "markdown: REQUIRED, the body. Raw HTML and angle "
+                        "brackets are refused; write links as [text](url)."
+                    ),
+                },
+                "category": {
+                    "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
+                    "description": (
+                        "markdown: stored PRESUMED. Omitted: the template's "
+                        "own category."
+                    ),
+                },
+                "document_date": _date(
+                    "markdown: the document's OWN date, YYYY-MM-DD."
+                ),
+                "document_id": _id(
+                    "copy: REQUIRED, the stored .docx to copy "
+                    "(list_documents)."
+                ),
+                "display_name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": DOCUMENT_NAME_MAX_CHARS,
+                    "description": (
+                        "copy: the copy's name. Default « Copie de … »."
+                    ),
+                },
+                "folder_id": _id(
+                    "A folder of the dossier (list_documents with "
+                    "include_folders); \"\" = the root. Omitted: « Projets »."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["source"],
+            "additionalProperties": False,
+        },
+        "handler": "create_document",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
 }
 

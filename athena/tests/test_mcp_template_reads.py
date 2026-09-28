@@ -555,19 +555,28 @@ def test_the_enum_literals_track_the_model():
     assert props["category"]["enum"] is tools._TEMPLATE_CATEGORIES
 
 
-def test_the_connector_reads_through_the_read_half_of_the_service():
-    """The connector imports the READ half of the generation service only,
-    so the « never » sweep (which reads a reached service whole) proves it
-    reaches no writer — the same resolver the popup uses (pinned in
-    tests/test_template_folder_reads.py)."""
+def test_the_template_read_goes_through_the_read_half_of_the_service():
+    """list_templates reads through the READ half of the generation service
+    — the same resolver the popup uses (pinned in
+    tests/test_template_folder_reads.py) — and never names the write half.
+
+    REWRITTEN in lot 2A (T8): until then the whole handlers module imported
+    the read half alone, so the « never » sweep (which reads a reached
+    service whole) proved the connector reached no document writer. The
+    generations (fill_gabarit, create_document) now import the WRITE half
+    (``gabarit_writer``), and the « document » NEVER was narrowed to an
+    existing document's file in the same commit; what stays true, and is
+    checked here, is that the READ tool's own code references only the
+    read half."""
     tree = ast.parse((_ATHENA / "mcp" / "handlers.py").read_text(encoding="utf-8"))
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "services":
-            imported |= {a.name for a in node.names}
-        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("services."):
-            imported.add(node.module.split(".", 1)[1])
-    assert "gabarit_champs" in imported and "gabarits" not in imported
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for name in ("list_templates", "_template_detail", "_template_row"):
+        names = {n.id for n in ast.walk(functions[name])
+                 if isinstance(n, ast.Name)}
+        assert "gabarit_writer" not in names, name
+    assert "gabarit_service" in {
+        n.id for n in ast.walk(functions["_template_detail"])
+        if isinstance(n, ast.Name)}
     assert handlers.gabarit_service is champs
 
 

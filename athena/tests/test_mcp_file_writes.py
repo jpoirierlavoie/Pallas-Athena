@@ -627,16 +627,25 @@ def test_the_ceilings_are_the_models():
 
 
 def test_the_files_family_and_its_promises():
+    # REWRITTEN in lot 2A (T8): the family gained the two generations, and
+    # the « document » NEVER no longer forbids ADDING a file (a generation
+    # or a copy is a NEW document) — only changing an existing one's bytes,
+    # which the connector cannot express: the GCS byte verbs are forbidden
+    # to every connector module and reached service, and the two creators
+    # it reaches write a new object, create-only
+    # (tests/test_mcp_generation.py pins the behaviour).
     family = next(f for f in disclosure.FAMILIES if f.key == "files")
     assert set(family.tools) == {"update_document", "move_documents",
-                                 "manage_folder"}
+                                 "manage_folder", "fill_gabarit",
+                                 "create_document"}
     text = endpoint.INSTRUCTIONS
     assert "FILES: " in text and "PRESUMED" in text
     assert "« Projets »" in text and "notes_internes" in text
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "update_metadata" not in keys["document"].forbidden
-    assert {"upload_document", "ingest_blob_as_document"} <= set(
+    assert {"upload_from_file", "upload_from_string", "rewrite"} <= set(
         keys["document"].forbidden)
+    assert "never adds a new file" not in text
     assert {"confirmer_analyse", "update_analyse"} <= set(
         keys["confirm"].forbidden)
     assert "its name and its folder are read-only" not in text

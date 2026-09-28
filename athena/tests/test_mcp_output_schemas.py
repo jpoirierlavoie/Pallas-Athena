@@ -2366,3 +2366,116 @@ def test_manage_folder_conforms_on_every_outcome(monkeypatch):
     _conforms("manage_folder", unchanged)
     assert [r["outcome"] for r in (created, reused, renamed, moved, unchanged)] == [
         "created", "reused", "renamed", "moved", "unchanged"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 2A (T8) — FILES: fill_gabarit, create_document (markdown, copy —
+# with and without an inherited protection), every outcome run through the
+# REAL handler on the shared fake store and the fake Cloud Storage
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _generation_world(monkeypatch):
+    import io
+    import sys
+    import zipfile
+
+    from models import doc_template as tpl_model
+    from models import document as document_model
+    from tests._fake_firestore import install
+    from tests._fake_gcs import FakeBucket
+    from utils import storage_identity
+
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.") or n in ("dav.sync",
+                                                    "mcp.write_support"))
+               and getattr(m, "db", None) is not None]
+    fake = install(monkeypatch, *modules)
+    bucket = FakeBucket()
+    monkeypatch.setattr(tpl_model.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(storage_identity, "owner_uid", lambda: "uid-conformance")
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001",
+                              "title": "T", "status": "actif",
+                              "clients": [], "client_ids": [],
+                              "opposing_parties": [], "opposing_party_ids": []})
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    ct = ('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org'
+          '/package/2006/content-types"><Default Extension="xml" '
+          'ContentType="application/xml"/></Types>')
+
+    def docx(names):
+        body = "".join(f"<w:p><w:r><w:t>{{{{{n}}}}}</w:t></w:r></w:p>"
+                       for n in names)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("[Content_Types].xml", ct)
+            zf.writestr("word/document.xml",
+                        f'<?xml version="1.0"?><w:document {w}><w:body>{body}'
+                        "</w:body></w:document>")
+        return buf.getvalue()
+
+    ids = {}
+    for key, names, kind in (
+        ("gabarit", ["dossier.titre", "objet_lettre", "FAITS", "civilité"],
+         "gabarit"),
+        ("note", ["note.titre", "note.contenu"], "note"),
+    ):
+        data = docx(names)
+        tpl, errors = tpl_model.create_template(
+            io.BytesIO(data), f"{key}.docx", len(data),
+            {"name": key, "category": "autre", "kind": kind}, "uid-conformance")
+        assert errors == [], errors
+        ids[key] = tpl["id"]
+    _d, errors = tpl_model.set_active_template(ids["note"], par="j",
+                                               expected_etag=None)
+    assert errors == []
+    source = docx(["x"])
+    path = "users/uid-conformance/dossiers/d1/documents/src/lettre.docx"
+    bucket.put(path, source)
+    mime = document_model.EXTENSION_MIME_TYPES[".docx"]
+    base = {**document_model._default_doc(), "dossier_id": "d1",
+            "dossier_file_number": "2026-001", "filename": "lettre.docx",
+            "file_type": mime, "file_size": len(source), "storage_path": path,
+            "category": "correspondance", "category_source": "juriste",
+            "created_at": DT, "updated_at": DT}
+    fake.seed("documents/src", {**base, "id": "src", "display_name": "Lettre",
+                                "etag": "e-src"})
+    champ, errors = document_model._analyse_derivee(
+        {"sous_nature": "CORR_CLIENT", "privileges": ["SECRET_PROFESSIONNEL"]},
+        document={})
+    assert errors == []
+    fake.seed("documents/prot", {**base, "id": "prot", "display_name": "Secret",
+                                 "analyse": champ, "category_source": "analyse",
+                                 "etag": "e-prot"})
+    return fake, ids
+
+
+def test_fill_gabarit_conforms_filled_and_left_for_word(monkeypatch):
+    _fake, ids = _generation_world(monkeypatch)
+    filled = handlers.fill_gabarit({
+        "template_id": ids["gabarit"], "dossier_id": "d1",
+        "blocs": [{"nom": "FAITS", "contenu": "Un.\n\nDeux."}],
+        "champs_manuels": [{"nom": "objet_lettre", "valeur": "Objet"}]})
+    _conforms("fill_gabarit", filled)
+    assert filled["fields"]["blocs_left_verbatim"] == ["civilité"]
+    bare = handlers.fill_gabarit({"template_id": ids["gabarit"],
+                                  "dossier_id": "d1"})
+    _conforms("fill_gabarit", bare)
+    assert bare["fields"]["manual_missing"] == ["objet_lettre"]
+
+
+def test_create_document_conforms_on_both_sources(monkeypatch):
+    _fake, ids = _generation_world(monkeypatch)
+    markdown = handlers.create_document({
+        "source": "markdown", "dossier_id": "d1", "title": "Titre",
+        "markdown": "**gras**", "category": "preuve", "folder_id": ""})
+    _conforms("create_document", markdown)
+    assert markdown["template"]["id"] == ids["note"]
+    plain_copy = handlers.create_document({"source": "copy",
+                                           "document_id": "src"})
+    _conforms("create_document", plain_copy)
+    assert plain_copy["protection"] is None and plain_copy["template"] is None
+    protected = handlers.create_document({"source": "copy",
+                                          "document_id": "prot"})
+    _conforms("create_document", protected)
+    assert protected["protection"]["niveau_protection"] == 3

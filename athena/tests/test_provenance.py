@@ -545,11 +545,22 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     ("hearing", "unlink_hearing"): (("hearing", "update_hearing"),),
     # Finds, or creates through create_note.
     ("note", "ensure_analyse_note"): (("note", "create_note"),),
+    # Lot 2A (T8). Finds the system folder, or adopts a legacy one, or
+    # creates it — each in its own helper, which the sweep then holds.
+    ("folder", "ensure_system_folder"): (
+        ("folder", "_adopt_legacy"), ("folder", "_create_system_folder"),
+    ),
+    # A copy IS an ingestion of the source's object (a GCS rewrite).
+    ("document", "copy_document"): (("document", "ingest_blob_as_document"),),
 }
 # Mutators that write THEMSELVES but stamp through ONE shared record
 # builder: the stamp is checked on the builder, and the mutator must call it
 # (the commit point stays the mutator's own, after its last write).
-_STAMPED_THROUGH: dict[tuple[str, str], tuple[str, str]] = {}
+_STAMPED_THROUGH: dict[tuple[str, str], tuple[str, str]] = {
+    ("document", "upload_document"): ("document", "_prepare_document_record"),
+    ("document", "ingest_blob_as_document"): (
+        "document", "_prepare_document_record"),
+}
 _STAMP_HELPERS = {"stamp_create", "stamp_update", "update_fields", "create_fields"}
 # ``commit_document``/``commit_fields`` since 2026-09-25 (lot 0a, étape 5):
 # the etag-guarded edits write through ``models.concurrency``, and its call
@@ -631,6 +642,10 @@ def _in_except_handler(fn: ast.AST, target: ast.AST) -> bool:
 
 def test_the_stamped_through_entries_are_reached_and_really_build_through():
     reached = reached_mutators()
+    # Reached directly, or as the delegate of a reached delegating mutator
+    # (the copy reaches ingest_blob_as_document that way).
+    reached |= {d for key, delegates in _DELEGATING_MUTATORS.items()
+                if key in reached for d in delegates}
     for (module, name), builder in _STAMPED_THROUGH.items():
         assert (module, name) in reached, f"stale entry: {module}.{name}"
         called = {n.func.id for n in ast.walk(_function(module, name))
@@ -648,6 +663,15 @@ def test_a_mutator_imported_by_name_is_reached(tmp_path):
         "def f():\n    upload_document()\n", encoding="utf-8")
     assert _model_references(probe) == {
         ("document", "upload_document"), ("folder", "ensure_system_folder")}
+
+
+def test_the_generations_reach_the_document_creators():
+    """fill_gabarit / create_document (lot 2A, T8) reach the two creators
+    and the system folder through services/gabarits, and the copy through
+    the model: every one of them is held to the commit-point rule."""
+    assert "gabarits.py" in {p.name for p in _services_reached()}
+    assert {("document", "upload_document"), ("folder", "ensure_system_folder"),
+            ("document", "copy_document")} <= reached_mutators()
 
 
 def test_the_reached_set_is_derived_and_not_vacuous():

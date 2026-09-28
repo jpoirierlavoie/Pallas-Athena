@@ -333,12 +333,15 @@ FAMILIES: tuple[Family, ...] = (
         key="files",
         label="FILES",
         scope=SCOPE_WRITE,
-        tools=("update_document", "move_documents", "manage_folder"),
+        tools=("update_document", "move_documents", "manage_folder",
+               "fill_gabarit", "create_document"),
         consent_template="mcp/families/_files.html",
         checkbox_summary_fr=(
             "classer un document (nom, date, étiquettes, dossier de "
-            "classement, catégorie présumée) et organiser les dossiers de "
-            "classement — jamais les dossiers système"
+            "classement, catégorie présumée), organiser les dossiers de "
+            "classement (jamais les dossiers système) et produire de "
+            "nouveaux projets Word — depuis un gabarit, depuis un texte "
+            "rédigé par Claude, par copie d'un .docx du même dossier"
         ),
         instructions_en=(
             "`update_document` REPLACES a document's filing fields you name "
@@ -354,7 +357,18 @@ FAMILIES: tuple[Family, ...] = (
             "« Reçus du portail » belong to the application and are never "
             "renamed, moved or recreated here (filing documents INTO them is "
             "allowed). Ids and etags come from `list_documents` "
-            "(include_folders for the tree)."
+            "(include_folders for the tree). New Word files are always NEW "
+            "documents, drafts never sent: `fill_gabarit` fills a gabarit "
+            "for a dossier into its « Projets » — you write ONLY the blocs "
+            "and manual fields `list_templates` (with template_id) reports, "
+            "the application resolves every other field, and a text holding "
+            # Doubled: this paragraph goes through str.format().
+            "« {{{{ » or « }}}} » is refused; `create_document` prints your "
+            "Markdown on the note-print template the lawyer designated "
+            "ACTIVE (refused when none is), or copies a stored .docx within "
+            "its OWN dossier — the copy keeping the source's category and "
+            "protection level, presumed. Reuse across dossiers goes through "
+            "a gabarit, never a copy."
         ),
     ),
 )
@@ -560,22 +574,29 @@ NEVERS: tuple[Never, ...] = (
     Never(
         key="document",
         # Lot 2A (T7) lifted a document's name, date, tags, folder and a
-        # PRESUMED category (the FILES family). What stays forbidden is the
-        # FILE: its bytes, and any new file entering a dossier
-        # (upload_document / ingest_blob_as_document — and « Projets »,
-        # which only a generation creates).
+        # PRESUMED category; T8 (fill_gabarit, create_document) lifted
+        # « never adds a new file to a dossier » — a generation or a copy
+        # is a NEW document. What stays forbidden is changing the FILE of a
+        # document that exists: the connector writes no byte itself (these
+        # GCS verbs appear in no connector module nor any service it
+        # reaches), and the two creators it reaches mint a fresh record and
+        # write a NEW object, create-only (ingest's if_generation_match=0).
         fr=(
-            "modifier le <strong>fichier</strong> d'un document ou en "
-            "verser un nouveau au dossier — la lecture de son contenu "
-            "relève de l'accès en lecture ci-dessus"
+            "modifier le <strong>fichier</strong> d'un document existant "
+            "— un projet ou une copie est toujours un nouveau document ; la "
+            "lecture de son contenu relève de l'accès en lecture ci-dessus"
         ),
         en=(
-            "It never changes a document's FILE and never adds a new file "
-            "to a dossier."
+            "It never changes an existing document's FILE: a generated "
+            "project or a copy is always a NEW document."
         ),
         forbidden=(
-            "upload_document", "ingest_blob_as_document",
-            "ensure_system_folder",
+            "upload_from_file", "upload_from_string", "upload_from_filename",
+            "rewrite", "compose",
+        ),
+        behavioural_test=(
+            "tests/test_mcp_generation.py::"
+            "test_no_generation_ever_touches_an_existing_document_file"
         ),
     ),
     Never(
