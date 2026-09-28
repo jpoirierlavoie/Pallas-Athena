@@ -522,3 +522,73 @@ def test_confirm_works_on_a_contact_with_an_invalid_legacy_field(magasin):
 
     assert erreurs == []
     assert _stored(magasin)["phone_cell"] == "pas un numéro"
+
+
+# ── Une écriture de Claude ne passe jamais PAR-DESSUS le juriste ────────
+#
+# La règle « jamais sur l'attestation du juriste » se décide sur une
+# LECTURE. Sans comparaison-et-écriture contre cette lecture, le set()
+# aveugle du chemin hérité écrasait une décision du juriste arrivée entre
+# la lecture et l'écriture — en silence (revue du lot 4a, étape 2).
+
+
+def test_a_lawyer_decision_landing_before_claude_s_commit_is_never_reverted(
+    magasin,
+):
+    """The lawyer decides « exempté » between update_partie's read and its
+    commit. On f5033ec the blind set() wrote Claude's presumed « vérifié »
+    over it; now the write is compare-and-set against its read and refused."""
+    rival = {**_stored(magasin), "identity_verified": "exempté",
+             "identity_verified_source": "juriste",
+             "identity_verified_date": ANCIEN, "etag": "e-juriste"}
+
+    def _hook(info) -> None:
+        if any(path == "parties/p1" for _op, path in info.ops):
+            remove()
+            magasin.external_write("parties/p1", rival)
+
+    remove = magasin.add_commit_hook(_hook)
+
+    doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "vérifié"}, kyc_source="mcp")
+
+    assert doc is None and erreurs == [concurrency.STALE_ETAG_ERROR]
+    stored = _stored(magasin)
+    assert stored["identity_verified"] == "exempté"
+    assert stored["etag"] == "e-juriste"
+    assert kyc.is_decided(stored, "identity_verified")
+
+
+def test_claude_s_notes_never_land_on_a_confirmation_made_in_between(
+    magasin, monkeypatch,
+):
+    """A NOTES-only write carries no transition, so update_partie's own rule
+    lets it through — the refusal lives in update_kyc_status's read. The
+    lawyer confirms right after that read: on f5033ec Claude's notes were
+    then written onto the confirmed check (« notes included » broken)."""
+    _presumed(magasin)
+    notes_before = _stored(magasin)["identity_verified_notes"]
+    real_get = pm.get_partie
+    calls = {"n": 0}
+
+    def racing_get(pid):
+        doc = real_get(pid)
+        calls["n"] += 1
+        if calls["n"] == 1:  # right after update_kyc_status's own read
+            magasin.external_write("parties/p1", {
+                **_stored(magasin),
+                "identity_verified_confirmed_at": ANCIEN,
+                "identity_verified_confirmed_by": "juriste",
+                "etag": "e-confirme"})
+        return doc
+
+    monkeypatch.setattr(pm, "get_partie", racing_get)
+
+    doc, erreurs = pm.update_kyc_status(
+        "p1", "identity_verified", "vérifié", notes="Ajout de Claude.",
+        source="mcp")
+
+    assert doc is None and erreurs == [concurrency.STALE_ETAG_ERROR]
+    stored = _stored(magasin)
+    assert stored["identity_verified_notes"] == notes_before
+    assert kyc.is_decided(stored, "identity_verified")

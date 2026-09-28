@@ -361,6 +361,13 @@ _KYC_BADGES = {
 # A presumed status is NOT decided: amber, never the green of a verified
 # identity — at a glance the fiche must not read as verified (D7).
 _KYC_PRESUMED_BADGE = "bg-amber-100 text-amber-700"
+# …EXCEPT the one presumed outcome that is an ALARM, not an all-clear: a
+# conflict Claude detected keeps the red of a detected conflict (label
+# « (présumé) » all the same). Amber is the colour of « Vérifié (présumé) »
+# too, so softening it would make « Claude says conflict » and « Claude says
+# verified » look alike at a glance — under-warning on a deontological bar
+# to acting is the failure that costs; over-warning merely costs a look.
+_KYC_PRESUMED_KEEPS_ITS_BADGE = frozenset({"conflit_détecté"})
 
 
 def _kyc_day(value) -> str:
@@ -374,9 +381,10 @@ def _kyc_view(partie: dict) -> dict:
     """Per check: the badge, its label and the ATTRIBUTION line — composed
     here, so the signer's name is never attached to a Claude inscription.
 
-    * presumed (inscribed by Claude, not confirmed): amber « … (présumé) »,
-      « inscrit par Claude le … — à confirmer », and the « Confirmer »
-      button;
+    * presumed (inscribed by Claude, not confirmed): amber « … (présumé) »
+      — a presumed « Conflit détecté » keeps its red, an alarm is never
+      softened —, « inscrit par Claude le … — à confirmer », and the
+      « Confirmer » button;
     * Claude's, confirmed: « confirmé le … par Me … (inscrit par Claude le
       …) »;
     * the lawyer's: « le … par Me … » (the text before lot 4a).
@@ -392,7 +400,8 @@ def _kyc_view(partie: dict) -> dict:
         badge = _KYC_BADGES.get(status, "bg-gray-100 text-gray-600")
         if presumed:
             label = f"{label} (présumé)"
-            badge = _KYC_PRESUMED_BADGE
+            if status not in _KYC_PRESUMED_KEEPS_ITS_BADGE:
+                badge = _KYC_PRESUMED_BADGE
         inscribed = _kyc_day(partie.get(kyc.date_key(field)))
         attribution = ""
         if status in kyc.DECIDED[field]:

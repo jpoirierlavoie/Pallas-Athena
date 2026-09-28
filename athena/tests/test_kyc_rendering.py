@@ -145,6 +145,27 @@ def test_a_presumed_inscription_is_amber_and_never_signed(client, db):
     assert SIGNER not in _conformite(html)
 
 
+def test_a_presumed_conflict_keeps_the_red_of_an_alarm(client, db):
+    """Amber is the colour of « Vérifié (présumé) »: a conflict Claude
+    DETECTED painted amber would read, at a glance, like Claude's all-clear.
+    Under-warning on a bar to acting is the failure that costs — the red
+    stays, the « (présumé) » and the « à confirmer » say who inscribed it.
+    (Failed on f5033ec: every presumed status was amber.)"""
+    pid = _seed(db, conflict_check="conflit_détecté",
+                conflict_check_date=INSCRIBED, conflict_check_source="mcp")
+
+    html = client.get(f"/parties/{pid}").get_data(as_text=True)
+
+    block = _conformite(html)
+    block = block[block.index("Conflit d"):]
+    assert "Conflit détecté (présumé)" in block
+    assert "bg-red-100 text-red-700" in block
+    assert "bg-amber-100" not in block
+    assert "inscrit par Claude le 25 septembre 2026 — à confirmer" in block
+    assert SIGNER not in block
+    assert "/conformite/conflit/confirmer" in html
+
+
 def test_the_confirm_form_carries_csrf_and_the_etag(client, db):
     pid = _seed(db, **PRESUMED)
     html = client.get(f"/parties/{pid}").get_data(as_text=True)

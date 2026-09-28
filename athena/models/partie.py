@@ -789,7 +789,11 @@ def update_partie(
     default naming anyone: a status transition without it is REFUSED
     (fail closed), so an omission can never stamp a Claude write as the
     lawyer's. An unchanged status — the web form re-submitting a presumed
-    value — needs no source and changes no provenance.
+    value — needs no source and changes no provenance. With ``"mcp"`` the
+    write is compare-and-set against the version read here even without
+    *expected_etag*: the « never over the lawyer's attestation » rule is
+    checked on that read, and a blind ``set()`` would revert a decision
+    landing in between.
     """
     doc, errors, _journaled = _update_partie(
         partie_id, data, expected_etag, kyc_source)
@@ -813,6 +817,15 @@ def _update_partie(
         return None, ["Contact introuvable."], 0
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR], 0
+    # A CLAUDE write is compare-and-set against the version read HERE even
+    # when the caller asserts none (D7). On the legacy blind set(), a
+    # lawyer's decision or « Confirmer » landing between this read and the
+    # commit would be REVERTED to Claude's presumed status — the rule
+    # « never over the lawyer's attestation » below was checked on a read
+    # the write then ignored. The web form (kyc_source « juriste ») keeps
+    # its path.
+    if expected_etag is None and kyc_source == kyc.SOURCE_MCP:
+        expected_etag = concurrency.etag_of(existing)
 
     data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}
@@ -1326,8 +1339,11 @@ def update_kyc_status(
     lawyer's attestation. With ``"mcp"`` the status is PRESUMED until the
     lawyer confirms it (:func:`confirm_kyc_status`), and ANY write —
     status or notes — on a check the lawyer decided or confirmed is
-    refused (``kyc.LAWYER_ATTESTATION``). An invalid source is a
-    programming error and raises.
+    refused (``kyc.LAWYER_ATTESTATION``). That refusal is decided on the
+    version read here, so an ``"mcp"`` write is ALWAYS compare-and-set
+    against it (or against *expected_etag* when given): a decision the
+    lawyer makes in between refuses it (stale) instead of being written
+    over. An invalid source is a programming error and raises.
     """
     if source not in kyc.VALID_SOURCES:
         raise ValueError(f"unknown KYC source: {source!r}")
@@ -1341,6 +1357,12 @@ def update_kyc_status(
             return None, ["Contact introuvable."]
         if kyc.is_decided(existing, field):
             return None, [kyc.LAWYER_ATTESTATION]
+        # The check above is only as good as the version it read: the write
+        # lands on THAT version or is refused. A notes-only write carries no
+        # transition, so update_partie's own rule would let it through onto
+        # a decision (or a « Confirmer ») the lawyer made in between.
+        if expected_etag is None:
+            expected_etag = concurrency.etag_of(existing)
 
     update_data: dict = {field: status}
     if notes is not None:
