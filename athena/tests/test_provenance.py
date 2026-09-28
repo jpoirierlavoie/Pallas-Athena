@@ -564,6 +564,7 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     # Lot 4a (step 2): the public wrapper over the body the party-link
     # helpers share — the body stamps, writes and notes the commit.
     ("dossier", "update_dossier"): (("dossier", "_update_dossier"),),
+    ("partie", "update_partie"): (("partie", "_update_partie"),),
 }
 # Lot 2A (T9). Names the verb regex catches that are NOT tool writes, each
 # with its reason — and each held to the OPPOSITE rule, so an exemption

@@ -68,6 +68,10 @@ ROLE_LABELS = {
     "autre": "Autre",
 }
 
+# The length of one representation's notes — the cap every other string of
+# this model gets from _sanitize_data, which never reached into the list.
+MANDATAIRE_NOTES_MAX = 2000
+
 # Mandataire / représentation kinds
 MANDATAIRE_KIND_LABELS = {
     "mandataire": "Mandataire",
@@ -367,7 +371,13 @@ def _normalize(data: dict) -> dict:
             cleaned.append({
                 "id": mid,
                 "kind": str(entry.get("kind") or "").strip(),
-                "notes": str(entry.get("notes") or "").strip(),
+                # _sanitize_data sanitizes TOP-LEVEL strings only: an
+                # entry's notes used to be stored with no tag strip and no
+                # length cap (lot 4a, step 2).
+                "notes": sanitize(
+                    str(entry.get("notes") or "").strip(),
+                    max_length=MANDATAIRE_NOTES_MAX,
+                ),
             })
         data["mandataires"] = cleaned
 
@@ -732,21 +742,38 @@ def update_partie(
     field-by-field apply (``routes/reception``), ``update_kyc_status`` and
     ``link_kyc_document`` — which name only what they change, so a later
     field is never reverted by them.
+
+    Every representation that leaves the ``mandataires`` list — the web
+    form posts it whole — is journaled in ``audit_events`` (``mandataire``)
+    after the commit (lot 4a).
     """
+    doc, errors, _journaled = _update_partie(partie_id, data, expected_etag)
+    return doc, errors
+
+
+def _update_partie(
+    partie_id: str, data: dict, guard: Optional[str]
+) -> tuple[Optional[dict], list[str], int]:
+    """:func:`update_partie`'s body, plus the number of mandataire detaches
+    journaled — which the mandataire helpers report. *guard* is the public
+    ``expected_etag``, same contract (``tests/test_concurrency_models.py``
+    proves it through the public wrapper).
+    """
+    expected_etag = guard
     existing = get_partie(partie_id)
     if not existing:
-        return None, ["Contact introuvable."]
+        return None, ["Contact introuvable."], 0
     if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
+        return None, [concurrency.STALE_ETAG_ERROR], 0
 
     data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}
     errors = _validate(merged)
     if errors:
-        return None, errors
+        return None, errors, 0
     errors = _mandataire_fitness_errors(partie_id, existing, merged)
     if errors:
-        return None, errors
+        return None, errors, 0
 
     now = datetime.now(timezone.utc)
     provenance.stamp_update(merged, now)
@@ -781,15 +808,56 @@ def update_partie(
             read_etag=concurrency.etag_of(existing),
         )
     except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
+        return None, [concurrency.STALE_ETAG_ERROR], 0
     except concurrency.Vanished:
-        return None, ["Contact introuvable."]
+        return None, ["Contact introuvable."], 0
     except Exception:
         log_unexpected("partie write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], 0
     provenance.note_commit(COLLECTION, partie_id)
 
-    return merged, []
+    # AFTER the commit, best-effort: a journal failure never fails the save.
+    journaled = _journal_mandataire_detaches(partie_id, existing, merged)
+    return merged, [], journaled
+
+
+def _mandataire_entries(partie: Optional[dict]) -> list[dict]:
+    """The stored representations, dict entries only (never raises)."""
+    return [
+        e for e in ((partie or {}).get("mandataires") or [])
+        if isinstance(e, dict) and str(e.get("id") or "").strip()
+    ]
+
+
+def _journal_mandataire_detaches(
+    partie_id: str, existing: dict, saved: dict
+) -> int:
+    """One ``audit_events`` row (``mandataire``) per representation that
+    LEFT the contact; the count. The mandataire contact itself stays — the
+    row says a LINK went: ``entity_id`` is the mandataire, ``title`` the
+    represented contact's name, ``status`` the kind. Best-effort, after the
+    commit, never raises (``models/audit_event``'s one documented exception
+    to « written by the callers »: the web form posts the list WHOLE, so
+    only the model sees every detach)."""
+    try:
+        from models import audit_event  # local: keeps the model graph flat
+
+        after = {str(e["id"]).strip() for e in _mandataire_entries(saved)}
+        represented = display_name(saved)
+        count = 0
+        for entry in _mandataire_entries(existing):
+            mid = str(entry["id"]).strip()
+            if mid in after:
+                continue
+            if audit_event.record_deletion(
+                "mandataire", mid, title=represented,
+                status=str(entry.get("kind") or ""),
+            ) is not None:
+                count += 1
+        return count
+    except Exception:
+        log_unexpected("mandataire detach journal failed", partie_id=partie_id)
+        return 0
 
 
 # The refusal when the reverse-reference check cannot be established. A
@@ -903,6 +971,231 @@ def _mandataire_fitness_errors(
         "physique du même rôle que chaque contact qu'il représente. Retirez "
         "d'abord cette représentation, puis changez son rôle ou son type."
     ]
+
+
+# ── Mandataires, one representation at a time (lot 4a) ───────────────────
+#
+# The web form posts the whole ``mandataires`` list; the connector (lot 4b)
+# adds, corrects and removes ONE representation. These helpers build the
+# new list from the STORED one — every other entry written back as stored —
+# and save it through update_partie, whose forward rule (_validate) and
+# reverse rule (_mandataire_fitness_errors) every path meets. They name the
+# refusal first where the forward rule would only say « Mandataire #2 ».
+# The caller bumps the ``parties`` CTag when ``report["changed"]`` (the
+# etag regenerates although vCard never carries mandataires: skipping the
+# bump makes DavX5's next If-Match PUT 412).
+
+MANDATAIRE_NOT_LISTED = (
+    "Ce contact n'est pas un mandataire du contact représenté."
+)
+MANDATAIRE_ALREADY_LISTED = (
+    "Ce contact est déjà mandataire du contact représenté, avec un autre "
+    "type ou d'autres notes : corrigez cette représentation plutôt que de "
+    "l'ajouter une seconde fois."
+)
+MANDATAIRE_NOTHING_TO_CHANGE = (
+    "Rien à modifier : précisez le type de représentation ou les notes."
+)
+
+
+def _clean_mandataire_notes(notes: object) -> tuple[str, Optional[str]]:
+    """``(notes, refusal)`` — bounded, and never silently altered.
+
+    The form path lets ``_normalize`` sanitize (the web's convention); a
+    one-entry write REFUSES instead, since truncating or stripping the
+    caller's text in silence would store something it did not ask for.
+    """
+    if not isinstance(notes, str):
+        return "", "Les notes de la représentation doivent être du texte."
+    clean = notes.strip()
+    if len(clean) > MANDATAIRE_NOTES_MAX:
+        return "", (
+            "Les notes de la représentation dépassent "
+            f"{MANDATAIRE_NOTES_MAX} caractères : rien n'a été enregistré."
+        )
+    if sanitize(clean, max_length=MANDATAIRE_NOTES_MAX) != clean:
+        return "", (
+            "Les notes de la représentation contiennent des chevrons (< >) "
+            "qui seraient retirés : reformulez-les. Rien n'a été enregistré."
+        )
+    return clean, None
+
+
+def _mandataire_report(partie_id: str, mandataire_id: str) -> dict:
+    return {"changed": False, "partie_id": partie_id,
+            "mandataire_id": mandataire_id}
+
+
+def _resolve_pair(
+    partie_id: str, mandataire_id: str, guard: Optional[str],
+) -> tuple[Optional[dict], Optional[str]]:
+    """The represented contact, read and checked against *guard* (the
+    public ``expected_etag``) — or a refusal."""
+    if not partie_id or not mandataire_id:
+        return None, "Le contact représenté et le mandataire sont requis."
+    existing = get_partie(partie_id)
+    if not existing:
+        return None, "Contact introuvable."
+    if not concurrency.matches(existing, guard):
+        return None, concurrency.STALE_ETAG_ERROR
+    return existing, None
+
+
+def _save_mandataires(
+    partie_id: str, existing: dict, entries: list[dict],
+) -> tuple[Optional[dict], list[str], int]:
+    """Commit a rebuilt list, compare-and-set against the version read."""
+    return _update_partie(
+        partie_id, {"mandataires": entries}, concurrency.etag_of(existing)
+    )
+
+
+def add_partie_mandataire(
+    partie_id: str,
+    mandataire_id: str,
+    *,
+    kind: str,
+    notes: str = "",
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], dict]:
+    """Add ONE representation to a contact — ``(doc, errors, report)``.
+
+    The ``delete_folder`` deviation from ``(doc, errors)``: the caller must
+    tell « added » apart from « already so ». Refused, each by name: an
+    unknown contact or mandataire, the contact itself, a mandataire that is
+    not an individual or not of the represented contact's role, an unknown
+    *kind*, notes too long or altered by sanitation, and an entry already
+    listed with a DIFFERENT kind or notes (the same one is a no-op success,
+    ``report["changed"]`` False, nothing written). Compare-and-set against
+    the version read here (after checking *expected_etag* when given).
+    """
+    partie_id = str(partie_id or "").strip()
+    mandataire_id = str(mandataire_id or "").strip()
+    report = _mandataire_report(partie_id, mandataire_id)
+    existing, refusal = _resolve_pair(partie_id, mandataire_id, expected_etag)
+    if refusal:
+        return None, [refusal], report
+    if mandataire_id == partie_id:
+        return None, ["Un contact ne peut pas être son propre mandataire."], report
+    if kind not in MANDATAIRE_KIND_LABELS:
+        return None, ["Type de représentation invalide."], report
+    clean_notes, refusal = _clean_mandataire_notes(notes)
+    if refusal:
+        return None, [refusal], report
+    target = get_partie(mandataire_id)
+    if not target:
+        return None, ["Mandataire introuvable."], report
+    if target.get("type") != "individual":
+        return None, ["Un mandataire doit être une personne physique."], report
+    if target.get("contact_role") != existing.get("contact_role"):
+        return None, [
+            "Un mandataire doit avoir le même rôle que le contact représenté."
+        ], report
+
+    entries = _mandataire_entries(existing)
+    report.update({"kind": kind, "notes": clean_notes,
+                   "mandataires_count": len(entries)})
+    for entry in entries:
+        if str(entry["id"]).strip() != mandataire_id:
+            continue
+        if (entry.get("kind") == kind
+                and str(entry.get("notes") or "") == clean_notes):
+            return existing, [], report
+        return None, [MANDATAIRE_ALREADY_LISTED], report
+
+    new_entry = {"id": mandataire_id, "kind": kind, "notes": clean_notes}
+    saved, errors, _journaled = _save_mandataires(
+        partie_id, existing, [dict(e) for e in entries] + [new_entry])
+    if errors:
+        return None, errors, report
+    report["changed"] = True
+    report["mandataires_count"] = len(_mandataire_entries(saved))
+    return saved, [], report
+
+
+def update_partie_mandataire(
+    partie_id: str,
+    mandataire_id: str,
+    *,
+    kind: Optional[str] = None,
+    notes: Optional[str] = None,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], dict]:
+    """Correct ONE representation's kind and/or notes — ``(doc, errors,
+    report)``. ``None`` leaves either alone; at least one is required. The
+    entry must be listed. An unchanged request writes nothing."""
+    partie_id = str(partie_id or "").strip()
+    mandataire_id = str(mandataire_id or "").strip()
+    report = _mandataire_report(partie_id, mandataire_id)
+    if kind is None and notes is None:
+        return None, [MANDATAIRE_NOTHING_TO_CHANGE], report
+    existing, refusal = _resolve_pair(partie_id, mandataire_id, expected_etag)
+    if refusal:
+        return None, [refusal], report
+    if kind is not None and kind not in MANDATAIRE_KIND_LABELS:
+        return None, ["Type de représentation invalide."], report
+    clean_notes = None
+    if notes is not None:
+        clean_notes, refusal = _clean_mandataire_notes(notes)
+        if refusal:
+            return None, [refusal], report
+
+    entries = [dict(e) for e in _mandataire_entries(existing)]
+    index = next((i for i, e in enumerate(entries)
+                  if str(e["id"]).strip() == mandataire_id), None)
+    if index is None:
+        return None, [MANDATAIRE_NOT_LISTED], report
+    entry = entries[index]
+    new_kind = kind if kind is not None else str(entry.get("kind") or "")
+    new_notes = (clean_notes if clean_notes is not None
+                 else str(entry.get("notes") or ""))
+    report.update({"kind": new_kind, "notes": new_notes,
+                   "mandataires_count": len(entries)})
+    if (new_kind == str(entry.get("kind") or "")
+            and new_notes == str(entry.get("notes") or "")):
+        return existing, [], report
+
+    entries[index] = {**entry, "kind": new_kind, "notes": new_notes}
+    saved, errors, _journaled = _save_mandataires(partie_id, existing, entries)
+    if errors:
+        return None, errors, report
+    report["changed"] = True
+    return saved, [], report
+
+
+def remove_partie_mandataire(
+    partie_id: str,
+    mandataire_id: str,
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], dict]:
+    """Detach ONE representation — the mandataire contact itself stays.
+
+    ``(doc, errors, report)``; refused when the entry is not listed. The
+    detach is journaled in ``audit_events`` (``mandataire``) after the
+    commit — ``report["journaled"]`` says whether that row was written.
+    """
+    partie_id = str(partie_id or "").strip()
+    mandataire_id = str(mandataire_id or "").strip()
+    report = _mandataire_report(partie_id, mandataire_id)
+    report["journaled"] = False
+    existing, refusal = _resolve_pair(partie_id, mandataire_id, expected_etag)
+    if refusal:
+        return None, [refusal], report
+    entries = [dict(e) for e in _mandataire_entries(existing)]
+    kept = [e for e in entries if str(e["id"]).strip() != mandataire_id]
+    if len(kept) == len(entries):
+        return None, [MANDATAIRE_NOT_LISTED], report
+    removed = next(e for e in entries if str(e["id"]).strip() == mandataire_id)
+    report.update({"kind": str(removed.get("kind") or ""),
+                   "mandataires_count": len(kept)})
+
+    saved, errors, journaled = _save_mandataires(partie_id, existing, kept)
+    if errors:
+        return None, errors, report
+    report["changed"] = True
+    report["journaled"] = journaled > 0
+    return saved, [], report
 
 
 # The three refusals of ``delete_partie`` that are NOT a reference

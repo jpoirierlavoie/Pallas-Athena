@@ -114,6 +114,26 @@ def _dossier(db):
     return doc["id"]
 
 
+def _partie_with_mandataire(db):
+    """A client represented by one mandataire (m1), a second candidate (m2)
+    of the same role, both individuals."""
+    for mid, last in (("m1", "Roy"), ("m2", "Gagnon")):
+        db.seed(f"parties/{mid}", {
+            **partie_model._default_doc(), "id": mid, "type": "individual",
+            "contact_role": "client", "last_name": last, "etag": f"e-{mid}",
+            "created_at": DT, "updated_at": DT})
+    doc, errors = partie_model.create_partie(
+        {"type": "individual", "contact_role": "client",
+         "first_name": "Jean", "last_name": "Tremblay",
+         "mandataires": [{"id": "m1", "kind": "tuteur", "notes": ""}]})
+    assert errors == [], errors
+    return doc["id"]
+
+
+def _mandataire_ids(stored):
+    return [e["id"] for e in stored.get("mandataires") or []]
+
+
 def _dossier_two_clients(db):
     """Two clients, so one of them may leave (never the last one)."""
     doc, errors = dossier_model.create_dossier({
@@ -219,6 +239,25 @@ _CASES = {
                              lambda i, **kw: dossier_model.remove_dossier_party(
                                  i, "p2", **kw)[:2],
                              "client_ids", ["p1"]),
+    # Lot 4a (step 2): the mandataire helpers, read back through the list.
+    "add_partie_mandataire": ("parties", _partie_with_mandataire,
+                              lambda i, **kw: partie_model.add_partie_mandataire(
+                                  i, "m2", kind="curateur", **kw)[:2],
+                              "mandataires", [
+                                  {"id": "m1", "kind": "tuteur", "notes": ""},
+                                  {"id": "m2", "kind": "curateur", "notes": ""},
+                              ]),
+    "update_partie_mandataire": ("parties", _partie_with_mandataire,
+                                 lambda i, **kw: partie_model.update_partie_mandataire(
+                                     i, "m1", notes="Jugement du 3 mars.", **kw)[:2],
+                                 "mandataires", [
+                                     {"id": "m1", "kind": "tuteur",
+                                      "notes": "Jugement du 3 mars."},
+                                 ]),
+    "remove_partie_mandataire": ("parties", _partie_with_mandataire,
+                                 lambda i, **kw: partie_model.remove_partie_mandataire(
+                                     i, "m1", **kw)[:2],
+                                 "mandataires", []),
     "update_time_entry": ("timeentries", _time_entry,
                           lambda i, **kw: time_entry_model.update_time_entry(
                               i, {"description": "Révision"}, **kw),
@@ -288,6 +327,9 @@ _GETTERS = {
     "update_dossier": (dossier_model, "get_dossier"),
     "update_dossier_party": (dossier_model, "get_dossier"),
     "remove_dossier_party": (dossier_model, "get_dossier"),
+    "add_partie_mandataire": (partie_model, "get_partie"),
+    "update_partie_mandataire": (partie_model, "get_partie"),
+    "remove_partie_mandataire": (partie_model, "get_partie"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entry"),
@@ -330,7 +372,9 @@ _CONTENT_REVISED_WITHOUT_ETAG = {"update_note"}
 # read — so they compare-and-set against THEIR read whatever the caller
 # passes (a blind set() would revert a party added in between). Their own
 # tests below; never the legacy one.
-_SELF_GUARDED = {"update_dossier_party", "remove_dossier_party"}
+_SELF_GUARDED = {"update_dossier_party", "remove_dossier_party",
+                 "add_partie_mandataire", "update_partie_mandataire",
+                 "remove_partie_mandataire"}
 _LEGACY_WITHOUT_ETAG = sorted(
     set(_CASES) - _RACE_AT_COMMIT - _CONTENT_REVISED_WITHOUT_ETAG
     - _SELF_GUARDED)
