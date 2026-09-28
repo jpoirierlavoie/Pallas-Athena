@@ -651,6 +651,35 @@ def test_a_rename_check_that_cannot_read_refuses(world, monkeypatch):
     assert world["db"].peek(f"doc_templates/{tid}") == before
 
 
+def test_a_full_versions_window_is_never_taken_for_the_whole_history(
+    world, monkeypatch,
+):
+    """Review of the fixups of lot 2A: the version list was read up to a
+    window « more than any template will carry » and then TAKEN as whole —
+    a source recorded past it was a rename checked against nothing, in
+    silence. A window that comes back full now refuses (« réessayez »),
+    never « nothing found ». With the window at 1 the old code read only
+    the newest version (no source) and stored « Lettre Tremblay » over the
+    d1 source of version 2: this test FAILS on it."""
+    import io as _io
+
+    _seed_source(world, "v2src", V2)
+    tid = world["template"]
+    _update(world, source_document_id="v2src", expected_version=1)  # v2 ← d1
+    got, errors, changed = tpl_model.update_template(      # v3, no source
+        tid, {}, _io.BytesIO(CLEAN), "gabarit.docx", len(CLEAN))
+    assert errors == [] and changed is True
+    monkeypatch.setattr(tpl_model, "_SOURCE_VERSIONS_WINDOW", 1)
+    before = dict(world["db"].peek(f"doc_templates/{tid}"))
+    exc = _refused(handlers.update_template,
+                   {"template_id": tid, "name": "Lettre Tremblay"})
+    assert "réessayez" in str(exc)
+    got, errors, changed = tpl_model.update_template(
+        tid, {"name": "Lettre Tremblay"})
+    assert errors == [tpl_model.NAME_CHECK_UNAVAILABLE_ERROR]
+    assert world["db"].peek(f"doc_templates/{tid}") == before
+
+
 def test_a_deleted_source_dossier_is_said_not_checked(world):
     _seed_source(world)
     tid = _create(name="Lettre type")["entity"]["id"]

@@ -1311,7 +1311,7 @@ def update_template(
 
         try:
             check = template_names.check_rename(
-                existing, renamed, accept=name_accept)
+                {**existing, "id": template_id}, renamed, accept=name_accept)
         except template_names.NameCheckUnavailable:
             return None, [NAME_CHECK_UNAVAILABLE_ERROR], False
         if check.residues:
@@ -1452,16 +1452,25 @@ def list_versions(
 
 # More versions than any template will carry: the list is read WHOLE —
 # a source dossier missed past the window would be a rename checked
-# against nothing, in silence.
+# against nothing, in silence. A window that comes back FULL is therefore
+# refused as unreadable, never taken for the whole list (review of the
+# fixups: the comment promised « WHOLE » and nothing enforced it).
 _SOURCE_VERSIONS_WINDOW = 1000
 
 
-def template_source_dossier_ids(template: dict) -> list[str]:
+def template_source_dossier_ids(
+    template: dict, template_id: Optional[str] = None,
+) -> list[str]:
     """Every dossier *template*'s files were taken from — its creation's
     (``source_dossier_id``) first, then each recorded version's — distinct,
     in that order. ``[]`` when none is recorded.
 
-    RAISES :class:`TemplateReadError` when the versions cannot be read: a
+    *template_id* — the id its versions live under; defaults to the
+    record's own ``id`` field. A caller holding the id passes it: a record
+    read without that field would otherwise skip its versions in silence.
+
+    RAISES :class:`TemplateReadError` when the versions cannot be read — or
+    fill the whole window, which cannot be told from a truncated list: a
     rename check that reads « no source » on an outage would pass a name
     it should refuse. Fixups of lot 2A.
     """
@@ -1469,11 +1478,16 @@ def template_source_dossier_ids(template: dict) -> list[str]:
     own = str(template.get("source_dossier_id") or "")
     if own:
         ids.append(own)
-    template_id = str(template.get("id") or "")
+    template_id = str(template_id or template.get("id") or "")
     if template_id:
-        for entry in list_versions(
+        entries = list_versions(
             template_id, limit=_SOURCE_VERSIONS_WINDOW, strict=True,
-        ):
+        )
+        if len(entries) >= _SOURCE_VERSIONS_WINDOW:
+            log_unexpected("template versions window full", exc_info=False,
+                           template_id=template_id, count=len(entries))
+            raise TemplateReadError(template_id)
+        for entry in entries:
             source = str(entry.get("source_dossier_id") or "")
             if source and source not in ids:
                 ids.append(source)
