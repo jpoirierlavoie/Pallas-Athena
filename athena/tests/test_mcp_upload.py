@@ -491,6 +491,70 @@ def test_a_filed_ticket_answers_again_without_a_key_and_writes_nothing(world):
     assert all(not path.startswith("documents/") for _kind, path in writes)
 
 
+def test_a_folder_read_that_blips_at_finalize_keeps_the_bytes(world, monkeypatch):
+    """Review of T9: the ingestion's own folder check fails OPEN to
+    « introuvable » (models/folder.get_folder answers None on a read
+    error), and on that word the ticket was SETTLED — its bytes, up to
+    200 MB, consumed — for a read that merely blipped. The handler now
+    re-reads the bound folder STRICTLY first: a failure releases the claim
+    and the bytes wait for the retry."""
+    from models import folder as folder_model
+
+    opened = _begin_document(world, folder_id="f1")
+    _put(world, opened, PDF)
+    staging = _staging(world, opened["ticket_id"])
+
+    def blip(_dossier_id):
+        raise RuntimeError("503 deadline exceeded")
+
+    all_folders, get_folder = folder_model._all_folders, folder_model.get_folder
+    monkeypatch.setattr(folder_model, "_all_folders", blip)
+    monkeypatch.setattr(folder_model, "get_folder", lambda *_a: None)
+    with pytest.raises(ToolArgumentError) as exc:
+        handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert exc.value.reason == "upload_retry"
+    assert _ticket(world, opened["ticket_id"])["status"] == ut.STATUS_OPEN
+    assert staging in world["bucket"].objects
+    monkeypatch.setattr(folder_model, "_all_folders", all_folders)
+    monkeypatch.setattr(folder_model, "get_folder", get_folder)
+    done = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert done["entity"]["folder_id"] == "f1"
+
+
+def test_a_folder_deleted_since_the_opening_refuses_saying_so(world):
+    opened = _begin_document(world, folder_id="f1")
+    _put(world, opened, PDF)
+    world["db"].external_delete("folders/f1")
+    with pytest.raises(ToolArgumentError, match="supprimé depuis") as exc:
+        handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert exc.value.reason == "upload_content_refused"
+    assert _documents(world) == {}
+
+
+def test_no_upload_ever_touches_an_existing_document_file(world):
+    """The « document » NEVER, for the upload path: a document already
+    stored under the ticket's reserved id (another dossier's — a collision
+    no uuid4 will ever produce, planted here) is never overwritten, its
+    record never rewritten; the upload is refused."""
+    opened = _begin_document(world)
+    _put(world, opened, PDF)
+    reserved = _ticket(world, opened["ticket_id"])["reserved_document_id"]
+    path = f"users/{UID}/dossiers/d2/documents/{reserved}/autre.pdf"
+    world["bucket"].put(path, b"%PDF-1.4 the other client's file")
+    world["db"].seed(f"documents/{reserved}", {
+        **document_model._default_doc(), "id": reserved, "dossier_id": "d2",
+        "filename": "autre.pdf", "file_type": "application/pdf",
+        "file_size": 32, "storage_path": path, "etag": "e-autre",
+        "created_at": DT, "updated_at": DT})
+    before = world["db"].peek(f"documents/{reserved}")
+    with pytest.raises(ToolArgumentError) as exc:
+        handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert exc.value.reason == "upload_content_refused"
+    assert world["db"].peek(f"documents/{reserved}") == before
+    assert world["bucket"].objects[path].data == b"%PDF-1.4 the other client's file"
+    assert list(_documents(world)) == [reserved]
+
+
 def test_content_the_ingestion_refuses_settles_the_ticket(world):
     fake_pdf = b"not a pdf at all" + bytes(64)
     opened = _begin_document(world, data=fake_pdf)
@@ -638,6 +702,29 @@ def test_a_replacement_installs_a_new_version_and_keeps_the_old(world):
     assert _ticket(world, opened["ticket_id"])["staged_sha256"] == (
         hashlib.sha256(new).hexdigest())
     assert done["entity"]["version"] == 2
+
+
+def test_a_replayed_replacement_reports_what_it_did_not_what_came_after(world):
+    """Review of T9: the replay rebuilt « replaced_version » from the
+    template's CURRENT version, so a later replacement (v2 → v3) made the
+    answer of this ticket (v1 → v2) read « nothing replaced »."""
+    tid = world["template"]
+    new = _docx("Version deux : {{objet_lettre}}")
+    opened = handlers.begin_upload({
+        "purpose": "gabarit", "template_mode": "replace", "template_id": tid,
+        "expected_version": 1, "filename": "x.docx",
+        "size_bytes": len(new), "md5_base64": _md5(new)})
+    _put(world, opened, new)
+    first = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert first["replaced_version"] == 1
+    later = _docx("Version trois : {{objet_lettre}}")
+    _t, errors, _c = tpl_model.update_template(
+        tid, {}, io.BytesIO(later), "l.docx", len(later))
+    assert errors == []
+    again = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert again["already_finalized"] is True
+    assert again["replaced_version"] == 1
+    assert again["entity"]["version"] == 3        # the template AS STORED
 
 
 def test_a_replacement_refuses_a_version_that_moved_since(world):

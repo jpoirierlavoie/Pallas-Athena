@@ -12073,14 +12073,19 @@ def _uploaded_document_payload(ticket: dict, doc: dict, *, already: bool,
     }
 
 
-def _replaced_version(ticket: dict, template: dict) -> Optional[int]:
-    """replace: the version this ticket's file replaced (kept), derived
-    from what was bound and what is stored; None when nothing was."""
+def _replaced_version(ticket: dict, installed: int) -> Optional[int]:
+    """replace: the version this ticket's file replaced (kept) — the bound
+    expected_version when the ticket INSTALLED the next one; None for a
+    creation, or when the file was identical (nothing installed).
+
+    *installed* is the version THIS ticket produced — the ticket's stored
+    result on a replay, never the template's current version: a later
+    replacement (v3) must not erase what this ticket did (v1 → v2)."""
     params = ticket.get("template_params") or {}
     if params.get("mode") != "replace":
         return None
     expected = int(params.get("expected_version") or 0)
-    if expected and int(template.get("version") or 1) == expected + 1:
+    if expected and int(installed or 0) == expected + 1:
         return expected
     return None
 
@@ -12134,7 +12139,8 @@ def _filed_answer(ticket: dict) -> dict:
         raise ToolArgumentError(_UPLOAD_ALREADY_FILED_GONE)
     return _uploaded_template_payload(
         ticket, template, already=True, leak_scan=None, scrubbed=None,
-        replaced_version=_replaced_version(ticket, template), warnings=[])
+        replaced_version=_replaced_version(ticket, int(result.get("version") or 0)),
+        warnings=[])
 
 
 def _replacement_landed(template: Optional[dict], expected: int,
@@ -12318,7 +12324,8 @@ def _complete_filed(holder: _UploadHolder, filed: dict) -> dict:
                           already_finalized=True)
     return _uploaded_template_payload(
         ticket, template, already=True, leak_scan=None, scrubbed=None,
-        replaced_version=_replaced_version(ticket, template),
+        replaced_version=_replaced_version(
+            ticket, int(template.get("version") or 1)),
         warnings=warnings)
 
 
@@ -12357,6 +12364,20 @@ def _finalize_document_upload(holder: _UploadHolder, blob) -> dict:
                                 reason="upload_retry")
     metadata = dict(ticket.get("bound_metadata") or {})
     presumed = bool(metadata.get("category"))
+    folder_id = str(metadata.get("folder_id") or "")
+    if folder_id:
+        # Re-read STRICTLY: the ingestion's own folder check fails open to
+        # « introuvable », and on that word the ticket would be settled —
+        # its bytes (up to 200 MB) consumed — for a read that merely blipped.
+        try:
+            folders = folder_model.list_dossier_folders(dossier_id)
+        except Exception:
+            _release_upload(holder)
+            raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+        if not any(f.get("id") == folder_id for f in folders):
+            raise _content_refused(holder, [
+                "Le dossier de classement nommé à l'ouverture du ticket a été "
+                "supprimé depuis."])
     doc, errors = document_model.ingest_blob_as_document(
         blob, dossier_id, dossier.get("file_number", "") or "",
         str(ticket.get("original_filename") or ""), metadata, uid,
