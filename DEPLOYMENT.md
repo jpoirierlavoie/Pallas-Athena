@@ -2207,7 +2207,9 @@ Notes:
   `template_id` and the `dossier_id` first, write only the blocs and manual
   fields, plain paragraphs separated by a blank line with no numbering of
   your own, `markdown: true` only for internal structure, never « {{ » or
-  « }} », always into « Projets »); `create_document`'s two sources and its
+  « }} », always into « Projets », and a refusal saying a party of the
+  dossier « n'a pas pu être lue » means retry — never write around it);
+  `create_document`'s two sources and its
   refusal when no note-print template is designated; the presumed category
   and its « Confirmer » in the application (a copy's category presumed
   only when the lawyer had not set it; its protection level presumed, to
