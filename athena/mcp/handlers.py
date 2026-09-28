@@ -5146,10 +5146,21 @@ def _billing_edit(
     existing = getter(row_id)
     if existing is None:
         raise ToolArgumentError(f"{kind} introuvable : {row_id}.")
+    stored_dossier = str(existing.get("dossier_id") or "")
+    # A call naming ONLY the dossier the row is already in is the replay of
+    # a move that succeeded — answered BEFORE the etag, like the model's own
+    # move (review of lot 3b): the move regenerated the etag, so the
+    # caller's pre-move expected_etag would otherwise read as a false
+    # conflict. Nothing is written either way.
+    if ("dossier_id" in args
+            and str(args.get("dossier_id") or "").strip() == stored_dossier
+            and stored_dossier
+            and not set(args) - {id_key, "dossier_id", "expected_etag",
+                                 "idempotency_key"}):
+        return _billing_unmoved(existing, kind, entity_type, entity_builder)
     expected = _expected_etag(args, existing, tool=tool, subject=stale_subject)
     _refuse_if_invoiced(existing, kind)
 
-    stored_dossier = str(existing.get("dossier_id") or "")
     target: Optional[dict] = None
     if "dossier_id" in args:
         wanted = str(args.get("dossier_id") or "").strip()
@@ -5201,24 +5212,12 @@ def _billing_edit(
         _refuse_legacy_ref_collision(legacy_collection, data["legacy_ref"])
 
     if not data and target is None:
-        if "dossier_id" in args:
-            # Already filed there — a replay of a move that succeeded.
-            return {
-                "updated": True,
-                "entity_type": entity_type,
-                "entity": entity_builder(existing),
-                "moved": False,
-                "previous_dossier_id": None,
-                "warnings": [
-                    f"{kind} est déjà à ce dossier : rien n'a été écrit."
-                ],
-            }
         raise ToolArgumentError(
             "Aucun champ à modifier : fournissez au moins un champ."
         )
 
     if target is not None and not data:
-        row, errors, _moved = mover(
+        row, errors, moved = mover(
             row_id, target, from_dossier_id=stored_dossier,
             expected_etag=expected,
         )
@@ -5226,31 +5225,58 @@ def _billing_edit(
         if target is not None:
             data["dossier_id"] = target["id"]
         row, errors = updater(row_id, data, expected_etag=expected)
+        moved = target is not None
     _raise_if_stale(
         errors, tool=tool, subject=stale_subject,
         reread=lambda: getter(row_id),
     )
     if errors:
         raise ToolArgumentError("; ".join(errors))
-    moved = target is not None
+    if target is not None and not moved:
+        # The model found the row already in the target (a concurrent move
+        # to the same dossier): it wrote nothing, and says so.
+        return _billing_unmoved(row, kind, entity_type, entity_builder)
     return {
         "updated": True,
         "entity_type": entity_type,
         "entity": entity_builder(row),
         "moved": moved,
         "previous_dossier_id": stored_dossier if moved else None,
-        "warnings": _move_warnings(existing, target, entity_type) if moved else [],
+        # Judged on the row AS WRITTEN: a rate or a phase changed in the
+        # same call is the one the warnings must speak of.
+        "warnings": (_move_warnings(row, target, entity_type,
+                                    phase_changed="phase" in data)
+                     if moved else []),
     }
 
 
-def _move_warnings(row: dict, target: dict, entity_type: str) -> list[str]:
+def _billing_unmoved(row: dict, kind: str, entity_type: str,
+                     entity_builder) -> dict:
+    """The row is already filed in the dossier asked for — nothing written."""
+    return {
+        "updated": True,
+        "entity_type": entity_type,
+        "entity": entity_builder(row),
+        "moved": False,
+        "previous_dossier_id": None,
+        "warnings": [f"{kind} est déjà à ce dossier : rien n'a été écrit."],
+    }
+
+
+def _move_warnings(row: dict, target: dict, entity_type: str, *,
+                   phase_changed: bool = False) -> list[str]:
     """What a billing row's move changes beyond its dossier — said, never
-    silently absorbed."""
-    out = [
-        "Le budget des deux dossiers change : la consommation de cette "
-        "ligne quitte l'ancien dossier et s'ajoute au nouveau (sa phase du "
-        "litige est conservée)."
-    ]
+    silently absorbed. *row* is the row as WRITTEN."""
+    out: list[str] = []
+    # A non-billable time entry counts in no budget (aggregate_actuals
+    # skips it): saying both budgets change would be false.
+    if entity_type != "time_entry" or row.get("billable"):
+        out.append(
+            "Le budget des deux dossiers change : la consommation de cette "
+            "ligne quitte l'ancien dossier et s'ajoute au nouveau"
+            + (" (sous la phase fixée par cet appel)." if phase_changed
+               else " (sa phase du litige est conservée).")
+        )
     if entity_type == "time_entry":
         rate = int(row.get("rate") or 0)
         target_rate = target.get("hourly_rate")
@@ -5926,8 +5952,25 @@ def _invoice_selection(args: dict, dossier_id: str) -> tuple[list[str], list[str
                 "`all_unbilled` ou des identifiants nommés — pas les deux : "
                 "une sélection doit avoir UN sens."
             )
-        rows = [("t", e) for e in time_entry_model.get_unbilled_time_entries(dossier_id)]
-        rows += [("x", x) for x in expense_model.get_unbilled_expenses(dossier_id)]
+        # STRICT readers (review of lot 3b): the fail-open ones turn a read
+        # error into « no unbilled time » — and the invoice would then be
+        # ISSUED without it, the preview agreeing, a permanent number taken
+        # for a short invoice. A failed read refuses, both for the preview
+        # and for the write.
+        try:
+            entries = time_entry_model.get_unbilled_time_entries_strict(dossier_id)
+            expenses = expense_model.get_unbilled_expenses_strict(dossier_id)
+        except Exception:
+            log_unexpected("mcp all_unbilled selection read failed")
+            raise ToolArgumentError(
+                "Les entrées de temps et les déboursés non facturés de ce "
+                "dossier n'ont pas pu être lus (lecture impossible) : rien "
+                "n'a été écrit. Réessayez dans un instant, ou nommez les "
+                "sources.",
+                reason="invoice_refused",
+            )
+        rows = [("t", e) for e in entries]
+        rows += [("x", x) for x in expenses]
         rows.sort(key=lambda r: (_as_utc(r[1].get("date")) or _UTC_MIN,
                                  str(r[1].get("id") or "")))
         truncated = len(rows) > INVOICE_SOURCES_MAX
@@ -6477,6 +6520,11 @@ _BUDGET_READ_ERROR = (
     "Les versions du budget de ce dossier n'ont pas pu être lues — lecture "
     "impossible. Rien n'a été écrit : réessayez dans un instant."
 )
+_BUDGET_ACTUALS_READ_ERROR = (
+    "Le temps et les déboursés de ce dossier n'ont pas pu être lus — "
+    "lecture impossible : la consommation du budget ne peut pas être "
+    "établie. Réessayez dans un instant."
+)
 
 
 def _budget_line_rows(budget: dict) -> list[dict]:
@@ -6557,10 +6605,16 @@ def get_budget(args: dict) -> dict:
         )
     versions = _budget_versions(dossier_id)
     latest = versions[0] if versions else None
-    actuals = budget_model.aggregate_actuals(
-        time_entry_model.list_time_entries(dossier_id=dossier_id),
-        expense_model.list_expenses(dossier_id=dossier_id),
-    )
+    # STRICT readers (review of lot 3b): read fail-open, an outage showed no
+    # consumption — every phase « ok », the 80 % alert, the deontological
+    # trigger this view exists for, silently gone. A failed read refuses.
+    try:
+        entries = time_entry_model.list_time_entries_strict(dossier_id)
+        expenses = expense_model.list_expenses_strict(dossier_id)
+    except Exception:
+        log_unexpected("mcp get_budget actuals read failed")
+        raise ToolArgumentError(_BUDGET_ACTUALS_READ_ERROR)
+    actuals = budget_model.aggregate_actuals(entries, expenses)
     view = budget_model.build_budget_view(latest, actuals)
     shown = versions[:BUDGET_HISTORY_MAX] if args.get("include_history", True) else []
     history = []
@@ -6615,15 +6669,29 @@ def _create_budget_version_impl(args: dict) -> dict:
     if mode not in ("replace", "merge"):
         raise ToolArgumentError("`mode` doit valoir replace ou merge.")
 
-    requested: dict[str, tuple[float, int]] = {}
+    # {sub-code: {"hours"?, "frais"?}} — by PRESENCE (review of lot 3b): in
+    # merge mode a value the line does not name keeps the stored one. Read
+    # as 0 it silently zeroed a quoted figure — a line sent to raise the
+    # hours dropped the phase's frais from the client's estimate — and a
+    # line naming only its sub-code REMOVED it.
+    requested: dict[str, dict[str, Any]] = {}
     for line in args.get("lines") or []:
         code = str(line.get("sous_phase") or "")
         if code in requested:
             raise ToolArgumentError(
                 f"Sous-code en double dans `lines` : « {code} »."
             )
-        requested[code] = (_clean_budget_hours(line.get("hours"), code),
-                           int(line.get("frais_cents") or 0))
+        named: dict[str, Any] = {}
+        if "hours" in line:
+            named["hours"] = _clean_budget_hours(line.get("hours"), code)
+        if "frais_cents" in line:
+            named["frais"] = int(line.get("frais_cents") or 0)
+        if not named:
+            raise ToolArgumentError(
+                f"Ligne « {code} » : donnez `hours` ou `frais_cents` — une "
+                "ligne qui ne nomme aucun chiffre ne dit rien."
+            )
+        requested[code] = named
 
     versions = _budget_versions(dossier_id)
     latest = versions[0] if versions else None
@@ -6634,10 +6702,17 @@ def _create_budget_version_impl(args: dict) -> dict:
         for l in (latest or {}).get("lines") or []
     }
     if mode == "replace":
-        result = {c: v for c, v in requested.items() if v != (0.0, 0)}
+        # The lines ARE the budget: a value a line omits is 0.
+        result = {}
+        for code, named in requested.items():
+            value = (named.get("hours", 0.0), named.get("frais", 0))
+            if value != (0.0, 0):
+                result[code] = value
     else:
         result = dict(stored)
-        for code, value in requested.items():
+        for code, named in requested.items():
+            base = stored.get(code, (0.0, 0))
+            value = (named.get("hours", base[0]), named.get("frais", base[1]))
             if value == (0.0, 0):
                 result.pop(code, None)
             else:
@@ -12170,7 +12245,9 @@ def _invoice_note_document(args: dict) -> dict:
             "pas remettre avant d'avoir marqué la facture envoyée."
         )
     return {
-        "created": True,
+        # False on a REUSED note (review of lot 3b): nothing was created, and
+        # a `created: true` beside `reused: true` claimed the opposite.
+        "created": not note.reused,
         "source": "invoice_note",
         "reused": bool(note.reused),
         "invoice": {

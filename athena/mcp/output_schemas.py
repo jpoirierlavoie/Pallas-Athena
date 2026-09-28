@@ -3466,7 +3466,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         **_write_protocol_keys(),
     }),
     "create_document": _obj({
-        "created": {"type": "boolean", "enum": [True]},
+        "created": _bool(
+            "false only for source invoice_note with `reused` true: nothing "
+            "was created."),
         "source": {
             "type": "string", "enum": ["markdown", "copy", "invoice_note"],
             "description": "What the document was made from.",

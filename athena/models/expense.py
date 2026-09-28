@@ -638,6 +638,26 @@ def get_unbilled_expenses(dossier_id: str) -> list[dict]:
     return [e for e in entries if not e.get("invoiced")]
 
 
+def list_expenses_strict(dossier_id: str) -> list[dict]:
+    """Every disbursement of *dossier_id*, unordered — PROPAGATES a read
+    error. The twin of ``time_entry.list_time_entries_strict`` (same
+    callers, same reason: an empty read must never become an invoice
+    without the dossier's disbursements, nor a budget view showing no
+    consumption). Single-field equality: automatic index."""
+    if not dossier_id:
+        return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    )
+    return [doc.to_dict() or {} for doc in query.stream()]
+
+
+def get_unbilled_expenses_strict(dossier_id: str) -> list[dict]:
+    """:func:`get_unbilled_expenses`'s selection — the same predicate —
+    over :func:`list_expenses_strict`: a read error PROPAGATES."""
+    return [e for e in list_expenses_strict(dossier_id) if not e.get("invoiced")]
+
+
 def mark_expenses_invoiced(expense_ids: list[str], invoice_id: str) -> list[str]:
     """Update expenses as invoiced. Returns the IDs that failed to update.
 

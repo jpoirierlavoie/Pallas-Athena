@@ -2320,8 +2320,8 @@ TOOLS: dict[str, dict] = {
             "disbursement, billed or not; `level` warn from 80 % of the "
             "phase's dollars, over past 100 %) and the version history. "
             "`base_version` is what create_budget_version expects (0 = no "
-            "budget yet). Actuals are read best-effort: a failed read shows "
-            "no consumption."
+            "budget yet). A failed read of the actuals refuses — never a "
+            "view showing no consumption."
         ),
         "input_schema": {
             "type": "object",
@@ -4604,9 +4604,11 @@ TOOLS: dict[str, dict] = {
             "WRITE — record a NEW version of a dossier's budget. It becomes "
             "the reference budget, and its « Estimation » PDF is a CLIENT "
             "document; every earlier version stays kept, nothing is "
-            "overwritten. mode replace: `lines` IS the budget. mode merge: "
-            "each line replaces its sub-code's (hours 0 and frais 0 removes "
-            "it), the rest kept. base_version from get_budget: refused if a "
+            "overwritten. mode replace: `lines` IS the budget (an omitted "
+            "hours or frais_cents is 0). mode merge: each line changes the "
+            "values it NAMES on its sub-code (an omitted one keeps the stored "
+            "value; both 0 removes the line), every other line kept. Each "
+            "line names hours or frais_cents. base_version from get_budget: refused if a "
             "newer version was saved since. Identical to the version in "
             "force: nothing written."
         ),

@@ -862,3 +862,169 @@ def test_every_new_tool_is_described_in_the_registry():
             "create_budget_version"} <= tools.EDIT_TOOLS
     assert "preview_invoice" not in tools.WRITE_TOOLS
     assert "get_budget" not in tools.WRITE_TOOLS
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. Revue adversariale du lot 3b — chaque défaut, son test (chacun
+#    échoue sur le code d'avant la revue)
+# ══════════════════════════════════════════════════════════════════════
+
+
+class _FailingQueries:
+    """A store whose QUERIES on one collection fail while its documents stay
+    readable by id — exactly the outage a fail-open list reader swallows
+    into ``[]`` (``list_time_entries``' ``except Exception: return []``)."""
+
+    def __init__(self, real, collection: str) -> None:
+        self._real, self._collection = real, collection
+
+    def collection(self, name: str):
+        col = self._real.collection(name)
+        return _FailingCollection(col) if name == self._collection else col
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+
+class _FailingCollection:
+    def __init__(self, col) -> None:
+        self._col = col
+
+    def where(self, *_a, **_k):
+        return self
+
+    def stream(self, *_a, **_k):
+        raise RuntimeError("store unavailable")
+
+    def __getattr__(self, name: str):
+        return getattr(self._col, name)
+
+
+def _time_queries_fail(world, monkeypatch) -> None:
+    module = sys.modules["models.time_entry"]
+    monkeypatch.setattr(module, "db", _FailingQueries(module.db, "timeentries"))
+
+
+def test_all_unbilled_refuses_when_the_time_entries_cannot_be_read(
+        world, monkeypatch):
+    """Read fail-open, an outage made « every unbilled source » mean « every
+    unbilled DISBURSEMENT »: the preview agreed, the invoice was ISSUED
+    without the dossier's time and took a permanent number for it."""
+    _time_queries_fail(world, monkeypatch)
+    with pytest.raises(tools.ToolArgumentError, match="lecture impossible") as r:
+        _preview(all_unbilled=True)
+    assert r.value.reason == "invoice_refused"
+    with pytest.raises(tools.ToolArgumentError, match="lecture impossible"):
+        _create(all_unbilled=True, expected_total_cents=5749)
+    assert world.peek_collection("invoices") == {}
+    assert world.peek(COUNTER) is None
+    assert world.peek("expenses/x1")["invoiced"] is False
+
+
+def test_get_budget_refuses_when_the_actuals_cannot_be_read(world, monkeypatch):
+    """Read fail-open, an outage showed NO consumption: every phase « ok »,
+    the 80 % alert — the deontological trigger — silently gone."""
+    _budget(base_version=0, mode="replace",
+            lines=[{"sous_phase": "PRE-01", "hours": 1}])
+    _time_queries_fail(world, monkeypatch)
+    with pytest.raises(tools.ToolArgumentError, match="lecture impossible"):
+        handlers.get_budget({"dossier_id": "d1"})
+
+
+def test_merge_keeps_the_values_a_line_does_not_name(world):
+    """A merge line sent to raise the hours used to ZERO the phase's frais —
+    a quoted figure dropped from the client's estimate in silence."""
+    _budget(base_version=0, mode="replace",
+            lines=[{"sous_phase": "PRE-01", "hours": 10, "frais_cents": 5000},
+                   {"sous_phase": "INT-01", "hours": 4}])
+    merged = _budget(base_version=1, mode="merge",
+                     lines=[{"sous_phase": "PRE-01", "hours": 12}])
+    stored = world.peek(f"budgets/{merged['entity']['id']}")
+    lines = {l["sous_phase"]: l for l in stored["lines"]}
+    assert lines["PRE-01"]["hours"] == 12 and lines["PRE-01"]["frais_cents"] == 5000
+    assert lines["INT-01"]["hours"] == 4
+    assert merged["diff"] == {"added": [], "changed": ["PRE-01"], "removed": []}
+    # A frais-only line keeps the hours.
+    again = _budget(base_version=2, mode="merge",
+                    lines=[{"sous_phase": "INT-01", "frais_cents": 700}])
+    lines = {l["sous_phase"]: l
+             for l in world.peek(f"budgets/{again['entity']['id']}")["lines"]}
+    assert lines["INT-01"]["hours"] == 4 and lines["INT-01"]["frais_cents"] == 700
+
+
+def test_a_budget_line_naming_no_figure_is_refused(world):
+    """It used to REMOVE the line in merge mode (read as 0 h, 0 ¢)."""
+    _budget(base_version=0, mode="replace",
+            lines=[{"sous_phase": "PRE-01", "hours": 10}])
+    world.reset_logs()
+    with pytest.raises(tools.ToolArgumentError, match="aucun chiffre"):
+        _budget(base_version=1, mode="merge", lines=[{"sous_phase": "PRE-01"}])
+    assert world.commits == []
+    assert len(world.peek_collection("budgets")) == 1
+
+
+def test_a_reused_invoice_note_says_nothing_was_created(world):
+    _note_template(world)
+    invoice = _issued(world)
+    first = handlers.create_document({"source": "invoice_note",
+                                      "invoice_id": invoice["id"]})
+    assert first["created"] is True
+    second = handlers.create_document({"source": "invoice_note",
+                                       "invoice_id": invoice["id"]})
+    assert second["reused"] is True and second["created"] is False
+    _conforms("create_document", second)
+
+
+def test_replaying_a_move_with_its_pre_move_etag_writes_nothing(world):
+    """The move regenerates the etag; the replay of the SAME call (no key)
+    used to be refused as a false conflict — the model's own move answers
+    « already there » before the etag, and now the handler does too."""
+    args = {"time_entry_id": "e2", "dossier_id": "d2",
+            "expected_etag": "e2-e0"}
+    handlers.update_time_entry(dict(args))
+    world.reset_logs()
+    again = handlers.update_time_entry(dict(args))
+    assert again["moved"] is False and world.commits == []
+    assert world.peek("timeentries/e2")["dossier_id"] == "d2"
+    _conforms("update_time_entry", again)
+
+
+def test_move_warnings_speak_of_the_row_as_written(world):
+    """The rate warning read the PRE-write row: a move that also set the
+    target's rate still said « the entry's rate is kept, it differs »."""
+    payload = handlers.update_time_entry({"time_entry_id": "e2",
+                                          "dossier_id": "d2",
+                                          "rate_cents": 25000})
+    assert world.peek("timeentries/e2")["rate"] == 25000
+    assert not any("taux" in w for w in payload["warnings"])
+    # A non-billable entry counts in no budget: no budget warning.
+    world.seed("timeentries/e6", _entry("e6", billable=False, amount=0))
+    moved = handlers.update_time_entry({"time_entry_id": "e6",
+                                        "dossier_id": "d2"})
+    assert moved["moved"] is True
+    assert not any("budget" in w for w in moved["warnings"])
+
+
+def test_a_source_changed_during_the_call_burns_no_number(world, monkeypatch):
+    """The burn the plan names: a source edited between the plan's read and
+    the invoice transaction. The number is drawn INSIDE that transaction,
+    so its abort leaves the year's counter where it was — the total-mismatch
+    refusal above never even reaches the counter."""
+    preview = _preview(time_entry_ids=["e1"])
+    real_plan = invoice_model.plan_invoice
+
+    def plan_then_concurrent_edit(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        world.external_write("timeentries/e1", {
+            **world.peek("timeentries/e1"), "hours": 2.0,
+            "etag": "e1-concurrent"})
+        return plan
+
+    monkeypatch.setattr(invoice_model, "plan_invoice", plan_then_concurrent_edit)
+    with pytest.raises(tools.ToolArgumentError, match="entre-temps") as refused:
+        _create(time_entry_ids=["e1"],
+                expected_total_cents=preview["total_cents"])
+    assert "aucun numéro n'a été consommé" in str(refused.value)
+    assert world.peek(COUNTER) is None
+    assert world.peek_collection("invoices") == {}
+    assert world.peek("timeentries/e1")["invoiced"] is False

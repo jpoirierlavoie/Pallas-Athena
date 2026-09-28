@@ -795,6 +795,33 @@ def get_unbilled_time_entries(dossier_id: str) -> list[dict]:
     return [e for e in entries if e.get("billable") and not e.get("invoiced")]
 
 
+def list_time_entries_strict(dossier_id: str) -> list[dict]:
+    """Every time entry of *dossier_id*, unordered — PROPAGATES a read error.
+
+    :func:`list_time_entries` swallows a failure into ``[]``: right for a
+    screen, wrong for a caller whose answer is based on the list — the
+    connector's invoice selection (``all_unbilled``), where an empty read
+    would issue an invoice without the dossier's time and take a permanent
+    number for it, and its budget view, where it would report no
+    consumption and hide the 80 % alert (review of lot 3b). The
+    ``folder.subtree_members`` doctrine: a write's — or an alert's — view of
+    the world may not degrade. Single-field equality: automatic index.
+    """
+    if not dossier_id:
+        return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    )
+    return [doc.to_dict() or {} for doc in query.stream()]
+
+
+def get_unbilled_time_entries_strict(dossier_id: str) -> list[dict]:
+    """:func:`get_unbilled_time_entries`'s selection — the same predicate —
+    over :func:`list_time_entries_strict`: a read error PROPAGATES."""
+    return [e for e in list_time_entries_strict(dossier_id)
+            if e.get("billable") and not e.get("invoiced")]
+
+
 def mark_time_entries_invoiced(entry_ids: list[str], invoice_id: str) -> list[str]:
     """Update time entries as invoiced. Returns the IDs that failed to update.
 
