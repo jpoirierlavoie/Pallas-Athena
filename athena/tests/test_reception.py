@@ -179,6 +179,41 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     assert ecrits
 
 
+@pytest.mark.parametrize("categorie, du_juriste", [
+    ("pièce", False),     # la valeur que le sélecteur PRÉSÉLECTIONNE
+    ("autre", True),      # quittée : c'est un choix
+    ("jugement", True),
+])
+def test_verser_seule_une_categorie_deplacee_est_un_choix_du_juriste(
+    web, monkeypatch, categorie, du_juriste,
+):
+    """D18 (revue des correctifs du lot 2A). Le versement présélectionne
+    « pièce », pas « autre » : la route comparait à « autre », si bien que
+    tout versement laissé sur « pièce » était enregistré comme le choix du
+    juriste (Claude ne pouvait plus le reclasser) et un « autre » choisi
+    comme un défaut. ÉCHOUE sur l'ancienne route."""
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
+    bucket = mock.Mock()
+    bucket.blob.return_value = _blob_quarantaine()
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier",
+                        lambda d: _dossier() if d == "d1" else None)
+    monkeypatch.setattr(rc, "ensure_system_folder",
+                        lambda d, role: ({"id": "f-portail", "system_role": role}, []))
+    ingest = mock.Mock(return_value=({"id": "doc9"}, []))
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
+
+    reponse = web.post(
+        "/reception/lots/inv1/b1/fichiers/0/verser",
+        data={"dossier_id": "d1", "category": categorie, "display_name": ""},
+    )
+    assert reponse.status_code == 302
+    assert ingest.call_args.args[4]["category"] == categorie
+    assert ingest.call_args.kwargs["lawyer_set_category"] is du_juriste
+
+
 def test_verser_refuse_un_uid_de_session_inutilisable_avant_toute_ecriture(
     web, monkeypatch
 ):

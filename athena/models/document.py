@@ -402,8 +402,11 @@ MCP_CATEGORY_ON_LAWYERS = (
     "dans l'application : une catégorie présumée ne la remplace pas. "
     "Signalez-lui l'écart ; lui seul la corrige."
 )
-# Where the upload forms START (the select's pre-selected value): a
+# Where the web UPLOAD form starts (the select's pre-selected value): a
 # category still equal to it was not chosen — see category_set_by_lawyer.
+# Réception's versement form starts ELSEWHERE (« pièce »,
+# routes/reception.VERSEMENT_DEFAULT_CATEGORY): each form is judged against
+# its own pre-selection, never this one.
 UPLOAD_DEFAULT_CATEGORY = "autre"
 
 
@@ -414,10 +417,13 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
 
     * True by an explicit lawyer gesture — the web edit form CHANGING the
       category (``update_metadata`` with a « juriste » source), « Confirmer
-      la catégorie » (:func:`confirmer_categorie`), or an upload whose form
-      the lawyer moved OFF the pre-selected default (the web upload and
-      Réception's versement: a category other than
-      :data:`UPLOAD_DEFAULT_CATEGORY`);
+      la catégorie » (:func:`confirmer_categorie`), the confirmation or the
+      edition of an analysis (:func:`confirmer_analyse`,
+      :func:`update_analyse` — both make the category « a determination of
+      the lawyer »), or an upload whose form the lawyer moved OFF its own
+      pre-selected value (the web upload: other than
+      :data:`UPLOAD_DEFAULT_CATEGORY`; Réception's versement: other than
+      ``routes.reception.VERSEMENT_DEFAULT_CATEGORY``);
     * False by every other writer of a category — a connector category
       (presumed, D15), an upload left on the default, a generation (the
       template's own category), an analysis.
@@ -2717,6 +2723,9 @@ def update_analyse(
         fields = {
             "analyse": champ, "category": champ["nature_detectee"],
             "category_source": "juriste",
+            # D18: the lawyer's edit IS his determination (« éditer vaut
+            # confirmer ») — a copy of this document keeps it his.
+            "category_set_by_lawyer": True,
             **provenance.update_fields(now),
         }
         transaction.set(
@@ -2907,6 +2916,10 @@ def confirmer_analyse(
             # La confirmation fait de la catégorie une détermination de
             # l'avocat : la mention « présumé » doit tomber avec elle.
             "category_source": "juriste",
+            # D18 (revue des correctifs du lot 2A) : et le marqueur le dit,
+            # sans quoi la COPIE de ce document (qui n'emporte pas l'analyse)
+            # lisait sa catégorie comme un défaut que Claude peut remplacer.
+            "category_set_by_lawyer": True,
             **provenance.update_fields(now),
         }
         transaction.update(ref, fields)

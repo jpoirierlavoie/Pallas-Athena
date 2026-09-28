@@ -48,7 +48,6 @@ from models.document import (
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
     build_attachment_disposition,
-    UPLOAD_DEFAULT_CATEGORY,
     ingest_blob_as_document,
     sign_blob_url,
 )
@@ -78,6 +77,18 @@ reception_bp = Blueprint("reception", __name__, url_prefix="/reception")
 
 _ONGLETS = ("documents", "rdv", "ouvertures")
 _JOURS_CHOIX = (14, 30, 60, 90)
+
+# D18 : la catégorie que le sélecteur du VERSEMENT présélectionne
+# (templates/reception/index.html la reçoit d'ici, jamais d'un littéral
+# recopié). Ce n'est PAS celle du formulaire de téléversement (« autre »,
+# models.document.UPLOAD_DEFAULT_CATEGORY) : un fichier reçu du client est
+# d'abord une pièce. Une catégorie restée à cette valeur n'a pas été
+# choisie ; seule une valeur que le juriste a QUITTÉE l'est. Revue des
+# correctifs du lot 2A : la route comparait à « autre », si bien que chaque
+# versement laissé sur « pièce » était enregistré comme un choix du juriste
+# (que Claude ne pouvait plus corriger), et un « autre » délibérément choisi
+# comme un défaut.
+VERSEMENT_DEFAULT_CATEGORY = "pièce"
 
 
 # ── Pastille de navigation (compteur mis en cache, fail-open) ────────────
@@ -463,6 +474,8 @@ def index():
         dossiers=list_dossiers(status_filter="actif") if onglet == "documents" else [],
         # The versement select is an INPUT: CHOICES, not LABELS.
         category_choices=CATEGORY_CHOICES,
+        # Its pre-selected value — the one D18 counts as « not chosen ».
+        versement_default_category=VERSEMENT_DEFAULT_CATEGORY,
         **contexte,
     )
 
@@ -764,6 +777,16 @@ def _nom_par_defaut(nom_client: str) -> str:
     return propre[:DISPLAY_NAME_MAX].strip()
 
 
+def _categorie_choisie(soumise: object) -> bool:
+    """D18 — la catégorie SOUMISE au versement est-elle un choix du juriste ?
+
+    Vrai seulement quand le sélecteur a été déplacé hors de sa valeur
+    présélectionnée (:data:`VERSEMENT_DEFAULT_CATEGORY`) ; un champ absent
+    ou vide n'est le choix de personne."""
+    return (isinstance(soumise, str) and bool(soumise.strip())
+            and soumise.strip() != VERSEMENT_DEFAULT_CATEGORY)
+
+
 @reception_bp.post("/lots/<inv_id>/<batch>/fichiers/<int:seq>/verser")
 @login_required
 def verser(inv_id: str, batch: str, seq: int):
@@ -887,11 +910,12 @@ def verser(inv_id: str, batch: str, seq: int):
         metadata,
         user_id,
         portail=portail,
-        # D18 : une catégorie que le juriste a choisie au versement (hors du
-        # défaut présélectionné) est la sienne — le connecteur ne la
-        # remplace jamais.
-        lawyer_set_category=(
-            metadata["category"] != UPLOAD_DEFAULT_CATEGORY),
+        # D18 : une catégorie que le juriste a choisie au versement — une
+        # valeur SOUMISE qui quitte celle que le sélecteur présélectionne
+        # (VERSEMENT_DEFAULT_CATEGORY, « pièce ») — est la sienne : le
+        # connecteur ne la remplace jamais. Un champ absent (un POST sans
+        # sélecteur) n'est le choix de personne.
+        lawyer_set_category=_categorie_choisie(request.form.get("category")),
     )
     if errors or document is None:
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")

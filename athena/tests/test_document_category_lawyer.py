@@ -242,17 +242,112 @@ def test_a_new_record_carries_the_marker_it_was_given():
                    lawyer_set_category=True)["category_set_by_lawyer"] is False
 
 
-def test_the_upload_forms_start_on_the_default_the_rule_names():
-    """The upload form and Réception's versement pre-select « autre »: a
-    category still equal to it was not moved by the lawyer."""
+def test_each_upload_form_is_judged_against_its_own_pre_selection():
+    """Rewritten deliberately (review of the fixups of lot 2A): it claimed
+    « the upload form and Réception's versement pre-select « autre » » and
+    checked only the first. Réception pre-selects « pièce » — so the route,
+    comparing to « autre », recorded every versement left on its default as
+    the lawyer's choice. Each form now names its own pre-selection, and the
+    Réception select renders the very constant its route compares to."""
     assert document_model.UPLOAD_DEFAULT_CATEGORY == "autre"
     upload = (_ATHENA / "templates" / "documents" / "upload.html").read_text(
         encoding="utf-8")
     assert "'selected' if cat_key == 'autre'" in upload
-    for route in ("routes/documents.py", "routes/reception.py"):
-        source = (_ATHENA / route).read_text(encoding="utf-8")
-        assert "lawyer_set_category=" in source, route
-        assert "UPLOAD_DEFAULT_CATEGORY" in source, route
+    documents_route = (_ATHENA / "routes/documents.py").read_text(
+        encoding="utf-8")
+    assert "lawyer_set_category=" in documents_route
+    assert "UPLOAD_DEFAULT_CATEGORY" in documents_route
+
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.reception as rc
+
+    assert rc.VERSEMENT_DEFAULT_CATEGORY == "pièce"
+    reception = (_ATHENA / "templates" / "reception" / "index.html").read_text(
+        encoding="utf-8")
+    assert "cle == versement_default_category %}selected" in reception
+    assert 'cle == "pièce"' not in reception        # no copied literal
+    source = (_ATHENA / "routes/reception.py").read_text(encoding="utf-8")
+    assert "versement_default_category=VERSEMENT_DEFAULT_CATEGORY" in source
+    assert "UPLOAD_DEFAULT_CATEGORY" not in source.replace(
+        "models.document.UPLOAD_DEFAULT_CATEGORY", "")
+
+
+@pytest.mark.parametrize("submitted, lawyers", [
+    ("pièce", False),        # the pre-selected value, left alone
+    ("autre", True),         # moved OFF it: the lawyer's choice
+    ("jugement", True),
+    (None, False),           # no field at all: nobody's choice
+    ("", False),
+])
+def test_reception_counts_only_a_moved_select_as_the_lawyers(submitted, lawyers):
+    """Fails on the old route, which compared to « autre »: « pièce » read
+    True and a deliberate « autre » False."""
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.reception as rc
+
+    assert rc._categorie_choisie(submitted) is lawyers
+
+
+# ── An analysis the lawyer confirmed or edited is his determination ──────
+
+
+def _analysed(fake, did):
+    champ, errors = document_model._analyse_derivee(
+        {"sous_nature": "CORR_TIERS"},
+        document={"id": did, "category": "autre"})
+    assert not errors, errors
+    _doc(fake, did, analyse=champ, category=champ["nature_detectee"],
+         category_source="analyse")
+
+
+def test_confirming_an_analysis_makes_the_category_the_lawyers(fake):
+    """Review of the fixups: confirmer_analyse made the category « a
+    determination of the lawyer » (category_source « juriste ») but left
+    the D18 marker absent — the document itself stayed protected by its
+    analysis, yet its COPY (which carries no analysis) read the category
+    as an untouched default Claude could replace. Fails on the old code."""
+    _analysed(fake, "qualifie")
+    doc, errors = document_model.confirmer_analyse(
+        "qualifie", "me@cabinet.ca")
+    assert not errors, errors
+    stored = fake.peek("documents/qualifie")
+    assert stored["category_set_by_lawyer"] is True
+    assert document_model.category_set_by_lawyer(stored) is True
+
+
+def test_editing_an_analysis_makes_the_category_the_lawyers(fake):
+    _analysed(fake, "edite")
+    doc, errors = document_model.update_analyse(
+        "edite", {"auteur": "Un Toit en Réserve"}, par="me@cabinet.ca")
+    assert not errors, errors
+    assert fake.peek("documents/edite")["category_set_by_lawyer"] is True
+
+
+def test_a_copy_of_a_confirmed_analysis_keeps_the_lawyers_category(
+    fake, monkeypatch,
+):
+    """The consent promises that a copy's category stays presumed « sauf si
+    vous l'aviez posée vous-même »: a category the lawyer CONFIRMED through
+    its analysis travels to the copy as his."""
+    _analysed(fake, "source")
+    fake.seed("documents/source", {
+        **fake.peek("documents/source"),
+        "storage_path": "users/u/dossiers/d1/documents/source/x.pdf",
+        "filename": "x.pdf", "file_type": "application/pdf"})
+    document_model.confirmer_analyse("source", "me@cabinet.ca")
+    bucket = mock.Mock()
+    monkeypatch.setattr(document_model.storage, "bucket", lambda: bucket)
+    seen = {}
+
+    def ingest(*args, **kwargs):
+        seen.update(kwargs)
+        return {"id": "copie"}, []
+
+    monkeypatch.setattr(document_model, "ingest_blob_as_document", ingest)
+    copy, errors = document_model.copy_document("source", user_id=UID)
+    assert not errors, errors
+    assert seen["category_source"] == "juriste"
+    assert seen["lawyer_set_category"] is True
 
 
 def test_the_web_upload_passes_the_lawyers_choice(monkeypatch):
