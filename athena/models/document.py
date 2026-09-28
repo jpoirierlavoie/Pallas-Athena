@@ -1202,6 +1202,39 @@ def upload_document(
     return merged, []
 
 
+def is_addressable_id(value: object) -> bool:
+    """True when *value* can name ONE top-level record: a non-empty string
+    with no « / ».
+
+    The Firestore client joins then re-splits a document id on « / », so
+    ``document("{id}/analyses/{analyse_id}")`` addresses a record DEEPER in
+    the tree — an entry of a document's write-once analysis journal read as
+    if it were the document, and a partial update staged ONTO it (lot 2A,
+    T7: the connector hands ids through verbatim). No id this application
+    mints carries a slash (UUIDv4, or the UUIDv5 of a system folder), so a
+    slashed id is an ABSENCE, never a path. The web routes never reach this
+    (Flask's default converter stops at « / »)."""
+    return isinstance(value, str) and bool(value) and "/" not in value
+
+
+def get_document_strict(document_id: str) -> Optional[dict]:
+    """Fetch a single document by ID; a read failure PROPAGATES.
+
+    ``None`` means the store answered « no such document » (or the id could
+    not name one, :func:`is_addressable_id`) — never « the read failed ». For
+    a caller about to WRITE on the strength of the answer (the connector's
+    edits), for which « introuvable » on a transient error would send the
+    caller hunting for an id that was right all along. Read-migrated like
+    :func:`get_document`.
+    """
+    if not is_addressable_id(document_id):
+        return None
+    doc = db.collection(COLLECTION).document(document_id).get()
+    if doc.exists:
+        return _migrate_category(doc.to_dict() or {})
+    return None
+
+
 def get_document(document_id: str) -> Optional[dict]:
     """Fetch a single document metadata by ID."""
     try:
@@ -1313,12 +1346,36 @@ def _changed_metadata(existing: dict, proposed: dict) -> dict:
     }
 
 
+TARGET_FOLDER_NOT_FOUND = "Le dossier de destination est introuvable."
+
+
+def _check_target_folder(transaction, dossier_id: str, target: Optional[str]) -> None:
+    """Refuse (:class:`_Refused`) unless *target* is a folder of
+    *dossier_id* — read THROUGH *transaction*, so a folder deleted between
+    this read and the commit aborts the write (the real client re-runs the
+    body, which then refuses) instead of filing the document under a dead
+    ``folder_id`` — the document then shows in no folder and at no root.
+    ``None`` (the dossier root) needs no read. Call it before any staged
+    write (reads first)."""
+    if target is None:
+        return
+    from models import folder as folder_model
+
+    if not is_addressable_id(target):
+        raise _Refused([TARGET_FOLDER_NOT_FOUND])
+    snap = db.collection(folder_model.COLLECTION).document(target).get(
+        transaction=transaction)
+    if not snap.exists or (snap.to_dict() or {}).get("dossier_id") != dossier_id:
+        raise _Refused([TARGET_FOLDER_NOT_FOUND])
+
+
 def update_metadata(
     document_id: str,
     data: dict,
     *,
     expected_etag: Optional[str] = None,
     source: Optional[str] = None,
+    folder_id: object = _UNSET,
 ) -> tuple[Optional[dict], list[str], bool]:
     """Update document metadata — a partial, transactional write.
 
@@ -1361,13 +1418,29 @@ def update_metadata(
     posts back untouched is not a new write, and must not block the save of
     another field. The returned document carries the NEW etag: a caller
     chaining ``update_analyse`` on the same save passes that one.
+
+    ``folder_id`` (keyword-only, lot 2A T7) — ALSO move the document, in the
+    SAME transaction: ``None`` or ``""`` is the dossier root, a string a
+    folder of the document's OWN dossier (read through the transaction —
+    :func:`_check_target_folder`). Omitted, the folder is left alone. It is
+    a keyword and never a key of *data* on purpose: the web edit form's
+    *data* cannot move a document (a ``folder_id`` in it is ignored like any
+    key outside the whitelist), and a caller that renames AND refiles in one
+    call gets one etag check and one commit — never a metadata write that
+    lands while the move that was to follow it is refused.
     """
+    if not is_addressable_id(document_id):
+        return None, ["Document introuvable."], False
     source, errors = _resolve_category_source(source)
     if errors:
         return None, errors, False
     proposed, errors = _metadata_input(data or {}, _METADATA_EDIT_KEYS)
     if errors:
         return None, errors, False
+    moving = folder_id is not _UNSET
+    target = (folder_id or None) if moving else None
+    if moving and target is not None and not isinstance(target, str):
+        return None, [TARGET_FOLDER_NOT_FOUND], False
     ref = db.collection(COLLECTION).document(document_id)
 
     @firestore.transactional
@@ -1384,6 +1457,11 @@ def update_metadata(
         value_errors = _metadata_value_errors(changes)
         if value_errors:
             raise _Refused(value_errors)
+        if moving and (existing.get("folder_id") or None) != target:
+            # A read, still before any staged write.
+            _check_target_folder(
+                transaction, existing.get("dossier_id") or "", target)
+            changes["folder_id"] = target
         if "category" in changes:
             if source == "mcp" and has_analysis(existing):
                 raise _Refused([MCP_CATEGORY_ON_ANALYSED])
@@ -1944,14 +2022,10 @@ def move_document(
     asserts nothing about the version (a move cannot lose another field's
     edit any more — it writes one key).
     """
-    from models import folder as folder_model
-
     target = target_folder_id or None
+    if not is_addressable_id(document_id):
+        return None, ["Document introuvable."], False
     ref = db.collection(COLLECTION).document(document_id)
-    folder_ref = (
-        db.collection(folder_model.COLLECTION).document(target)
-        if target else None
-    )
 
     @firestore.transactional
     def _apply(transaction) -> tuple[dict, bool]:
@@ -1963,11 +2037,7 @@ def move_document(
             raise _Refused([concurrency.STALE_ETAG_ERROR])
         if doc.get("dossier_id") != dossier_id:
             raise _Refused(["Le document n'appartient pas à ce dossier."])
-        if folder_ref is not None:
-            folder_snap = folder_ref.get(transaction=transaction)
-            if (not folder_snap.exists or
-                    (folder_snap.to_dict() or {}).get("dossier_id") != dossier_id):
-                raise _Refused(["Le dossier de destination est introuvable."])
+        _check_target_folder(transaction, dossier_id, target)
         if (doc.get("folder_id") or None) == target:
             return doc, False
         fields = {
@@ -1989,48 +2059,112 @@ def move_document(
     return doc, [], changed
 
 
+# The per-row outcomes of move_documents_bulk.
+MOVE_MOVED = "moved"
+MOVE_UNCHANGED = "unchanged"
+MOVE_REFUSED = "refused"
+MOVE_NOT_FOUND = "Document introuvable."
+MOVE_OTHER_DOSSIER = "Ce document appartient à un autre dossier."
+MOVE_DUPLICATE_IDS = "Un même document est nommé deux fois dans la liste."
+MOVE_BULK_MAX = 50
+
+
 def move_documents_bulk(
     dossier_id: str,
     document_ids: list[str],
     target_folder_id: Optional[str],
-) -> tuple[int, list[str]]:
-    """Move multiple documents to a folder. Returns (count_moved, errors)."""
-    # Validate target folder
-    if target_folder_id:
-        from models.folder import get_folder
-        folder = get_folder(dossier_id, target_folder_id)
-        if not folder:
-            return 0, ["Le dossier de destination est introuvable."]
+) -> tuple[list[dict], list[str]]:
+    """Move documents of ONE dossier into one folder — every row read, and
+    every move written, in ONE transaction.
 
-    now = datetime.now(timezone.utc)
-    moved = 0
-    errors: list[str] = []
-    batch = db.batch()
+    Returns ``(rows, errors)``. *errors* non-empty refuses the WHOLE call and
+    nothing is written: an unknown target folder, more than
+    :data:`MOVE_BULK_MAX` ids, an id named twice, a store that cannot be
+    read, a commit that failed. Otherwise *rows* holds one row per requested
+    id, IN REQUEST ORDER: ``{"id", "outcome", "reason",
+    "previous_folder_id", "doc"}`` — ``outcome`` ∈ ``moved`` / ``unchanged``
+    (already filed there: nothing written for it) / ``refused`` (no such
+    document, or a document of another dossier — ``reason`` says which,
+    in French, without the id), ``doc`` the document as stored AFTER the
+    call (``None`` on a refused row).
 
-    for doc_id in document_ids:
-        doc = get_document(doc_id)
-        if not doc:
-            errors.append(f"Document {doc_id} introuvable.")
-            continue
-        if doc.get("dossier_id") != dossier_id:
-            errors.append(f"Document {doc_id} n'appartient pas à ce dossier.")
-            continue
+    Rewritten in lot 2A (T7, 2026-09-27) before the connector reached it.
+    The old body read each document OUTSIDE any transaction through the
+    fail-OPEN :func:`get_document` — a read error reported as « introuvable »
+    while the other rows moved —, rewrote rows already in the target (a new
+    etag for nothing), checked the target folder once, beforehand, so a
+    folder deleted before the commit left documents under a dead
+    ``folder_id`` (in no folder, at no root), and answered with loose
+    strings. Now: the target folder and every document are read through the
+    transaction (a concurrent write to any of them aborts the commit, and
+    the real client re-runs the body on fresh data — a move never reverts
+    another write, it writes ``folder_id`` and its stamp only), a read error
+    refuses everything, and the moved rows commit together or not at all.
+    """
+    ids = [str(i) for i in (document_ids or [])]
+    if len(ids) > MOVE_BULK_MAX:
+        return [], [f"{MOVE_BULK_MAX} documents au plus par déplacement."]
+    if len(set(ids)) != len(ids):
+        return [], [MOVE_DUPLICATE_IDS]
+    target = target_folder_id or None
+    refs = {
+        i: db.collection(COLLECTION).document(i)
+        for i in ids if is_addressable_id(i)
+    }
 
-        ref = db.collection(COLLECTION).document(doc_id)
-        batch.update(ref, {
-            "folder_id": target_folder_id,
-            **provenance.update_fields(now),
-        })
-        moved += 1
+    @firestore.transactional
+    def _apply(transaction) -> list[dict]:
+        # Reads first: the target folder, then every document in ONE
+        # batched read (``get_all`` answers in no particular order — keyed
+        # back by id below, never zipped against the request).
+        _check_target_folder(transaction, dossier_id, target)
+        found: dict[str, dict] = {}
+        if refs:
+            for snap in transaction.get_all(list(refs.values())):
+                if snap.exists:
+                    found[snap.id] = _migrate_category(snap.to_dict() or {})
+        rows: list[dict] = []
+        moving: list[str] = []
+        for doc_id in ids:
+            doc = found.get(doc_id)
+            row = {"id": doc_id, "outcome": MOVE_REFUSED, "reason": None,
+                   "previous_folder_id": None, "doc": None}
+            if doc is None:
+                row["reason"] = MOVE_NOT_FOUND
+            elif doc.get("dossier_id") != dossier_id:
+                row["reason"] = MOVE_OTHER_DOSSIER
+            else:
+                previous = doc.get("folder_id") or None
+                row.update(previous_folder_id=previous, doc=doc)
+                if previous == target:
+                    row["outcome"] = MOVE_UNCHANGED
+                else:
+                    row["outcome"] = MOVE_MOVED
+                    moving.append(doc_id)
+            rows.append(row)
+        if moving:
+            now = datetime.now(timezone.utc)
+            by_id = {r["id"]: r for r in rows}
+            for doc_id in moving:
+                # One instant, one etag PER ROW: each document's etag is its
+                # own concurrency token (update_fields mints a fresh uuid).
+                fields = {"folder_id": target, **provenance.update_fields(now)}
+                transaction.update(refs[doc_id], fields)
+                by_id[doc_id]["doc"] = {**by_id[doc_id]["doc"], **fields}
+        return rows
 
-    if moved > 0:
-        try:
-            batch.commit()
-        except Exception:
-            log_unexpected("document bulk move failed")
-            return 0, ["Erreur lors du déplacement. Veuillez réessayer."]
-
-    return moved, errors
+    try:
+        rows = _apply(db.transaction())
+    except _Refused as refusal:
+        return [], refusal.errors
+    except Exception:
+        log_unexpected("document bulk move failed")
+        return [], ["Erreur lors du déplacement. Rien n'a été déplacé — "
+                    "réessayez."]
+    for row in rows:
+        if row["outcome"] == MOVE_MOVED:
+            provenance.note_commit(COLLECTION, row["id"])
+    return rows, []
 
 
 # ── Summary ──────────────────────────────────────────────────────────────
@@ -2249,7 +2383,14 @@ def record_analyse(
 
     Le journal (`set()` de l'entrée) et le cache (`update()` des seules
     clés que l'analyse possède) partent ensemble ou pas du tout.
+
+    Un identifiant à barre oblique est une ABSENCE (lot 2A, T7 —
+    :func:`is_addressable_id`) : le connecteur le transmet tel quel, et
+    ``document("{id}/analyses/{a}")`` désignait une entrée du journal, sur
+    laquelle ce modèle écrivait un cache et ouvrait un journal à elle.
     """
+    if not is_addressable_id(document_id):
+        return None, ["Document introuvable."]
     ref = db.collection(COLLECTION).document(document_id)
 
     @firestore.transactional

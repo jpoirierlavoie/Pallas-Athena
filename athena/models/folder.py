@@ -367,6 +367,29 @@ def _name_taken(
     )
 
 
+def find_folder_named(
+    folders: Iterable[dict],
+    parent_id: Optional[str],
+    name: object,
+) -> Optional[dict]:
+    """The folder of *folders* (one dossier's) sitting in *parent_id*
+    (``None`` = the dossier root) under *name* — compared exactly as
+    :func:`_name_taken` compares (trimmed, case-folded, whatever the Unicode
+    normalization) — or ``None``. Pure.
+
+    The connector's ``manage_folder`` create with ``if_exists: "reuse"``
+    finds, through this, the folder its refused creation collided with: what
+    it reuses is by construction what the duplicate rule refused."""
+    wanted = _fold_equivalent(name)
+    if not wanted:
+        return None
+    for f in folders:
+        if ((f.get("parent_folder_id") or None) == (parent_id or None)
+                and _fold_equivalent(f.get("name")) == wanted):
+            return f
+    return None
+
+
 # _count_items (one query per folder, and fail-OPEN: doc_count = 0 on a read
 # error, so a populated folder read as empty) was removed in August 2026. Its
 # last caller, the browser's per-folder counts, moved to subtree_index, and

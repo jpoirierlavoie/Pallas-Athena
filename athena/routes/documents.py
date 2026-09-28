@@ -872,7 +872,13 @@ def document_move_bulk() -> str:
             return '<div class="text-red-600 text-sm">Paramètres manquants.</div>', 422
         return redirect(url_for("documents.document_list"))
 
-    moved, errors = move_documents_bulk(dossier_id, doc_ids, target_folder_id)
+    # The model refuses an id named twice (a batch naming a row twice has no
+    # single outcome to report); a form that posts a checkbox twice means it
+    # once — deduplicated here, in order.
+    rows, errors = move_documents_bulk(
+        dossier_id, list(dict.fromkeys(doc_ids)), target_folder_id)
+    moved = sum(1 for r in rows if r["outcome"] == "moved")
+    errors = errors or [r["reason"] for r in rows if r["outcome"] == "refused"]
 
     target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=target_folder_id or "")
     if _is_htmx():
