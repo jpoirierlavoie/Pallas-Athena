@@ -26,10 +26,14 @@ surfaces log identically:
    ("note_honoraires")`` — never « the most recent », D11): none designated
    (``no_note_template``) and an unreadable store (``template_read_failed``)
    are two different answers;
-5. the fill context (the dossier and the client read as before — a client
-   gone falls back to the invoice's frozen billing snapshot), the values,
-   and their FINGERPRINT (:func:`fill_fingerprint` — the template's id and
-   version plus a SHA-256 of everything the fill prints);
+5. the fill context — the dossier through the STRICT reader (a read
+   failure refuses, ``dossier_unreadable``: the fail-open ``get_dossier``
+   turned a blip into ``None``, and the note was filed with « [CHAMP
+   MANQUANT : …] » in every dossier field while the call reported success
+   — review of lot 3a, step 2), the client as before (a client gone falls
+   back to the invoice's frozen billing snapshot) —, the values, and their
+   FINGERPRINT (:func:`fill_fingerprint` — the template's id and version
+   plus a SHA-256 of everything the fill prints);
 6. unless *regenerate*: a note already generated from THIS invoice with the
    SAME fingerprint is returned instead of a duplicate (``reused=True``,
    nothing written, no log line — the connector's own ``mcp_write`` says
@@ -65,7 +69,7 @@ from models.doc_template import (
     template_file_bytes,
 )
 from models.document import find_generated_for_invoice
-from models.dossier import get_dossier
+from models.dossier import get_dossier_strict
 from models.invoice import get_invoice_with_items_strict, line_items_missing
 from models.partie import get_partie
 from services.gabarits import GenerationRefused, projet_names, save_generated
@@ -88,6 +92,10 @@ INVOICE_UNREADABLE = (
 )
 INVOICE_VOIDED = (
     "Impossible de générer une note d'honoraires pour une facture annulée."
+)
+DOSSIER_UNREADABLE = (
+    "Le dossier de cette facture n'a pas pu être lu — lecture impossible. "
+    "Rien n'a été généré : réessayez dans un instant."
 )
 LINE_ITEMS_UNREADABLE = (
     "Les lignes de cette facture sont introuvables alors que son sous-total "
@@ -234,7 +242,16 @@ def generer_note_honoraires(
     template_id = template["id"]
 
     dossier_id = invoice.get("dossier_id", "")
-    dossier = get_dossier(dossier_id) if dossier_id else None
+    # STRICT: this read decides what a client-facing document prints, and
+    # the note is filed on its answer. « None » stays « no such dossier »
+    # (the save then refuses: « Projets » has no dossier to live in).
+    try:
+        dossier = get_dossier_strict(dossier_id) if dossier_id else None
+    except Exception:
+        log_unexpected("note d'honoraires: dossier read failed",
+                       invoice_id=invoice_id)
+        raise _refuse("dossier_unreadable", DOSSIER_UNREADABLE,
+                      template_id=template_id, invoice_id=invoice_id)
     client_id = invoice.get("client_id", "")
     client = get_partie(client_id) if client_id else None
     day = today or today_mtl()

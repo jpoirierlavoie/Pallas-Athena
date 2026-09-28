@@ -425,6 +425,59 @@ def test_a_failed_line_item_read_is_refused_never_filled_empty(
     _nothing_written(db)
 
 
+def _fail_first_dossier_read(db, monkeypatch) -> list:
+    """The FIRST read of ``dossiers/d1`` fails at the SERVER — the
+    generation's own read of the invoice's dossier; every later read (the
+    « Projets » system folder's) works again. Returns the refused reads."""
+    real = db._fake_server.batch_get_documents
+    refused: list = []
+
+    def _batch_get(request, metadata=None, **kw):
+        names = [str(n) for n in request["documents"]]
+        if not refused and any(n.endswith("/dossiers/d1") for n in names):
+            refused.append(names)
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(db._fake_server, "batch_get_documents", _batch_get)
+    return refused
+
+
+def test_a_failed_dossier_read_is_refused_never_filled_with_gaps(
+    store, events, monkeypatch,
+):
+    """Régression (revue du lot 3a, étape 2) — le service lisait le dossier
+    par ``get_dossier``, qui avale la panne en ``None`` : la note se
+    remplissait alors de « [CHAMP MANQUANT : …] » à chaque champ du dossier
+    (numéro de cour, district, intitulé…), se classait quand même — la
+    lecture suivante, celle du dossier « Projets », réussissant — et
+    l'appel rapportait un succès. Une lecture ratée REFUSE désormais."""
+    db, _bucket, _template = store
+    refused = _fail_first_dossier_read(db, monkeypatch)
+
+    refusal = _refused("dossier_unreadable")
+
+    assert refused                      # the dossier read is what failed
+    assert refusal.message == nh.DOSSIER_UNREADABLE
+    _nothing_written(db)
+    assert [e for e, _ in events] == ["generation_failed"]
+    assert events[0][1]["invoice_id"] == "i1"
+
+
+def test_the_web_says_a_failed_dossier_read_and_files_nothing(
+    store, web, monkeypatch,
+):
+    db, _bucket, _template = store
+    refused = _fail_first_dossier_read(db, monkeypatch)
+
+    resp = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
+
+    assert refused
+    assert resp.status_code == 200
+    assert str(escape(nh.DOSSIER_UNREADABLE)) in resp.get_data(as_text=True)
+    _nothing_written(db)
+
+
 def test_no_designated_template_names_the_fix(store, events):
     db, _bucket, template = store
     cleared, errors = tpl.clear_active_template(

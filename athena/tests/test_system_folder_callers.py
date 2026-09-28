@@ -168,7 +168,9 @@ def facture(monkeypatch):
     monkeypatch.setattr(nh, "get_active_template", lambda kind: {
         "id": "t9", "name": "Note", "placeholders": [], "version": 1,
         "kind": kind})
-    monkeypatch.setattr(nh, "get_dossier",
+    # The service reads the dossier STRICTLY since the review of lot 3a,
+    # step 2 (a failed read refuses) — the seam renamed with it.
+    monkeypatch.setattr(nh, "get_dossier_strict",
                         lambda did: {"id": "d1", "file_number": "2026-001"})
     monkeypatch.setattr(nh, "cabinet_dict", lambda: {})
     monkeypatch.setattr(nh, "build_invoice_context", lambda *a, **k: SimpleNamespace(
