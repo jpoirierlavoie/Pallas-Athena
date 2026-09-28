@@ -13012,8 +13012,14 @@ def _template_file_checked(
 
 def _source_protection_warning(src: dict) -> list[str]:
     """A qualified-privileged source — the scan read names and numbers,
-    never the TEXT, which now serves every client."""
-    level = (src.get("analyse") or {}).get("niveau_protection")
+    never the TEXT, which now serves every client.
+
+    Computed BEFORE the template write by its callers (review of T10):
+    after the commit nothing may raise, and this reads a stored shape — a
+    cache that is not a mapping yields no warning, never an exception that
+    would report a written template as a failure."""
+    analyse = src.get("analyse")
+    level = analyse.get("niveau_protection") if isinstance(analyse, dict) else None
     if not isinstance(level, int) or isinstance(level, bool) or level < 1:
         return []
     return [
@@ -13024,17 +13030,47 @@ def _source_protection_warning(src: dict) -> list[str]:
     ]
 
 
-def _special_kind_file_warnings(kind: str, placeholders: list[str]) -> list[str]:
-    """A note-print template with nowhere to print a note: once designated,
-    every « Imprimer (Word) » and create_document markdown would be
-    refused (the same exact-name check)."""
-    if kind == "note" and RICH_FIELD not in placeholders:
+def _special_kind_file_warnings(
+    kind: str, placeholders: list[str], *,
+    active_kept_version: Optional[int] = None,
+) -> list[str]:
+    """A note-print template with nowhere to print a note.
+
+    Not designated (a creation, a kind change, a new file for a template
+    that is not the active one): the consequence is conditional — once
+    designated, create_document would refuse it, and « Imprimer (Word) »
+    would print a note WITHOUT its text (``utils.note_docx`` skips the
+    field; it refuses nothing). The ACTIVE template's new file
+    (*active_kept_version* = the version kept): the consequence is NOW, and
+    the way back is named — review of T10: a conditional « désigné actif »
+    about a template that already is misstates what just happened."""
+    if kind != "note" or RICH_FIELD in placeholders:
+        return []
+    field = f"« {{{{{RICH_FIELD}}}}} » (écrit exactement ainsi)"
+    if active_kept_version is not None:
         return [
-            "Ce gabarit « Note (impression) » ne porte pas "
-            f"« {{{{{RICH_FIELD}}}}} » (écrit exactement ainsi) : désigné "
-            "actif, il n'aurait nulle part où imprimer le texte d'une note."
+            "Ce gabarit est le gabarit « Note (impression) » ACTIF et sa "
+            f"nouvelle version ne porte pas {field} : dès maintenant, "
+            "« Imprimer (Word) » produit une note SANS son texte, et "
+            "create_document refuse. Le juriste peut rétablir la version "
+            f"{active_kept_version} dans l'application (Gabarits), ou une "
+            "version qui porte ce champ peut être installée."
         ]
-    return []
+    return [
+        f"Ce gabarit « Note (impression) » ne porte pas {field} : désigné "
+        "actif, il n'aurait nulle part où imprimer le texte d'une note."
+    ]
+
+
+def _model_refusal(errors: list[str], nothing: str) -> ToolArgumentError:
+    """The template model's own French errors, closed by *nothing* — unless
+    they already say what was not written (READ_ERROR,
+    VERSION_IN_PROGRESS_ERROR… end on « Rien n'a été modifié : réessayez »),
+    where a second « Rien n'a été modifié. » would only repeat it."""
+    text = " ".join(errors)
+    if "Rien n'a été" in text or "rien n'a été" in text:
+        return ToolArgumentError(text)
+    return ToolArgumentError(f"{text} {nothing}")
 
 
 def _never_active_warning(kind: str) -> list[str]:
@@ -13094,6 +13130,7 @@ def _create_template_impl(args: dict) -> dict:
     data, scrubbed, leak, warnings = _template_file_checked(
         data, identifiers, accept, scrub=scrub, dossier_id=dossier_id,
         name_accepted=name_accepted, nothing=nothing)
+    protection = _source_protection_warning(src)   # before the write
 
     # The template's OWN name as its file name — never the source's
     # (« Lettre à M. Tremblay.docx »), which the scan never reads.
@@ -13104,14 +13141,14 @@ def _create_template_impl(args: dict) -> dict:
         uid,
     )
     if template is None:
-        raise ToolArgumentError(f"{' '.join(errors)} {nothing}")
+        raise _model_refusal(errors, nothing)
 
     # ── Committed: nothing below may refuse. ───────────────────────────
     placeholders = _template_placeholders(template)
     warnings += _never_active_warning(kind)
     warnings += _special_kind_file_warnings(kind, placeholders)
     warnings += _template_file_warnings(template)
-    warnings += _source_protection_warning(src)
+    warnings += protection
     _log_template_write(
         "template_uploaded", template_id=template.get("id"),
         dossier_id=dossier_id, source_document_id=source_id,
@@ -13271,7 +13308,7 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
             # The designation landed between the read and the commit.
             raise _active_kind_refusal(
                 doc_template_model.get_template(template_id) or template)
-        raise ToolArgumentError(f"{' '.join(errors)} {nothing}")
+        raise _model_refusal(errors, nothing)
     if not wrote:
         # Another writer stored these very values meanwhile.
         return _template_edit_payload(
@@ -13292,6 +13329,18 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
 
 
 def _template_version_moved(stored: int, expected: int) -> ToolArgumentError:
+    if expected > stored:
+        # No version is ever withdrawn (a restore installs N+1): a number
+        # AHEAD of the stored one was never read — never « another version
+        # installed since », which would send the caller hunting for a
+        # write that did not happen (review of T10). A wrong argument, not
+        # an outdated view: logged as such (no stale_etag reason).
+        return ToolArgumentError(
+            f"`expected_version` : le gabarit est à la version {stored} — "
+            f"aucune version {expected} n'existe. Relisez-le (list_templates "
+            "avec template_id, champ version), puis rappelez avec cette "
+            f"version. {_NOTHING_MODIFIED}"
+        )
     return ToolArgumentError(
         f"Le gabarit est à la version {stored}, pas {expected} : une autre "
         "version a été installée depuis votre lecture — ce fichier aurait "
@@ -13349,6 +13398,7 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
     data, scrubbed, leak, warnings = _template_file_checked(
         data, identifiers, accept, scrub=scrub, dossier_id=dossier_id,
         name_accepted=(), nothing=nothing)
+    protection = _source_protection_warning(src)   # before the write
 
     digest = hashlib.sha256(data).hexdigest()
     stored_sha = str(template.get("sha256") or "")
@@ -13378,7 +13428,7 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
         reread=lambda: doc_template_model.get_template(template_id),
     )
     if errors:
-        raise ToolArgumentError(f"{' '.join(errors)} {nothing}")
+        raise _model_refusal(errors, nothing)
     if not changed:
         warnings.append(
             "Ce fichier est identique à la version en vigueur : aucune "
@@ -13390,7 +13440,8 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
 
     # ── Committed: nothing below may refuse. ───────────────────────────
     version = int(updated.get("version") or 1)
-    if doc_template_model.is_active(updated):
+    active = doc_template_model.is_active(updated)
+    if active:
         kind = updated.get("kind") or ""
         warnings.append(
             "Ce gabarit est le gabarit ACTIF des « "
@@ -13404,9 +13455,10 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
     )
     warnings += _dropped_fields_warning(template, updated)
     warnings += _special_kind_file_warnings(
-        updated.get("kind") or "gabarit", _template_placeholders(updated))
+        updated.get("kind") or "gabarit", _template_placeholders(updated),
+        active_kept_version=expected_version if active else None)
     warnings += _template_file_warnings(updated)
-    warnings += _source_protection_warning(src)
+    warnings += protection
     _log_template_write(
         "template_updated", template_id=template_id, file_replaced=True,
         version=version, dossier_id=dossier_id, source_document_id=source_id,

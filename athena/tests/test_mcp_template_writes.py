@@ -434,6 +434,17 @@ def test_a_protected_source_says_the_text_was_not_checked(world):
                for w in result["warnings"])
 
 
+def test_a_malformed_analysis_cache_never_fails_a_written_template(world):
+    """Review of T10: the protection warning read the source's stored
+    ``analyse`` AFTER the template committed — a cache that is not a mapping
+    raised there, and the call reported « ENREGISTRÉE — NE PAS RÉESSAYER »
+    for a template written cleanly. It is read before the write now."""
+    _seed_source(world, analyse=["pas", "un", "dictionnaire"])
+    result = _create()
+    assert result["created"] is True
+    assert not any("qualifié" in w for w in result["warnings"])
+
+
 def test_without_a_storage_identity_nothing_is_written(world, monkeypatch):
     _seed_source(world)
 
@@ -782,12 +793,83 @@ def test_a_new_file_for_the_active_template_keeps_its_designation(world):
                for w in result["warnings"])
 
 
-def test_a_new_note_print_file_without_its_body_field_is_warned(world):
+def test_a_new_file_for_the_active_note_template_without_its_body_says_now(
+        world):
+    """Review of T10 — REWRITTEN on purpose: this test used to pin the
+    conditional « désigné actif, il n'aurait nulle part… » on the ACTIVE
+    template, which already is designated. Its new version prints a note
+    WITHOUT its text from this very moment (utils.note_docx skips the
+    field, it refuses nothing) and create_document refuses — said in the
+    present tense, with the way back (the version kept)."""
     tid = _active_note(world)
     _seed_source(world, data=V2)
     result = _replace(world, template_id=tid)
-    assert any("{{note.contenu}}" in w and "nulle part" in w
+    body = [w for w in result["warnings"] if "{{note.contenu}}" in w
+            and "ne porte pas" in w]
+    assert len(body) == 1, result["warnings"]
+    assert "dès maintenant" in body[0] and "SANS son texte" in body[0]
+    assert "create_document refuse" in body[0]
+    assert "rétablir la version 1" in body[0]
+    assert "désigné actif, il n'aurait" not in body[0]
+
+
+def test_a_new_file_for_a_note_template_not_active_stays_conditional(world):
+    """The same missing field on a « note » template that is NOT the active
+    one: nothing breaks yet — the warning stays conditional."""
+    note = _docx(_p("{{note.titre}}") + _p("{{note.contenu}}"))
+    tpl, errors = tpl_model.create_template(
+        io.BytesIO(note), "n.docx", len(note),
+        {"name": "Impression bis", "category": "autre", "kind": "note"}, UID)
+    assert errors == []
+    _seed_source(world, data=V2)
+    result = _replace(world, template_id=tpl["id"])
+    assert result["entity"]["active"] is False
+    assert any("désigné actif, il n'aurait nulle part" in w
                for w in result["warnings"])
+    assert not any("dès maintenant" in w for w in result["warnings"])
+
+
+def test_a_model_refusal_already_saying_nothing_was_written_is_not_doubled(
+        world, monkeypatch):
+    """Review of T10: the template model's VERSION_IN_PROGRESS_ERROR (and
+    READ_ERROR) already end on « Rien n'a été modifié : réessayez » — the
+    handler appended a second « Rien n'a été modifié. »."""
+    _seed_source(world, data=V2)
+    monkeypatch.setattr(
+        tpl_model, "_store_version_bytes",
+        lambda *_a, **_k: (None, [tpl_model.VERSION_IN_PROGRESS_ERROR]))
+    message = str(_refused(handlers.update_template, {
+        "template_id": world["template"], "source_document_id": "src",
+        "expected_version": 1}))
+    assert message.count("Rien n'a été modifié") == 1, message
+    assert "réessayez dans quelques minutes" in message
+    monkeypatch.setattr(
+        tpl_model, "_store_version_bytes",
+        lambda *_a, **_k: (None, [tpl_model.UPLOAD_ERROR]))
+    message = str(_refused(handlers.create_template, {
+        "source_document_id": "src", "name": "Lettre", "category": "autre"}))
+    assert message.endswith("Rien n'a été créé."), message
+
+
+def test_an_expected_version_ahead_of_the_stored_one_is_named_as_such(
+        world, monkeypatch):
+    """Review of T10: a version is never withdrawn (a restore installs N+1),
+    so an expected_version AHEAD of the stored one was never read — the
+    refusal used to claim « une autre version a été installée depuis votre
+    lecture », sending the caller after a write that never happened."""
+    _seed_source(world, data=V2)
+
+    def _no_download(*_a, **_k):
+        raise AssertionError("downloaded for an impossible version")
+
+    monkeypatch.setattr(document_model, "get_document_bytes", _no_download)
+    exc = _refused(handlers.update_template, {
+        "template_id": world["template"], "source_document_id": "src",
+        "expected_version": 5})
+    message = str(exc)
+    assert "version 1" in message and "aucune version 5 n'existe" in message
+    assert "installée depuis votre lecture" not in message
+    assert exc.reason != "stale_etag"      # a wrong argument, not a stale view
 
 
 def test_a_version_installed_during_the_call_is_refused_by_the_model(
