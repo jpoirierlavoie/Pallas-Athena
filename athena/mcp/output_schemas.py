@@ -1305,6 +1305,58 @@ def _template_leak_report(*, nullable: bool = False) -> dict:
     return schema
 
 
+def _part_count_rows(description: str) -> dict:
+    """A per-part tally: the package entry, its French label, the count."""
+    return _arr(_obj({
+        "part": _str("The package entry (word/header1.xml…)."),
+        "where": _str("French: corps, en-tête, pied de page…"),
+        "count": _int(),
+    }), description)
+
+
+def _templatize_preview_row() -> dict:
+    """One substitution as preview_templatize counts it — counts, entry
+    names and the caller's own field name; never the document's text, never
+    the literal (its index names it)."""
+    return _obj({
+        "index": _int("Its position in your list, from 0."),
+        "placeholder": _str(
+            'The field name, normalized; "" when invalid (see errors).'),
+        "classification": {
+            "type": ["string", "null"],
+            "enum": ["auto", "manual", "passthrough", None],
+            "description": (
+                "auto = the application fills it; manual = prompted letter "
+                "metadata; passthrough = left verbatim for Word (a misspelt "
+                "catalog name lands here); null = invalid name."),
+        },
+        "expected_occurrences": _nint("Yours, when given."),
+        "substituted": _int(
+            "Occurrences it would replace (a text box counted once) — the "
+            "value create_template's expected_occurrences must equal."),
+        "matches_expected": {
+            "type": ["boolean", "null"],
+            "description": "null when you gave no expected_occurrences.",
+        },
+        "by_part": _part_count_rows("`substituted`, part by part."),
+        "in_alternate_branches": _int(
+            "Also replaced in a text box's second copy (mc:Fallback)."),
+        "in_field_results": _int(
+            "Left in place: in a Word field's result (Word regenerates it)."),
+        "in_bound_controls": _int(
+            "Left in place: in a content control bound to data."),
+        "blocked_by_markup": _int(
+            "Left in place: cut by a soft or non-breaking hyphen."),
+        "in_existing_placeholders": _int(
+            "Left in place: inside a {{…}} the document already holds."),
+        "in_non_target_parts": _part_count_rows(
+            "Left in place: footnotes, endnotes, comments, document "
+            "properties — parts the fill engine never reads."),
+        "fallback_consistent": _bool(
+            "false = a text box's two copies differ — refused."),
+    })
+
+
 def _scrubbed_properties() -> dict:
     return {
         "type": ["array", "null"], "items": _str(),
@@ -3305,6 +3357,76 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             }, description="purpose gabarit: the template as stored."),
         ],
     },
+    # Lot 2B — the templatize preview (a READ). Every key is emitted on
+    # every call, null where it does not apply: all required.
+    "preview_templatize": _obj({
+        "document_id": _str(),
+        "dossier_id": _str(
+            "The source document's dossier — the one whose identifiers were "
+            "checked."),
+        "source_blockers": _arr(_obj({
+            "code": _str(
+                "tracked_changes | comments | strict_ooxml | namespace | "
+                "encoding | malformed_xml | too_complex | too_much_text | "
+                "duplicate_entry | unreadable."),
+            "message": _str("French: what to do in Word."),
+            "where": _arr(_str("French label of a part concerned.")),
+        }), "Reasons the SOURCE cannot be templatized at all; [] = none."),
+        "substitutions": _arr(_templatize_preview_row(),
+                              "One row per substitution, in your order."),
+        "result_placeholders": {
+            **_obj({
+                "placeholder_count": _int(),
+                "auto_count": _int("Fields the application fills itself."),
+                "manual_count": _int("Short letter metadata, prompted."),
+                "passthrough_count": _int(
+                    "Left verbatim, to complete in Word."),
+                "fragmented_count": _int(
+                    "Fields Word split across runs — they will not fill."),
+            }),
+            "type": ["object", "null"],
+            "description": (
+                "The would-be template's fields; null when no result could "
+                "be computed (a source blocker, or an output check that "
+                "failed — see errors)."),
+        },
+        "leak_scan": {
+            **_obj({
+                "residues": _arr(_obj({
+                    "identifier": _str(
+                        "The dossier's own spelling — or your literal, "
+                        "exactly as you sent it."),
+                    "count": _int(),
+                    "where": _arr(_str("French label of a part.")),
+                    "origin": {
+                        "type": "string", "enum": ["dossier", "substitution"],
+                        "description": (
+                            "dossier = an identifier of the source dossier; "
+                            "substitution = a literal of yours that would "
+                            "survive somewhere."),
+                    },
+                }), "What would remain: create_template refuses on each "
+                    "unless the lawyer accepts it (accept_residual)."),
+                "skipped": _int("Identifiers too short to check."),
+                "parts_scanned": _int(),
+            }),
+            "type": ["object", "null"],
+            "description": (
+                "The identifier check of the would-be result; null when it "
+                "could not run (see errors)."),
+        },
+        "scrubbed_properties": _scrubbed_properties(),
+        "ready_to_create": _bool(
+            "true = no blocker, no error, every substitution found at least "
+            "once, and nothing would remain: create_template with these "
+            "substitutions, each expected_occurrences = its `substituted`, "
+            "passes the file checks (its `name` is checked there)."),
+        "errors": _arr(_str(
+            "French: why create_template would refuse — an invalid "
+            "substitution, a count that differs from yours, a text box "
+            "whose two copies differ, a check that could not run.")),
+        "warnings": _arr(_str(), "French; empty when clean."),
+    }),
     # Lot 2A (T10) — explicit `required` lists: every key below is emitted
     # on every call (null where it does not apply), so a strict client can
     # rely on each.
@@ -3316,11 +3438,36 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "The stored document the file was taken from — never modified."),
         "leak_scan": _template_leak_report(),
         "scrubbed_properties": _scrubbed_properties(),
+        # Lot 2B — always emitted: null without `substitutions`.
+        "templatized": {
+            **_obj({
+                "substitution_count": _int(),
+                "substituted_total": _int(),
+                "substitutions": _arr(_obj({
+                    "index": _int("Its position in your list, from 0."),
+                    "placeholder": _str("The field name inserted."),
+                    "classification": _str("auto | manual | passthrough."),
+                    "substituted": _int(
+                        "Equal to your expected_occurrences."),
+                    "in_alternate_branches": _int(
+                        "Also replaced in a text box's second copy "
+                        "(mc:Fallback), not counted above."),
+                    "left_in_place": _int(
+                        "Occurrences seen and NOT replaced (field results, "
+                        "footnotes, document properties…)."),
+                })),
+                "rewritten_parts": _arr(_str("French label of a part.")),
+            }),
+            "type": ["object", "null"],
+            "description": (
+                "What the substitutions did; null when the file was "
+                "registered unchanged (no `substitutions`)."),
+        },
         "warnings": _arr(_str(), "French; empty when clean."),
         **_write_protocol_keys(),
     }, required=["created", "entity_type", "entity", "source_document_id",
-                 "leak_scan", "scrubbed_properties", "warnings",
-                 "idempotent_replay"]),
+                 "leak_scan", "scrubbed_properties", "templatized",
+                 "warnings", "idempotent_replay"]),
     "update_template": _obj({
         "updated": {"type": "boolean", "enum": [True]},
         "mode": {

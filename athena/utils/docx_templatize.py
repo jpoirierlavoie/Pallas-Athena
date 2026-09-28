@@ -9,13 +9,15 @@ disturbing a single byte of the letterhead Word must reopen without repair.
 identical formatting or across a ``{{`` bridge, so a literal Word split
 across a language or bold change (``Jean`` | ``Tremblay``, the spell-check
 split) would silently never match. This module is the engine; the MCP tools
-(``preview_templatize`` / ``templatize_document``) and the leak scan
-(``utils.docx_leak_scan``) sit on top of it.
+(``preview_templatize``, and ``create_template`` given ``substitutions`` —
+``mcp/handlers.py``, lot 2B step 2) and the leak scan
+(``utils.docx_leak_scan``, run on the OUTPUT) sit on top of it.
 
 API::
 
     templatize(docx_bytes, substitutions) -> TemplatizeResult   # .data = bytes
     analyse(docx_bytes, substitutions)    -> TemplatizeResult   # .data = None
+    check_request(substitutions)          -> tuple[str, ...]    # no document
 
 Both return the SAME report — per substitution: its classification
 (auto / manual / passthrough, from ``utils.template_fields``), the count it
@@ -169,6 +171,7 @@ __all__ = [
     "SubstitutionReport",
     "TemplatizeResult",
     "analyse",
+    "check_request",
     "fold",
     "templatize",
 ]
@@ -1302,6 +1305,21 @@ def templatize(docx_bytes: bytes, substitutions: Sequence[Substitution]
     check passed. Otherwise ``data`` is ``None`` and nothing was produced.
     """
     return _run(docx_bytes, substitutions, write=True)
+
+
+def check_request(substitutions: Sequence[Substitution], *,
+                  require_expected: bool = True) -> tuple[str, ...]:
+    """The French errors the REQUEST alone carries — invalid literal or
+    field name, a missing or out-of-range ``expected_occurrences`` (when
+    *require_expected*), a literal given twice — exactly as :func:`templatize`
+    (``require_expected=True``) or :func:`analyse` (``False``) would report
+    them, without reading a document.
+
+    For a caller that must refuse before it downloads anything (lot 2B's
+    ``create_template``): the same :func:`_prepare` both entry points run,
+    so the two can never disagree. ``()`` = the request is valid."""
+    _check_input(b"", substitutions)
+    return tuple(_prepare(substitutions, dry=not require_expected)[1])
 
 
 def _empty_report(index: int, sub: Substitution) -> SubstitutionReport:

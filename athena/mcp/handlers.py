@@ -31,7 +31,9 @@ T8: « Projets » created on first use by a generation), ``doc_templates``
 (lot 2A T9 through the upload ticket, T10 from a stored document —
 ``create_template``/``update_template``: a template created, its metadata
 corrected, or a NEW version of its file with its write-once ``versions``
-entry — never its « actif » designation), ``mcp_upload_tickets`` (the
+entry — never its « actif » designation; lot 2B: ``create_template`` given
+``substitutions`` stores a TEMPLATIZED copy of the stored document, whose
+own record and object are only read), ``mcp_upload_tickets`` (the
 ticket's own record) and
 ``dossiers``. Storage is written only by those creators — and, for the
 upload ticket, by ``models/upload_ticket``, which holds every Storage verb
@@ -142,7 +144,7 @@ from services import rendez_vous as rendez_vous_service
 from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, deadlines, pdf_text, phases, recurrence,
+    analyse_blocs, deadlines, docx_templatize, pdf_text, phases, recurrence,
     storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
@@ -153,6 +155,7 @@ from utils.docx_leak_scan import (
     scan_identifiers,
     scrub_core_properties,
     text_residues,
+    words_within,
 )
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import log_hearing_series_event
@@ -12871,7 +12874,8 @@ _TEMPLATE_RETRYABLE_ERRORS = frozenset({
 # Plan D5 (interpretation A) and D11, lot 2A T10. A Word document ALREADY in
 # a dossier becomes a firm-wide gabarit — a new one, or a new VERSION of an
 # existing one — its bytes UNCHANGED, bar the opt-in scrub of its core
-# document properties. Turning its literals into {{…}} fields is lot 2B.
+# document properties. Turning its literals into {{…}} fields is lot 2B:
+# create_template's `substitutions` and preview_templatize (further down).
 #
 # The leak scan is NOT optional here, as it is for an upload ticket that
 # names no dossier: a stored document names its own dossier, and its file is
@@ -12928,22 +12932,26 @@ def _log_template_write(event: str, **fields: Any) -> None:
         log_unexpected("mcp template logging failed", exc_info=False)
 
 
-def _template_source_too_large(nothing: str) -> ToolArgumentError:
+def _template_source_too_large(nothing: str, arg: str = "source_document_id"
+                               ) -> ToolArgumentError:
     return ToolArgumentError(
-        "`source_document_id` : ce document dépasse 10 Mo, la taille maximale "
+        f"`{arg}` : ce document dépasse 10 Mo, la taille maximale "
         f"d'un gabarit. {nothing}"
     )
 
 
-def _template_source(document_id: str, nothing: str) -> tuple[dict, str, list]:
+def _template_source(document_id: str, nothing: str, *,
+                     arg: str = "source_document_id") -> tuple[dict, str, list]:
     """The stored .docx a template is taken from, its dossier id and that
     dossier's identifiers — each read fail CLOSED, and all of it BEFORE a
     byte is downloaded (the size gate runs on the stored metadata).
 
     The identifiers are those of the document's OWN dossier, never one the
-    caller names: a file's residue is the matter it was written for."""
+    caller names: a file's residue is the matter it was written for. *arg*
+    names the argument in the refusals (``document_id`` for lot 2B's
+    ``preview_templatize``)."""
     unknown = (
-        "`source_document_id` : document introuvable. Prenez son identifiant "
+        f"`{arg}` : document introuvable. Prenez son identifiant "
         f"dans list_documents. {nothing}"
     )
     if not document_model.is_addressable_id(document_id):
@@ -12958,7 +12966,7 @@ def _template_source(document_id: str, nothing: str) -> tuple[dict, str, list]:
     filename = str(src.get("filename") or "")
     if src.get("file_type") != _DOCX_MIME or not filename.lower().endswith(".docx"):
         raise ToolArgumentError(
-            "`source_document_id` : un gabarit est un document Word (.docx) — "
+            f"`{arg}` : un gabarit est un document Word (.docx) — "
             f"celui-ci est d'un autre format. {nothing}"
         )
     try:
@@ -12966,7 +12974,7 @@ def _template_source(document_id: str, nothing: str) -> tuple[dict, str, list]:
     except (TypeError, ValueError):
         declared = 0
     if declared > doc_template_model.MAX_TEMPLATE_SIZE:
-        raise _template_source_too_large(nothing)
+        raise _template_source_too_large(nothing, arg)
     dossier_id = str(src.get("dossier_id") or "")
     if not dossier_id:
         raise ToolArgumentError(
@@ -12992,7 +13000,8 @@ def _template_source(document_id: str, nothing: str) -> tuple[dict, str, list]:
     return src, dossier_id, identifiers
 
 
-def _template_source_bytes(document_id: str, nothing: str) -> bytes:
+def _template_source_bytes(document_id: str, nothing: str, *,
+                           arg: str = "source_document_id") -> bytes:
     """The source document's bytes, bounded at a template's 10 MB (re-checked
     on the byte count: stale metadata must not smuggle a larger file in)."""
     data, why = document_model.get_document_bytes(
@@ -13000,7 +13009,7 @@ def _template_source_bytes(document_id: str, nothing: str) -> bytes:
     if data is not None:
         return data
     if why == "too_large":
-        raise _template_source_too_large(nothing)
+        raise _template_source_too_large(nothing, arg)
     if why == "no_storage_path":
         raise ToolArgumentError(
             "Ce document n'a pas de fichier enregistré : rien à reprendre "
@@ -13044,12 +13053,17 @@ def _template_name_accepted(name: str, identifiers: list, accept: list[str],
 def _template_file_checked(
     data: bytes, identifiers: list, accept: list[str], *, scrub: bool,
     dossier_id: str, name_accepted: tuple[str, ...], nothing: str,
+    templatized: bool = False,
 ) -> tuple[bytes, Optional[list[str]], dict, list[str]]:
     """The file as it will be stored: validated as a template, scrubbed when
     asked, then scanned against the source dossier — fail CLOSED. Returns
     ``(data, scrubbed, report, warnings)``; every accepted residue is
     echoed, by name, in the warnings (plan: the acceptance is visible where
-    it lands)."""
+    it lands).
+
+    *templatized* (lot 2B): *data* is the RESULT of the substitutions and
+    *identifiers* carries their literals too — the refusal then says what
+    stays behind after them and how to reach it."""
     validation = validate_template(data)
     if validation.errors:
         raise ToolArgumentError(f"{' '.join(validation.errors)} {nothing}")
@@ -13066,6 +13080,11 @@ def _template_file_checked(
         raise ToolArgumentError(f"{exc} {nothing}")
     if scan.residues:
         listing, scrub_hint = _residue_listing(scan)
+        if templatized:
+            raise ToolArgumentError(
+                _templatized_residue_refusal(listing, scrub_hint, nothing),
+                reason="template_residue",
+            )
         raise ToolArgumentError(
             "Le fichier nomme encore le dossier du document dont il est tiré "
             "— un gabarit vaut pour tout le cabinet, et ceci s'imprimerait "
@@ -13195,6 +13214,325 @@ def _clean_scrub_flag(args: dict, nothing: str) -> bool:
     return scrub
 
 
+# ── Lot 2B — templatizing a stored .docx ───────────────────────────────
+#
+# Plan D5 (interpretation B), sub-lot 2B step 2. A finished letter already in
+# a dossier becomes a firm-wide gabarit by replacing each literal of its
+# matter (a name, a file number, an address) with the {{field}} the fill
+# engine resolves — utils/docx_templatize, pure, all or nothing. Two tools:
+#
+# * preview_templatize (READ) — the engine's counts, per substitution and per
+#   part, what it leaves in place, and the dossier identifiers that would
+#   REMAIN once the substitutions apply (the leak scan run on the would-be
+#   result). Never the document's text: counts, entry names, the dossier's
+#   own identifiers and the caller's own literals.
+# * create_template given `substitutions` — the same engine with EVERY
+#   expected_occurrences required and exact; the result validated, scanned
+#   (a residue refuses unless accepted) and stored as a NEW template. The
+#   source document is only READ.
+#
+# The scan's identifiers are the source dossier's PLUS each substitution's
+# literal: a literal the caller asked to replace that survives elsewhere —
+# a footnote, a field result, docProps, or in another CASE (the engine is
+# case-sensitive, the scan is not) — would print in every generated letter,
+# identifier builder or not. One carve-out, stated: a literal whose words
+# all sit inside a placeholder NAME of the result (« client » and
+# {{client.nom}}) is not scanned — the scan reads text, and would otherwise
+# flag the very field that replaced it.
+
+_PREVIEW_NOTHING = "Aucun aperçu n'a été produit."
+_SUBSTITUTION_KEYS = frozenset({"literal", "placeholder", "expected_occurrences"})
+
+
+def _clean_substitutions(raw: Any, *, require_expected: bool, nothing: str
+                         ) -> list:
+    """The caller's substitutions as engine objects — their SHAPE only (the
+    engine judges the literals and the names, :func:`docx_templatize.
+    check_request`). Refusals number the entry, never quote it."""
+    if not isinstance(raw, list):
+        raise ToolArgumentError(
+            "`substitutions` doit être une liste d'objets {literal, "
+            f"placeholder, expected_occurrences}}. {nothing}")
+    if not raw:
+        raise ToolArgumentError(
+            f"`substitutions` : au moins une substitution. {nothing}")
+    if len(raw) > docx_templatize.MAX_SUBSTITUTIONS:
+        raise ToolArgumentError(
+            f"`substitutions` : {docx_templatize.MAX_SUBSTITUTIONS} au plus "
+            f"par appel. {nothing}")
+    subs = []
+    for position, item in enumerate(raw, start=1):
+        where = f"`substitutions` (n° {position})"
+        if not isinstance(item, dict):
+            raise ToolArgumentError(f"{where} doit être un objet. {nothing}")
+        if set(item) - _SUBSTITUTION_KEYS:
+            raise ToolArgumentError(
+                f"{where} ne prend que literal, placeholder et "
+                f"expected_occurrences. {nothing}")
+        literal, placeholder = item.get("literal"), item.get("placeholder")
+        if not isinstance(literal, str) or not literal:
+            raise ToolArgumentError(
+                f"{where} : `literal`, le texte à remplacer, est requis. "
+                f"{nothing}")
+        if not isinstance(placeholder, str) or not placeholder:
+            raise ToolArgumentError(
+                f"{where} : `placeholder`, le nom du champ, est requis. "
+                f"{nothing}")
+        expected = item.get("expected_occurrences")
+        if expected is None:
+            if require_expected:
+                raise ToolArgumentError(
+                    f"{where} : `expected_occurrences` est requis — le nombre "
+                    "d'occurrences que preview_templatize a compté "
+                    f"(« substituted »). {nothing}")
+        elif isinstance(expected, bool) or not isinstance(expected, int):
+            raise ToolArgumentError(
+                f"{where} : `expected_occurrences` est un entier. {nothing}")
+        subs.append(docx_templatize.Substitution(
+            literal=literal, placeholder=placeholder,
+            expected_occurrences=expected))
+    return subs
+
+
+def _scrubbed_source(data: bytes, scrub: bool, nothing: str
+                     ) -> tuple[bytes, Optional[list[str]]]:
+    """The core-properties scrub, BEFORE the substitutions: the engine then
+    counts what the stored file will really hold (it reports a docProps
+    occurrence as left in place — which the scrub would have emptied)."""
+    if not scrub:
+        return data, None
+    try:
+        result = scrub_core_properties(data)
+    except LeakScanError as exc:
+        raise ToolArgumentError(f"{exc} {nothing}")
+    return result.data, list(result.emptied)
+
+
+def _templatize_identifiers(identifiers: list, subs: list, names
+                            ) -> tuple[list[str], set]:
+    """``(identifiers to scan, fold keys of the literals added)`` — the
+    source dossier's identifiers first (their spelling wins a tie), then each
+    literal that is not one of them, minus the carve-out of the section
+    comment (a literal inside one of *names*, the placeholder names of the
+    result — ``validate_template(result).placeholders``)."""
+    name_keys = [fold_key(n) for n in names]
+    dossier_keys = {fold_key(i) for i in identifiers if isinstance(i, str)}
+    extra: list[str] = []
+    for sub in subs:
+        key = fold_key(sub.literal)
+        if not key or key in dossier_keys or any(
+                fold_key(e) == key for e in extra):
+            continue
+        if any(words_within(key, name_key) for name_key in name_keys):
+            continue
+        extra.append(sub.literal)
+    return [*identifiers, *extra], {fold_key(e) for e in extra}
+
+
+def _templatized_residue_refusal(listing: str, scrub_hint: str,
+                                 nothing: str) -> str:
+    return (
+        "Une fois les substitutions faites, le fichier nomme encore le dossier "
+        "du document dont il est tiré, ou garde un texte que vous avez demandé "
+        "de remplacer — un gabarit vaut pour tout le cabinet, et ceci "
+        f"s'imprimerait dans chaque document futur : {listing}. {nothing} "
+        "Ajoutez une substitution pour chacun (le remplacement respecte la "
+        "casse : une variante EN MAJUSCULES demande la sienne), retirez-le "
+        "dans Word s'il se trouve là où rien n'est remplacé (note de bas de "
+        "page, résultat de champ — preview_templatize le montre), ou, "
+        "SEULEMENT si le juriste accepte chacun d'eux, rappelez en les "
+        f"listant, tels qu'écrits ici, dans accept_residual.{scrub_hint}"
+    )
+
+
+def _templatize_refusal(result, nothing: str) -> ToolArgumentError:
+    """The engine's refusal — its blockers (a source it cannot templatize),
+    then its errors (a request it cannot apply) — closed by *nothing*
+    unless the engine already says nothing was written."""
+    bits = []
+    for blocker in result.blockers:
+        where = _residue_parts(blocker.parts)
+        bits.append(f"{blocker.message} ({where})" if where else blocker.message)
+    bits += list(result.errors)
+    text = " ".join(bits) or "La transformation en gabarit a échoué."
+    if "ien n'a été" not in text:
+        text = f"{text} {nothing}"
+    return ToolArgumentError(
+        f"{text} preview_templatize montre, pour chaque substitution, où et "
+        "combien de fois son texte se trouve.",
+        reason="templatize_refused",
+    )
+
+
+def _part_counts(counts: dict) -> list[dict]:
+    """A per-part tally as rows — the package entry and its French label."""
+    return [
+        {"part": part, "where": (_residue_part_labels([part]) or [""])[0],
+         "count": int(n)}
+        for part, n in counts.items()
+    ]
+
+
+def _templatize_report(result) -> dict:
+    """What create_template substituted — counts and field names only,
+    never a literal (the result is stored for 24 h by run_write)."""
+    rows = [
+        {
+            "index": r.index,
+            "placeholder": r.placeholder,
+            "classification": r.classification,
+            "substituted": r.substituted,
+            "in_alternate_branches": r.in_alternate_branches,
+            "left_in_place": r.not_substituted,
+        }
+        for r in result.substitutions
+    ]
+    return {
+        "substitution_count": len(rows),
+        "substituted_total": sum(r["substituted"] for r in rows),
+        "substitutions": rows,
+        "rewritten_parts": _residue_part_labels(result.rewritten_parts),
+    }
+
+
+def _result_placeholders(validation) -> dict:
+    """The would-be template's inventory, as the fill engine will read it
+    (*validation*: ``validate_template`` of the would-be result)."""
+    names = list(validation.placeholders)
+    classification = classify_placeholders(names)
+    return {
+        "placeholder_count": len(names),
+        "auto_count": len(classification.auto),
+        "manual_count": len(classification.manual),
+        "passthrough_count": len(classification.passthrough),
+        "fragmented_count": len(validation.split_run_suspects),
+    }
+
+
+def _preview_row(report) -> dict:
+    expected = report.expected
+    return {
+        "index": report.index,
+        "placeholder": report.placeholder,
+        "classification": report.classification,
+        "expected_occurrences": expected,
+        "substituted": report.substituted,
+        "matches_expected": (None if expected is None
+                             else report.substituted == expected),
+        "by_part": _part_counts(report.by_part),
+        "in_alternate_branches": report.in_alternate_branches,
+        "in_field_results": report.in_field_results,
+        "in_bound_controls": report.in_bound_controls,
+        "blocked_by_markup": report.blocked_by_markup,
+        "in_existing_placeholders": report.in_existing_placeholders,
+        "in_non_target_parts": _part_counts(report.in_non_target_parts),
+        "fallback_consistent": report.fallback_consistent,
+    }
+
+
+# ── preview_templatize (READ) ───────────────────────────────────────────
+
+def preview_templatize(args: dict) -> dict:
+    """Count what create_template's substitutions would do — and what would
+    remain — without writing anything. See the section comment above."""
+    nothing = _PREVIEW_NOTHING
+    document_id = str(args.get("document_id") or "").strip()
+    subs = _clean_substitutions(args.get("substitutions"),
+                                require_expected=False, nothing=nothing)
+    scrub = _clean_scrub_flag(args, nothing)
+    _src, dossier_id, identifiers = _template_source(
+        document_id, nothing, arg="document_id")
+    data = _template_source_bytes(document_id, nothing, arg="document_id")
+    data, scrubbed = _scrubbed_source(data, scrub, nothing)
+
+    analysis = docx_templatize.analyse(data, subs)
+    errors = list(analysis.errors)
+    warnings = list(analysis.warnings)
+    # The would-be result: the substitutions that FOUND something, each at
+    # its own count (a caller's wrong expectation is already in `errors`).
+    # Dropping the ones that found nothing changes no other count — they
+    # masked nothing — so this second pass replaces exactly what the first
+    # counted. None found anything → the file is what it is now.
+    after: Optional[bytes] = None
+    if not analysis.blockers:
+        applicable = [
+            docx_templatize.Substitution(
+                literal=sub.literal, placeholder=sub.placeholder,
+                expected_occurrences=report.substituted)
+            for sub, report in zip(subs, analysis.substitutions)
+            if report.substituted >= 1
+        ]
+        if not applicable:
+            after = data
+        else:
+            applied = docx_templatize.templatize(data, applicable)
+            if applied.data is not None:
+                after = applied.data
+            else:
+                # The second pass numbers ITS list: a « Substitution n° k »
+                # there is not the caller's k — and the first pass already
+                # said it (a text box whose copies differ). Keep the rest.
+                errors += [e for e in applied.errors
+                           if not e.startswith("Substitution n°")
+                           and e not in errors]
+                errors.append(
+                    "Le gabarit résultant n'a pas pu être produit : ce qui "
+                    "resterait du dossier n'est pas contrôlé tant que les "
+                    "erreurs ci-dessus demeurent.")
+
+    leak_scan: Optional[dict] = None
+    validation = validate_template(after) if after is not None else None
+    if validation is not None:
+        scan_ids, literal_keys = _templatize_identifiers(
+            identifiers, subs, validation.placeholders)
+        try:
+            scan = scan_identifiers(after, scan_ids)
+        except LeakScanError as exc:
+            errors.append(str(exc))
+        else:
+            leak_scan = {
+                "residues": [
+                    {"identifier": r.identifier, "count": r.count,
+                     "where": _residue_part_labels(r.parts),
+                     "origin": ("substitution"
+                                if fold_key(r.identifier) in literal_keys
+                                else "dossier")}
+                    for r in scan.residues
+                ],
+                "skipped": len(scan.skipped),
+                "parts_scanned": len(scan.parts_scanned),
+            }
+            warnings += [
+                f"« {r.identifier} » resterait dans le gabarit ({r.count} "
+                f"fois : {_residue_parts(r.parts)}) : il s'imprimerait dans "
+                "chaque document tiré de ce gabarit."
+                for r in scan.residues
+            ]
+    ready = bool(
+        not analysis.blockers and not errors and subs
+        and all(r.substituted >= 1 for r in analysis.substitutions)
+        and leak_scan is not None and not leak_scan["residues"]
+    )
+    return {
+        "document_id": document_id,
+        "dossier_id": dossier_id,
+        "source_blockers": [
+            {"code": b.code, "message": b.message,
+             "where": _residue_part_labels(b.parts)}
+            for b in analysis.blockers
+        ],
+        "substitutions": [_preview_row(r) for r in analysis.substitutions],
+        "result_placeholders": (
+            _result_placeholders(validation) if validation is not None
+            else None),
+        "leak_scan": leak_scan,
+        "scrubbed_properties": scrubbed,
+        "ready_to_create": ready,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 # ── create_template ─────────────────────────────────────────────────────
 
 def create_template(args: dict) -> dict:
@@ -13221,6 +13559,18 @@ def _create_template_impl(args: dict) -> dict:
         raise ToolArgumentError(f"`kind` : valeur hors vocabulaire. {nothing}")
     accept = _clean_accept_residual(args.get("accept_residual"), nothing)
     scrub = _clean_scrub_flag(args, nothing)
+    # Lot 2B: substitutions → the TEMPLATIZED path (interpretation B). The
+    # request is judged whole before a byte is downloaded — every
+    # expected_occurrences present and in range, every literal and name valid.
+    subs = None
+    if args.get("substitutions") is not None:
+        subs = _clean_substitutions(args.get("substitutions"),
+                                    require_expected=True, nothing=nothing)
+        request_errors = docx_templatize.check_request(subs)
+        if request_errors:
+            raise ToolArgumentError(
+                f"{' '.join(request_errors)} {nothing}",
+                reason="templatize_refused")
 
     # Everything judged before the template model is reached — in the
     # order that downloads nothing a cheaper check would have refused.
@@ -13231,9 +13581,26 @@ def _create_template_impl(args: dict) -> dict:
     except storage_identity.StorageIdentityUnavailable:
         raise ToolArgumentError(_STORAGE_UNAVAILABLE)
     data = _template_source_bytes(source_id, nothing)
-    data, scrubbed, leak, warnings = _template_file_checked(
-        data, identifiers, accept, scrub=scrub, dossier_id=dossier_id,
-        name_accepted=name_accepted, nothing=nothing)
+    templatized: Optional[dict] = None
+    if subs is None:
+        data, scrubbed, leak, warnings = _template_file_checked(
+            data, identifiers, accept, scrub=scrub, dossier_id=dossier_id,
+            name_accepted=name_accepted, nothing=nothing)
+    else:
+        # All or nothing: the engine refuses the whole call on one count
+        # that differs, one blocker, one output check; then the RESULT is
+        # scanned — the source dossier's identifiers plus the literals.
+        data, scrubbed = _scrubbed_source(data, scrub, nothing)
+        result = docx_templatize.templatize(data, subs)
+        if result.data is None:
+            raise _templatize_refusal(result, nothing)
+        scan_ids, _literal_keys = _templatize_identifiers(
+            identifiers, subs, validate_template(result.data).placeholders)
+        data, _unscrubbed, leak, warnings = _template_file_checked(
+            result.data, scan_ids, accept, scrub=False, dossier_id=dossier_id,
+            name_accepted=name_accepted, nothing=nothing, templatized=True)
+        warnings = [*result.warnings, *warnings]
+        templatized = _templatize_report(result)
     protection = _source_protection_warning(src)   # before the write
 
     # The template's OWN name as its file name — never the source's
@@ -13261,6 +13628,10 @@ def _create_template_impl(args: dict) -> dict:
         accepted_residue_count=(
             len(leak["accepted_residues"]) + len(name_accepted)),
         scrubbed=bool(scrubbed),
+        substitution_count=(
+            templatized["substitution_count"] if templatized else None),
+        substituted_count=(
+            templatized["substituted_total"] if templatized else None),
     )
     return {
         "created": True,
@@ -13269,6 +13640,7 @@ def _create_template_impl(args: dict) -> dict:
         "source_document_id": source_id,
         "leak_scan": leak,
         "scrubbed_properties": scrubbed,
+        "templatized": templatized,
         "warnings": warnings,
     }
 

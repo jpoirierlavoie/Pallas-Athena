@@ -2673,6 +2673,95 @@ def test_create_template_conforms_clean_scrubbed_and_with_residues(monkeypatch):
         "category": "correspondance", "accept_residual": ["2026-001"]})
     _conforms("create_template", accepted)
     assert accepted["leak_scan"]["accepted_residues"][0]["identifier"] == "2026-001"
+    assert accepted["templatized"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 2B — templatizing a stored document
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _seed_tracked_source(fake, bucket):
+    """A stored .docx carrying a tracked insertion — a source the engine
+    refuses (the blocker branch: no result, no scan)."""
+    import io
+    import zipfile
+
+    from models import document as document_model
+
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats'
+            '.org/package/2006/content-types"><Default Extension="xml" '
+            'ContentType="application/xml"/></Types>'))
+        zf.writestr("word/document.xml", (
+            f'<?xml version="1.0"?><w:document {w}><w:body><w:p><w:r>'
+            "<w:t>Dossier 2026-001</w:t></w:r></w:p><w:p><w:ins w:id=\"1\" "
+            'w:author="J"><w:r><w:t>ajout</w:t></w:r></w:ins></w:p>'
+            "</w:body></w:document>"))
+    data = buf.getvalue()
+    path = "users/uid-conformance/dossiers/d1/documents/tracked/t.docx"
+    bucket.put(path, data)
+    fake.seed("documents/tracked", {
+        **document_model._default_doc(), "id": "tracked", "dossier_id": "d1",
+        "dossier_file_number": "2026-001", "display_name": "T",
+        "filename": "t.docx",
+        "file_type": document_model.EXTENSION_MIME_TYPES[".docx"],
+        "file_size": len(data), "storage_path": path,
+        "category": "correspondance", "category_source": "juriste",
+        "created_at": DT, "updated_at": DT, "etag": "e-tracked"})
+
+
+def test_preview_templatize_conforms_ready_residual_and_blocked(monkeypatch):
+    fake, _ids = _generation_world(monkeypatch)
+    from models import doc_template as tpl_model
+
+    bucket = tpl_model.storage.bucket()
+    _seed_leaky_source(fake, bucket)
+    _seed_tracked_source(fake, bucket)
+    sub = {"literal": "2026-001", "placeholder": "dossier.reference_interne"}
+    ready = handlers.preview_templatize({
+        "document_id": "leaky", "substitutions": [dict(sub)]})
+    _conforms("preview_templatize", ready)
+    assert ready["ready_to_create"] is True
+    assert ready["result_placeholders"] is not None
+    assert ready["substitutions"][0]["matches_expected"] is None
+    # A wrong expectation, an unknown literal and an invalid name — and the
+    # residue the untouched file number leaves.
+    residual = handlers.preview_templatize({
+        "document_id": "leaky", "scrub_properties": True, "substitutions": [
+            {"literal": "Absent", "placeholder": "client.nom",
+             "expected_occurrences": 2},
+            {"literal": "Dossier", "placeholder": "pas un nom"}]})
+    _conforms("preview_templatize", residual)
+    assert residual["leak_scan"]["residues"][0]["identifier"] == "2026-001"
+    assert residual["substitutions"][0]["matches_expected"] is False
+    assert residual["substitutions"][1]["classification"] is None
+    assert residual["scrubbed_properties"] == []
+    assert residual["ready_to_create"] is False
+    blocked = handlers.preview_templatize({
+        "document_id": "tracked", "substitutions": [dict(sub)]})
+    _conforms("preview_templatize", blocked)
+    assert blocked["source_blockers"][0]["code"] == "tracked_changes"
+    assert blocked["leak_scan"] is None
+    assert blocked["result_placeholders"] is None
+
+
+def test_create_template_conforms_when_templatized(monkeypatch):
+    fake, _ids = _generation_world(monkeypatch)
+    from models import doc_template as tpl_model
+
+    _seed_leaky_source(fake, tpl_model.storage.bucket())
+    templatized = handlers.create_template({
+        "source_document_id": "leaky", "name": "Modèle gabaritisé",
+        "category": "correspondance", "substitutions": [
+            {"literal": "2026-001", "placeholder": "dossier.reference_interne",
+             "expected_occurrences": 1}]})
+    _conforms("create_template", templatized)
+    assert templatized["templatized"]["substituted_total"] == 1
+    assert templatized["leak_scan"]["accepted_residues"] == []
 
 
 def test_update_template_conforms_in_both_modes_and_on_no_ops(monkeypatch):

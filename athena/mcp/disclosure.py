@@ -397,14 +397,27 @@ FAMILIES: tuple[Family, ...] = (
         tools=("create_template", "update_template"),
         consent_template="mcp/families/_templates.html",
         checkbox_summary_fr=(
-            "enregistrer comme gabarit un .docx déjà versé à un dossier et "
-            "corriger un gabarit (nom, description, catégorie, type, ou "
-            "nouvelle version de son fichier, la précédente conservée)"
+            "enregistrer comme gabarit un .docx déjà versé à un dossier, tel "
+            "quel ou transformé en gabarit (ses textes propres au dossier "
+            "remplacés par des champs), et corriger un gabarit (nom, "
+            "description, catégorie, type, ou nouvelle version de son "
+            "fichier, la précédente conservée)"
         ),
+        # A brace is DOUBLED here: build_instructions runs str.format over
+        # this text (for {phase_bulk_max}), which halves it — « {{{{field}}}} »
+        # reads « {{field}} » in INSTRUCTIONS (pinned).
         instructions_en=(
             "`create_template` registers a .docx ALREADY in a dossier as a "
             "NEW template, its bytes unchanged (scrub_properties aside: it "
-            "empties the file's document properties), and `update_template` "
+            "empties the file's document properties) — or, given "
+            "`substitutions`, a TEMPLATIZED copy, each literal of the matter "
+            "(a name, a number, an address) replaced by its {{{{field}}}}: run "
+            "`preview_templatize` (a read) FIRST — it counts every "
+            "occurrence, part by part, says what stays in place and what "
+            "would remain of the dossier — adjust, then pass each count as "
+            "`expected_occurrences`; one count that differs refuses the "
+            "whole call, and matching is case-SENSITIVE, so an ALL-CAPS "
+            "variant needs its own substitution. `update_template` "
             "corrects a template's name, description, category or kind — or "
             "installs a stored .docx as a NEW version of its file (the one "
             "in force kept, restorable in the application). An OUTSIDE .docx "
@@ -412,7 +425,8 @@ FAMILIES: tuple[Family, ...] = (
             "`begin_upload` (purpose gabarit) and `finalize_upload`. Ids, "
             "versions and etags come from `list_templates`. A file taken "
             "from a dossier document is ALWAYS checked against that "
-            "document's own dossier, an uploaded one against the dossier_id "
+            "document's own dossier (a templatized one as it will be stored, "
+            "your literals included), an uploaded one against the dossier_id "
             "you MUST name — unless it comes from no dossier and you declare "
             "aucun_dossier_source: true, when nothing is checked — refused "
             "while it, or the name of a "
@@ -644,6 +658,9 @@ NEVERS: tuple[Never, ...] = (
         # (create_template, update_template) only READS a stored document:
         # its bytes are copied into a TEMPLATE object, the document's own
         # record and object untouched (tests/test_mcp_template_writes.py).
+        # Lot 2B (create_template's `substitutions`) templatizes an
+        # in-memory COPY of those bytes into the template object; the
+        # source stays byte-identical (tests/test_mcp_templatize.py).
         fr=(
             "modifier le <strong>fichier</strong> d'un document existant "
             "— un projet, une copie ou un fichier téléversé est toujours un "

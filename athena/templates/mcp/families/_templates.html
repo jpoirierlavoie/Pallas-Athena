@@ -7,19 +7,30 @@
    since the fixups of lot 2A, unless he declares aucun_dossier_source. A
    replaced file is always KEPT (NEVER « template_version »), and the
    active special template is designated by the lawyer alone (NEVER
-   « active_template »). #}
+   « active_template »). Lot 2B: create_template's `substitutions` store a
+   TEMPLATIZED copy (preview_templatize counts first); the check then runs
+   on the copy as stored. No double brace in this partial: Jinja would read
+   it as an expression. #}
 <p class="mt-3">
   <strong>Gérer vos gabarits</strong>&nbsp;: enregistrer comme
-  <strong>nouveau</strong> gabarit un document Word déjà versé à un dossier,
-  tel quel (seules ses propriétés de document peuvent être effacées), et
-  corriger un gabarit — son nom, sa description, sa catégorie, son type, ou
+  <strong>nouveau</strong> gabarit un document Word déjà versé à un dossier —
+  tel quel (seules ses propriétés de document peuvent être effacées), ou
+  <strong>transformé en gabarit</strong>&nbsp;: sur une
+  <strong>copie</strong>, les textes propres à son dossier que Claude désigne
+  (un nom, un numéro, une adresse) remplacés par les champs que l'application
+  remplit, tout ou rien — chaque remplacement compté d'avance, et un seul
+  décompte différent fait refuser l'enregistrement entier —, et corriger un
+  gabarit — son nom, sa description, sa catégorie, son type, ou
   une <strong>nouvelle version</strong> de son fichier tirée d'un tel
   document ou d'un fichier téléversé, la version précédente restant
   conservée et rétablissable. Un fichier tiré d'un document est
-  <strong>toujours</strong> contrôlé contre le dossier de ce document&nbsp;:
-  il est refusé tant que lui — ou le nom du nouveau gabarit qu'il crée —
-  nomme encore les parties, les numéros ou les adresses de ce dossier, sauf
-  si vous acceptez chacun d'eux. Un fichier téléversé l'est contre le dossier
+  <strong>toujours</strong> contrôlé contre le dossier de ce document — un
+  gabarit transformé, tel qu'il sera enregistré, les textes que Claude a
+  demandé de remplacer compris&nbsp;: il est refusé tant que lui — ou le nom
+  du nouveau gabarit qu'il crée — nomme encore les parties, les numéros ou les
+  adresses de ce dossier, sauf si vous acceptez chacun d'eux. Ce contrôle
+  porte sur ces noms, numéros et adresses, jamais sur le reste du texte&nbsp;:
+  relisez un gabarit transformé avant de vous en servir. Un fichier téléversé l'est contre le dossier
   que Claude doit nommer — sauf s'il déclare expressément que le fichier ne
   vient d'<strong>aucun</strong> dossier&nbsp;: rien n'est alors contrôlé, et
   le résultat le dit. Le nouveau nom donné à un gabarit existant est contrôlé

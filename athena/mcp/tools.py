@@ -26,6 +26,7 @@ from tz import to_mtl
 # Pure module (no Firestore at import) — safe to derive enums from, unlike
 # models.* (see the literal-enum comment below).
 from utils import analyse_taxonomies as _tax
+from utils import docx_templatize as _templatize
 from utils import phases
 from utils import recurrence
 
@@ -945,6 +946,14 @@ _TEMPLATE_MODES = ["create", "replace"]
 # Lot 2A (T10) — a template's etag is on its list_templates row (list mode
 # and detail mode alike: both render _template_summary).
 _TEMPLATE_ETAG_READERS = ("list_templates",)
+# Lot 2B — templatizing. DERIVED from the pure engine (no Firestore at
+# import), never copied: the schema and the engine cannot drift.
+TEMPLATIZE_SUBSTITUTIONS_MAX = _templatize.MAX_SUBSTITUTIONS
+TEMPLATIZE_LITERAL_MIN_CHARS = _templatize.MIN_LITERAL_CHARS
+TEMPLATIZE_LITERAL_MAX_CHARS = _templatize.MAX_LITERAL_CHARS
+# A name, or the same name written {{name}}.
+TEMPLATIZE_PLACEHOLDER_MAX_CHARS = _templatize.MAX_PLACEHOLDER_CHARS + 4
+TEMPLATIZE_EXPECTED_MAX = _templatize.MAX_EXPECTED_OCCURRENCES
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
     "expert", "huissier", "notaire", "autre",
@@ -1404,6 +1413,59 @@ def _phase_bulk_items(id_key: str, id_description: str) -> dict:
                 **_phase_props(),
             },
             "required": [id_key],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _substitutions_prop(*, expected_required: bool) -> dict:
+    """The `substitutions` array of lot 2B (preview_templatize: counts
+    optional; create_template: each REQUIRED and exact)."""
+    expected: dict = {
+        "type": "integer", "minimum": 1, "maximum": TEMPLATIZE_EXPECTED_MAX,
+        "description": (
+            "REQUIRED: the exact count preview_templatize reported as "
+            "`substituted` — any other refuses the whole call."
+            if expected_required else
+            "Optional: the count you expect; a mismatch is reported."
+        ),
+    }
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": TEMPLATIZE_SUBSTITUTIONS_MAX,
+        "description": (
+            f"1 to {TEMPLATIZE_SUBSTITUTIONS_MAX} literal → field "
+            "replacements, longest literal matched first."
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                "literal": {
+                    "type": "string",
+                    "minLength": TEMPLATIZE_LITERAL_MIN_CHARS,
+                    "maxLength": TEMPLATIZE_LITERAL_MAX_CHARS,
+                    "description": (
+                        "The text exactly as the document writes it — "
+                        "CASE-SENSITIVE, whole words (non-breaking spaces "
+                        "and curly apostrophes match plain ones). No "
+                        "brace, tab or line break."
+                    ),
+                },
+                "placeholder": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": TEMPLATIZE_PLACEHOLDER_MAX_CHARS,
+                    "description": (
+                        "The field it becomes, e.g. client.nom_complet or "
+                        "{{client.nom_complet}} — names as list_templates "
+                        "shows them; an ALL-CAPS name prints its value in "
+                        "capitals."
+                    ),
+                },
+                "expected_occurrences": expected,
+            },
+            "required": (["literal", "placeholder", "expected_occurrences"]
+                         if expected_required else ["literal", "placeholder"]),
             "additionalProperties": False,
         },
     }
@@ -5368,25 +5430,71 @@ TOOLS: dict[str, dict] = {
             "finalizer at a time, with no etag to pass."
         ),
     },
+    # ── Lot 2B — TEMPLATIZE a document already in a dossier (READ) ──────
+    # Interpretation B (plan D5): its literals become {{…}} fields. This
+    # read counts; create_template's `substitutions` writes.
+    "preview_templatize": {
+        "title": "Aperçu d'une transformation en gabarit",
+        "description": (
+            "READ — call BEFORE create_template with `substitutions`. For a "
+            "stored .docx (id from list_documents) it counts where each "
+            "literal → {{field}} replacement lands (body, headers, footers, "
+            "per part) and what stays in place (field results, footnotes, "
+            "document properties, text a {{…}} already holds); gives each "
+            "field's class (auto: the application fills it; manual: "
+            "prompted; passthrough: left for Word); and lists the source "
+            "dossier's identifiers — and your literals — that would REMAIN "
+            "in the result, as create_template's check finds them. Matching "
+            "is CASE-SENSITIVE: an ALL-CAPS variant of a name needs its own "
+            "substitution, with an ALL-CAPS field name. Adjust and preview "
+            "again until ready_to_create, then create_template with each "
+            "expected_occurrences = its `substituted`. Writes nothing, and "
+            "never returns the document's text — counts only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": _id(
+                    "The stored .docx (UUIDv4), from list_documents. Its "
+                    "OWN dossier's identifiers are the ones checked."
+                ),
+                "substitutions": _substitutions_prop(expected_required=False),
+                "scrub_properties": {
+                    "type": "boolean",
+                    "description": (
+                        "Count as if the document properties were emptied "
+                        "first, as create_template would with it (default "
+                        "false)."
+                    ),
+                },
+            },
+            "required": ["document_id", "substitutions"],
+            "additionalProperties": False,
+        },
+        "handler": "preview_templatize",
+    },
     # ── Lot 2A (T10) — TEMPLATES from a document already in a dossier ───
     # Interpretation A (plan D5): the stored .docx is registered UNCHANGED
-    # (bar the opt-in core-properties scrub). Turning its literals into
-    # {{…}} fields is lot 2B's preview_templatize / substitutions.
+    # (bar the opt-in core-properties scrub) — or, given `substitutions`
+    # (lot 2B, interpretation B), as a TEMPLATIZED copy.
     "create_template": {
         "title": "Enregistrer un document comme gabarit",
         "description": (
             "WRITE — registers a Word document ALREADY in a dossier (.docx, "
             "10 MB at most, id from list_documents) as a NEW firm-wide "
-            "template, its bytes unchanged — scrub_properties first empties "
-            "the file's title, subject, author, last editor and description. "
-            "Refused while the file or `name` still carries the source "
-            "dossier's names, numbers or addresses: each residue is named; "
-            "list it in accept_residual ONLY on the lawyer's word, and every "
-            "accepted one is echoed back. A special kind (note_honoraires, "
-            "note) is created NOT active: only the lawyer designates the "
-            "active one, in the application. The source document is never "
-            "modified. Fields Word fragmented come back in "
-            "entity.validation_warnings."
+            "template. Without `substitutions`, its bytes unchanged. With "
+            "them, a templatized COPY: each literal becomes its {{field}} — "
+            "all or nothing, every count exact (run preview_templatize "
+            "first). scrub_properties first empties the file's title, "
+            "subject, author, last editor and description. Refused while the "
+            "stored file (after the substitutions, their literals included) "
+            "or `name` still carries the source dossier's names, numbers or "
+            "addresses: each residue is named; list it in accept_residual "
+            "ONLY on the lawyer's word, and every accepted one is echoed "
+            "back. A special kind (note_honoraires, note) is created NOT "
+            "active: only the lawyer designates the active one, in the "
+            "application. The source document is never modified. Fields "
+            "Word fragmented come back in entity.validation_warnings."
         ),
         "input_schema": {
             "type": "object",
@@ -5442,6 +5550,7 @@ TOOLS: dict[str, dict] = {
                         "(default false)."
                     ),
                 },
+                "substitutions": _substitutions_prop(expected_required=True),
                 **_write_protocol_props(),
             },
             "required": ["source_document_id", "name", "category"],
