@@ -627,14 +627,31 @@ def update_task(
     return merged, []
 
 
-def delete_task(task_id: str) -> tuple[bool, str]:
-    """Delete a task. Returns (success, error_message)."""
-    existing = get_task(task_id)
+def delete_task(
+    task_id: str, *, deleted_out: Optional[dict] = None,
+) -> tuple[bool, str]:
+    """Delete a task. Returns (success, error_message).
+
+    ``deleted_out`` (keyword-only, finitions sync-4): when given, receives
+    the document this call READ and deleted — the version whose
+    ``dossier_id`` names the DAV collection to tombstone. A caller must take
+    the collection from HERE, never from its own earlier read: that read is
+    a separate round trip (a fail-open one in the web routes, whose blip
+    read « no dossier » and tombstoned « Général » instead, the deleted item
+    staying on the phone for good). The read is STRICT: a failure answers
+    ``concurrency.READ_UNAVAILABLE_ERROR``, never « introuvable »."""
+    try:
+        existing = get_task_strict(task_id)
+    except Exception:
+        log_unexpected("task delete: read failed", task_id=task_id)
+        return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
         return False, "Tâche introuvable."
 
     try:
         db.collection(COLLECTION).document(task_id).delete()
+        if deleted_out is not None:
+            deleted_out.update(existing)
         return True, ""
     except Exception:
         log_unexpected("task delete failed")

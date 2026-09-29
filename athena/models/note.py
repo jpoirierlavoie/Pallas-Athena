@@ -591,7 +591,9 @@ def update_note(
     return None, [concurrency.STALE_ETAG_ERROR]
 
 
-def delete_note(note_id: str) -> tuple[bool, str]:
+def delete_note(
+    note_id: str, *, deleted_out: Optional[dict] = None,
+) -> tuple[bool, str]:
     """Delete a note. Returns (success, error_message).
 
     The dossier's « Théorie de la cause » is never deleted bare: its content
@@ -605,17 +607,34 @@ def delete_note(note_id: str) -> tuple[bool, str]:
     doctrine), so a deleted analysis stays recoverable. Ordinary notes keep
     the plain delete. Callers on every path — the web route and the DAV
     DELETE — go through here, so neither can skip the snapshot.
-    """
-    existing = get_note(note_id)
+
+    ``deleted_out`` (keyword-only, finitions sync-4): when given, receives
+    the document this call READ and deleted — the version whose
+    ``dossier_id`` names the DAV collection to tombstone. A caller must take
+    the collection from HERE, never from its own earlier read: that read is
+    a separate round trip (a fail-open one in the web routes, whose blip
+    read « no dossier » and tombstoned « Général » instead, the deleted item
+    staying on the phone for good). The read is STRICT: a failure answers
+    ``concurrency.READ_UNAVAILABLE_ERROR``, never « introuvable »."""
+    try:
+        existing = get_note_strict(note_id)
+    except Exception:
+        log_unexpected("note delete: read failed", note_id=note_id)
+        return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
         return False, "Note introuvable."
 
     ref = db.collection(COLLECTION).document(note_id)
     if existing.get("is_analyse"):
-        return _delete_analyse_note(ref, note_id, existing)
+        ok, error = _delete_analyse_note(ref, note_id, existing)
+        if ok and deleted_out is not None:
+            deleted_out.update(existing)
+        return ok, error
 
     try:
         ref.delete()
+        if deleted_out is not None:
+            deleted_out.update(existing)
         return True, ""
     except Exception:
         log_unexpected("note delete failed")

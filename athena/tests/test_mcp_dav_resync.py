@@ -336,7 +336,8 @@ def _dossier(i):
 @pytest.mark.parametrize("new", ["", "d1", "d2"])   # the form posts "" for none
 def test_the_task_route_moves_exactly_as_before(monkeypatch, old, new):
     calls = _route_recorder(monkeypatch, tasks_routes)
-    monkeypatch.setattr(tasks_routes, "get_task",
+    # The old dossier is read STRICTLY since the finitions (sync-4).
+    monkeypatch.setattr(tasks_routes, "get_task_strict",
                         lambda i: {"id": i, "dossier_id": old, "title": "T"})
     monkeypatch.setattr(tasks_routes, "get_dossier", _dossier)
     monkeypatch.setattr(
@@ -382,7 +383,8 @@ def test_the_hearing_route_moves_like_relocate_resource(monkeypatch, old, new):
     one bump, and no tombstone recorded then removed in the same collection
     (the old block's double churn)."""
     calls = _route_recorder(monkeypatch, hearings_routes)
-    monkeypatch.setattr(hearings_routes, "get_hearing",
+    # The old dossier is read STRICTLY since the finitions (sync-4).
+    monkeypatch.setattr(hearings_routes, "get_hearing_strict",
                         lambda i: {"id": i, "dossier_id": old, "title": "A"})
     monkeypatch.setattr(hearings_routes, "get_dossier", _dossier)
     monkeypatch.setattr(

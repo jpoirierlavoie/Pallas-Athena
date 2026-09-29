@@ -167,11 +167,13 @@ def test_creation_redirects_to_the_chain_it_just_created(client, monkeypatch):
 
 
 # ── Suppression scopée ──────────────────────────────────────────────────
+# The chain scope reads the STORED hearing strictly since the finitions
+# (sync-4): these tests stage get_hearing_strict.
 def test_scope_suivantes_deletes_from_this_occurrence_onward(
     client, monkeypatch
 ):
     calls = {}
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, date(2026, 9, 22)))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, date(2026, 9, 22)))
     monkeypatch.setattr(
         rh, "delete_series",
         lambda sid, *, from_date=None: (
@@ -192,7 +194,7 @@ def test_the_pivot_never_reaches_into_the_past(client, monkeypatch):
     """Une occurrence passée est le constat de ce qui a eu lieu : le pivot
     est le plus TARDIF entre son jour et aujourd'hui."""
     calls = {}
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, date(2026, 9, 1)))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, date(2026, 9, 1)))
     monkeypatch.setattr(
         rh, "delete_series",
         lambda sid, *, from_date=None: (
@@ -204,12 +206,12 @@ def test_the_pivot_never_reaches_into_the_past(client, monkeypatch):
 
 
 def test_scope_occurrence_deletes_only_this_one(client, monkeypatch):
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, TODAY))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, TODAY))
     monkeypatch.setattr(rh, "delete_series", lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("la portée unitaire ne doit pas toucher la chaîne")))
     deleted = []
     monkeypatch.setattr(
-        rh, "delete_hearing", lambda i: (deleted.append(i) or (True, ""))
+        rh, "delete_hearing", lambda i, **kw: (deleted.append(i) or (True, ""))
     )
     monkeypatch.setattr(rh, "record_tombstone", lambda *a: None)
     monkeypatch.setattr(rh, "bump_ctag", lambda n: None)
@@ -226,12 +228,12 @@ def test_a_detached_occurrence_cannot_delete_the_empty_chain(
     affiche encore « Cette occurrence et les suivantes ». Sans la relecture
     du serie_id STOCKÉ, ce POST supprimerait toute audience autonome du
     cabinet — avec un jeton CSRF valide et la session du juriste."""
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, TODAY, serie=""))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, TODAY, serie=""))
     monkeypatch.setattr(rh, "delete_series", lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("delete_series ne doit JAMAIS être appelée sur \"\"")))
     deleted = []
     monkeypatch.setattr(
-        rh, "delete_hearing", lambda i: (deleted.append(i) or (True, ""))
+        rh, "delete_hearing", lambda i, **kw: (deleted.append(i) or (True, ""))
     )
     monkeypatch.setattr(rh, "record_tombstone", lambda *a: None)
     monkeypatch.setattr(rh, "bump_ctag", lambda n: None)
@@ -249,7 +251,7 @@ def test_a_chain_delete_journals_one_row_not_one_per_occurrence(
     par chaîne évinceraient tout l'historique de suppression du cabinet."""
     rows = [_occ(f"h{i}", TODAY) for i in range(5)]
     journal = []
-    monkeypatch.setattr(rh, "get_hearing", lambda i: rows[0])
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: rows[0])
     monkeypatch.setattr(rh, "delete_series", lambda sid, *, from_date=None: (rows, []))
     monkeypatch.setattr(
         rh, "record_deletion",
@@ -264,7 +266,7 @@ def test_a_chain_delete_journals_one_row_not_one_per_occurrence(
 def test_a_chain_delete_failure_travels_on_a_2xx_redirect(client, monkeypatch):
     """htmx n'échange que les 2xx : un fragment 4xx ne paraîtrait jamais et
     le bouton semblerait mort."""
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, TODAY))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, TODAY))
     monkeypatch.setattr(
         rh, "delete_series", lambda sid, *, from_date=None: ([], ["Erreur."])
     )
@@ -276,7 +278,7 @@ def test_a_chain_delete_failure_travels_on_a_2xx_redirect(client, monkeypatch):
 def test_deleting_nothing_says_so_rather_than_claiming_success(
     client, monkeypatch
 ):
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, TODAY))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, TODAY))
     monkeypatch.setattr(
         rh, "delete_series", lambda sid, *, from_date=None: ([], [])
     )

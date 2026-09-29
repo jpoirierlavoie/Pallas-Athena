@@ -116,7 +116,7 @@ def test_a_series_create_refuses_an_unresolvable_dossier(client, monkeypatch):
 
 
 def test_update_refuses_an_unresolvable_dossier(client, monkeypatch, bumps):
-    monkeypatch.setattr(rh, "get_hearing", lambda hid: {
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda hid: {
         "id": hid, "dossier_id": "d1", "title": "Audience"})
     monkeypatch.setattr(rh, "update_hearing", _forbid("update_hearing"))
     r = client.post("/audiences/h1", data=_form(dossier_id="parti"))
@@ -143,7 +143,8 @@ def test_an_empty_dossier_is_still_general(client, monkeypatch, bumps):
 
 def test_a_resolvable_dossier_gets_its_labels(client, monkeypatch, bumps):
     seen = {}
-    monkeypatch.setattr(rh, "get_hearing", lambda hid: {
+    # The old dossier is read STRICTLY since the finitions (sync-4).
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda hid: {
         "id": hid, "dossier_id": "d1", "title": "Audience"})
 
     def _update(hid, data, **kw):

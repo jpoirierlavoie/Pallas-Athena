@@ -46,6 +46,7 @@ from models.hearing import (
     delete_series,
     forum_of,
     get_hearing,
+    get_hearing_strict,
     list_hearings,
     list_hearings_in_range,
     list_hearings_window,
@@ -55,6 +56,7 @@ from models.hearing import (
     unlink_hearing,
     update_hearing,
 )
+from models.concurrency import READ_UNAVAILABLE_ERROR
 from models.dossier import (
     get_dossier,
     VALID_COURTS,
@@ -670,8 +672,15 @@ def hearing_update(hearing_id: str) -> str:
     """Handle edit form submission."""
     # Capture the old dossier BEFORE the write: reassigning a hearing moves it
     # between DAV collections, and the old one needs a tombstone or DavX5
-    # keeps a duplicate copy of the court date forever.
-    existing_hearing = get_hearing(hearing_id)
+    # keeps a duplicate copy of the court date forever. STRICTLY (finitions,
+    # sync-4): the fail-open read answered a blip with « no dossier », and a
+    # real dossier-to-dossier move then never tombstoned the old one. A read
+    # that failed refuses the save.
+    try:
+        existing_hearing = get_hearing_strict(hearing_id)
+        read_errors: list[str] = []
+    except Exception:
+        existing_hearing, read_errors = None, [READ_UNAVAILABLE_ERROR]
     old_dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
 
     # The version the form was rendered from (routes/edit_conflict.py):
@@ -680,6 +689,7 @@ def hearing_update(hearing_id: str) -> str:
     expected = edit_conflict.submitted_etag()
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
+    link_errors = read_errors + link_errors
     return_to = request.form.get("return_to", "")
 
     hearing, errors = (
@@ -822,17 +832,27 @@ def hearing_delete(hearing_id: str) -> str:
     the practice.
     """
     return_to = request.form.get("return_to", "")
-    existing_hearing = get_hearing(hearing_id)
-    dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
+    if request.form.get("scope") == "suivantes":
+        # The chain is named by the STORED hearing — read strictly: an
+        # unreadable one refuses (a 2xx redirect carrying the banner), never
+        # quietly falls back to deleting this ONE occurrence.
+        try:
+            stored = get_hearing_strict(hearing_id)
+        except Exception:
+            target = safe_internal_redirect(
+                return_to, url_for("hearings.hearing_list"))
+            return redirect(f"{target}{'&' if '?' in target else '?'}"
+                            f"erreur={escape(READ_UNAVAILABLE_ERROR)}")
+        if stored and stored.get("serie_id"):
+            return _delete_chain_from(stored, return_to)
 
-    if (
-        request.form.get("scope") == "suivantes"
-        and existing_hearing
-        and existing_hearing.get("serie_id")
-    ):
-        return _delete_chain_from(existing_hearing, return_to)
-
-    success, error = delete_hearing(hearing_id)
+    # The collection to tombstone comes from the document the MODEL read and
+    # deleted (finitions, sync-4) — never from a separate fail-open
+    # pre-read, whose blip tombstoned « Général » and left the court date
+    # on the phone for good.
+    existing_hearing: dict = {}
+    success, error = delete_hearing(hearing_id, deleted_out=existing_hearing)
+    dossier_id = existing_hearing.get("dossier_id")
 
     if success:
         record_tombstone(collection_for(dossier_id), hearing_id)

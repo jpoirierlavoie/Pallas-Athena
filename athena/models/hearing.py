@@ -1119,14 +1119,31 @@ def update_hearing(
     return merged, []
 
 
-def delete_hearing(hearing_id: str) -> tuple[bool, str]:
-    """Delete a hearing. Returns (success, error_message)."""
-    existing = get_hearing(hearing_id)
+def delete_hearing(
+    hearing_id: str, *, deleted_out: Optional[dict] = None,
+) -> tuple[bool, str]:
+    """Delete a hearing. Returns (success, error_message).
+
+    ``deleted_out`` (keyword-only, finitions sync-4): when given, receives
+    the document this call READ and deleted — the version whose
+    ``dossier_id`` names the DAV collection to tombstone. A caller must take
+    the collection from HERE, never from its own earlier read: that read is
+    a separate round trip (a fail-open one in the web routes, whose blip
+    read « no dossier » and tombstoned « Général » instead, the deleted item
+    staying on the phone for good). The read is STRICT: a failure answers
+    ``concurrency.READ_UNAVAILABLE_ERROR``, never « introuvable »."""
+    try:
+        existing = get_hearing_strict(hearing_id)
+    except Exception:
+        log_unexpected("hearing delete: read failed", hearing_id=hearing_id)
+        return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
         return False, "Audience introuvable."
 
     try:
         db.collection(COLLECTION).document(hearing_id).delete()
+        if deleted_out is not None:
+            deleted_out.update(existing)
         return True, ""
     except Exception:
         log_unexpected("hearing delete failed")

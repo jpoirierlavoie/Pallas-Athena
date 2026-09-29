@@ -119,12 +119,17 @@ def test_task_delete_route_records_the_trail(monkeypatch):
         tr, "record_deletion",
         lambda *a, **kw: recorded.append((a, kw)) or {"id": "ev"},
     )
-    monkeypatch.setattr(
-        tr, "get_task",
-        lambda tid: {"id": tid, "dossier_id": "d1",
-                     "title": "Produire la proposition", "status": "à_faire"},
-    )
-    monkeypatch.setattr(tr, "delete_task", lambda tid: (True, ""))
+    stored = {"id": "t1", "dossier_id": "d1",
+              "title": "Produire la proposition", "status": "à_faire"}
+
+    def _delete(tid, *, deleted_out=None):
+        # The route journals the document the MODEL deleted (finitions,
+        # sync-4), never a separate pre-read.
+        if deleted_out is not None:
+            deleted_out.update(stored)
+        return True, ""
+
+    monkeypatch.setattr(tr, "delete_task", _delete)
     monkeypatch.setattr(tr, "record_tombstone", lambda s, r: None)
     monkeypatch.setattr(tr, "bump_ctag", lambda s: None)
 
@@ -142,7 +147,7 @@ def test_task_delete_route_records_the_trail(monkeypatch):
 
     # Refused delete → no phantom event.
     recorded.clear()
-    monkeypatch.setattr(tr, "delete_task", lambda tid: (False, "introuvable"))
+    monkeypatch.setattr(tr, "delete_task", lambda tid, **kw: (False, "introuvable"))
     with app.test_request_context("/taches/t1/delete", method="POST"):
         tr.task_delete.__wrapped__("t1")
     assert recorded == []

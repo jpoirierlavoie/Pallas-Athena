@@ -151,10 +151,14 @@ def test_note_delete_records_a_tombstone(client, bumps, tombstones, monkeypatch)
     """Deletions travel ONLY via tombstones (sync-collection reports live
     members + tombstones; an unmentioned href reads as 'unchanged'). A bare
     CTag bump left the deleted note on the phone forever."""
-    monkeypatch.setattr(
-        notes_routes, "get_note", lambda i: {"id": "n1", "dossier_id": "d1"}
-    )
-    monkeypatch.setattr(notes_routes, "delete_note", lambda i: (True, ""))
+    def _delete(i, *, deleted_out=None):
+        # The route tombstones the collection of the document the MODEL
+        # deleted (finitions, sync-4), never a separate pre-read.
+        if deleted_out is not None:
+            deleted_out.update({"id": "n1", "dossier_id": "d1"})
+        return True, ""
+
+    monkeypatch.setattr(notes_routes, "delete_note", _delete)
     resp = client.post("/notes/n1/delete", data={})
     assert resp.status_code in (302, 303)
     assert tombstones["record"] == [("dossier:d1", "n1")]

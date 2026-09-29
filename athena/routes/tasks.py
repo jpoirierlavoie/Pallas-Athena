@@ -31,12 +31,14 @@ from models.task import (
     create_task,
     delete_task,
     get_task,
+    get_task_strict,
     list_tasks,
     list_tasks_by_status,
     set_task_completion,
     sort_tasks_for_display,
     update_task,
 )
+from models.concurrency import READ_UNAVAILABLE_ERROR
 from models.dossier import (
     get_dossier,
     get_dossiers_bulk,
@@ -392,13 +394,24 @@ def task_edit(task_id: str) -> str:
 @login_required
 def task_update(task_id: str) -> str:
     """Handle edit form submission."""
-    # Capture the old dossier_id before update
-    existing_task = get_task(task_id)
+    # Capture the old dossier_id before update — STRICTLY (finitions,
+    # sync-4): through the fail-open read a blip gave « no dossier », and
+    # relocate_resource then treated a real dossier-to-dossier move as one
+    # from « Général », never tombstoning the old collection (a duplicate
+    # copy left on the phone). A read that failed refuses the save. With
+    # the form's etag (D9) the model refuses a move landing between this
+    # read and its own, so the dossier read here is the one replaced.
+    try:
+        existing_task = get_task_strict(task_id)
+        read_errors: list[str] = []
+    except Exception:
+        existing_task, read_errors = None, [READ_UNAVAILABLE_ERROR]
     old_dossier_id = existing_task.get("dossier_id") if existing_task else None
 
     expected = edit_conflict.submitted_etag()
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
+    link_errors = read_errors + link_errors
     return_to = request.form.get("return_to", "")
 
     task, errors = (
@@ -450,11 +463,14 @@ def task_update(task_id: str) -> str:
 @login_required
 def task_delete(task_id: str) -> str:
     """Delete a task and redirect to the list (or back to the caller)."""
-    existing_task = get_task(task_id)
-    dossier_id = existing_task.get("dossier_id") if existing_task else None
     return_to = request.form.get("return_to", "")
 
-    success, error = delete_task(task_id)
+    # The collection to tombstone comes from the document the MODEL read and
+    # deleted (finitions, sync-4) — never from a separate fail-open pre-read,
+    # whose blip tombstoned « Général » and left the task on the phone.
+    existing_task: dict = {}
+    success, error = delete_task(task_id, deleted_out=existing_task)
+    dossier_id = existing_task.get("dossier_id")
 
     if success:
         scope = collection_for(dossier_id)

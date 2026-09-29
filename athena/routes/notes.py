@@ -32,6 +32,7 @@ from models.note import (
     create_note,
     delete_note,
     get_note,
+    get_note_strict,
     list_notes,
     list_notes_recent,
     set_pinned,
@@ -509,11 +510,15 @@ def note_update(note_id: str) -> str:
 @login_required
 def note_delete(note_id: str) -> str:
     """Delete a note and redirect to the list (or back to the caller)."""
-    existing_note = get_note(note_id)
-    dossier_id = existing_note.get("dossier_id") if existing_note else None
     return_to = request.form.get("return_to", "")
 
-    success, error = delete_note(note_id)
+    # The collection to tombstone comes from the document the MODEL read and
+    # deleted (finitions, sync-4) — never from a separate fail-open
+    # pre-read, whose blip tombstoned « Général » and left the note on the
+    # phone for good.
+    existing_note: dict = {}
+    success, error = delete_note(note_id, deleted_out=existing_note)
+    dossier_id = existing_note.get("dossier_id")
 
     if success:
         # Tombstone BEFORE bumping: the bump makes DavX5 re-sync, and the
@@ -534,7 +539,7 @@ def note_delete(note_id: str) -> str:
         )
 
     target = safe_internal_redirect(return_to, url_for("notes.note_list"))
-    if not success and existing_note is not None:
+    if not success and error != "Note introuvable.":
         # A refused delete goes BACK to the note with a banner. It used to
         # return silently to the list, the note still standing; and since
         # lot 1a (L3) the théorie de la cause can refuse a delete that races
