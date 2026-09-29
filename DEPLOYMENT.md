@@ -160,7 +160,7 @@ integrations an adopter cannot otherwise discover without reading `config.py`.
 | `RATE_LIMIT_LOGIN` | ○ | `5 per minute` | Login rate limit |
 | `MCP_ENABLED` | ○ | `true` | `false` → all `/mcp` + `/oauth/*` routes 404 |
 | `MCP_WRITE_ENABLED` | ○ | `true` | `false` → every write tool vanishes from `tools/list` and is refused at `tools/call`, and the consent checkboxes disappear; reads are untouched. It is the **master** write switch: the accounting tools below are writes, so `false` stops them too, whatever `MCP_COMPTABILITE_ENABLED` says. Its arm/disarm procedure is **deploy-ordered** — see the comment in `app.yaml` — which is why it is deliberately not editable at runtime |
-| `MCP_COMPTABILITE_ENABLED` | ○ | **`false`** | The accounting switch — the only MCP switch that defaults to **off** (money is fail-closed: forgetting the variable leaves accounting off). `false` → the accounting tools (scope `athena:comptabilite`, a separate consent box « Autoriser la comptabilité ») vanish from `tools/list`, are refused at `tools/call`, and their box is not offered. **Dormant**: no tool carries the scope before plan lot 5, so the box is never offered and `true` changes nothing yet. Same double duty and same deploy order as `MCP_WRITE_ENABLED` — re-consenting while it is `false` silently yields a grant without accounting; see `app.yaml` |
+| `MCP_COMPTABILITE_ENABLED` | ○ | **`false`** | The accounting switch — the only MCP switch that defaults to **off** (money is fail-closed: forgetting the variable leaves accounting off). `false` → the accounting tools (scope `athena:comptabilite`, a separate consent box « Autoriser la comptabilité ») vanish from `tools/list`, are refused at `tools/call`, and their box is not offered. Since plan lot 5b six tools carry the scope — `get_admin_ledger` (read) and the ACCOUNTING family (`record_trust_entry`, `record_admin_entry`, `update_admin_entry`, `clear_register_entries`, `reverse_register_entry`) — so `true` offers the box, and a token granted it sees them. Same double duty and same deploy order as `MCP_WRITE_ENABLED` — re-consenting while it is `false` silently yields a grant without accounting; see `app.yaml` |
 | `MCP_CANONICAL_ORIGIN` | ○ | owner domain in [config.py](athena/config.py) | OAuth issuer — **must be your domain** |
 | `TRACE_SAMPLE_RATIO` | ○ | `0.1` | Trace sampling (read by `utils/tracing_setup.py`, not by `config.py`) |
 | `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` | ✔ (prod) | — | `gcp`. Read by the **OpenTelemetry SDK itself**: since SDK 1.42 the resource detectors load *only* when it is set. Needed in **both** yamls — each service runs its own `tracing_setup` in its own process |
@@ -1318,10 +1318,15 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 - The consent screen has room for a **second, separate box**, « Autoriser la
   comptabilité » (scope `athena:comptabilite`). It appears only when
   `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**
-  at least one tool carries that scope — none does before plan lot 5, so
-  today there is nothing to tick, whatever `MCP_COMPTABILITE_ENABLED` says.
-  A write grant never reaches an accounting tool: each box grants its own
-  scope, and only its own.
+  at least one tool carries that scope — six do since plan lot 5b (the
+  ACCOUNTING family and `get_admin_ledger`). A write grant never reaches an
+  accounting tool: each box grants its own scope, and only its own. The
+  box lists what it grants — inscribing trust and administration entries
+  (a fee payment, an encaissement: each RECORDS A PAYMENT on the invoice),
+  correcting an editable administration entry, clearing at the statement
+  date, reversing — and what it never does (delete an entry, reconcile,
+  create an account, transfer between dossiers, withdraw cash, pay a paper
+  invoice, show a bank number). Arming it is its own train: §15 « Lot 5 ».
 - **Run no MCP write during a deploy window — and none after a rollback
   past the idempotency claim** (plan lot 0a: `mcp/write_support.py` with its
   `pending` status). Since that release a write CLAIMS its `idempotency_key`
@@ -2834,6 +2839,82 @@ Notes:
   conflict reported to him AT ONCE; notes are appended, never replaced);
   and `update_partie_mandataire`'s (an individual of the same role;
   `update` for a representation already listed).
+- **Lot 5 — accounting through the connector (5a: the model, service and
+  web half, an ordinary release; 5b: six tools behind their OWN switch —
+  branch `mcp-ecriture-lot5`, with lot 4 and any earlier lot of that stack
+  not yet deployed, in ONE push).** 5b adds the READ `get_admin_ledger` and
+  the ACCOUNTING family — `record_trust_entry` (a trust entry; its
+  `virement_honoraires` is the fee payment, trust withdrawal + operations
+  recette + the invoice's payment in ONE transaction), `record_admin_entry`
+  (a dépense split TPS/TVQ, an other recette, an encaissement that pays the
+  invoice in the same transaction, a card payment's two legs),
+  `update_admin_entry` (an editable entry, against its etag),
+  `clear_register_entries` (≤ 50 entries of one account, at the STATEMENT
+  date) and `reverse_register_entry` (the one correction) — all under the
+  scope `athena:comptabilite` and its switch `MCP_COMPTABILITE_ENABLED`,
+  every rule the MODELS' (the lock floor, the Montréal clock, arts. 57, 58
+  and 59, the provision refusal). No index to deploy (the reads reuse the
+  existing registers' indexes), no dependency, no Tailwind class, no icon,
+  no `cron.yaml` or `firestore.rules` change, and no DavX5 account re-add
+  (neither register nor an invoice is DAV-exposed). **The lot SHIPS with
+  `MCP_COMPTABILITE_ENABLED: "false"`**, and in that state nothing is
+  reachable: the six tools are hidden from every `tools/list` and refused at
+  `tools/call`, the box is not offered — and no token in force holds the
+  scope (it was never offered before 5b), so the push needs no revocation.
+  **In this order:**
+  1. **Both integrity scripts clean, BEFORE the push** —
+     `verify_trust_integrity` and `verify_admin_integrity` (read-only; the
+     environment of the T3 recipe above): exit `0`, or `2` with every note
+     read with the lawyer. The connector will write into these registers;
+     an écart there first is one nobody can tell from the connector's.
+  2. **Push the lot as ONE deploy** with the switch `"false"`. Check the
+     connector in force: `tools/list` still **80** tools (31 read, 49
+     write), and its `initialize` text now says only that accounting tools
+     « appear only under the SEPARATE `athena:comptabilite` grant ». The
+     byte budget is the deploy gate's `tests/test_mcp_descriptor_budget.py`
+     (about 251 KB of its 280 KB cap with the six counted).
+  3. **To arm it**: `python -m scripts.revoke_mcp_tokens`, remove the
+     connector in claude.ai, set `MCP_COMPTABILITE_ENABLED: "true"` in
+     `app.yaml` and deploy (the `app.yaml` comment keeps this order).
+  4. **Re-add the connector and READ the accounting box before ticking
+     it**: what it grants (reading the administration ledger; trust
+     entries — a disbursement drawing only on CLEARED funds, a fee payment
+     by cheque to the lawyer or transfer only, on an issued Athéna invoice
+     that imputes no provision, writing the withdrawal, the recette and the
+     invoice's payment in one operation; administration entries, an
+     encaissement that pays its invoice; corrections of an editable
+     administration entry; clearing at the statement date; reversal, the
+     only correction), the lock/future rule, and its « jamais » list —
+     delete an entry, reconcile, create or modify an account, transfer
+     between dossiers, attach a receipt, withdraw cash or pay a paper or
+     provision invoice, show a bank number. Then `tools/list` for a token
+     holding all three scopes: **86** tools (32 read, 54 write), and the
+     `initialize` text now carries an « ACCOUNTING: » paragraph.
+  5. **Never smoke-test the registers.** Every entry is PERMANENT — a
+     reversal keeps both in the register, art. 38 prints them —, so the
+     first write is a REAL bank movement the lawyer asks for. Before it,
+     prove the refusals, which write nothing: a trust disbursement
+     « comptant » (refused, art. 57), a fee payment on a brouillon invoice
+     (refused), an entry dated tomorrow (refused), and a `get_admin_ledger`
+     whose balances match « Comptabilité ». After the first real entry,
+     open it in the application (its « par Claude » provenance, its status
+     « en circulation ») and, for a fee payment, the invoice (its payment,
+     its status) and the operations account (its recette).
+  6. **Incident**: `MCP_COMPTABILITE_ENABLED: "false"` + deploy stops the
+     six tools ONLY; `MCP_WRITE_ENABLED: "false"` stops every write,
+     accounting included (the read `get_admin_ledger` answers to the
+     accounting switch alone).
+  7. **Then update BOTH copies of the claude.ai skill `pallas-athena` the
+     same day.** What 5b makes false there: every « 80 outils » (86: 32 +
+     54 — under the accounting grant; 80 without it), and any sentence
+     saying the connector never touches trust accounting or never records a
+     payment (both are now true WITHOUT the accounting grant only). Add the
+     discipline: record only what the BANK shows, at its date; a
+     `idempotency_key` per movement, kept on a retry; an uncertain outcome
+     (`accounting_outcome_uncertain`) is re-read (`list_trust_transactions`,
+     `get_admin_ledger`) before anything else, retried only with the SAME
+     key; clear only at the statement date; a mistake is REVERSED, never
+     re-entered on top.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
