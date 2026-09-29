@@ -6774,6 +6774,34 @@ TOOLS: dict[str, dict] = {
 }
 
 
+# The key's description is DERIVED from the tool's declared policy (lot-5
+# completeness review): _write_protocol_props() says « Recommended on every
+# unattended/scheduled write », which is the optional policy's truth — on
+# the eight ``required`` tools it sat beside a ``required`` list naming the
+# key and a description saying « idempotency_key REQUIRED », and a model
+# reads a property description as a fact about the code. One text per
+# policy, applied here so a ninth required tool is described by its
+# declaration alone.
+REQUIRED_KEY_DESCRIPTION = (
+    "Caller-chosen key identifying THIS write — REQUIRED here: a call "
+    "without it is refused, and so is one whose replay record cannot be "
+    "read. Retrying with the same key returns the first call's stored "
+    "result instead of writing twice (kept 24 h); the same key with "
+    "different arguments is refused."
+)
+
+
+def _describe_required_keys(registry: dict) -> None:
+    for spec in registry.values():
+        if spec.get("idempotency") == IDEMPOTENCY_REQUIRED:
+            prop = spec["input_schema"]["properties"].get("idempotency_key")
+            if prop is not None:
+                prop["description"] = REQUIRED_KEY_DESCRIPTION
+
+
+_describe_required_keys(TOOLS)
+
+
 # The accounting tools (plan decision D1): trust and administration register
 # entries, behind their OWN scope and their own kill switch. DERIVED from the
 # declared scope, never listed by hand — a tool joins by declaring

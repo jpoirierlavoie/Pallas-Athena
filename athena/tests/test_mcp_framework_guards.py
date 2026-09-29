@@ -362,6 +362,29 @@ def test_every_write_tool_declares_its_idempotency_policy():
             assert "idempotency_key" in spec["input_schema"].get("required", []), name
 
 
+def test_the_key_s_description_says_what_its_policy_does():
+    """Lot-5 completeness review: the eight `required` tools described their
+    key as « Recommended on every unattended/scheduled write » — the
+    optional policy's text — beside a schema that demands it. DERIVED from
+    the declaration both ways: a required key says REQUIRED and never
+    « Recommended », an optional one keeps the recommendation."""
+    required = {n for n, s in tools.TOOLS.items()
+                if s.get("idempotency") == tools.IDEMPOTENCY_REQUIRED}
+    assert len(required) == 8, sorted(required)
+    for name, spec in tools.TOOLS.items():
+        prop = spec["input_schema"]["properties"].get("idempotency_key")
+        if prop is None:
+            assert name not in tools.WRITE_TOOLS, name
+            continue
+        text = prop["description"]
+        if name in required:
+            assert text == tools.REQUIRED_KEY_DESCRIPTION, name
+            assert "REQUIRED" in text and "Recommended" not in text, name
+        else:
+            assert "Recommended on every unattended/scheduled write" in text, name
+            assert "REQUIRED" not in text, name
+
+
 # ══════════════════════════════════════════════════════════════════════
 # (g) Accounting: its own scope, and a key it DEMANDS
 # ══════════════════════════════════════════════════════════════════════
