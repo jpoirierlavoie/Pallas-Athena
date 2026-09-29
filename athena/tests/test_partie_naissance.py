@@ -160,6 +160,8 @@ def test_mise_a_jour_partielle_preserve_les_mandataires(monkeypatch):
         email="ancien@exemple.com",
     )
     monkeypatch.setattr(pm, "get_partie", lambda pid: dict(stocke))
+    # The update's own read is STRICT since the finitions (sync-3).
+    monkeypatch.setattr(pm, "get_partie_strict", lambda pid: dict(stocke))
     ecrit = {}
 
     class _Doc:

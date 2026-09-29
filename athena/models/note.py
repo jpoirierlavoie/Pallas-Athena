@@ -505,7 +505,12 @@ def update_note(
 
     attempts = 1 if expected_etag is not None else _UNGUARDED_ATTEMPTS
     for _attempt in range(attempts):
-        existing = get_note(note_id)
+        # STRICT (finitions, sync-3): a failed read is never « introuvable ».
+        try:
+            existing = get_note_strict(note_id)
+        except Exception:
+            log_unexpected("note update: read failed", note_id=note_id)
+            return None, [concurrency.READ_UNAVAILABLE_ERROR]
         if not existing:
             return None, ["Note introuvable."]
         if not concurrency.matches(existing, expected_etag):

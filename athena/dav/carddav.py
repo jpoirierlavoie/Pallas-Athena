@@ -34,6 +34,7 @@ from dav.xml_utils import (
     serialize_multistatus,
 )
 from models.audit_event import record_deletion
+from models.concurrency import is_read_unavailable
 from models.dav_ids import DAV_ID_INVALID, DAV_ID_TAKEN, valid_resource_id
 from models.partie import (
     MANDATAIRE_CHECK_UNAVAILABLE,
@@ -43,7 +44,7 @@ from models.partie import (
     create_partie,
     delete_partie,
     display_name,
-    get_partie,
+    get_partie_strict,
     list_parties_strict,
     partie_to_vcard,
     update_partie,
@@ -82,6 +83,23 @@ def _unavailable(operation: str, check: str) -> Response:
     resp = Response("Service Unavailable", status=503)
     resp.headers["Retry-After"] = "30"
     return resp
+
+
+def _contact(partie_id: str) -> dict | None:
+    """One contact, STRICT (finitions, sync-3) — ``None`` only when the store
+    answered « absent »; a failed read raises :class:`_ReadUnavailable`.
+    The fail-open ``get_partie`` it replaces turned a blip into a 404 on
+    GET / multiget / DELETE (« deleted » to the client — on DELETE it drops
+    its copy while the contact stays) and, on a phone EDIT sent with
+    If-Match, into a 412 « conflict ». A name the store itself refuses can
+    hold no contact: its failed read is « absent »."""
+    try:
+        return get_partie_strict(partie_id)
+    except Exception as exc:
+        if not valid_resource_id(partie_id):
+            return None
+        log_unexpected("carddav addressbook read failed", check="resource")
+        raise _ReadUnavailable() from exc
 
 
 def _members() -> list[dict]:
@@ -146,7 +164,10 @@ def propfind_collection() -> Response:
 @carddav_bp.route("/dav/addressbook/<partie_id>.vcf", methods=["PROPFIND"])
 @dav_auth_required
 def propfind_resource(partie_id: str) -> Response:
-    partie = get_partie(partie_id)
+    try:
+        partie = _contact(partie_id)
+    except _ReadUnavailable:
+        return _unavailable("propfind", "resource")
     if not partie:
         return Response("Not Found", status=404)
 
@@ -330,7 +351,11 @@ def _handle_multiget(body_root: ET.Element) -> Response:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
 
-        partie = get_partie(partie_id)
+        try:
+            partie = _contact(partie_id)
+        except _ReadUnavailable:
+            # One unreadable href would answer 404 — « deleted ».
+            return _unavailable("report", "resource")
         if not partie:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
@@ -372,7 +397,10 @@ def _handle_addressbook_query(body_root: ET.Element) -> Response:
 @carddav_bp.route("/dav/addressbook/<partie_id>.vcf", methods=["GET"])
 @dav_auth_required
 def get_resource(partie_id: str) -> Response:
-    partie = get_partie(partie_id)
+    try:
+        partie = _contact(partie_id)
+    except _ReadUnavailable:
+        return _unavailable("get", "resource")
     if not partie:
         return Response("Not Found", status=404)
 
@@ -401,7 +429,13 @@ def put_resource(partie_id: str) -> Response:
     if_match = request.headers.get("If-Match")
     if_none_match = request.headers.get("If-None-Match")
 
-    existing = get_partie(partie_id)
+    # STRICT: a blip answered by the fail-open read turned a phone EDIT
+    # (If-Match) into a 412 « conflict », and an edit without If-Match into
+    # the create branch, refused 412 by create().
+    try:
+        existing = _contact(partie_id)
+    except _ReadUnavailable:
+        return _unavailable("put", "resource")
 
     # If-None-Match: * means "only create, do not overwrite"
     if if_none_match == "*" and existing:
@@ -442,8 +476,8 @@ def put_resource(partie_id: str) -> Response:
         uid = data.pop("vcard_uid", None)
         created, errors = create_partie(data, dav_id=partie_id, dav_uid=uid)
         if errors == [DAV_ID_TAKEN]:
-            # create() found a contact our fail-open read did not see (a
-            # read error, or a racing PUT): refused, never overwritten.
+            # create() found a contact our read did not see (a racing
+            # PUT): refused, never overwritten.
             log_dav_operation("put", "addressbook", status_code=412,
                               reason="id_pris")
             return Response("Precondition Failed", status=412)
@@ -493,6 +527,10 @@ def _refused(partie_id: str, errors: list[str]) -> Response:
         )
         resp.headers["Retry-After"] = "60"
         return resp
+    if is_read_unavailable(errors):
+        # The model's own re-read failed (finitions, sync-3) — never the
+        # 422 a client treats as a permanent refusal of the card.
+        return _unavailable("put", "resource")
     return Response(
         "Données invalides : " + " ".join(errors), status=422,
         content_type="text/plain; charset=utf-8",
@@ -504,7 +542,10 @@ def _refused(partie_id: str, errors: list[str]) -> Response:
 @carddav_bp.route("/dav/addressbook/<partie_id>.vcf", methods=["DELETE"])
 @dav_auth_required
 def delete_resource(partie_id: str) -> Response:
-    existing = get_partie(partie_id)
+    try:
+        existing = _contact(partie_id)
+    except _ReadUnavailable:
+        return _unavailable("delete", "resource")
     if not existing:
         return Response("Not Found", status=404)
 

@@ -1074,7 +1074,12 @@ def update_hearing(
     if errors:
         return None, errors
 
-    existing = get_hearing(hearing_id)
+    # STRICT (finitions, sync-3): a failed read is never « introuvable ».
+    try:
+        existing = get_hearing_strict(hearing_id)
+    except Exception:
+        log_unexpected("hearing update: read failed", hearing_id=hearing_id)
+        return None, [concurrency.READ_UNAVAILABLE_ERROR]
     if not existing:
         return None, ["Audience introuvable."]
     if not concurrency.matches(existing, expected_etag):

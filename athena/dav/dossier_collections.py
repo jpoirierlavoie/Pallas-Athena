@@ -60,7 +60,6 @@ from models.dossier import get_dossier, get_dossier_for_dav
 from models.hearing import (
     create_hearing,
     delete_hearing,
-    get_hearing,
     get_hearing_strict,
     hearing_to_vevent,
     list_hearings_strict,
@@ -69,14 +68,13 @@ from models.hearing import (
     update_hearing,
     vevent_to_hearing,
 )
-from models.concurrency import STALE_ETAG_ERROR
+from models.concurrency import STALE_ETAG_ERROR, is_read_unavailable
 from models.note import (
     AnalyseDuplicateError,
     AnalyseLookupError,
     create_note,
     delete_note,
     find_analyse_note_strict,
-    get_note,
     get_note_strict,
     list_notes_strict,
     list_notes_without_dossier_strict,
@@ -87,7 +85,6 @@ from models.note import (
 from models.task import (
     create_task,
     delete_task,
-    get_task,
     get_task_strict,
     list_tasks_strict,
     list_tasks_without_dossier_strict,
@@ -504,7 +501,10 @@ def propfind_resource(dossier_id: str, resource_id: str) -> Response:
     except ValueError:
         return Response(_PAYLOAD_TOO_LARGE, status=413)
 
-    resolved = _resolve_resource(dossier_id, resource_id)
+    try:
+        resolved = _resolve_resource(dossier_id, resource_id)
+    except _ResourceUnreadable:
+        return _resource_unavailable(dossier_id, "propfind")
     if resolved is None:
         return Response("Not Found", status=404)
 
@@ -723,7 +723,11 @@ def _handle_multiget(
         if members_by_id is not None:
             resolved = members_by_id.get(resource_id)
         else:
-            resolved = _resolve_resource(dossier_id, resource_id)
+            try:
+                resolved = _resolve_resource(dossier_id, resource_id)
+            except _ResourceUnreadable:
+                # One unreadable href would answer 404 — « deleted ».
+                return _resource_unavailable(dossier_id, "report")
         if resolved is None:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
@@ -818,7 +822,10 @@ def _handle_calendar_query(
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["GET"])
 @dav_auth_required
 def get_resource(dossier_id: str, resource_id: str) -> Response:
-    resolved = _resolve_resource(dossier_id, resource_id)
+    try:
+        resolved = _resolve_resource(dossier_id, resource_id)
+    except _ResourceUnreadable:
+        return _resource_unavailable(dossier_id, "get")
     if resolved is None:
         return Response("Not Found", status=404)
 
@@ -981,6 +988,22 @@ def _create_refusal(
     return None
 
 
+def _update_unreadable(dossier_id: str, errors: list[str]) -> Response | None:
+    """503 + ``Retry-After`` when an ``update_*`` refused because ITS read
+    failed (``models.concurrency.READ_UNAVAILABLE_ERROR``, finitions,
+    sync-3) — the handler's strict read succeeded, the model's did not.
+    Before, the model's fail-open re-read answered « … introuvable », mapped
+    here to 422 « Données invalides. »: a permanent refusal of the phone's
+    edit, which DavX5 does not retry. ``None`` otherwise."""
+    if not is_read_unavailable(errors):
+        return None
+    log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                      status_code=503, reason="lecture_indisponible")
+    resp = Response("Service Unavailable", status=503)
+    resp.headers["Retry-After"] = "30"
+    return resp
+
+
 def _create_errors_response(
     dossier_id: str, resource_id: str, component: str, errors: list[str]
 ) -> Response | None:
@@ -1069,6 +1092,9 @@ def _put_hearing(
         # was served.
         strip_hearing_description_suffix(data, existing)
         updated, errors = update_hearing(resource_id, data)
+        unreadable = _update_unreadable(dossier_id, errors)
+        if unreadable is not None:
+            return unreadable
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VEVENT) validation failed for %s: %s",
@@ -1180,6 +1206,9 @@ def _put_task(
         # one « Dossier: … » block. `existing` is what the phone was served.
         strip_dav_description_suffix(data, existing)
         updated, errors = update_task(resource_id, data)
+        unreadable = _update_unreadable(dossier_id, errors)
+        if unreadable is not None:
+            return unreadable
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VTODO) validation failed for %s: %s",
@@ -1240,6 +1269,9 @@ def _put_note(
 
     if existing:
         updated, errors = update_note(resource_id, data)
+        unreadable = _update_unreadable(dossier_id, errors)
+        if unreadable is not None:
+            return unreadable
         if STALE_ETAG_ERROR in errors:
             # D17: a content change carries its revision, so the model
             # guards the commit on the version it read and re-reads on a
@@ -1325,7 +1357,20 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
             "dav.resource_id": resource_id,
         }
     )
-    existing = get_task(resource_id)
+    # STRICT (finitions, sync-3): DavX5 takes a 404 on DELETE as « already
+    # gone » and drops its copy while the server keeps the record — which
+    # then reappears on the phone at the collection's next change. The
+    # fail-open getters answered a blip with exactly that 404.
+    try:
+        return _delete_resource(dossier_id, resource_id)
+    except _ResourceUnreadable:
+        return _resource_unavailable(dossier_id, "delete")
+
+
+def _delete_resource(dossier_id: str, resource_id: str) -> Response:
+    """:func:`delete_resource`'s body — its reads raise
+    :class:`_ResourceUnreadable` (none of its writes does)."""
+    existing = _read_component("VTODO", resource_id)
     if existing and (existing.get("dossier_id") or "") == dossier_id:
         if_match = request.headers.get("If-Match")
         if if_match and if_match != f'"{existing.get("etag", "")}"':
@@ -1352,7 +1397,7 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         )
         return Response("", status=204)
 
-    existing_note = get_note(resource_id)
+    existing_note = _read_component("VJOURNAL", resource_id)
     if existing_note and (existing_note.get("dossier_id") or "") == dossier_id:
         if_match = request.headers.get("If-Match")
         if if_match and if_match != f'"{existing_note.get("etag", "")}"':
@@ -1389,7 +1434,7 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         )
         return Response("", status=204)
 
-    existing_hearing = get_hearing(resource_id)
+    existing_hearing = _read_component("VEVENT", resource_id)
     if existing_hearing and (existing_hearing.get("dossier_id") or "") == dossier_id:
         if_match = request.headers.get("If-Match")
         if if_match and if_match != f'"{existing_hearing.get("etag", "")}"':
@@ -1421,8 +1466,46 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
 
 # -- Helpers -----------------------------------------------------------------
 
+class _ResourceUnreadable(Exception):
+    """The store could not say whether a resource exists."""
+
+
+def _resource_unavailable(dossier_id: str, operation: str) -> Response:
+    """503 + ``Retry-After`` — a per-resource read failed (finitions,
+    sync-3). Never the 404 the fail-open getters produced: DavX5 takes a
+    404 on DELETE as « already gone » and drops its copy while the server
+    keeps the record (it reappears at the collection's next change), and a
+    404 on GET/multiget as « deleted »."""
+    log_dav_operation(operation, "dossier", dossier_id=dossier_id or None,
+                      status_code=503, reason="lecture_indisponible")
+    resp = Response("Service Unavailable", status=503)
+    resp.headers["Retry-After"] = "30"
+    return resp
+
+
+def _read_component(component: str, resource_id: str) -> dict | None:
+    """One component's STRICT read for the per-resource paths — ``None``
+    only when the store answered « absent ». A name the store itself
+    refuses can hold no document (ids are UUIDs or the phone's valid
+    names), so its failed read is « absent » — « retry » would never end;
+    any other failure raises :class:`_ResourceUnreadable`."""
+    try:
+        return _read_strict(component, resource_id)
+    except Exception as exc:
+        if not valid_resource_id(resource_id):
+            return None
+        # Inside the except, so the ERROR line carries the traceback.
+        log_unexpected("dav resource read failed", component=component)
+        raise _ResourceUnreadable() from exc
+
+
 def _resolve_resource(dossier_id: str, resource_id: str):
     """Resolve a resource id to (doc, serializer) within this collection.
+
+    STRICT since the finitions (sync-3): a failed read RAISES
+    :class:`_ResourceUnreadable` — each caller answers 503 — where the
+    fail-open ``get_task`` / ``get_note`` / ``get_hearing`` fell through to
+    « not found », a 404 the phone reads as « deleted ».
 
     Tasks, notes and hearings share one flat id space under
     /dav/dossier-{id}/{resourceId}.ics. A resource created on the phone
@@ -1433,15 +1516,15 @@ def _resolve_resource(dossier_id: str, resource_id: str):
     three point reads on a miss, ordered cheapest-first by how often each
     type is fetched. Returns None when nothing in THIS dossier matches.
     """
-    task = get_task(resource_id)
+    task = _read_component("VTODO", resource_id)
     if task and (task.get("dossier_id") or "") == dossier_id:
         return task, task_to_vtodo
 
-    note = get_note(resource_id)
+    note = _read_component("VJOURNAL", resource_id)
     if note and (note.get("dossier_id") or "") == dossier_id:
         return note, note_to_vjournal
 
-    hearing = get_hearing(resource_id)
+    hearing = _read_component("VEVENT", resource_id)
     if hearing and (hearing.get("dossier_id") or "") == dossier_id:
         return hearing, hearing_to_vevent
 

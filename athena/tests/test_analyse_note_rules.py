@@ -271,7 +271,8 @@ def test_a_rival_write_between_read_and_commit_leaves_no_revision(
     fake, monkeypatch
 ):
     _seed(fake, _analyse())
-    real = note_model.get_note
+    # The update's own read is STRICT since the finitions (sync-3).
+    real = note_model.get_note_strict
 
     def racing(nid):
         doc = real(nid)
@@ -279,7 +280,7 @@ def test_a_rival_write_between_read_and_commit_leaves_no_revision(
                                                      etag="e-rival"))
         return doc
 
-    monkeypatch.setattr(note_model, "get_note", racing)
+    monkeypatch.setattr(note_model, "get_note_strict", racing)
     note, errors = note_model.update_note(
         NID, {"content": "Réécrite."}, expected_etag="e0", revision="content",
     )

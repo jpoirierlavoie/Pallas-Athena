@@ -546,7 +546,12 @@ def update_task(
     it; the web form, the checkbox and the DAV PUT do not — their reopen
     commits and the step's refusal is logged, as since lot 1a.
     """
-    existing = get_task(task_id)
+    # STRICT (finitions, sync-3): a failed read is never « introuvable ».
+    try:
+        existing = get_task_strict(task_id)
+    except Exception:
+        log_unexpected("task update: read failed", task_id=task_id)
+        return None, [concurrency.READ_UNAVAILABLE_ERROR]
     if not existing:
         return None, ["Tâche introuvable."]
     if not concurrency.matches(existing, expected_etag):

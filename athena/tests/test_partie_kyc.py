@@ -59,6 +59,8 @@ def _maj(monkeypatch, stocke: dict, data: dict, source: str = "juriste") -> dict
     Lot 4a: the lawyer's source by default — the web form's (changed
     deliberately: a status transition without a source is now refused)."""
     monkeypatch.setattr(pm, "get_partie", lambda pid: dict(stocke))
+    # The update's own read is STRICT since the finitions (sync-3).
+    monkeypatch.setattr(pm, "get_partie_strict", lambda pid: dict(stocke))
     ecrit: dict = {}
 
     class _Doc:

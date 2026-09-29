@@ -4790,7 +4790,18 @@ def _raise_if_stale(
     The model refuses when a write landed between the handler's read and
     the commit; *reread* fetches the record again, best-effort, only to name
     the time of that write.
+
+    It also names the model's FAILED-READ refusal (finitions, sync-3):
+    ``update_hearing`` / ``update_task`` / ``update_note`` /
+    ``update_partie`` re-read strictly and answer
+    ``concurrency.READ_UNAVAILABLE_ERROR`` when that read fails — raised here
+    under reason ``read_unavailable`` (the stop-the-batch signal of
+    OBSERVABILITY.md), never the « … introuvable » their fail-open getters
+    used to report about a record that exists.
     """
+    if concurrency.is_read_unavailable(errors):
+        raise ToolArgumentError(concurrency.READ_UNAVAILABLE_ERROR,
+                                reason="read_unavailable")
     if not concurrency.is_stale(errors):
         return
     try:

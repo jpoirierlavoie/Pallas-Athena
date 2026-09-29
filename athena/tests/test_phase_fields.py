@@ -314,6 +314,8 @@ def test_update_task_repairs_phase_only_retag(monkeypatch):
     # phase, the sub-code follows the phase (-00) instead of 422-ing the PUT.
     stored = _task_doc(phase="CTS", sous_phase="CTS-02", status="à_faire")
     monkeypatch.setattr(task_model, "get_task", lambda tid: dict(stored))
+    # The update's own read is STRICT since the finitions (sync-3).
+    monkeypatch.setattr(task_model, "get_task_strict", lambda tid: dict(stored))
 
     written: dict = {}
 

@@ -839,7 +839,12 @@ def _update_partie(
     proves it through the public wrapper).
     """
     expected_etag = guard
-    existing = get_partie(partie_id)
+    # STRICT (finitions, sync-3): a failed read is never « introuvable ».
+    try:
+        existing = get_partie_strict(partie_id)
+    except Exception:
+        log_unexpected("partie update: read failed", partie_id=partie_id)
+        return None, [concurrency.READ_UNAVAILABLE_ERROR], 0
     if not existing:
         return None, ["Contact introuvable."], 0
     if not concurrency.matches(existing, expected_etag):

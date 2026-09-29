@@ -79,6 +79,25 @@ STALE_ETAG_ERROR = (
 )
 
 
+# The refusal a model returns when the read its write depends on FAILED
+# (finitions, sync-3). Before it, the four update_* re-read through their
+# fail-open getter and answered a Firestore blip with « … introuvable » —
+# which the DAV PUT mapped to 422 « Données invalides. » (a permanent refusal
+# to DavX5) and the connector reported about a record that exists. One
+# constant, so DAV (503 + Retry-After) and the connector (reason
+# ``read_unavailable``) recognise it (``is_read_unavailable``) without
+# parsing French.
+READ_UNAVAILABLE_ERROR = (
+    "Cet élément n'a pas pu être lu — une panne passagère. Rien n'a été "
+    "enregistré : réessayez dans un instant."
+)
+
+
+def is_read_unavailable(errors: Optional[Iterable[str]]) -> bool:
+    """True when a model's error list is the failed-read refusal."""
+    return READ_UNAVAILABLE_ERROR in list(errors or ())
+
+
 class StaleWrite(Exception):
     """The stored etag is not the one the caller read: nothing was written."""
 

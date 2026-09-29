@@ -132,7 +132,7 @@ def test_a_create_racing_an_existing_contact_is_refused_never_overwritten(
                                  "last_name": "Existant",
                                  "vcard_uid": "u0", "etag": "e0"})
     before = fake.peek(f"parties/{RID}")
-    monkeypatch.setattr(carddav, "get_partie", lambda i: None)
+    monkeypatch.setattr(carddav, "get_partie_strict", lambda i: None)
     resp = _put(client, HREF, _vcard())
     assert resp.status_code == 412
     assert fake.peek(f"parties/{RID}") == before

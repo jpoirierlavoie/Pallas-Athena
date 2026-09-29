@@ -233,10 +233,10 @@ def linked_and_standalone(monkeypatch):
 
     patch_members(monkeypatch, dc, hearings=everything)
     monkeypatch.setattr(
-        dc, "get_hearing", lambda i: next((h for h in everything if h["id"] == i), None)
+        dc, "get_hearing_strict", lambda i: next((h for h in everything if h["id"] == i), None)
     )
-    monkeypatch.setattr(dc, "get_task", lambda i: None)
-    monkeypatch.setattr(dc, "get_note", lambda i: None)
+    monkeypatch.setattr(dc, "get_task_strict", lambda i: None)
+    monkeypatch.setattr(dc, "get_note_strict", lambda i: None)
     _stub_dossier_lookup(
         monkeypatch,
         lambda i: {"id": "d1", "file_number": "2026-001",
@@ -590,9 +590,9 @@ def general_members(monkeypatch):
 
     patch_members(monkeypatch, dc, hearings=[solo_hearing, linked_hearing],
                   tasks=[solo_task], notes=[solo_note])
-    monkeypatch.setattr(dc, "get_hearing", lambda i: solo_hearing if i == "h-solo" else None)
-    monkeypatch.setattr(dc, "get_task", lambda i: solo_task if i == "t-solo" else None)
-    monkeypatch.setattr(dc, "get_note", lambda i: solo_note if i == "n-solo" else None)
+    monkeypatch.setattr(dc, "get_hearing_strict", lambda i: solo_hearing if i == "h-solo" else None)
+    monkeypatch.setattr(dc, "get_task_strict", lambda i: solo_task if i == "t-solo" else None)
+    monkeypatch.setattr(dc, "get_note_strict", lambda i: solo_note if i == "n-solo" else None)
     monkeypatch.setattr(dc, "get_ctag", lambda n: "ctag-g")
     monkeypatch.setattr(dc, "get_sync_token", lambda n: "token-g")
     monkeypatch.setattr(dc, "get_tombstones_strict", lambda n: [])
@@ -844,9 +844,9 @@ def test_multiget_bulk_path_is_byte_identical_to_the_point_path(monkeypatch):
     by_id = {h["id"]: h for h in hearings}
 
     patch_members(monkeypatch, dc, hearings=hearings)
-    monkeypatch.setattr(dc, "get_hearing", lambda rid: by_id.get(rid))
-    monkeypatch.setattr(dc, "get_task", lambda rid: None)
-    monkeypatch.setattr(dc, "get_note", lambda rid: None)
+    monkeypatch.setattr(dc, "get_hearing_strict", lambda rid: by_id.get(rid))
+    monkeypatch.setattr(dc, "get_task_strict", lambda rid: None)
+    monkeypatch.setattr(dc, "get_note_strict", lambda rid: None)
 
     hrefs = [f"/dav/dossier-d1/{h['id']}.ics" for h in hearings]
     hrefs.append("/dav/dossier-d1/absent.ics")  # a 404 row on both paths

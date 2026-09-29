@@ -272,7 +272,7 @@ def test_a_rival_write_before_an_unguarded_commit_is_what_gets_snapshotted(
     refused — and the snapshot is the RIVAL's text, the one actually
     overwritten, never the stale read."""
     _seed(fake)
-    real = note_model.get_note
+    real = note_model.get_note_strict  # the update's own (strict) read
     calls = []
 
     def racing(nid):
@@ -283,7 +283,7 @@ def test_a_rival_write_before_an_unguarded_commit_is_what_gets_snapshotted(
                 content="Au téléphone.", etag="o-rival"))
         return doc
 
-    monkeypatch.setattr(note_model, "get_note", racing)
+    monkeypatch.setattr(note_model, "get_note_strict", racing)
     note, errors = note_model.update_note(NID, {"content": "Second jet."})
     assert errors == [] and len(calls) == 2
     assert fake.peek(f"notes/{NID}")["content"] == "Second jet."
@@ -296,7 +296,7 @@ def test_an_unguarded_caller_that_keeps_losing_is_refused_not_looped(
     fake, monkeypatch,
 ):
     _seed(fake)
-    real = note_model.get_note
+    real = note_model.get_note_strict  # the update's own (strict) read
     counter = iter(range(100))
 
     def always_racing(nid):
@@ -305,7 +305,7 @@ def test_an_unguarded_caller_that_keeps_losing_is_refused_not_looped(
             content="Rival.", etag=f"o-rival-{next(counter)}"))
         return doc
 
-    monkeypatch.setattr(note_model, "get_note", always_racing)
+    monkeypatch.setattr(note_model, "get_note_strict", always_racing)
     note, errors = note_model.update_note(NID, {"content": "Second jet."})
     assert note is None and errors == [concurrency.STALE_ETAG_ERROR]
     assert _revisions(fake) == []
@@ -320,7 +320,7 @@ def test_a_phone_edit_that_loses_every_race_is_retried_not_refused(
     n'est invalide : une écriture concurrente a gagné chaque fois. 503 +
     Retry-After garde la modification sur le téléphone, qui la renvoie."""
     _seed(fake)
-    real = note_model.get_note
+    real = note_model.get_note_strict  # the update's own (strict) read
     counter = iter(range(100))
 
     def always_racing(nid):
@@ -329,7 +329,7 @@ def test_a_phone_edit_that_loses_every_race_is_retried_not_refused(
             content="Rival.", etag=f"o-rival-{next(counter)}"))
         return doc
 
-    monkeypatch.setattr(note_model, "get_note", always_racing)
+    monkeypatch.setattr(note_model, "get_note_strict", always_racing)
     resp = _put(dav, _vjournal("Revu au téléphone."))
     assert resp.status_code == 503
     assert resp.headers["Retry-After"] == "30"
@@ -344,7 +344,7 @@ def test_a_named_version_is_still_refused_rather_than_retried(
     version asked to be refused if it moved — the connector's tools, a
     current web form."""
     _seed(fake)
-    real = note_model.get_note
+    real = note_model.get_note_strict  # the update's own (strict) read
 
     def racing(nid):
         doc = real(nid)
@@ -352,7 +352,7 @@ def test_a_named_version_is_still_refused_rather_than_retried(
             content="Au téléphone.", etag="o-rival"))
         return doc
 
-    monkeypatch.setattr(note_model, "get_note", racing)
+    monkeypatch.setattr(note_model, "get_note_strict", racing)
     note, errors = note_model.update_note(NID, {"content": "Second jet."},
                                           expected_etag="o0")
     assert note is None and errors == [concurrency.STALE_ETAG_ERROR]

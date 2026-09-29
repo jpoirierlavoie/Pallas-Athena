@@ -345,15 +345,18 @@ _ALL = pytest.mark.parametrize("case", sorted(_CASES), ids=sorted(_CASES))
 
 # The getter each case's model reads its `existing` through — the seam a
 # concurrent write is slipped into, between the model's read and its commit.
+# update_partie / update_kyc_status / update_note / update_task read through
+# their STRICT getter since the finitions (sync-3): a failed read is
+# « lecture impossible », never « introuvable ».
 _GETTERS = {
-    "update_partie": (partie_model, "get_partie"),
+    "update_partie": (partie_model, "get_partie_strict"),
     "update_dossier": (dossier_model, "get_dossier"),
     "update_dossier_party": (dossier_model, "get_dossier"),
     "remove_dossier_party": (dossier_model, "get_dossier"),
     "add_partie_mandataire": (partie_model, "get_partie"),
     "update_partie_mandataire": (partie_model, "get_partie"),
     "remove_partie_mandataire": (partie_model, "get_partie"),
-    "update_kyc_status": (partie_model, "get_partie"),
+    "update_kyc_status": (partie_model, "get_partie_strict"),
     "confirm_kyc_status": (partie_model, "get_partie"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
@@ -361,8 +364,8 @@ _GETTERS = {
     "set_expense_phase": (expense_model, "get_expense"),
     "move_time_entry": (time_entry_model, "get_time_entry"),
     "move_expense": (expense_model, "get_expense"),
-    "update_note": (note_model, "get_note"),
-    "update_task": (task_model, "get_task"),
+    "update_note": (note_model, "get_note_strict"),
+    "update_task": (task_model, "get_task_strict"),
     "update_metadata": (document_model, "get_document"),
     "update_analyse": (document_model, "get_document"),
     "confirmer_analyse": (document_model, "get_document"),
@@ -1202,7 +1205,7 @@ _SINGLE_DECISION = {"decide_rendez_vous"}
 # The getter the HANDLER reads its record through (the bulk reader for the
 # reclassifiers) — the seam a rival write is slipped in after.
 _HANDLER_GETTERS = {
-    "update_partie": (partie_model, "get_partie"),
+    "update_partie": (partie_model, "get_partie_strict"),
     "update_dossier": (dossier_model, "get_dossier"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
