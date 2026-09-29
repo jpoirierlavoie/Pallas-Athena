@@ -262,6 +262,20 @@ def test_initialize_shape(client):
     # RECLASSIFY names the bulk tools literally, not as « their _bulk forms ».
     assert "`set_time_entry_phase_bulk`" in instructions
     assert "`set_expense_phase_bulk`" in instructions
+    # Lot 4b: the initialize text a client model reads says what the two
+    # new families do to the PHONE and to a compliance record — and the two
+    # promises the lot falsified are gone from it, while « nothing can be
+    # deleted » carries the precision that keeps it true.
+    assert "DOSSIERS: " in instructions and "CONTACTS: " in instructions
+    assert "fermé / archivé DRAINS its DavX5 collection" in instructions
+    assert "call it again with the SAME status" in instructions
+    assert "counts as NOT done" in instructions
+    assert "removes a LINK — the contact stays" in instructions
+    assert "It never CONFIRMS an identity or conflict-of-interest check" in (
+        instructions)
+    assert "can never be changed here" not in instructions
+    assert "identity verification or conflict-of-interest checks" not in (
+        instructions)
 
 
 # ── tools/list & tools/call ─────────────────────────────────────────────
