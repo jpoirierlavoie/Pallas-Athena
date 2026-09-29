@@ -1240,8 +1240,8 @@ def list_dossiers_by_status_strict(status: str) -> list[dict]:
     A document whose stored ``id`` disagrees with its document id is skipped
     the same way (the collection URL is the document id); an absent ``id``
     is taken from the document id. A stored ``opened_date`` that is not a
-    timezone-aware datetime sorts
-    as the oldest instead of raising in the sort (a ``TypeError`` there
+    timezone-aware datetime sorts as the oldest instead of raising in the
+    sort (a ``TypeError`` there
     would have turned one bad date into a 503 of the whole discovery). An
     unknown *status* raises ``ValueError`` before any read:
     :func:`list_dossiers` IGNORES a filter outside :data:`VALID_STATUSES`
