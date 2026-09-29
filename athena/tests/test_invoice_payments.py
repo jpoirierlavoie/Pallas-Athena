@@ -384,3 +384,276 @@ def test_le_chemin_payee_envoyee_annulee_reste_ferme_sur_une_facture_encaissee(s
     assert "envoyée" not in imod.available_transitions(store["doc"])
     ok, _ = imod.void_invoice("inv1")
     assert ok is False        # void refuse « payée » — la porte de derrière
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Lot 5a — payment_updates, la SEULE computation d'un paiement, et
+# get_invoices_by_number, la résolution stricte d'une facture par son numéro.
+#
+# Ce bloc tourne sur le faux Firestore PARTAGÉ (tests/_fake_firestore.py) : le
+# client, ses transactions et la boucle de reprise de `transactional` sont les
+# vrais, et l'on relit ce qui est STOCKÉ — pas un dict remis à un bouchon.
+#
+# La matrice est une TABLE ÉCRITE À LA MAIN, pas une comparaison entre deux
+# chemins du même code : record_payment tourne désormais SUR payment_updates,
+# si bien qu'« il donne le même résultat que lui » serait vrai par
+# construction. La table est la sémantique de record_payment AVANT
+# l'extraction ; la moitié record_payment de la matrice a été rejouée contre
+# l'ancien models/invoice.py (commit 9e89e54) et y passe à l'identique.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from tests._fake_firestore import install  # noqa: E402
+
+PAID_ON = datetime(2026, 9, 15, tzinfo=UTC)
+
+# The exact refusals — pinned: a ledger transaction will relay them to the
+# lawyer and to the connector alike.
+_DRAFT = ("Cette facture est encore un brouillon : envoyez-la avant "
+          "d'y porter un encaissement.")
+_VOIDED = "Cette facture est annulée : aucun encaissement ne peut y être porté."
+_CAP = ("Le montant encaissé ne peut pas dépasser le solde dû (1000.00 $). "
+        "Pour un trop-perçu, portez-le au fidéicommis plutôt qu'à la facture.")
+_REDUCE = ("Une réduction d'encaissement ne peut pas dépasser le montant "
+           "déjà encaissé sur la facture.")
+
+# A retainer invoice: total 1 200 $, provision 200 $, amount_due 1 000 $ — so
+# « more than due but within the total » is a row of its own.
+_STATES = {
+    "brouillon": {"status": "brouillon", "amount_paid": 0},
+    "envoyée": {"status": "envoyée", "amount_paid": 0},
+    "en_retard": {"status": "en_retard", "amount_paid": 0},
+    # « payée » set by HAND (nothing recorded) — the lawyer's statement.
+    "payée_main": {"status": "payée", "amount_paid": 0},
+    # « payée » the ledger set (a payment recorded) — its flip is undoable.
+    "payée_inscrite": {"status": "payée", "amount_paid": 100000,
+                       "paid_date": datetime(2026, 9, 1, tzinfo=UTC)},
+    "annulée": {"status": "annulée", "amount_paid": 0},
+}
+_AMOUNTS = {"zéro": 0, "partiel": 40000, "solde_dû": 100000, "au_delà_du_dû": 110000}
+
+# (state, amount) → the stored status after, or the exact refusal.
+_EXPECTED = {
+    ("brouillon", "zéro"): _DRAFT,
+    ("brouillon", "partiel"): _DRAFT,
+    ("brouillon", "solde_dû"): _DRAFT,
+    ("brouillon", "au_delà_du_dû"): _DRAFT,
+    ("envoyée", "zéro"): "envoyée",
+    ("envoyée", "partiel"): "envoyée",
+    ("envoyée", "solde_dû"): "payée",
+    ("envoyée", "au_delà_du_dû"): _CAP,
+    ("en_retard", "zéro"): "en_retard",
+    ("en_retard", "partiel"): "en_retard",
+    ("en_retard", "solde_dû"): "payée",
+    ("en_retard", "au_delà_du_dû"): _CAP,
+    ("payée_main", "zéro"): "payée",
+    ("payée_main", "partiel"): "payée",
+    ("payée_main", "solde_dû"): "payée",
+    ("payée_main", "au_delà_du_dû"): _CAP,
+    ("payée_inscrite", "zéro"): "envoyée",
+    ("payée_inscrite", "partiel"): "envoyée",
+    ("payée_inscrite", "solde_dû"): "payée",
+    ("payée_inscrite", "au_delà_du_dû"): _CAP,
+    ("annulée", "zéro"): _VOIDED,
+    ("annulée", "partiel"): _VOIDED,
+    ("annulée", "solde_dû"): _VOIDED,
+    ("annulée", "au_delà_du_dû"): _VOIDED,
+}
+
+_MATRIX = sorted(_EXPECTED)
+_STAMP_KEYS = {"etag", "updated_at", "updated_via", "mcp_updated_at"}
+
+
+def _seeded(state: str) -> dict:
+    doc = {
+        "id": "inv1", "invoice_number": "2026-F031", "dossier_id": "dos1",
+        "total": 120000, "retainer_applied": 20000, "amount_due": 100000,
+        "paid_date": None, "etag": "e0",
+        "updated_at": datetime(2026, 9, 1, tzinfo=UTC),
+    }
+    doc.update(_STATES[state])
+    return doc
+
+
+@pytest.fixture
+def real_store(monkeypatch):
+    return install(monkeypatch, imod)
+
+
+def _is_refusal(expected: str) -> bool:
+    return expected not in ("envoyée", "en_retard", "payée")
+
+
+def _core(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in _STAMP_KEYS}
+
+
+@pytest.mark.parametrize("state, amount_key", _MATRIX)
+def test_record_payment_matrice_sur_le_vrai_magasin(real_store, state, amount_key):
+    """record_payment × {6 états} × {4 montants}, relu au magasin. Rejouée
+    contre le models/invoice.py d'avant l'extraction : identique."""
+    seed = _seeded(state)
+    real_store.seed("invoices/inv1", seed)
+    amount = _AMOUNTS[amount_key]
+    expected = _EXPECTED[(state, amount_key)]
+
+    updated, errors = imod.record_payment("inv1", amount, PAID_ON)
+    stored = real_store.peek("invoices/inv1")
+
+    if _is_refusal(expected):
+        assert (updated, errors) == (None, [expected])
+        assert stored == seed                                  # nothing moved
+        assert [c for c in real_store.commits if c.ops] == []  # nothing committed
+        return
+    assert errors == []
+    assert stored["status"] == expected
+    assert stored["amount_paid"] == amount
+    assert stored["paid_date"] == (PAID_ON if amount > 0 else None)
+    assert stored["etag"] != "e0" and stored["updated_at"] > seed["updated_at"]
+    # Only the payment fields and the stamp moved.
+    moved = {k for k in stored if stored[k] != seed.get(k)}
+    assert moved <= {"amount_paid", "paid_date", "status"} | _STAMP_KEYS
+    assert _core(updated) == _core(stored)
+
+
+@pytest.mark.parametrize("state, amount_key", _MATRIX)
+def test_payment_updates_suit_la_meme_table_sans_toucher_au_magasin(
+    real_store, state, amount_key
+):
+    """La fonction pure rend la même table — sans une seule lecture ni
+    écriture (aucun RPC au magasin), et sans modifier la facture reçue."""
+    invoice = _seeded(state)
+    before = dict(invoice)
+    now = datetime(2026, 9, 20, 14, tzinfo=UTC)
+    amount = _AMOUNTS[amount_key]
+    expected = _EXPECTED[(state, amount_key)]
+
+    if _is_refusal(expected):
+        with pytest.raises(imod.PaymentRefused) as refusal:
+            imod.payment_updates(invoice, amount, PAID_ON, now=now)
+        assert str(refusal.value) == expected
+    else:
+        updates = imod.payment_updates(invoice, amount, PAID_ON, now=now)
+        assert updates.get("status", invoice["status"]) == expected
+        assert updates["amount_paid"] == amount
+        assert updates["paid_date"] == (PAID_ON if amount > 0 else None)
+        assert updates["updated_at"] == now
+        assert updates["etag"] and updates["etag"] != "e0"
+        assert set(updates) <= {"amount_paid", "paid_date", "status"} | _STAMP_KEYS
+    assert invoice == before
+    assert real_store.reads == [] and real_store.commits == []
+
+
+@pytest.mark.parametrize(
+    "state, amount_key",
+    [key for key in _MATRIX if not _is_refusal(_EXPECTED[key])],
+)
+def test_record_payment_ecrit_exactement_ce_que_payment_updates_calcule(
+    real_store, state, amount_key
+):
+    """La couture : ce qui est STOCKÉ est la facture lue plus les champs de
+    payment_updates — rien d'autre, rien de moins (le tampon mis à part)."""
+    seed = _seeded(state)
+    real_store.seed("invoices/inv1", seed)
+    amount = _AMOUNTS[amount_key]
+    imod.record_payment("inv1", amount, PAID_ON)
+    computed = imod.payment_updates(
+        seed, amount, PAID_ON, now=datetime(2026, 9, 20, tzinfo=UTC))
+    assert _core(real_store.peek("invoices/inv1")) == _core({**seed, **computed})
+
+
+def test_une_reduction_sur_une_facture_annulee_passe_et_laisse_son_statut():
+    """reducing=True : un encaissement contre-passé doit pouvoir reprendre
+    ce qui avait été porté sur une facture annulée depuis — sans en toucher
+    le statut."""
+    invoice = {**_seeded("annulée"), "amount_paid": 40000,
+               "paid_date": datetime(2026, 9, 1, tzinfo=UTC)}
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    updates = imod.payment_updates(invoice, 0, invoice["paid_date"],
+                                   now=now, reducing=True)
+    assert updates["amount_paid"] == 0 and updates["paid_date"] is None
+    assert "status" not in updates
+    updates = imod.payment_updates(invoice, 10000, invoice["paid_date"],
+                                   now=now, reducing=True)
+    assert updates["amount_paid"] == 10000
+    assert updates["paid_date"] == invoice["paid_date"]
+    assert "status" not in updates
+    # Without the flag, the same write is refused as before.
+    with pytest.raises(imod.PaymentRefused) as refusal:
+        imod.payment_updates(invoice, 10000, invoice["paid_date"], now=now)
+    assert str(refusal.value) == _VOIDED
+
+
+def test_une_reduction_n_augmente_jamais_l_encaisse_ni_n_ouvre_un_brouillon():
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    voided = {**_seeded("annulée"), "amount_paid": 40000}
+    with pytest.raises(imod.PaymentRefused) as refusal:
+        imod.payment_updates(voided, 50000, None, now=now, reducing=True)
+    assert str(refusal.value) == _REDUCE
+    with pytest.raises(imod.PaymentRefused) as refusal:
+        imod.payment_updates(_seeded("brouillon"), 0, None, now=now, reducing=True)
+    assert str(refusal.value) == _DRAFT
+
+
+def test_une_reduction_d_une_payee_inscrite_defait_la_bascule():
+    updates = imod.payment_updates(
+        _seeded("payée_inscrite"), 60000, PAID_ON,
+        now=datetime(2026, 9, 20, tzinfo=UTC), reducing=True)
+    assert updates["status"] == "envoyée" and updates["amount_paid"] == 60000
+
+
+@pytest.mark.parametrize("bad", [True, 12.5, "40000", None, -1])
+def test_payment_updates_refuse_ce_qui_n_est_pas_des_cents_positifs(bad):
+    """record_payment convertit sa saisie avant d'appeler ; un appelant qui
+    stage dans SA transaction passe des cents entiers, ou il est refusé —
+    jamais tronqué en silence."""
+    with pytest.raises(imod.PaymentRefused):
+        imod.payment_updates(_seeded("envoyée"), bad, None,
+                             now=datetime(2026, 9, 20, tzinfo=UTC))
+
+
+def test_payment_refused_garde_son_ancien_nom():
+    assert imod._PaymentRefused is imod.PaymentRefused
+
+
+# ── get_invoices_by_number : strict, et chaque correspondance ────────────
+
+
+def test_get_invoices_by_number_rend_chaque_correspondance(real_store):
+    real_store.seed("invoices/a", {"id": "a", "invoice_number": "2026-F031",
+                                   "dossier_id": "dos1"})
+    real_store.seed("invoices/b", {"id": "b", "invoice_number": "2026-F031",
+                                   "dossier_id": "dos2"})
+    real_store.seed("invoices/c", {"id": "c", "invoice_number": "2026-F032",
+                                   "dossier_id": "dos1"})
+    found = imod.get_invoices_by_number("  2026-F031 ")
+    assert sorted(i["id"] for i in found) == ["a", "b"]
+    assert imod.get_invoices_by_number("2026-F099") == []
+
+
+def test_get_invoices_by_number_prend_l_id_du_document(real_store):
+    """L'id du DOCUMENT fait foi : c'est par lui qu'un appelant écrira."""
+    real_store.seed("invoices/vrai", {"invoice_number": "2026-F040"})
+    assert imod.get_invoices_by_number("2026-F040")[0]["id"] == "vrai"
+
+
+def test_get_invoices_by_number_vide_ne_lit_rien(real_store):
+    assert imod.get_invoices_by_number("") == []
+    assert imod.get_invoices_by_number("   ") == []
+    assert imod.get_invoices_by_number(None) == []
+    assert real_store.reads == []
+
+
+def test_get_invoices_by_number_propage_une_panne_de_lecture(real_store, monkeypatch):
+    """La défaillance que la résolution par list_invoices avalait : une panne
+    se lisait « Aucune facture ». Ici elle REMONTE — l'appelant décide."""
+    real_store.seed("invoices/a", {"id": "a", "invoice_number": "2026-F031",
+                                   "dossier_id": "dos1"})
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("firestore indisponible")
+
+    monkeypatch.setattr(real_store._fake_server, "run_query", _boom)
+    with pytest.raises(RuntimeError):
+        imod.get_invoices_by_number("2026-F031")
+    # The contrast that motivated it: the fail-open lister hides the outage.
+    assert imod.list_invoices(dossier_id="dos1") == []

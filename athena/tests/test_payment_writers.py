@@ -39,8 +39,12 @@ _NOT_CODE = {"tests", "static", "templates", "__pycache__", "node_modules"}
 _REQUIRED_ROOTS = {"routes", "models", "mcp", "services", "scripts"}
 
 _PAYMENT_WRITER = "record_payment"
+# Lot 5a: the pure computation record_payment runs on — what a ledger
+# transaction will stage in its own commit. It writes nothing itself, but a
+# caller that stages its result IS a payment writer, so it is swept too.
+_PAYMENT_COMPUTATION = "payment_updates"
 _ORCHESTRATION = ("projeter_paiement", "reduire_paiement")
-_WATCHED = (_PAYMENT_WRITER,) + _ORCHESTRATION
+_WATCHED = (_PAYMENT_WRITER, _PAYMENT_COMPUTATION) + _ORCHESTRATION
 _ORCHESTRATION_MODULE = "services.encaissements"
 
 
@@ -137,9 +141,11 @@ def test_the_sweep_ignores_strings_and_sees_every_reference_form():
         "enc.projeter_paiement(e)\n"
         "cb = invoice_model.reduire_paiement\n"
         "getattr(invoice_model, 'record_payment')(i, 0)\n"
+        "invoice_model.payment_updates(inv, 0, None, now=n)\n"
     )
     refs, defs, imports_module = _scan(evasive)
-    assert refs == {"record_payment": 2, "projeter_paiement": 1, "reduire_paiement": 1}
+    assert refs == {"record_payment": 2, "payment_updates": 1,
+                    "projeter_paiement": 1, "reduire_paiement": 1}
     assert defs == dict.fromkeys(_WATCHED, 0)
     assert imports_module
 
@@ -151,6 +157,7 @@ def test_each_payment_function_is_defined_exactly_where_expected(sweep):
     where = {n: {rel for rel, (_r, defs, _m) in sweep.items() if defs[n]} for n in _WATCHED}
     assert where == {
         "record_payment": {"models/invoice.py"},
+        "payment_updates": {"models/invoice.py"},
         "projeter_paiement": {"services/encaissements.py"},
         "reduire_paiement": {"services/encaissements.py"},
     }, where
@@ -165,6 +172,14 @@ def test_record_payment_callers_are_exactly_the_decided_set(sweep):
         "scripts/purge_encaissements_factures.py",
         "scripts/reprise_encaissements.py",
     }
+
+
+def test_payment_updates_is_reached_only_by_record_payment_so_far(sweep):
+    """Lot 5a extracted the computation; nothing but record_payment (its own
+    module) stages it yet. Lot 5 opens exactly one more door — the ledger
+    transaction in models/admin_ledger.py — and must widen this set on
+    purpose, in the commit that makes the projection atomic."""
+    assert _referencing(sweep, [_PAYMENT_COMPUTATION]) == {"models/invoice.py"}
 
 
 def test_projection_callers_are_exactly_the_decided_set(sweep):

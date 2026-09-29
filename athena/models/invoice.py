@@ -1760,6 +1760,142 @@ def balance_of(invoice: dict) -> int:
     return int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
 
 
+class PaymentRefused(Exception):
+    """A payment the invoice cannot take — raised by :func:`payment_updates`.
+
+    Inside :func:`record_payment`'s transaction it aborts it (nothing is
+    written); inside a caller's own ledger transaction it must abort THAT
+    transaction too — never be caught and the ledger entry committed without
+    its payment. The message is French and user-facing.
+    """
+
+
+#: The historical private name, kept for any caller that still reads it.
+_PaymentRefused = PaymentRefused
+
+
+def payment_updates(
+    invoice: dict,
+    new_amount_paid: int,
+    paid_date,
+    *,
+    now: datetime,
+    reducing: bool = False,
+) -> dict:
+    """The fields a payment writes on *invoice* — the ONE computation of
+    ``amount_paid``, ``paid_date`` and the status flip. Returns the update
+    dict for a partial ``update()``; raises :class:`PaymentRefused`.
+
+    PURE: no read, no write, no clock. The caller has read *invoice* (inside
+    its transaction) and passes ``now``; the provenance stamp comes from
+    ``provenance.update_fields`` like every model write (``updated_via`` from
+    the request's ContextVar — ``mcp`` when the connector writes — and a
+    fresh etag). It exists so a LEDGER transaction can stage the invoice's
+    payment in the same commit as the entry that records the money, instead
+    of projecting it afterwards with a second, non-transactional write (lot
+    5, D2). :func:`record_payment` runs on it, byte for byte.
+
+    The semantics — each one a decision that already cost something:
+
+    * ``brouillon`` refuses: an invoice not yet sent owes nothing;
+    * ``annulée`` refuses — unless ``reducing``: a REDUCTION (a reversed
+      encaissement) must still be able to take back what was recorded on an
+      invoice voided since, and leaves its status alone. ``reducing`` never
+      raises the amount: a caller that passes more than what is recorded is
+      refused, not obeyed;
+    * the cap is ``amount_due``, NEVER ``total``: with a retainer applied,
+      ``amount_due < total``, and capping on the total let a payment land
+      between the two — a negative balance with nothing to explain it;
+    * the balance reaching zero flips ``envoyée``/``en_retard`` to ``payée``;
+    * a correction that reopens a balance undoes that flip — and ONLY that
+      flip: a ``payée`` with a RECORDED payment (``amount_paid > 0`` before
+      this write) goes back to ``envoyée``; a ``payée`` set by hand, with
+      nothing recorded, is the lawyer's statement and is never touched;
+    * ``paid_date`` is ``None`` once nothing is paid (a stale date would
+      read as « paid on that day »).
+    """
+    if not isinstance(new_amount_paid, int) or isinstance(new_amount_paid, bool):
+        raise PaymentRefused("Le montant encaissé doit être un nombre entier de cents.")
+    amount = new_amount_paid
+    if amount < 0:
+        raise PaymentRefused("Le montant encaissé ne peut pas être négatif.")
+
+    status = invoice.get("status", "")
+    if status == "annulée" and not reducing:
+        raise PaymentRefused(
+            "Cette facture est annulée : aucun encaissement ne peut y "
+            "être porté."
+        )
+    if status == "brouillon":
+        raise PaymentRefused(
+            "Cette facture est encore un brouillon : envoyez-la avant "
+            "d'y porter un encaissement."
+        )
+    if reducing and amount > int(invoice.get("amount_paid", 0)):
+        raise PaymentRefused(
+            "Une réduction d'encaissement ne peut pas dépasser le montant "
+            "déjà encaissé sur la facture."
+        )
+
+    # Cap on what is OWED, not on the invoice total. With a retainer
+    # applied, amount_due < total, and capping on `total` let a payment
+    # land between the two — producing a NEGATIVE balance with nothing
+    # to explain it. An overpayment is a real event, but recording it
+    # here would silently corrupt the balance rather than report it.
+    due = int(invoice.get("amount_due", 0))
+    if amount > due:
+        raise PaymentRefused(
+            "Le montant encaissé ne peut pas dépasser le solde dû "
+            f"({due / 100:.2f} $). Pour un trop-perçu, portez-le au "
+            "fidéicommis plutôt qu'à la facture."
+        )
+
+    updates: dict = {
+        "amount_paid": amount,
+        # A cleared payment has no date; keeping a stale one would read
+        # as « paid on that day » for an invoice carrying no payment.
+        "paid_date": paid_date if amount > 0 else None,
+        **provenance.update_fields(now),
+    }
+
+    had_recorded_payment = int(invoice.get("amount_paid", 0)) > 0
+    if amount >= due and status in ("envoyée", "en_retard"):
+        updates["status"] = "payée"
+    elif amount < due and status == "payée" and had_recorded_payment:
+        # Undo OUR OWN flip only — see the docstring.
+        updates["status"] = "envoyée"
+    return updates
+
+
+def get_invoices_by_number(number: str) -> list[dict]:
+    """Every invoice bearing *number* — STRICT: a read failure RAISES.
+
+    For resolving a fee invoice by the number the lawyer typed or Claude
+    cites. The resolution it replaces (``routes/trust._resolve_invoice_number``)
+    went through :func:`list_invoices`, which fails OPEN to ``[]`` — a read
+    blip then answered « Aucune facture » for an invoice that exists. Here a
+    swallowed error is impossible: the caller decides what an unreadable
+    store means.
+
+    Returns EVERY match, so the caller can refuse an ambiguity rather than
+    pick one: ``create_invoice`` checks uniqueness inside its transaction,
+    but a lookup cannot vouch for every number the base has ever held. A
+    blank number is ``[]`` without a read. One equality on
+    ``invoice_number`` — the automatic single-field index, the shape
+    :func:`invoice_number_exists` already reads. The document id is
+    authoritative for ``id`` (a caller writes through it).
+    """
+    wanted = (number or "").strip()
+    if not wanted:
+        return []
+    return [
+        {**(snap.to_dict() or {}), "id": snap.id}
+        for snap in db.collection(COLLECTION)
+        .where(filter=FieldFilter("invoice_number", "==", wanted))
+        .stream()
+    ]
+
+
 def record_payment(
     invoice_id: str,
     amount_paid: int,
@@ -1789,6 +1925,11 @@ def record_payment(
 
     ``amount_paid = 0`` clears the payment entirely (the full correction).
     Returns ``(updated_invoice, errors)``; fails CLOSED on any read error.
+
+    The computation — refusals, cap, flip and its narrow undo — is
+    :func:`payment_updates`, the pure function a ledger transaction stages
+    in its own commit; this function reads the invoice in its transaction,
+    applies it and writes. A refusal aborts before any write.
     """
     errors: list[str] = []
     try:
@@ -1804,65 +1945,21 @@ def record_payment(
     def _apply(transaction) -> dict:
         snap = ref.get(transaction=transaction)
         if not snap.exists:
-            raise _PaymentRefused("Facture introuvable.")
+            raise PaymentRefused("Facture introuvable.")
         invoice = snap.to_dict() or {}
-
-        status = invoice.get("status", "")
-        if status == "annulée":
-            raise _PaymentRefused(
-                "Cette facture est annulée : aucun encaissement ne peut y "
-                "être porté."
-            )
-        if status == "brouillon":
-            raise _PaymentRefused(
-                "Cette facture est encore un brouillon : envoyez-la avant "
-                "d'y porter un encaissement."
-            )
-
-        # Cap on what is OWED, not on the invoice total. With a retainer
-        # applied, amount_due < total, and capping on `total` let a payment
-        # land between the two — producing a NEGATIVE balance with nothing
-        # to explain it. An overpayment is a real event, but recording it
-        # here would silently corrupt the balance rather than report it.
-        due = int(invoice.get("amount_due", 0))
-        if amount > due:
-            raise _PaymentRefused(
-                "Le montant encaissé ne peut pas dépasser le solde dû "
-                f"({due / 100:.2f} $). Pour un trop-perçu, portez-le au "
-                "fidéicommis plutôt qu'à la facture."
-            )
-
-        now = datetime.now(timezone.utc)
-        updates: dict = {
-            "amount_paid": amount,
-            # A cleared payment has no date; keeping a stale one would read
-            # as « paid on that day » for an invoice carrying no payment.
-            "paid_date": paid_date if amount > 0 else None,
-            **provenance.update_fields(now),
-        }
-
-        due = int(invoice.get("amount_due", 0))
-        had_recorded_payment = int(invoice.get("amount_paid", 0)) > 0
-        if amount >= due and status in ("envoyée", "en_retard"):
-            updates["status"] = "payée"
-        elif amount < due and status == "payée" and had_recorded_payment:
-            # Undo OUR OWN flip only — see the docstring.
-            updates["status"] = "envoyée"
-
+        updates = payment_updates(
+            invoice, amount, paid_date, now=datetime.now(timezone.utc)
+        )
         transaction.update(ref, updates)
         return {**invoice, **updates}
 
     try:
         return _apply(db.transaction()), errors
-    except _PaymentRefused as refusal:
+    except PaymentRefused as refusal:
         return None, [str(refusal)]
     except Exception:
         log_unexpected("invoice operation failed")
         return None, ["Erreur. Veuillez réessayer."]
-
-
-class _PaymentRefused(Exception):
-    """Refusal raised inside the payment transaction (aborts, never writes)."""
 
 
 #: Why « annulée » is refused by update_status — shown to the web user AND,
