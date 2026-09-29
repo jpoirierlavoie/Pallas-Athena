@@ -23,6 +23,7 @@ from dav.sync import (
     clear_tombstones,
     collection_for,
     delete_sync_state,
+    remove_tombstone,
 )
 from services import dossier_dav
 from pagination import (
@@ -805,6 +806,11 @@ def dossier_analyse_init(dossier_id: str) -> str:
 
     note, errors, created = ensure_analyse_note(dossier_id)
     if created:
+        # The id is deterministic (models.note.analyse_note_id): a théorie
+        # deleted before and re-created here comes back under the id its
+        # tombstone names — drop it, or one REPORT would call the note both
+        # live and deleted.
+        remove_tombstone(collection_for(dossier_id), note["id"])
         bump_ctag(collection_for(dossier_id))
     if note is None and errors:
         # A refusal (a duplicate, a read error) must not render the empty

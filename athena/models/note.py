@@ -160,6 +160,7 @@ def create_note(
     *,
     dav_id: Optional[str] = None,
     dav_uid: Optional[str] = None,
+    _reserved_id: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors).
 
@@ -179,6 +180,12 @@ def create_note(
     ``[DAV_ID_INVALID]``; ``dav_uid`` is kept only when it can be stored
     verbatim and is ignored without ``dav_id``. A ``created_at`` in *data*
     (a VJOURNAL's DTSTART) is still honoured.
+
+    ``_reserved_id`` (private, finitions robustness-4) serves ONE caller,
+    :func:`ensure_analyse_note`: the note is written with ``create()`` at
+    that server-computed, deterministic id (:func:`analyse_note_id`), so an
+    ``AlreadyExists`` (``[DAV_ID_TAKEN]``) tells a parallel initializer
+    created it first — never a second note.
     """
     data = dict(data)
     data.pop("id", None)
@@ -199,7 +206,8 @@ def create_note(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    note_id = dav_id if dav_id is not None else str(uuid.uuid4())
+    note_id = (dav_id if dav_id is not None
+               else _reserved_id or str(uuid.uuid4()))
     vjournal_uid = (
         (dav_ids.client_uid(dav_uid) if dav_id is not None else None)
         or str(uuid.uuid4())
@@ -215,7 +223,7 @@ def create_note(
 
     try:
         ref = db.collection(COLLECTION).document(note_id)
-        if dav_id is not None:
+        if dav_id is not None or _reserved_id:
             ref.create(merged)
         else:
             ref.set(merged)
@@ -223,7 +231,7 @@ def create_note(
         return None, [dav_ids.DAV_ID_TAKEN]
     except Exception:
         log_unexpected("note write failed")
-        if dav_id is not None:
+        if dav_id is not None or _reserved_id:
             # A phone-chosen name: a document there may be a racing PUT's.
             return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
         # A FRESH id: read it back before answering (robustness-1).
@@ -1008,6 +1016,29 @@ def find_analyse_note_strict(dossier_id: str) -> Optional[dict]:
     return found[0] if found else None
 
 
+# The namespace of the analyse note's deterministic id (finitions,
+# robustness-4) — frozen: changing it would orphan every analyse note
+# created since (they would no longer be found by id; the dossier_id query
+# still finds them, so nothing is lost, but the fork guard would weaken).
+_ANALYSE_ID_NAMESPACE = uuid.UUID("5b3f0c1e-7d2a-4a8e-9c61-2f4e8a9d7b30")
+
+
+def analyse_note_id(dossier_id: str) -> str:
+    """The deterministic id a dossier's théorie de la cause is CREATED at.
+
+    A documented exception to Architecture Rule 6 (UUIDv4 ids, never
+    reused): a UUIDv5 of the dossier — the system folders' precedent
+    (``models.folder.system_folder_id``). Two initializers racing (the web
+    « Ajouter une théorie de la cause » and a connector ``edit_analyse``
+    init, two inits under different keys) can then only ever target ONE
+    document, whose ``create()`` the second loses. A théorie deleted and
+    re-initialized is recreated at the same id (its tombstone is removed on
+    creation). Legacy analyse notes keep their uuid4 id: the existence check
+    queries by dossier, never by this id.
+    """
+    return str(uuid.uuid5(_ANALYSE_ID_NAMESPACE, f"{dossier_id}:analyse"))
+
+
 def ensure_analyse_note(
     dossier_id: str,
 ) -> tuple[Optional[dict], list[str], bool]:
@@ -1054,7 +1085,23 @@ def ensure_analyse_note(
         "pinned": False,
         "dateless": True,
         "is_analyse": True,
-    })
+    }, _reserved_id=analyse_note_id(dossier_id))
+    if errors == [dav_ids.DAV_ID_TAKEN]:
+        # A parallel initializer created it between our existence check and
+        # our create(): the id is deterministic, so it is THE note — read it
+        # back (finitions, robustness-4). Before, both callers minted a
+        # fresh uuid4 and FORKED the théorie: every later edit refused as a
+        # duplicate until the lawyer deleted one by hand.
+        try:
+            existing = find_analyse_note_strict(dossier_id)
+        except AnalyseDuplicateError:
+            return None, [ANALYSE_DUPLICATE_ERROR], False
+        except AnalyseLookupError:
+            log_unexpected("analyse read-back failed")
+            return None, [ANALYSE_READ_ERROR], False
+        if existing:
+            return existing, [], False
+        return None, [ANALYSE_READ_ERROR], False
     return note, errors, bool(note is not None and not errors)
 
 

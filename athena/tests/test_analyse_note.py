@@ -176,13 +176,16 @@ def test_create_analyse_note_payload(monkeypatch):
     )
     captured = {}
 
-    def _create(data):
+    def _create(data, *, _reserved_id=None):
         captured.update(data)
-        return dict(data, id="n-new"), []
+        captured["_reserved_id"] = _reserved_id
+        return dict(data, id=_reserved_id), []
 
     monkeypatch.setattr(note, "create_note", _create)
     result, errors = note.create_analyse_note("d1")
-    assert errors == [] and result["id"] == "n-new"
+    # Created at the dossier's DETERMINISTIC id (finitions, robustness-4).
+    assert errors == [] and result["id"] == note.analyse_note_id("d1")
+    assert captured["_reserved_id"] == note.analyse_note_id("d1")
     assert captured["title"] == note.ANALYSE_TITLE
     assert captured["content"] == note._ANALYSE_SEED
     assert captured["category"] == "stratégie"
