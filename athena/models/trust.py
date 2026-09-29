@@ -329,6 +329,38 @@ class _TxnAbort(Exception):
         self.detail = detail
 
 
+class _OwnCommitLanded(Exception):
+    """A RE-RUN of a create body found the entry THIS call minted (review of
+    lot 5a, step 3 — the ``models/invoice._OwnCommitLandedError`` doctrine).
+
+    The id is minted BEFORE the transaction and known to no other writer, so
+    finding it can only mean an earlier attempt of this very call COMMITTED:
+    the commit RPC is retried under the same transaction id after a lost
+    answer (``ServiceUnavailable``), the retry is answered ``Aborted``, and
+    the ``transactional`` decorator re-runs the body over the writes that
+    landed. Unchecked, that re-run read the debited balances and the
+    advanced counter, then ``set()`` the SAME entry again under the next
+    sequence and applied its amount a SECOND time — to the account, to the
+    client's two balances, and (a fee payment) to the invoice — and reported
+    success. Raised by the FIRST read of the body, before any guard can
+    word the landed state as a refusal."""
+
+
+# The answer of a create whose transaction RAISED after a commit was
+# attempted, or whose re-run found its own landed entry (review of lot 5a,
+# step 3). A raise out of a commit does not prove that nothing landed: the
+# server can apply it and the answer be lost. It is therefore never worded
+# « nothing was written » — a retry of a create is a SECOND withdrawal of
+# client funds — and the connector (lot 5b) recognizes this constant to keep
+# its idempotency claim, as it does ``models.invoice.CREATE_OUTCOME_UNCERTAIN``.
+CREATE_OUTCOME_UNCERTAIN = (
+    "L'inscription au fidéicommis a échoué d'une façon qui ne permet pas de "
+    "savoir si elle a été enregistrée : vérifiez le journal de caisse avant "
+    "de réessayer."
+)
+OUTCOME_UNCERTAIN_REASON = "issue_incertaine"
+
+
 # Machine-stable abort reason → French user message.
 _ABORT_MESSAGES = {
     "compte_introuvable": "Compte en fidéicommis introuvable.",
@@ -970,7 +1002,11 @@ def _prepare_create(
 
 def _read_create(txn, ctx: dict) -> dict:
     """Every read a create needs, inside *txn* (all before any write).
-    Raises ``_TxnAbort`` for a document that must exist and does not."""
+    Raises ``_TxnAbort`` for a document that must exist and does not, and
+    :class:`_OwnCommitLanded` when the entry this call minted already exists
+    — the FIRST read, so no guard ever judges a landed attempt's state."""
+    if ctx["tx_ref"].get(transaction=txn).exists:
+        raise _OwnCommitLanded(ctx["tx_id"])
     acc_snap = ctx["account_ref"].get(transaction=txn)
     if not acc_snap.exists:
         raise _TxnAbort("compte_introuvable")
@@ -1166,6 +1202,21 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
     }
 
 
+def _uncertain_create(
+    report_out: Optional[dict], message: str, **fields,
+) -> tuple[None, list[str]]:
+    """The create's answer when its outcome is UNKNOWN (review of lot 5a,
+    step 3): logged (ids only, no traceback — the line is the signal), the
+    reason :data:`OUTCOME_UNCERTAIN_REASON`, the message
+    :data:`CREATE_OUTCOME_UNCERTAIN`. Never a refusal line: nothing was
+    refused, and the write may stand."""
+    log_unexpected(message, exc_info=False,
+                   **{k: v for k, v in fields.items() if v})
+    if report_out is not None:
+        report_out["reason"] = OUTCOME_UNCERTAIN_REASON
+    return None, [CREATE_OUTCOME_UNCERTAIN]
+
+
 def _log_create_refusal(abort_reason: str, account_id, dossier_id) -> None:
     """The create path's refusal log — one shape for the prechecks and the
     in-transaction guards (the overdraft control keeps its own event)."""
@@ -1209,6 +1260,9 @@ def create_transaction(
     dossier_id = ctx["dossier_id"]
     transaction = db.transaction()
     result: dict = {}
+    # Sticky across attempts: once a body has staged its writes, a commit
+    # was attempted, and a later raise can no longer prove nothing landed.
+    attempted: dict = {"commit": False}
 
     @firestore.transactional
     def _create(txn) -> None:
@@ -1221,17 +1275,27 @@ def create_transaction(
         now = datetime.now(timezone.utc)
         reads = _read_create(txn, ctx)
         result.update(_stage_create(txn, ctx, reads, now))
+        attempted["commit"] = True
 
     try:
         with span("trust.transaction", direction=ctx["direction"],
                   purpose=ctx["purpose"], dossier_id=dossier_id):
             _create(transaction)
+    except _OwnCommitLanded:
+        return _uncertain_create(_report_out, "trust create_transaction: an "
+                                 "earlier attempt of the transaction landed",
+                                 account_id=account_id)
     except _TxnAbort as abort:
         _log_create_refusal(abort.reason, account_id, dossier_id)
         if _report_out is not None:
             _report_out["reason"] = abort.reason
         return None, [_abort_message(abort.reason, abort.detail)]
     except Exception as exc:
+        if attempted["commit"]:
+            return _uncertain_create(_report_out, "trust create_transaction: "
+                                     "transaction failed after a commit attempt",
+                                     account_id=account_id,
+                                     error_type=type(exc).__name__)
         logger.error(
             "create_transaction failed for account %s: %s",
             sanitize_log_value(account_id), type(exc).__name__,
@@ -1938,8 +2002,10 @@ def create_inter_dossier_transfer(
     counter_ref = db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id))
     from_ref = db.collection(DOSSIERS_COLLECTION).document(from_dossier_id)
     to_ref = db.collection(DOSSIERS_COLLECTION).document(to_dossier_id)
+    leg_a_ref = db.collection(TRANSACTIONS_COLLECTION).document(leg_a_id)
     transaction = db.transaction()
     result: dict = {}
+    attempted: dict = {"commit": False}
 
     @firestore.transactional
     def _transfer(txn) -> None:
@@ -1953,6 +2019,11 @@ def create_inter_dossier_transfer(
         # _today_midnight_utc).
         now = datetime.now(timezone.utc)
         today = _today_midnight_utc()
+        # FIRST read: the leg THIS call minted — an earlier attempt that
+        # landed with its answer lost (see _OwnCommitLanded). Re-run over it,
+        # the body moved the two clients' balances a second time.
+        if leg_a_ref.get(transaction=txn).exists:
+            raise _OwnCommitLanded(leg_a_id)
         acc_snap = account_ref.get(transaction=txn)
         if not acc_snap.exists:
             raise _TxnAbort("compte_introuvable")
@@ -2038,7 +2109,7 @@ def create_inter_dossier_transfer(
             status="compensée", cleared_date=today, related_transaction_id=leg_a_id,
         )
 
-        txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_a_id), leg_a)
+        txn.set(leg_a_ref, leg_a)
         txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_b_id), leg_b)
         txn.set(counter_ref, {"seq": seq_b, "updated_at": now})
         # Account book & bank net to zero, but bump the audit metadata.
@@ -2062,10 +2133,15 @@ def create_inter_dossier_transfer(
                 **provenance.update_fields(now),
             })
         result["legs"] = [leg_a, leg_b]
+        attempted["commit"] = True
 
     try:
         with span("trust.transaction", direction="transfer", purpose="virement_inter_dossiers", dossier_id=from_dossier_id):
             _transfer(transaction)
+    except _OwnCommitLanded:
+        return _uncertain_create(None, "trust inter-dossier transfer: an earlier "
+                                 "attempt of the transaction landed",
+                                 account_id=account_id)
     except _TxnAbort as abort:
         log_trust_event(
             "trust_transaction_refused", "refused",
@@ -2074,10 +2150,20 @@ def create_inter_dossier_transfer(
         )
         return None, [_abort_message(abort.reason, abort.detail, "Virement refusé.")]
     except Exception as exc:
+        if attempted["commit"]:
+            return _uncertain_create(None, "trust inter-dossier transfer: transaction "
+                                     "failed after a commit attempt",
+                                     account_id=account_id,
+                                     error_type=type(exc).__name__)
         logger.error("inter-dossier transfer failed: %s", type(exc).__name__)
         return None, ["Erreur lors du virement. Veuillez réessayer."]
 
     legs = result["legs"]
+    for leg in legs:
+        # The commit record (models/provenance): the transfer is a money
+        # mutator like the others, and a failure after this point must read
+        # « written », never « nothing was written ».
+        provenance.note_commit(TRANSACTIONS_COLLECTION, leg["id"])
     for leg in legs:
         log_trust_event(
             "trust_transaction_created", transaction_id=leg["id"],

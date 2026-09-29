@@ -94,6 +94,27 @@ _NOTHING_WRITTEN = (
     "Rien n'a été inscrit — ni au fidéicommis, ni au compte "
     "d'administration, ni sur la facture."
 )
+
+# The composite's answer when its outcome is UNKNOWN (review of lot 5a, step
+# 3): its transaction raised after a commit was attempted — a commit whose
+# answer is lost may have landed —, or a re-run of its body found the trust
+# entry THIS call minted (``trust._OwnCommitLanded``: an earlier attempt
+# landed, and the unguarded re-run withdrew the fees a SECOND time). Never
+# « rien n'a été inscrit » — a retry of a fee payment is a second withdrawal
+# of the client's funds —, and the connector (lot 5b) recognizes this
+# constant to keep its idempotency claim, as it does
+# ``models.invoice.CREATE_OUTCOME_UNCERTAIN``.
+CREATE_OUTCOME_UNCERTAIN = (
+    "L'enregistrement du paiement d'honoraires a échoué d'une façon qui ne "
+    "permet pas de savoir s'il a été inscrit : vérifiez le journal du "
+    "fidéicommis et la facture avant de réessayer."
+)
+REVERSE_OUTCOME_UNCERTAIN = (
+    "La contre-passation du paiement d'honoraires a échoué d'une façon qui ne "
+    "permet pas de savoir si elle a été inscrite : vérifiez l'écriture au "
+    "fidéicommis avant de réessayer."
+)
+OUTCOME_UNCERTAIN_REASON = trust.OUTCOME_UNCERTAIN_REASON
 _NOTHING_REVERSED = (
     "Rien n'a été contre-passé — ni au fidéicommis, ni au compte "
     "d'administration, ni sur la facture."
@@ -184,6 +205,18 @@ def _message(reason: str, detail: Optional[str] = None) -> str:
 
 def _midnight(value) -> Optional[datetime]:
     return trust._midnight_utc(value)
+
+
+def _uncertain(report: Optional[dict], message: str, log_message: str,
+               **ids) -> tuple[None, list[str]]:
+    """The answer of an operation whose outcome is unknown — never a
+    refusal line (nothing was refused; the write may stand). Ids only."""
+    log_unexpected(log_message, exc_info=False,
+                   **{k: v for k, v in ids.items() if v})
+    if report is not None:
+        report["reason"] = OUTCOME_UNCERTAIN_REASON
+        report["side"] = "paiement"
+    return None, [message]
 
 
 def _fail(report: Optional[dict], reason: str, message: str, *, side: str,
@@ -308,6 +341,9 @@ def create_fee_payment(
 
     transaction = db.transaction()
     result: dict = {}
+    # Sticky across attempts: once a body has staged its writes, a commit was
+    # attempted, and a later raise no longer proves that nothing landed.
+    attempted: dict = {"commit": False}
 
     @firestore.transactional
     def _pay(txn) -> None:
@@ -320,7 +356,11 @@ def create_fee_payment(
         # read that as a running-balance error.
         now = datetime.now(timezone.utc)
         # 1. READS — the trust leg's, then the recette's (the invoice and the
-        # dossier the trust leg read are passed on, never read twice).
+        # dossier the trust leg read are passed on, never read twice). The
+        # trust leg's FIRST read is the entry this call minted: found, an
+        # earlier attempt LANDED (trust._OwnCommitLanded) — its answer lost,
+        # the commit retried and answered Aborted — and this re-run must not
+        # withdraw the fees, record the recette and pay the invoice again.
         t_reads = trust._read_create(txn, t_ctx)
         a_reads = al._read_create(
             txn, a_ctx, dossier=t_reads["dossier"], invoice=t_reads["invoice"],
@@ -356,11 +396,16 @@ def create_fee_payment(
             },
         )
         result.update(trust=t_result, admin=a_result)
+        attempted["commit"] = True
 
     try:
         with span("trust.transaction", direction="déboursé", purpose=TRUST_PURPOSE,
                   dossier_id=t_ctx["dossier_id"]):
             _pay(transaction)
+    except (trust._OwnCommitLanded, al._OwnCommitLanded):
+        return _uncertain(_report_out, CREATE_OUTCOME_UNCERTAIN,
+                          "fee payment: an earlier attempt of the transaction landed",
+                          account_id=t_ctx["account_id"], dossier_id=t_ctx["dossier_id"])
     except _FeeAbort as abort:
         return _fail(_report_out, abort.reason, _message(abort.reason, abort.detail),
                      side="administration", operation="create",
@@ -388,6 +433,14 @@ def create_fee_payment(
                      side="administration", operation="create",
                      account_id=admin_account_id, dossier_id=t_ctx["dossier_id"])
     except Exception as exc:
+        if attempted["commit"]:
+            return _uncertain(_report_out, CREATE_OUTCOME_UNCERTAIN,
+                              "fee payment: transaction failed after a commit attempt",
+                              account_id=t_ctx["account_id"],
+                              dossier_id=t_ctx["dossier_id"],
+                              error_type=type(exc).__name__)
+        # No body ever staged its writes: a READ failed before any commit
+        # was attempted — nothing can have landed.
         log_unexpected("fee payment write failed", error_type=type(exc).__name__)
         if _report_out is not None:
             _report_out["reason"] = "erreur"
@@ -473,6 +526,7 @@ def reverse_fee_payment(
     admin_reason = f"Contre-passation du paiement d'honoraires au fidéicommis — {reason}"
     transaction = db.transaction()
     result: dict = {}
+    attempted: dict = {"commit": False}
 
     @firestore.transactional
     def _reverse(txn) -> None:
@@ -513,6 +567,7 @@ def reverse_fee_payment(
         # legacy fee payment) and « all were already reversed » are two
         # different facts, and the caller must not word one as the other.
         result.update(trust=t_result, admin=a_result, linked=len(rows))
+        attempted["commit"] = True
 
     try:
         with span("trust.transaction", direction="reversal", purpose=TRUST_PURPOSE,
@@ -523,6 +578,16 @@ def reverse_fee_payment(
                      side="administration" if abort.reason != "pas_un_paiement_honoraires"
                      else "paiement", operation="reverse", transaction_id=tx_id)
     except trust._TxnAbort as abort:
+        if abort.reason == "déjà_contrepassée" and attempted["commit"]:
+            # A re-run found the fee payment reversed AFTER this call had
+            # attempted its own commit: most likely that commit landed with
+            # its answer lost (the reversal ids are minted per attempt, so
+            # the re-run cannot tell it from another caller's). « Déjà
+            # contre-passée » worded as a refusal would tell the lawyer his
+            # reversal failed; it is uncertain, and the entry says which.
+            return _uncertain(_report_out, REVERSE_OUTCOME_UNCERTAIN,
+                              "fee payment reversal: reversed after this call's "
+                              "own commit attempt", transaction_id=tx_id)
         return _fail(_report_out, abort.reason,
                      trust._abort_message(abort.reason, abort.detail,
                                           "Contre-passation refusée."),
@@ -536,6 +601,11 @@ def reverse_fee_payment(
             side="administration", operation="reverse", transaction_id=tx_id,
         )
     except Exception as exc:
+        if attempted["commit"]:
+            return _uncertain(_report_out, REVERSE_OUTCOME_UNCERTAIN,
+                              "fee payment reversal: transaction failed after a "
+                              "commit attempt", transaction_id=tx_id,
+                              error_type=type(exc).__name__)
         log_unexpected("fee payment reversal failed", error_type=type(exc).__name__)
         if _report_out is not None:
             _report_out["reason"] = "erreur"
