@@ -389,6 +389,80 @@ def test_bank_interest_carries_no_dossier_and_only_it_may(fake):
     assert "seuls les intérêts et les frais bancaires" in str(refusal)
 
 
+def test_an_objet_that_contradicts_its_direction_is_refused(fake):
+    """Revue du lot 5b (argent et règlement) : le modèle ne lie pas l'objet
+    au sens, et le connecteur inscrivait « Dépôt du client » en DÉBOURSÉ ou
+    « Remise au client » en RECETTE — la ligne du registre de l'art. 38
+    disait le contraire du mouvement. Les quatre objets dont le NOM tranche
+    le sens sont refusés à contre-sens, sans rien écrire ; « règlement »
+    va dans les deux sens."""
+    _cleared_deposit(fake)
+    before = _entries(fake, "trust_transactions")
+    for purpose, direction in (("dépôt_client", "déboursé"),
+                               ("avance_honoraires", "déboursé"),
+                               ("remise_client", "recette"),
+                               ("déboursé_tiers", "recette")):
+        refusal = _refused("record_trust_entry", **_deposit(
+            1000, day="2026-09-04", purpose=purpose, direction=direction,
+            counterparty="Jean Tremblay"))
+        assert refusal.reason == "accounting_refused", purpose
+        assert "contraire du mouvement" in str(refusal), purpose
+    assert _entries(fake, "trust_transactions") == before
+
+    out = _call("record_trust_entry", **_deposit(
+        1000, day="2026-09-04", purpose="règlement", direction="déboursé",
+        counterparty="Me X, en fidéicommis"))
+    assert (out["entity"]["purpose"], out["entity"]["direction"]) == (
+        "règlement", "déboursé")
+    out = _call("record_trust_entry", **_deposit(
+        2000, day="2026-09-04", purpose="règlement", direction="recette"))
+    assert out["entity"]["direction"] == "recette"
+
+
+def test_a_disbursement_with_no_client_is_refused_for_what_it_is(fake):
+    """Revue du lot 5b : un déboursé sans dossier ni client (des frais
+    bancaires) ne passe JAMAIS le contrôle des fonds compensés — il se tient
+    par client, et aucun client ne couvre celui-ci. Le refus disait « solde
+    compensé insuffisant… attendez la compensation des dépôts » : une
+    attente sans fin. Il dit maintenant pourquoi, et n'écrit rien."""
+    _cleared_deposit(fake)
+    before = _entries(fake, "trust_transactions")
+    refusal = _refused("record_trust_entry", account_id="acc1",
+                       direction="déboursé", purpose="frais_bancaires",
+                       amount_cents=500, date="2026-09-04",
+                       method="dépôt_direct", counterparty="Desjardins")
+    assert refusal.reason == "accounting_refused"
+    assert "jamais permis" in str(refusal)
+    assert "Attendez la compensation" not in str(refusal)
+    assert _entries(fake, "trust_transactions") == before
+    # The model's own verdict, unchanged: the same entry is refused there.
+    _entry, errors = trust.create_transaction({
+        "account_id": "acc1", "direction": "déboursé",
+        "purpose": "frais_bancaires", "amount": 500, "date": _d(2026, 9, 4),
+        "method": "dépôt_direct", "counterparty": "Desjardins"})
+    assert errors
+
+
+def test_a_fee_payment_on_a_reconciled_admin_day_names_admin_date(fake):
+    """Revue du lot 5b (D16) : le plancher de conciliation du compte
+    d'opérations refuse la recette d'un paiement d'honoraires datée dans la
+    période conciliée — et le refus du modèle nomme le champ du FORMULAIRE
+    web. Au connecteur, il nomme l'argument, `admin_date` ; rien n'est
+    écrit, et la date réelle du dépôt passe."""
+    _cleared_deposit(fake)
+    fake.seed("admin_reconciliations/rec1", {
+        "id": "rec1", "account_id": "ops1", "status": "complétée",
+        "period_end": _d(2026, 9, 12)})
+    before = {c: _entries(fake, c) for c in (
+        "trust_transactions", "admin_transactions", "invoices")}
+    refusal = _refused("record_trust_entry", **_fee())
+    assert refusal.reason == "accounting_refused"
+    assert "`admin_date`" in str(refusal)
+    assert {c: _entries(fake, c) for c in before} == before
+    out = _call("record_trust_entry", **_fee(admin_date="2026-09-15"))
+    assert out["admin_recette"]["date"] == "2026-09-15"
+
+
 def test_a_future_or_backdated_entry_is_refused(fake):
     assert "futur" in str(_refused("record_trust_entry",
                                    **_deposit(day="2026-09-21")))

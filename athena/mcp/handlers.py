@@ -16732,6 +16732,27 @@ def get_admin_ledger(args: dict) -> dict:
 _TRUST_FEE_ARGS = ("invoice_id", "admin_account_id", "admin_date")
 _TRUST_NO_DOSSIER_PURPOSES = ("intérêts", "frais_bancaires")
 _TRUST_ISSUED = ("envoyée", "en_retard")
+# The purposes whose NAME decides the direction (the lot's design, guard 7 of
+# record_trust_entry — never built in the model: the web form still lets the
+# lawyer pair any objet with any sens). « Dépôt du client » paid OUT, or
+# « Remise au client » paid IN, would print a false line in the register
+# art. 38 requires — the money moving one way, its Objet column saying the
+# other. Only the four unambiguous ones: « règlement », « autre »,
+# « intérêts » and « frais bancaires » go either way, and the fee payment
+# keeps its own refusal below. A CONNECTOR rule — extending it to the web
+# form is the lawyer's decision.
+_TRUST_PURPOSE_DIRECTION = {
+    "avance_honoraires": "recette",
+    "dépôt_client": "recette",
+    "remise_client": "déboursé",
+    "déboursé_tiers": "déboursé",
+}
+_TRUST_DIRECTION_WORDS = {"recette": "une recette", "déboursé": "un déboursé"}
+# A fee payment's administration-side floor refusals name the WEB form's
+# field; the connector's caller knows it by another name.
+_FEE_ADMIN_DATE_REASONS = (
+    "date_administration_verrouillée", "date_administration_verrouillée_jour",
+)
 
 
 def record_trust_entry(args: dict) -> dict:
@@ -16752,6 +16773,15 @@ def _record_trust_entry_impl(args: dict) -> dict:
             raise ToolArgumentError(
                 ", ".join(f"`{k}`" for k in stray) + " ne vaut que pour un "
                 "paiement d'honoraires (purpose « virement_honoraires »).")
+    implied = _TRUST_PURPOSE_DIRECTION.get(purpose)
+    if implied and direction != implied:
+        label = comptabilite_service.TRUST_PURPOSE_LABELS.get(purpose, purpose)
+        raise ToolArgumentError(
+            f"L'objet « {label} » est {_TRUST_DIRECTION_WORDS[implied]} "
+            f"(`direction` « {implied} ») : inscrit en "
+            f"{direction or 'sens inconnu'}, il ferait dire au registre le "
+            "contraire du mouvement. Rien n'a été inscrit.",
+            reason="accounting_refused")
     if direction == "déboursé" and method == "comptant":
         raise ToolArgumentError(
             "Aucun retrait en espèces du compte général en fidéicommis "
@@ -16788,6 +16818,18 @@ def _record_trust_entry_impl(args: dict) -> dict:
         raise ToolArgumentError(
             "Sans dossier ni client, seuls les intérêts et les frais "
             "bancaires s'inscrivent : nommez `dossier_id` et `client_id`.")
+    if not dossier_id and direction == "déboursé":
+        # The model's own verdict, said for what it is: a déboursé draws
+        # only on a CLIENT's cleared funds (art. 59), and with no client the
+        # cleared balance it checks is 0 — every such déboursé is refused,
+        # always, under « solde compensé insuffisant … attendez la
+        # compensation », a wait that never ends.
+        raise ToolArgumentError(
+            "Un déboursé sans dossier ni client n'est jamais permis : le "
+            "registre ne laisse sortir que les fonds compensés d'un client, "
+            "et aucun client n'en porte ici — attendre une compensation n'y "
+            "changera rien. Rien n'a été inscrit.",
+            reason="accounting_refused")
     if dossier_id:
         dossier = _read_dossier_strict(dossier_id)
         if client_id not in (dossier.get("client_ids") or []):
@@ -16862,6 +16904,10 @@ def _record_trust_entry_impl(args: dict) -> dict:
             admin_date=admin_date, allow_external_ref=False,
         )
         if not report["ok"]:
+            if report.get("reason") in _FEE_ADMIN_DATE_REASONS:
+                report = {**report, "errors": list(report.get("errors") or []) + [
+                    "Pour le connecteur, cette date du dépôt est l'argument "
+                    "`admin_date` (par défaut, la date du retrait)."]}
             _raise_register_refusal(report)
         entry = report["trust_entry"]
     else:

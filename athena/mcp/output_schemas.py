@@ -1654,8 +1654,10 @@ def _admin_ledger_row() -> dict:
             "reversal), écriture_liée_facture, écriture_liée_fideicommis, "
             "paiement_carte_indivisible; null when editable."),
         **_nmoney("balance_after", (
-            "Running ledger balance after this entry — null unless ONE "
-            "account was read without a kind/status/category filter.")),
+            "Running balance after this entry, in LEDGER sign like "
+            "ledger_balance (a card's runs negative while money is owed) — "
+            "null unless ONE account was read without a kind/status/"
+            "category filter.")),
     }, optional=_PROVENANCE_KEYS)
 
 
@@ -4223,8 +4225,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "true = more entries match than `limit`: narrow the window "
             "(there is no cursor)."),
         **_nmoney("opening_balance", (
-            "The balance carried into date_from — null unless ONE account "
-            "was read without a filter.")),
+            "The balance carried into date_from, in ledger sign — null "
+            "unless ONE account was read without a filter.")),
         "warnings": _arr(_str(), "French; empty when nothing is amiss."),
     }),
 

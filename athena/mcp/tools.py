@@ -6468,9 +6468,13 @@ TOOLS: dict[str, dict] = {
                 "purpose": {
                     "type": "string", "enum": _TRUST_ENTRY_PURPOSES,
                     "description": (
-                        "Objet. virement_honoraires = a fee payment (a "
-                        "déboursé); intérêts / frais_bancaires carry no "
-                        "dossier."
+                        "Objet — it must agree with the direction: "
+                        "avance_honoraires / dépôt_client are recettes; "
+                        "remise_client / déboursé_tiers and "
+                        "virement_honoraires (a fee payment) déboursés. "
+                        "Only intérêts / frais_bancaires may carry no "
+                        "dossier, and then only as a recette (a déboursé "
+                        "draws on a client's cleared funds)."
                     ),
                 },
                 "amount_cents": _money_arg("Integer cents, > 0."),
