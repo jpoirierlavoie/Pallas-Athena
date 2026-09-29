@@ -380,6 +380,45 @@ def test_le_registre_et_les_factures_concordent_apres_les_ecritures(
     assert code == 0, out
 
 
+def test_une_facture_supprimee_apres_contre_passation_n_est_pas_orpheline(
+    fake, monkeypatch, capsys
+):
+    """Revue du lot 5a — régression du CONTRÔLE, pas du modèle : le chemin
+    normal de l'application (contre-passer l'encaissement, annuler la
+    facture, la supprimer — l'annulation refuse tant qu'un encaissement
+    tient) laissait des lignes contre-passées citant une facture disparue,
+    et le contrôle nº 8 en faisait un « encaissements orphelins » : un écart
+    que les modèles n'avaient jamais produit, sur le script que l'étape
+    exige propre avant son déploiement. Un encaissement DEBOUT sur une
+    facture disparue reste, lui, signalé."""
+    entry, errs = al.create_transaction(_enc(amount=60000))
+    assert errs == []
+    _, errs = al.reverse_transaction(entry["id"], "chèque sans provision")
+    assert errs == []
+    assert invoice_model.void_invoice("fac1") == (True, "")
+    assert invoice_model.delete_invoice("fac1") == (True, "")
+    assert fake.peek("invoices/fac1") is None
+    code, out = _run_integrity(fake, monkeypatch, capsys)
+    assert code == 0, out
+
+    # The real orphan — a STANDING encaissement whose invoice vanished out of
+    # band (the app cannot produce it: the void refuses first).
+    fake.seed("invoices/fac2", {
+        "id": "fac2", "invoice_number": "2026-F032", "status": "envoyée",
+        "total": 50000, "retainer_applied": 0,
+        "amount_due": 50000, "amount_paid": 0, "paid_date": None,
+        "dossier_id": "dos1", "dossier_file_number": "2026-001",
+        "dossier_title": "Tremblay c. X", "etag": "inv2-e0",
+    })
+    _, errs = al.create_transaction(_enc(invoice_id="fac2", amount=10000))
+    assert errs == []
+    fake.external_delete("invoices/fac2")
+    code, out = _run_integrity(fake, monkeypatch, capsys)
+    assert code == 1, out
+    assert "facture fac2: introuvable (encaissements orphelins)" in out
+    assert "fac1" not in out
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 3. La modification : l'etag d'abord, la ventilation nommée
 # ══════════════════════════════════════════════════════════════════════

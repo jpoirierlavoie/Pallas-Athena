@@ -26,7 +26,10 @@ module deliberately does not have (balances are computed at read). Checks:
      The sum comes from the MODEL, not from a local reimplementation: the
      copy that lived here omitted ``reversed_by_id`` and would report a false
      gap after any contre-passation of a compensée encaissement — the one
-     correction flow the two-step lifecycle exists for.
+     correction flow the two-step lifecycle exists for. For the same reason
+     an invoice enters this check as CITED only by a STANDING encaissement:
+     reversed rows citing an invoice voided and deleted since (the normal
+     reverse → void → delete path) are not « orphans ».
   9. the direction of every SIMPLE kind is the one its kind implies
      (``models/admin_ledger._KIND_DIRECTION`` — dépense ⇒ déboursé, autre
      recette and encaissement ⇒ recette). Since lot 0b the model derives the
@@ -190,7 +193,16 @@ def main() -> int:
         # 8. Lot P cumulative — on ne retient ici que les factures CITÉES par
         # le registre ; les autres sont balayées plus bas, car une facture
         # payée SANS écriture est exactement le trou que ce contrôle a manqué.
-        if t.get("kind") == "encaissement_facture" and t.get("invoice_id"):
+        # Citée par un encaissement DEBOUT seulement — le prédicat de
+        # ``sum_invoice_receipts`` (ni annulé, ni contre-passé). Le chemin
+        # normal de l'application est « contre-passer l'encaissement, annuler
+        # la facture, la supprimer » (l'annulation refuse tant qu'un
+        # encaissement tient) : les lignes contre-passées citent alors une
+        # facture disparue, et les compter en faisait un faux « encaissements
+        # orphelins » — un écart que les modèles n'ont jamais produit, sur le
+        # contrôle même que le lot 5a exige propre avant son déploiement.
+        if (t.get("kind") == "encaissement_facture" and t.get("invoice_id")
+                and t.get("status") != "annulée" and not t.get("reversed_by_id")):
             invoice_ids.add(t["invoice_id"])
 
     # Toute facture portant un montant encaissé entre dans le contrôle, qu'une
