@@ -229,3 +229,45 @@ def test_review_e3_the_d22_runbook_writes_only_what_it_says():
     tail = body[body.index("*No invoice number burned*"):
                 body.index("*Tell the lawyer*")]
     assert "delete the test data of steps 9 to 13" in tail
+
+
+def test_final_check_the_finitions_and_lot_5_texts_follow_the_d22_runbook():
+    """Final check of the branch (2026-09-29): three texts still described
+    the pre-D22 trains, or a rule the tools no longer state.
+
+    * The « Finitions » entry said its connector changes « ride the stack's
+      own revocation (§15 « Lot 4 », then « Lot 5 ») » — two revocations
+      the D22 runbook collapses into its step 5.
+    * It tied the D25 skill note and the « Analyse documentaire » re-export
+      to « Lot 5 » step 9, which the runbook defers to step 17 — the
+      accounting train, weeks later — while D25 ships under the ordinary
+      write grant on push day; and the runbook's step 15 never named that
+      re-export at all.
+    * « Lot 5 » step 9 still taught the skill « record only what the BANK
+      shows » — the phrasing the review of E3 removed from INSTRUCTIONS:
+      both writers record a movement that HAPPENED at the bank, and a
+      cheque just written is on no statement until it clears.
+
+    Fails on 9a80416."""
+    text = _flat(_REPO / "DEPLOYMENT.md")
+    runbook = _section_15(text)
+    finitions = runbook[runbook.index("**Finitions — the adversarial review"):
+                        runbook.index("**Cold starts:**")]
+    assert "ride the stack's own revocation" not in finitions
+    assert ("ride the ONE revocation of §15 « Déploiement unique (D22) » "
+            "(step 5") in finitions
+    assert "are updated with §15 « Lot 5 » step 9, add" not in finitions
+    assert "step 15 — D25 rides the ordinary write grant" in finitions
+    assert "re-export it at that same step 15" in finitions
+
+    head = "**Déploiement unique (D22) — the whole MCP write-expansion program"
+    body = runbook[runbook.index(head):runbook.index("**Storage identity (lot 0a")]
+    step_15 = body[body.index("*Tell the lawyer*"):
+                   body.index("**Later — the accounting switch")]
+    assert "python -m scripts.exporter_competence_analyse" in step_15
+    assert "« Analyse documentaire »" in step_15
+
+    lot_5 = runbook[runbook.index("**Lot 5 — accounting through the connector"):
+                    runbook.index("**Finitions — the adversarial review")]
+    assert "record only what the BANK shows" not in lot_5
+    assert "record only a movement that HAPPENED at the bank" in lot_5

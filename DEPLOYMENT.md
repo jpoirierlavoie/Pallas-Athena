@@ -1642,7 +1642,12 @@ Notes:
       the same day, with the lists of « Lot 1b », « Lot 2A », « Lot 2B »,
       « Lot 3 », « Lot 4 » and « Finitions » at once — every count reads 80
       (31 + 49); the accounting disciplines (« Lot 5 », step 9) wait for
-      step 17.
+      step 17. The same day, re-export and re-paste the claude.ai skill
+      « Analyse documentaire » (`python -m
+      scripts.exporter_competence_analyse` — « Finitions », its D25
+      paragraph): it is generated, and any copy exported before the review
+      of D25 says the analysis « remplace » the stored category without
+      exception.
 
   **Later — the accounting switch, its own train, once the release has run
   clean:**
@@ -3287,7 +3292,9 @@ Notes:
      grant, 80 without it). Each is now true WITHOUT the accounting grant
      only, and the connector's own texts refuse those phrasings
      (`tests/test_mcp_disclosure.py` `KNOWN_FALSE_CLAIMS`). Add the
-     discipline: record only what the BANK shows, at its date; one
+     discipline: record only a movement that HAPPENED at the bank, at the
+     date it happened — the tools' own rule; a cheque just written is one,
+     recorded en circulation before any statement shows it; one
      `idempotency_key` per movement, kept on a retry; an uncertain outcome
      (`accounting_outcome_uncertain`) is re-read (`list_trust_transactions`,
      `get_admin_ledger`) before anything else and retried only with the
@@ -3313,8 +3320,9 @@ Notes:
   as the stack it sits on).** No train of its own: no scope, no switch, no
   tool (still **86**), no index, no dependency, no Tailwind class, no icon,
   no `cron.yaml` or `firestore.rules` change, no DavX5 account re-add. Its
-  connector changes ride the stack's own revocation (§15 « Lot 4 », then
-  « Lot 5 »): INSTRUCTIONS open on a SAFETY CORE that a client cutting at
+  connector changes ride the ONE revocation of §15 « Déploiement unique
+  (D22) » (step 5; the accounting ones reach a token only at its step
+  17): INSTRUCTIONS open on a SAFETY CORE that a client cutting at
   2 048 characters reads whole (the « never » list, the one outbound
   effect, confirm-before-writing, idempotency and etag, re-read before a
   retry), then ONE index line per family naming its tools — the family
@@ -3344,13 +3352,15 @@ Notes:
   `divergence_categorie` flag and a warning; `list_documents` rows gain
   `divergence_categorie`; `update_document` judges the lawyer's rule
   before the analysis rule (« dites-le au juriste »). When BOTH copies of
-  the claude.ai skill `pallas-athena` are updated with §15 « Lot 5 »
-  step 9, add: an analysis no longer replaces the lawyer's category — a
+  the claude.ai skill `pallas-athena` are updated on the day of the push
+  (§15 « Déploiement unique (D22) », step 15 — D25 rides the ordinary
+  write grant, so it does NOT wait for the accounting lists of « Lot 5 »
+  step 9, deferred to step 17), add: an analysis no longer replaces the lawyer's category — a
   phrasing « l'analyse remplace la catégorie » (or « an analysis
   replacing it », the lot 2A wording above) is true of a PRESUMED
   category only; a gap is reported to him, never settled by a new
   analysis. The claude.ai skill « Analyse documentaire » is GENERATED, not
-  edited: re-export it with the same step (`python -m
+  edited: re-export it at that same step 15 (`python -m
   scripts.exporter_competence_analyse`) and re-paste it — its « Il
   **remplace** la catégorie stockée » bullet was unconditional until the
   review of D25. **Device-visible — tell the lawyer, then check after the
