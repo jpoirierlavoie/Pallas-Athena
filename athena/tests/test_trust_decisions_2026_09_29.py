@@ -329,12 +329,35 @@ def test_d23_le_beneficiaire_choisi_est_inscrit_comme_le_profil_l_ecrit(fake, cl
 
 
 def test_d23_un_profil_sans_nom_le_dit_au_formulaire(fake, client):
+    """Un profil qui ne nomme personne : le formulaire n'offre aucun nom —
+    le navigateur ne poste donc AUCUN bénéficiaire, et le refus dit que
+    c'est le PROFIL qui manque, jamais « la contrepartie est requise »."""
     fake.seed("settings/cabinet", {"nom": "", "organisation": ""})
     html = _html(client.get("/fideicommis/nouvelle"))
     assert "ne nomme ni l'avocat ni le cabinet" in html
-    resp = client.post("/fideicommis/", data=_fee_form())
+    form = {k: v for k, v in _fee_form().items() if k != "counterparty"}
+    before = _registers(fake)
+    resp = client.post("/fideicommis/", data=form)
     assert resp.status_code == 400
-    assert fee_payment._MESSAGES["bénéficiaires_honoraires_inconnus"] in _html(resp)
+    html = _html(resp)
+    assert fee_payment._MESSAGES["bénéficiaires_honoraires_inconnus"] in html
+    assert trust._ABORT_MESSAGES["contrepartie_requise"] not in html
+    assert _registers(fake) == before
+
+
+def test_d23_un_paiement_sans_beneficiaire_nomme_les_noms_acceptes(fake):
+    """Sans bénéficiaire, le modèle refuse sur la règle de l'art. 58 — en
+    nommant les deux noms acceptés — et avant toute lecture des registres."""
+    fake.reset_logs()
+    report: dict = {}
+    _, errs = fee_payment.create_fee_payment(
+        _entry(purpose="virement_honoraires", invoice_id="inv1", counterparty="  "),
+        admin_account_id="ops1", _report_out=report)
+    assert errs == [fee_payment._message(
+        "bénéficiaire_honoraires_invalide", f"« {FIRM} » ou « {LAWYER} »")]
+    assert report == {"reason": "bénéficiaire_honoraires_invalide", "side": "paiement"}
+    read = [path for record in fake.reads for path in record.paths]
+    assert read == ["settings/cabinet"], read
 
 
 # ══════════════════════════════════════════════════════════════════════

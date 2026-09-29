@@ -55,7 +55,8 @@ composite:
   and nobody else — the two names the firm profile holds
   (``settings/cabinet`` through ``utils/cabinet.cabinet_dict``: ``nom`` and
   ``organisation``, :func:`fee_payees`). Any other value is refused
-  (``bénéficiaire_honoraires_invalide``), and the one accepted is stored as
+  (``bénéficiaire_honoraires_invalide`` — a blank one too, ahead of the
+  register's generic « contrepartie requise »), and the one accepted is stored as
   the profile spells it (:func:`match_fee_payee` folds case, Unicode
   composition and spacing only).
 
@@ -353,6 +354,19 @@ def create_fee_payment(
         return _fail(_report_out, "facture_athena_requise",
                      _message("facture_athena_requise"),
                      side="paiement", operation="create")
+
+    # A fee payment that names NO payee is refused on the D23 rule, not the
+    # register's generic « contrepartie requise »: the web form's payee is a
+    # select of the firm profile's names, so an empty profile posts none —
+    # and the lawyer must read that the PROFILE is what is missing.
+    if not str(data.get("counterparty") or "").strip():
+        payees = fee_payees()
+        reason = ("bénéficiaire_honoraires_invalide" if payees
+                  else "bénéficiaires_honoraires_inconnus")
+        return _fail(_report_out, reason, _message(reason, payees_label(payees)),
+                     side="paiement", operation="create",
+                     account_id=data.get("account_id"),
+                     dossier_id=data.get("dossier_id"))
 
     # The trust side's read-free rules FIRST (art. 58 names the method
     # before anything else is said about the deposit).
