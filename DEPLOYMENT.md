@@ -3078,6 +3078,50 @@ Notes:
      REVERSED, never re-entered on top, and an administration mistake is
      corrected with `update_admin_entry` while the entry stays editable;
      never a paper, unsent or provision-imputing invoice for a fee payment.
+- **Finitions — the adversarial review of lots 0a-5 (branch
+  `mcp-ecriture-finitions`, on top of `mcp-ecriture-lot5`, in the SAME push
+  as the stack it sits on).** No train of its own: no scope, no switch, no
+  tool (still **86**), no index, no dependency, no Tailwind class, no icon,
+  no `cron.yaml` or `firestore.rules` change, no DavX5 account re-add. Its
+  connector changes ride the stack's own revocation (§15 « Lot 4 », then
+  « Lot 5 »): INSTRUCTIONS open on a protocol core that a client cutting at
+  2 048 characters still reads; `clear_register_entries` takes
+  `expected_etags` (REQUIRED at the administration register);
+  `record_document_analysis` takes an optional `expected_etag` and returns
+  `entity` {id, etag}; `list_trust_transactions` rows gain ten optional
+  keys (account, dossier, client, reference, description, invoice, reversal
+  links, provenance); four write outputs require LESS than before (a
+  same-key replay stored by the previous release still conforms); a write
+  whose record could not be read answers `read_unavailable`, never
+  « introuvable »; a create whose commit raised and whose read-back failed
+  too answers `write_outcome_uncertain`, the key kept. **Device-visible —
+  tell the lawyer, then check after the deploy:**
+  1. A DAV read that FAILS answers **503 + `Retry-After`** — a collection
+     listing, a sync report, a contact, an event, a task, a note, a
+     DELETE —, where it answered an empty 207, a 404, a 412, a 422 or a
+     500. DavX5 retries; it deletes nothing. No outage can be staged in
+     production, so check the ordinary path: `curl` a PROPFIND Depth:1 on
+     one active dossier collection and on `/dav/addressbook/` — 207, every
+     member listed —, then a phone sync that pulls one edit made in the
+     application.
+  2. A CONFIRMED Bookings rendez-vous: « ignorer » / « conserver » a
+     divergence in Réception, then edit that event on the phone — it
+     uploads (before, the phone's next edit answered 412 and was lost).
+  3. On the phone, type a line AFTER the « Dossier: / Type: / Modalité: »
+     block of an event's description, and after a task's « Dossier: »
+     line; sync, then open both in the application: the notes and the
+     description show the typed line and NO metadata block. Move an event
+     from one dossier calendar to another on the phone: the new event's
+     notes carry no block either.
+  4. The web, on a read that fails: a note edit re-renders the form with
+     the typed text and « n'a pas pu être lu — réessayez » (it used to
+     return to the list, the edit lost); a task or hearing edit refuses
+     the same way; a deletion deletes nothing and never tombstones
+     « Général » (a task's or hearing's refused deletion still returns to
+     the list without a banner, as before — the item is simply there).
+  Watch, the first week: the finitions' `unexpected` messages
+  (OBSERVABILITY.md, « Messages of the finitions ») — a burst is an outage,
+  a steady line on one id a stored document to repair.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

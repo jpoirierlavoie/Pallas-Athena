@@ -1033,8 +1033,12 @@ def analyse_note_id(dossier_id: str) -> str:
     init, two inits under different keys) can then only ever target ONE
     document, whose ``create()`` the second loses. A théorie deleted and
     re-initialized is recreated at the same id (its tombstone is removed on
-    creation). Legacy analyse notes keep their uuid4 id: the existence check
-    queries by dossier, never by this id.
+    creation) — and inherits what the deleted one left under that id: its
+    ``revisions`` subcollection (write-once, outliving the delete by
+    design, the ``content:delete`` snapshot included) reads as the new
+    note's history, and ``audit_events`` keeps a ``note`` deletion for an id
+    that exists again. Legacy analyse notes keep their uuid4 id: the
+    existence check queries by dossier, never by this id.
     """
     return str(uuid.uuid5(_ANALYSE_ID_NAMESPACE, f"{dossier_id}:analyse"))
 
