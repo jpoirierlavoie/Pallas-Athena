@@ -629,6 +629,27 @@ def test_un_virement_inter_dossiers_a_un_seul_volet_est_une_note(
     assert f"(écriture {pair_leg['id']}): virement inter-dossiers" not in out
 
 
+def test_un_objet_qui_contredit_le_sens_est_une_note(fake, monkeypatch, capsys):
+    """Revue de complétude du lot 5 : le connecteur refuse « Dépôt du client »
+    en déboursé ou « Remise au client » en recette (la ligne de l'art. 38
+    dirait le contraire du mouvement), le formulaire web l'accepte encore —
+    étendre le refus au web est la décision de l'avocat, et elle a besoin de
+    savoir ce que le registre contient déjà. Le couple ambigu (« règlement »
+    dans un sens ou l'autre) n'est pas signalé ; la carte est celle du
+    modèle."""
+    _september(fake, monkeypatch)
+    bad = _create(direction="déboursé", amount=10000, purpose="dépôt_client",
+                  counterparty="Huissier", date=_d(2026, 9, 10))
+    ok = _create(direction="déboursé", amount=10000, purpose="règlement",
+                 counterparty="Me X", date=_d(2026, 9, 10))
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"(écriture {bad['id']}): objet « Dépôt du client » inscrit en "
+            f"déboursé — l'objet dit une recette") in out
+    assert f"(écriture {ok['id']}): objet" not in out
+    assert vti.trust.PURPOSE_DIRECTIONS is trust.PURPOSE_DIRECTIONS
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 1 — le solde courant d'un virement inter-dossiers (revue de complétude
 #     du lot 5)

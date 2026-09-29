@@ -80,7 +80,10 @@ Checks 5-10 (lot 5a, 2026-09-28):
      invoice carrying a provision (``retainer_applied > 0``); a correction
      is never reversed again; a two-leg transfer reverses whole; and every
      SINGLE-leg ``virement_inter_dossiers`` (no linked counter-leg — the
-     create form offered the purpose) is listed. Annulée
+     create form offered the purpose) is listed, and so is every entry whose
+     objet contradicts its sens (``trust.PURPOSE_DIRECTIONS`` — refused by
+     the connector since lot 5b, still accepted by the web form: the measure
+     the lawyer's decision to refuse it there needs). Annulée
      entries (a cheque that never left the account) and corrections (which
      copy their original's method and withdraw nothing of their own) are
      outside the three withdrawal rules.
@@ -485,6 +488,23 @@ def _check_history_rules(
                 f" de {int(tx.get('amount', 0))} cents) — aucun volet "
                 f"contrepartie lié : vérifier avec l'avocat où l'autre moitié "
                 f"a été inscrite."
+            )
+
+        # An objet whose NAME contradicts the sens (« Dépôt du client » paid
+        # out, « Remise au client » paid in): the connector refuses the pair
+        # since lot 5b, the web form still accepts it — whether to refuse it
+        # there too is the lawyer's decision, and this is its measure. From
+        # the MODEL's map, never a copy (the lot 5a review). Listed whatever
+        # the status: the register prints the line either way.
+        implied = trust.PURPOSE_DIRECTIONS.get(purpose)
+        if implied and tx.get("direction") != implied:
+            notes.append(
+                f"{where}: objet « {trust.PURPOSE_LABELS.get(purpose, purpose)} » "
+                f"inscrit en "
+                f"{trust.DIRECTION_LABELS.get(tx.get('direction'), tx.get('direction')).lower()}"
+                f" — l'objet dit {'une recette' if implied == 'recette' else 'un déboursé'} ; "
+                f"le connecteur refuse ce couple depuis le lot 5b, le formulaire "
+                f"web l'accepte encore."
             )
 
         # The three withdrawal rules — never on a correction, never on an

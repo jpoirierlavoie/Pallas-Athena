@@ -16745,20 +16745,15 @@ _TRUST_FEE_ARGS = ("invoice_id", "admin_account_id", "admin_date")
 _TRUST_NO_DOSSIER_PURPOSES = ("intérêts", "frais_bancaires")
 _TRUST_ISSUED = ("envoyée", "en_retard")
 # The purposes whose NAME decides the direction (the lot's design, guard 7 of
-# record_trust_entry — never built in the model: the web form still lets the
-# lawyer pair any objet with any sens). « Dépôt du client » paid OUT, or
-# « Remise au client » paid IN, would print a false line in the register
-# art. 38 requires — the money moving one way, its Objet column saying the
-# other. Only the four unambiguous ones: « règlement », « autre »,
-# « intérêts » and « frais bancaires » go either way, and the fee payment
-# keeps its own refusal below. A CONNECTOR rule — extending it to the web
-# form is the lawyer's decision.
-_TRUST_PURPOSE_DIRECTION = {
-    "avance_honoraires": "recette",
-    "dépôt_client": "recette",
-    "remise_client": "déboursé",
-    "déboursé_tiers": "déboursé",
-}
+# record_trust_entry). « Dépôt du client » paid OUT, or « Remise au client »
+# paid IN, would print a false line in the register art. 38 requires — the
+# money moving one way, its Objet column saying the other. The map is the
+# MODEL's vocabulary (models/trust.PURPOSE_DIRECTIONS, read through the
+# service), shared with the integrity script that lists the incoherent pairs
+# already in the register; the REFUSAL is a CONNECTOR rule — the web form
+# still lets the lawyer pair any objet with any sens, and extending it there
+# is his decision, on that measure.
+_TRUST_PURPOSE_DIRECTION = comptabilite_service.TRUST_PURPOSE_DIRECTIONS
 _TRUST_DIRECTION_WORDS = {"recette": "une recette", "déboursé": "un déboursé"}
 # A fee payment's administration-side floor refusals name the WEB form's
 # field; the connector's caller knows it by another name.

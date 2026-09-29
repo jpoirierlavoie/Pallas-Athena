@@ -214,6 +214,23 @@ def test_the_hand_copied_vocabularies_are_the_models_own():
     assert tools._REGISTER_STATUSES == list(al.VALID_TX_STATUSES)
 
 
+def test_the_objet_sens_map_is_the_models_one_source():
+    """Revue de complétude du lot 5 : la carte objet → sens vivait dans le
+    gestionnaire seul, et le contrôle d'intégrité qui doit MESURER
+    l'historique avant que l'avocat étende la règle au web ne pouvait pas la
+    lire sans en tenir une copie. Elle est le vocabulaire du modèle ; le
+    connecteur la lit par le service."""
+    from scripts import verify_trust_integrity as vti
+
+    assert handlers._TRUST_PURPOSE_DIRECTION == trust.PURPOSE_DIRECTIONS
+    assert svc.TRUST_PURPOSE_DIRECTIONS == trust.PURPOSE_DIRECTIONS
+    assert vti.trust.PURPOSE_DIRECTIONS is trust.PURPOSE_DIRECTIONS
+    assert set(trust.PURPOSE_DIRECTIONS) <= set(trust.VALID_PURPOSES)
+    assert set(trust.PURPOSE_DIRECTIONS.values()) <= set(trust.VALID_DIRECTIONS)
+    reserved = {trust.REVERSAL_PURPOSE, trust.TRANSFER_PURPOSE, trust.FEE_PAYMENT_PURPOSE}
+    assert not set(trust.PURPOSE_DIRECTIONS) & reserved
+
+
 def test_the_connector_never_records_a_transfer_nor_a_correction_by_itself():
     purposes = tools.TOOLS["record_trust_entry"]["input_schema"]["properties"][
         "purpose"]["enum"]

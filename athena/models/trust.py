@@ -93,6 +93,27 @@ TRANSFER_PURPOSE = "virement_inter_dossiers"
 # on its invoice, in ONE transaction (``models/fee_payment``, lot 5a).
 FEE_PAYMENT_PURPOSE = "virement_honoraires"
 
+# The direction a purpose's NAME implies — « Dépôt du client » paid OUT, or
+# « Remise au client » paid IN, would print a line of the art. 38 register
+# whose Objet column says the opposite of the movement. Only the four
+# unambiguous purposes: « règlement », « autre », « intérêts » and « frais
+# bancaires » go either way, the fee payment keeps its own composite path
+# (always a déboursé), and the two reserved purposes are the model's.
+#
+# A VOCABULARY here, not yet a rule of this module: the CONNECTOR refuses an
+# incoherent pair (mcp/handlers.record_trust_entry, lot 5b review), while
+# the web form still lets the lawyer pair any objet with any sens —
+# extending the refusal to the web is HIS decision (a pairing he actually
+# uses would start being refused). ``scripts/verify_trust_integrity``
+# check 8 lists the incoherent pairs already in the register, from this
+# same map, which is the measure that decision needs.
+PURPOSE_DIRECTIONS = {
+    "avance_honoraires": "recette",
+    "dépôt_client": "recette",
+    "remise_client": "déboursé",
+    "déboursé_tiers": "déboursé",
+}
+
 # ── Withdrawal rules of RLRQ c. B-1, r. 5 (verified 2026-09-25, D14) ───────
 # Art. 58: fees and disbursements leave the general trust account « seulement
 # par chèque tiré à l'ordre de l'avocat ou par virement à un compte qui n'est

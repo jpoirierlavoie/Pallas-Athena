@@ -548,6 +548,10 @@ OUTCOME_UNCERTAIN_REASON: str = trust.OUTCOME_UNCERTAIN_REASON
 ADMIN_KIND_LABELS: dict = dict(al.KIND_LABELS)
 ADMIN_CATEGORY_LABELS: dict = dict(al.ADMIN_CATEGORY_LABELS)
 TRUST_PURPOSE_LABELS: dict = dict(trust.PURPOSE_LABELS)
+#: The direction each unambiguous trust purpose's name implies — the
+#: model's vocabulary (``trust.PURPOSE_DIRECTIONS``), which the connector
+#: enforces and the integrity script measures.
+TRUST_PURPOSE_DIRECTIONS: dict = dict(trust.PURPOSE_DIRECTIONS)
 
 
 def ventiler_montant(gross: int) -> tuple[int, int, int]:
