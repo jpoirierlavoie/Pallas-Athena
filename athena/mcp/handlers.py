@@ -7970,6 +7970,13 @@ def _refresh_dossier_party_names(args: dict) -> dict:
             "`partie_id` (tous les dossiers de ce contact) — exactement un "
             "des deux."
         )
+    # Resolved first, STRICTLY and by name: the model's own reads fail open,
+    # so an outage would come back « introuvable » without the way to find a
+    # valid id.
+    if dossier_id:
+        _read_dossier_strict(dossier_id)
+    else:
+        _read_partie_for_write(partie_id)
     rows, errors = dossier_model.refresh_party_names(
         dossier_id=dossier_id or None, partie_id=partie_id or None,
     )

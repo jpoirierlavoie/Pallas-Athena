@@ -738,3 +738,32 @@ def test_an_unreadable_dossier_is_never_a_missing_party_dossier(db, monkeypatch)
             "roles": ["intimé"]})
     assert "pas pu être lu" in str(err.value)
     assert "introuvable" not in str(err.value)
+
+
+@pytest.mark.parametrize("selector, path", [
+    ("dossier_id", "dossiers/{did}"),
+    ("partie_id", "parties/p1"),
+], ids=["by_dossier", "by_contact"])
+def test_a_refresh_over_an_unreadable_record_is_never_introuvable(
+        db, monkeypatch, selector, path):
+    """refresh_names handed its selector to the model, whose reads fail
+    open: an outage answered « Dossier introuvable » / « Contact
+    introuvable ». Resolved strictly in the handler now."""
+    _contact(db, "p1", "Jean", "Tremblay")
+    did = _dossier(db)
+    target = path.format(did=did)
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(str(n).endswith(target) for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    value = did if selector == "dossier_id" else "p1"
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.update_dossier_party({"action": "refresh_names",
+                                       selector: value})
+    assert "pas pu être lu" in str(err.value)
+    assert "introuvable" not in str(err.value)
