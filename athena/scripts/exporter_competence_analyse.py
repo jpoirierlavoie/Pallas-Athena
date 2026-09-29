@@ -169,10 +169,17 @@ inventer une.
 
 **Ce que l'enregistrement fait, et qu'il faut savoir avant d'appeler :**
 
-- Il **remplace** la catégorie stockée. La précédente reste au journal,
-  et si c'est l'avocat qui l'avait posée, un avertissement le lui dit.
+- Il **remplace** la catégorie stockée — **jamais** celle que l'avocat a
+  choisie ou confirmée (`category_set_by_lawyer`) : celle-là est GARDÉE,
+  avec sa confirmation, et si la sous-nature en dérive une autre,
+  `divergence_categorie` et un avertissement le disent. Signale-lui
+  l'écart ; une réanalyse ne le tranche pas. La catégorie remplacée,
+  elle, reste au journal.
 - Il marque le résultat **présumé**. La mention accompagne la valeur
-  partout, y compris au connecteur, jusqu'à confirmation.
+  partout, y compris au connecteur, jusqu'à confirmation. Là où la
+  confirmation de l'avocat a été gardée, elle précède ton passage : la
+  fiche le marque « confirmée avant cette analyse » jusqu'à ce qu'il le
+  confirme de nouveau.
 - Il est **journalisé pour toujours** : chaque exécution laisse sa trace,
   avec son modèle et sa date. Rien ne s'efface.
 - Le niveau de protection **ne redescend jamais** par une réanalyse. Si

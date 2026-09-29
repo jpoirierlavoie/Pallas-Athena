@@ -289,6 +289,9 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "la catégorie est remplacée, le niveau",
     "posée dans l'application, est remplacée",
     "the stored category is derived from it",
+    # Review of D25: the FILES paragraph handed every analysed document's
+    # category to record_document_analysis — which KEEPS the lawyer's.
+    "`record_document_analysis`'s) — never over",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before

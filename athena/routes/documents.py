@@ -242,6 +242,11 @@ def document_detail(document_id: str) -> str:
         # D25 : la catégorie que l'analyse dérive, quand la catégorie du
         # juriste — gardée — en diffère ; "" sinon (la note ambre).
         categorie_suggeree=document_model.analysis_category_divergence(doc),
+        # D25 : sa confirmation, gardée par une analyse enregistrée APRÈS
+        # elle, ne couvre pas le passage affiché — la carte ne le présente
+        # pas comme confirmé (alertes montrées, « Confirmer » offert).
+        confirmation_anterieure=(
+            document_model.analysis_confirmation_predates_run(doc)),
         # Le refus de « Confirmer » voyage sur une redirection 2xx
         # (?erreur=) ; la page ne le lisait pas, si bien qu'un refus — y
         # compris « Aucune analyse à confirmer. » — ne paraissait jamais.
@@ -600,6 +605,10 @@ def document_edit(document_id: str) -> str:
         category_labels=CATEGORY_LABELS,
         errors=[],
         return_to=request.args.get("return_to", ""),
+        # D25 : le résumé d'analyse du formulaire ne tait pas qu'une
+        # confirmation gardée précède le passage affiché.
+        confirmation_anterieure=(
+            document_model.analysis_confirmation_predates_run(doc)),
         **_analyse_form_context(),
     )
 
@@ -817,6 +826,8 @@ def document_update(document_id: str) -> str:
             errors=errors,
             conflict=conflict,
             return_to=return_to,
+            confirmation_anterieure=(
+                document_model.analysis_confirmation_predates_run(existing)),
             **_analyse_form_context(),
         )
 

@@ -553,6 +553,41 @@ def analysis_category_divergence(doc: Optional[dict]) -> str:
     return derived if derived and derived != current else ""
 
 
+def _as_utc(value: object) -> Optional[datetime]:
+    """*value* as an aware UTC datetime, ``None`` when it is not one."""
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def analysis_confirmation_predates_run(doc: Optional[dict]) -> bool:
+    """True when *doc*'s analysis cache carries the lawyer's confirmation
+    but that confirmation was given BEFORE the run the cache now holds.
+    PURE.
+
+    D25 (2026-09-29): an analysis recorded on a category of his KEEPS his
+    confirmation as it was (``confirme`` / ``confirme_par`` /
+    ``confirme_le``, :func:`record_analyse`) — so the cache then holds a
+    model's qualification, summary and alerts that he never read, under a
+    confirmation dated before it (``confirme_le < genere_le``). Confirming
+    says « I saw THIS version » (plan, rule 11; §7), so the document page
+    must not present that run as confirmed: it keeps the stored
+    confirmation, and still shows the run's alerts and a « Confirmer »
+    button. :func:`confirmer_analyse` stamps ``confirme_le`` AFTER the
+    run, :func:`update_analyse` stamps both at the same instant: neither
+    reads as anterior. A stamp that is missing or not a datetime proves
+    nothing either way and reads False (the rule before D25).
+    """
+    analyse = (doc or {}).get("analyse") or {}
+    if analyse.get("confirme") is not True:
+        return False
+    confirmed = _as_utc(analyse.get("confirme_le"))
+    generated = _as_utc(analyse.get("genere_le"))
+    if confirmed is None or generated is None:
+        return False
+    return confirmed < generated
+
+
 def _parse_document_date(raw) -> tuple[Optional[datetime], Optional[str]]:
     """Strict twin of :func:`_coerce_document_date` for WRITES.
 

@@ -199,3 +199,18 @@ def test_le_corps_exporte_est_deplie():
     corps = module.deplier(module.CORPS)
     longues = [ligne for ligne in corps.split(_NL) if len(ligne) > 90]
     assert longues, "aucune ligne longue : le corps n'a pas été déplié"
+
+
+def test_le_corps_dit_que_la_categorie_du_juriste_est_gardee():
+    # Revue de D25 (2026-09-29) : le corps disait « Il **remplace** la
+    # catégorie stockée », sans réserve, et qu'un avertissement le lui dit
+    # quand l'avocat l'avait posée. Depuis D25 l'analyse GARDE la catégorie
+    # du juriste avec sa confirmation, et cet avertissement ne se lève
+    # plus : un modèle qui le croirait réanalyserait pour « corriger » une
+    # catégorie qu'aucune analyse ne peut changer.
+    corps = " ".join(_module().deplier(_module().CORPS).split())
+    assert "Il **remplace** la catégorie stockée. La précédente" not in corps
+    assert "si c'est l'avocat qui l'avait posée, un avertissement" not in corps
+    assert "celle-là est GARDÉE, avec sa confirmation" in corps
+    assert "divergence_categorie" in corps
+    assert "« confirmée avant cette analyse »" in corps

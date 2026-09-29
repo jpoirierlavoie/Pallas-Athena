@@ -12553,13 +12553,17 @@ def _analyse_warnings(champ: dict) -> list[str]:
         )
     if conservee and champ.get("confirme"):
         # D25 — sa confirmation est gardée telle qu'elle était : elle couvre
-        # désormais un passage qu'il n'a pas lu, et l'écran tait les
-        # alertes d'une analyse confirmée. Le dire, c'est tout ce qui reste.
+        # désormais un passage qu'il n'a pas lu. La fiche ne le présente pas
+        # comme confirmé (models.document.analysis_confirmation_predates_run :
+        # pastille « Confirmée avant cette analyse », alertes montrées,
+        # « Confirmer » offert) ; le connecteur le dit aussi.
         out.append(
             "Catégorie et confirmation du juriste CONSERVÉES : cette analyse "
             "paraît sous la confirmation qu'il avait donnée, sans qu'il l'ait "
-            "lue. Signalez-lui ce qu'elle change (sous-nature, régime, "
-            "alertes) ; il la corrige dans l'application."
+            "lue — la fiche la marque « confirmée avant cette analyse », "
+            "alertes affichées. Signalez-lui ce qu'elle change (sous-nature, "
+            "régime, alertes) ; il la confirme de nouveau ou la corrige dans "
+            "l'application."
         )
     elif conservee:
         out.append(

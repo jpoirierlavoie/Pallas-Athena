@@ -3135,7 +3135,11 @@ Notes:
   phrasing « l'analyse remplace la catégorie » (or « an analysis
   replacing it », the lot 2A wording above) is true of a PRESUMED
   category only; a gap is reported to him, never settled by a new
-  analysis. **Device-visible — tell the lawyer, then check after the
+  analysis. The claude.ai skill « Analyse documentaire » is GENERATED, not
+  edited: re-export it with the same step (`python -m
+  scripts.exporter_competence_analyse`) and re-paste it — its « Il
+  **remplace** la catégorie stockée » bullet was unconditional until the
+  review of D25. **Device-visible — tell the lawyer, then check after the
   deploy:**
   1. A DAV read that FAILS answers **503 + `Retry-After`** — a collection
      listing, a sync report, a contact, an event, a task, a note, a
@@ -3182,12 +3186,13 @@ Notes:
      again through the connector (D25): its category and his confirmation
      stay. When the analysis derives another category, the fiche's
      « Analyse » card shows, in amber, « L'analyse suggère la catégorie X ;
-     la vôtre est conservée » — ALSO under a kept « Confirmée », whose
-     alerts stay folded: tell him that a kept confirmation covers an
-     analysis he has not read, and that he re-reads it before relying on
-     it. And in the edit form, correcting an analysis field other than the
-     sous-nature no longer replaces the category (changing the sous-nature
-     still re-derives it).
+     la vôtre est conservée » — ALSO under a kept confirmation, which the
+     card then marks « Confirmée avant cette analyse », the new run's
+     alerts shown and « Confirmer » offered: tell him that a kept
+     confirmation covers an analysis he has not read, and that he re-reads
+     it, then confirms it. And in the edit form, correcting an analysis
+     field other than the sous-nature no longer replaces the category
+     (changing the sous-nature still re-derives it).
   Watch, the first week: the finitions' `unexpected` messages
   (OBSERVABILITY.md, « Messages of the finitions ») — a burst is an outage,
   a steady line on one id a stored document to repair.

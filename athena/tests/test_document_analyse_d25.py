@@ -323,6 +323,9 @@ def test_the_tool_says_a_kept_confirmation_covers_a_run_he_did_not_read(fake):
     text = " ".join(result["warnings"])
     assert "Catégorie et confirmation du juriste CONSERVÉES" in text
     assert "sans qu'il l'ait lue" in text
+    # Review of D25: what the fiche shows, and the gesture that settles it.
+    assert "« confirmée avant cette analyse »" in text
+    assert "il la confirme de nouveau ou la corrige" in text
     assert "Classification PRÉSUMÉE" not in text
 
 
@@ -515,13 +518,117 @@ def test_the_detail_page_shows_the_gap(client, fake):
 
 def test_the_gap_stays_visible_under_a_kept_confirmation(client, fake):
     """The note sits OUTSIDE the « not confirmed » block: a re-analysis keeps
-    his confirmation, and the alerts of a confirmed analysis are folded."""
+    his confirmation, and once he confirms THIS run the alerts fold again —
+    the note must stay. (Docstring rewritten deliberately in the review of
+    D25: it said a kept confirmation folds the new run's alerts; it no
+    longer does — see the two tests below.)"""
     _doc(fake, "qualifie", category="correspondance",
          category_set_by_lawyer=True, analyse=_confirmed_analysis("CORR_TIERS"))
     _record("qualifie")
     html = _flat(client.get("/documents/qualifie").get_data(as_text=True))
     assert "Confirmée" in html
     assert _NOTE in html
+
+
+# ── Review of D25: a kept confirmation does not vouch for the new run ─────
+
+
+def _kept_confirmation_with_an_alert(fake):
+    """A document he confirmed, then re-analysed through the connector as a
+    hearing minute that carries the judgment — the alert that makes appeal
+    delays run, which the kept confirmation used to fold away unseen."""
+    _doc(fake, "qualifie", category="correspondance",
+         category_set_by_lawyer=True, analyse=_confirmed_analysis("CORR_TIERS"))
+    _, errors = _record("qualifie", sous_nature="PV_AUDIENCE_JUGEMENT")
+    assert errors == [], errors
+    stored = fake.peek("documents/qualifie")
+    assert stored["analyse"]["confirme"] is True          # D25: kept
+    assert stored["analyse"]["alerte_dispositif_detecte"] is True
+    return stored
+
+
+_DISPOSITIF = "Paraît porter le jugement lui-même"
+
+
+def test_a_kept_confirmation_does_not_fold_the_new_runs_alerts(client, fake):
+    """FAILS on cc9de4e: the card read « Confirmée » and folded every alert
+    of a run the lawyer never read — confirming says « j'ai vu CETTE
+    version » (plan, rule 11), and D25 keeps a confirmation given BEFORE
+    it. The stored confirmation is untouched; the card no longer vouches
+    for the run, shows its alerts and offers « Confirmer »."""
+    stored = _kept_confirmation_with_an_alert(fake)
+    html = _flat(client.get("/documents/qualifie").get_data(as_text=True))
+    assert "Confirmée avant cette analyse" in html
+    assert _DISPOSITIF in html
+    assert "/documents/qualifie/analyse/confirmer" in html
+    assert "Votre confirmation précède cette analyse" in html
+    assert "Confirmée le 01/09/2026, avant cette analyse du" in html
+    # Nothing was cleared: the page reads, the store keeps his confirmation.
+    after = fake.peek("documents/qualifie")
+    assert after["analyse"]["confirme"] is True
+    assert (after["analyse"]["confirme_par"], after["analyse"]["confirme_le"]) == (
+        stored["analyse"]["confirme_par"], CONFIRMED_AT)
+
+
+def test_confirming_the_new_run_folds_its_alerts_again(client, fake):
+    """The existing gesture settles it: « Confirmer » stamps the confirmation
+    AFTER the run, and the card is « Confirmée » again, alerts folded."""
+    _kept_confirmation_with_an_alert(fake)
+    _, errors = document_model.confirmer_analyse("qualifie", "me@cabinet.ca")
+    assert errors == [], errors
+    assert not document_model.analysis_confirmation_predates_run(
+        fake.peek("documents/qualifie"))
+    html = _flat(client.get("/documents/qualifie").get_data(as_text=True))
+    assert "Confirmée avant cette analyse" not in html
+    assert _DISPOSITIF not in html
+    assert "Confirmée" in html
+
+
+def test_the_edit_form_says_the_confirmation_predates_the_run(client, fake):
+    """FAILS on cc9de4e: the form's analysis summary dropped « présumé » and
+    said nothing — the same silent vouching, on the edit page."""
+    _kept_confirmation_with_an_alert(fake)
+    html = _flat(client.get("/documents/qualifie/edit").get_data(as_text=True))
+    assert "— confirmée avant cette analyse" in html
+
+
+def test_the_texts_say_a_kept_confirmation_does_not_vouch_for_the_run():
+    """Review of D25 — the consent screen and INSTRUCTIONS say what the card
+    and the model do: a run made after his confirmation is marked, alerts
+    shown; the analysis also replaces a category nobody chose; and an
+    analysed document's category is the analysis's only when it is not his.
+    FAILS on cc9de4e."""
+    from mcp import disclosure
+
+    consent = (_ATHENA / "templates" / "mcp" / "families" / "_analyse.html"
+               ).read_text(encoding="utf-8").replace("&nbsp;", " ")
+    assert "« confirmée avant cette analyse », ses alertes affichées" in (
+        " ".join(consent.split()))
+    families = {f.key: f for f in disclosure.FAMILIES}
+    assert "or one nobody chose" in families["analyse"].instructions_en
+    assert ("`record_document_analysis`'s, unless it is the lawyer's"
+            in families["files"].instructions_en)
+
+
+@pytest.mark.parametrize("analyse, anterior", [
+    ({}, False),                                           # no analysis
+    ({"confirme": False, "genere_le": DT}, False),         # presumed
+    # confirmer_analyse: stamped AFTER the run.
+    ({"confirme": True, "genere_le": DT, "confirme_le": CONFIRMED_AT}, False),
+    # update_analyse: both stamps at the same instant.
+    ({"confirme": True, "genere_le": DT, "confirme_le": DT}, False),
+    # D25: a run recorded after the confirmation it kept.
+    ({"confirme": True, "genere_le": CONFIRMED_AT, "confirme_le": DT}, True),
+    # A naive stamp is read as UTC, never a TypeError.
+    ({"confirme": True, "genere_le": CONFIRMED_AT,
+      "confirme_le": DT.replace(tzinfo=None)}, True),
+    # A missing or foreign stamp proves nothing: the rule before D25.
+    ({"confirme": True, "genere_le": CONFIRMED_AT}, False),
+    ({"confirme": True, "genere_le": "2026-09-01", "confirme_le": DT}, False),
+])
+def test_an_anterior_confirmation_is_read_from_the_stamps(analyse, anterior):
+    assert document_model.analysis_confirmation_predates_run(
+        {"analyse": analyse}) is anterior
 
 
 @pytest.mark.parametrize("did", ["defaut", "concorde"])
