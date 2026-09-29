@@ -30,6 +30,7 @@ import os
 import pathlib
 import re
 import sys
+import uuid
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -1118,11 +1119,10 @@ def test_a_locked_row_says_why(fake):
     assert row["locked"] is True and row["lock_reason"] == "écriture_verrouillée"
 
 
-def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
-    """The « account_number » promise (mcp/disclosure): every accounting
-    payload — the read, each write, each branch — carries neither the
-    accounts' transit nor their account number, nor a receipt's storage
-    path; the keys are never emitted either."""
+def _every_accounting_payload(fake) -> list:
+    """Every accounting payload the connector emits — the read, each write,
+    each branch — on the seeded accounts (their transit and last 4 digits
+    stored beside them), in a fixed order the checks below index into."""
     payloads = []
     rec = _call("record_trust_entry", **_deposit())
     payloads.append(rec)
@@ -1151,7 +1151,15 @@ def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
                           tx_id=payloads[2]["entity"]["id"], reason="Erreur"))
     payloads.append(_call("reverse_register_entry", register="admin",
                           tx_id=dep["entity"]["id"], reason="Doublon"))
+    return payloads
 
+
+def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
+    """The « account_number » promise (mcp/disclosure): every accounting
+    payload — the read, each write, each branch — carries neither the
+    accounts' transit nor their account number, nor a receipt's storage
+    path; the keys are never emitted either."""
+    payloads = _every_accounting_payload(fake)
     dumped = json.dumps(payloads, ensure_ascii=False, default=str)
     assert _bank_numbers_in(dumped) == []
     assert RECEIPT_PATH not in dumped and "administration/rx" not in dumped
@@ -1191,6 +1199,50 @@ def test_the_bank_number_scan_sets_aside_generated_ids_never_a_leak():
                  '{"account_number_last4": "6789"}', "Desjardins 12345-6789"):
         text = json.dumps({"x": leak, **generated}, ensure_ascii=False)
         assert _bank_numbers_in(text), leak
+
+
+def _hostile_uuid4(seed: int):
+    """A ``uuid.uuid4`` whose EVERY id and etag carries both seeded bank
+    numbers — each a valid lowercase uuid4, unique within the run, the
+    numbers placed where the seed and the counter put them, the worst place
+    included: « 6789 » as a whole hyphen-delimited group, which a
+    word-boundary search would call a leak."""
+    counter = itertools.count(1)
+
+    def make() -> uuid.UUID:
+        n = next(counter)
+        layout = (seed + n) % 3
+        if layout == 0:
+            text = (f"{seed % 0x10000:04x}{n % 0x10000:04x}-{LAST4}-"
+                    f"4{seed % 0x1000:03x}-8{n % 0x1000:03x}-{TRANSIT}{n:07x}")
+        elif layout == 1:
+            text = (f"{n % 0x10000:04x}{LAST4}-{seed % 0x10000:04x}-"
+                    f"4{n % 0x1000:03x}-9{seed % 0x1000:03x}-{n:07x}{TRANSIT}")
+        else:
+            text = (f"{TRANSIT}{n % 0x1000:03x}-{n % 0x10000:04x}-"
+                    f"4{seed % 0x1000:03x}-a{n % 0x1000:03x}-"
+                    f"{n:05x}{LAST4}{seed % 0x1000:03x}")
+        value = uuid.UUID(text)
+        assert str(value) == text and value.version == 4, text
+        return value
+
+    return make
+
+
+@pytest.mark.parametrize("seed", range(24))
+def test_the_bank_number_check_is_deterministic_whatever_the_ids(
+        fake, monkeypatch, seed):
+    """The flake, reproduced on purpose and shown gone (2026-09-29): the
+    whole payload run of the check above, with EVERY id and etag the run
+    mints carrying both bank numbers — the chance event that once failed
+    the deploy gate, made certain, at a different position under each
+    seed. The raw dump holds both numbers (non-vacuous); the check still
+    finds none, every time: it can only fail on a real leak."""
+    monkeypatch.setattr(uuid, "uuid4", _hostile_uuid4(seed))
+    payloads = _every_accounting_payload(fake)
+    dumped = json.dumps(payloads, ensure_ascii=False, default=str)
+    assert LAST4 in dumped and TRANSIT in dumped
+    assert _bank_numbers_in(dumped) == []
 
 
 # ══════════════════════════════════════════════════════════════════════
