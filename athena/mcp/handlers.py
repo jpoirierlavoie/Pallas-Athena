@@ -17429,7 +17429,7 @@ def _reverse_register_entry_impl(args: dict) -> dict:
     if register == "trust" and original.get("purpose") == "virement_inter_dossiers":
         # Its reversal moves one client's funds back to another client —
         # a transfer between dossiers, which the connector never makes
-        # (the « register_setup » promise): the lawyer reverses it in the
+        # (the « register_transfer » promise): the lawyer reverses it in the
         # application, where the two legs go together.
         raise ToolArgumentError(
             "Un virement entre dossiers se contre-passe dans l'application : "

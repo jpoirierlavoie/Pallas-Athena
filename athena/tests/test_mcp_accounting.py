@@ -574,6 +574,83 @@ def test_a_cleared_entry_is_no_longer_editable(fake):
     assert "reverse_register_entry" in str(refusal)
 
 
+def test_the_train_s_pilot_moves_the_balance_as_deployment_says_and_locks_both_sides(fake):
+    """Review of lot 5, step 5 (money lens). DEPLOYMENT.md §15 « Lot 5 »,
+    step 6, is the lawyer's supervised pilot on a TEST administration
+    account, and it now states the balance to expect after each call — a
+    balance other than those is an écart, and the pilot stops. The recipe
+    said « its four entries » (there are TWO: the dépense and its reversal)
+    and let (d) « bring the account back to 0,00 $ » — the balance is ALREADY
+    zero after (c), since ``admin_delta`` counts every status. This runs the
+    four calls through the real handlers and pins each figure.
+
+    It also pins the consent partial's editability clause against the
+    model: « jamais contre-passée » named only the ORIGINAL of a pair, while
+    the reversal itself (``reverses_id``, en circulation after a cleared
+    original) is locked by ``_entry_lock_reason`` too — the partial now
+    names both sides."""
+    fake.seed("admin_accounts/essai", {
+        "id": "essai", "name": "Essai — connecteur", "institution": "",
+        "status": "actif", "account_type": "opérations", "transit": "",
+        "account_number_last4": "", "ledger_balance": 0,
+    })
+
+    def balance() -> int:
+        return fake.peek("admin_accounts/essai")["ledger_balance"]
+
+    # (a) the dépense of 1,00 $, today, sans taxe.
+    made = _call("record_admin_entry", **_depense(
+        100, account_id="essai", date="2026-09-20", ventilation="sans_taxe",
+        category="autre"))["entity"]
+    assert made["status"] == "en_circulation" and balance() == -100
+    stored = fake.peek(f"admin_transactions/{made['id']}")
+    assert (stored["net_amount"], stored["gst_amount"], stored["qst_amount"]) == (100, 0, 0)
+    # (b) cleared at today's date: the balance does not move.
+    _call("clear_register_entries", register="admin", tx_ids=[made["id"]],
+          cleared_date="2026-09-20")
+    assert fake.peek(f"admin_transactions/{made['id']}")["status"] == "compensée"
+    assert balance() == -100
+    # (c) reversed: the reversal enters en circulation — and the balance is
+    # zero AT ONCE.
+    rev = _call("reverse_register_entry", register="admin", tx_id=made["id"],
+                reason="Pilote du connecteur")
+    reversal_id = rev["entity"]["id"]
+    assert rev["entity"]["status"] == "en_circulation"
+    assert rev["original"]["status_after"] == "compensée"
+    assert balance() == 0
+    # The reversal, en circulation and linked to nothing else, is NOT
+    # editable — the side « jamais contre-passée » did not name.
+    current = fake.peek(f"admin_transactions/{reversal_id}")
+    assert al._entry_lock_reason(current, None) == "écriture_verrouillée"
+    before = _entries(fake, "admin_transactions")
+    refusal = _refused("update_admin_entry", tx_id=reversal_id,
+                       expected_etag=current["etag"], description="x")
+    assert refusal.reason == "accounting_refused"
+    assert _entries(fake, "admin_transactions") == before
+    # (d) the reversal cleared: still zero, nothing outstanding — and the
+    # account holds exactly TWO entries.
+    _call("clear_register_entries", register="admin", tx_ids=[reversal_id],
+          cleared_date="2026-09-20")
+    rows = [r for r in _entries(fake, "admin_transactions").values()
+            if r.get("account_id") == "essai"]
+    assert len(rows) == 2 and balance() == 0
+    assert sum(al.admin_delta(r["direction"], r["amount"]) for r in rows) == 0
+    assert {r["status"] for r in rows} == {"compensée"}
+
+    deployment = (_ATHENA.parent / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    flat = " ".join(deployment.split())
+    assert "its four entries" not in flat
+    assert "its TWO entries (the dépense and its reversal)" in flat
+    for figure in ("the account's balance reads **−1,00 $**",
+                   "still **−1,00 $**", "the balance reads **0,00 $** AT ONCE",
+                   "still **0,00 $**, now with nothing outstanding"):
+        assert figure in flat, figure
+    partial = " ".join((_ATHENA / "templates" / "mcp" / "families" /
+                        "_comptabilite.html").read_text(encoding="utf-8").split())
+    assert "ni contre-passée ni elle-même une contre-passation" in partial
+    assert "et jamais contre-passée" not in partial
+
+
 def test_nothing_is_dated_in_a_reconciled_period(fake):
     outstanding = _call("record_admin_entry", **_depense(date="2026-09-08"))
     fake.seed("admin_reconciliations/r1", {
@@ -740,6 +817,13 @@ def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
                           card_account_id="card1"))
     payloads.append(handlers.get_admin_ledger({}))
     payloads.append(handlers.get_admin_ledger({"account_id": "ops1"}))
+    # Review of lot 5, step 5 (money lens): the promise is shown to an
+    # accounting token for the WHOLE connector, and the train (DEPLOYMENT.md
+    # §15 « Lot 5 », step 5) checks get_trust_snapshot by hand — the two
+    # trust reads carry the seeded account's transit and last 4 digits
+    # neither, on the real store.
+    payloads.append(handlers.get_trust_snapshot({}))
+    payloads.append(handlers.list_trust_transactions({"account_id": "acc1"}))
     payloads.append(_call("reverse_register_entry", register="trust",
                           tx_id=payloads[2]["entity"]["id"], reason="Erreur"))
     payloads.append(_call("reverse_register_entry", register="admin",
@@ -753,6 +837,10 @@ def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
         assert f'"{forbidden}' not in dumped, forbidden
     ledger = handlers.get_admin_ledger({"account_id": "ops1"})
     assert any(r["has_receipt"] for r in ledger["transactions"])
+    # Non-vacuous: the trust reads DID read the seeded account and entries.
+    snapshot = json.dumps(payloads[7], ensure_ascii=False, default=str)
+    assert "Desjardins" in snapshot and "Général" in snapshot
+    assert payloads[8]["transactions"]
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -934,14 +934,19 @@ def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake
         "Le connecteur n'efface jamais une écriture.",
         "c'est la seule correction d'une écriture du fidéicommis, et d'une "
         "écriture d'administration qui n'est plus modifiable",
-        "à aucun paiement d'honoraires ni à aucun paiement de carte, et "
-        "jamais contre-passée",
+        # REWRITTEN in the review of lot 5, step 5 (money lens): « et
+        # jamais contre-passée » named only the ORIGINAL of a pair — the
+        # reversal itself is locked too (models/admin_ledger
+        # ._entry_lock_reason, reverses_id).
+        "à aucun paiement d'honoraires ni à aucun paiement de carte, ni "
+        "contre-passée ni elle-même une contre-passation",
         "(les 25 dernières conservées)",
     ):
         assert fragment in block, fragment
     for gone in ("Une écriture inscrite par erreur ne s'efface pas",
                  "c'est la seule correction, et l'original",
-                 "chaque correction étant conservée"):
+                 "chaque correction étant conservée",
+                 "et jamais contre-passée"):
         assert gone not in block, gone
     from tests.test_mcp_disclosure import _false_claims_in
     assert _false_claims_in(" ".join(body.split())) == []

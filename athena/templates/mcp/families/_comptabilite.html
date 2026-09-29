@@ -13,7 +13,10 @@
    and the editable conditions now name the card payment and the reversal
    pair too (models/admin_ledger._entry_lock_reason). « Chaque correction
    étant conservée » overstated a trail the model caps at 25
-   (_REVISIONS_CAP). #}
+   (_REVISIONS_CAP). Review of the text step (money lens): « jamais
+   contre-passée » named only the ORIGINAL of a pair — the reversal itself
+   (reverses_id, « en circulation » after a cleared original) is locked too,
+   and read as editable here; the clause now names both sides. #}
 <p class="mt-3">
   <strong>Lire</strong> le registre d'administration&nbsp;: les comptes
   d'opérations et les cartes de crédit, leurs soldes, leur dernière
@@ -39,9 +42,9 @@
   la facture dans la même opération — et des paiements de carte&nbsp;;
   <strong>corriger</strong> une écriture d'administration tant qu'elle reste
   modifiable (en circulation, hors période conciliée, liée à aucune facture,
-  à aucun paiement d'honoraires ni à aucun paiement de carte, et jamais
-  contre-passée), ses corrections inscrites sur l'écriture (les 25
-  dernières conservées).
+  à aucun paiement d'honoraires ni à aucun paiement de carte, ni
+  contre-passée ni elle-même une contre-passation), ses corrections
+  inscrites sur l'écriture (les 25 dernières conservées).
 </p>
 <p class="mt-2">
   <strong>Compenser</strong> jusqu'à {{ disclosure.register_clear_max }}

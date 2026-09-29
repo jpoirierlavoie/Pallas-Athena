@@ -2874,8 +2874,10 @@ Notes:
   « Lot 4 » — since those lots widen `athena:write`):
   0. **Baseline, before the push** (read-only; the environment of the T3
      recipe above): `python -m scripts.verify_trust_integrity` and
-     `python -m scripts.verify_admin_integrity`. Exit `0` — or `2` with
-     every note read with the lawyer —, admin check nº 8 (`amount_paid` ==
+     `python -m scripts.verify_admin_integrity`. Exit `0` — or, for the
+     trust script only, `2` with every note read with the lawyer (the
+     administration script has no notes: every finding it prints is an
+     écart, exit `1`) —, admin check nº 8 (`amount_paid` ==
      Σ receipts, over EVERY invoice carrying a payment) clean above all: an
      encaissement the old regime never projected onto its invoice reads
      there as an écart, and 5a's atomic reversal REFUSES when an invoice's
@@ -2893,8 +2895,9 @@ Notes:
      (251 KB of its 280 KB cap, the six counted).
   2. **Run both integrity scripts again, on the deployed version**, before
      anything is armed — `verify_trust_integrity` and
-     `verify_admin_integrity`, read-only: exit `0`, or `2` with every note
-     read with the lawyer. The connector will write into these registers;
+     `verify_admin_integrity`, read-only: exit `0` (the trust script `2`
+     with every note read with the lawyer). The connector will write into
+     these registers;
      an écart there first is one nobody could later tell from the
      connector's.
   3. **Arm the switch**: `MCP_COMPTABILITE_ENABLED: "true"` in `app.yaml`,
@@ -2943,22 +2946,33 @@ Notes:
      (no transit, no digits). First the refusals, which write nothing: a
      trust disbursement « comptant » (art. 57), a fee payment on a
      brouillon invoice, an entry dated tomorrow. Then, the lawyer watching,
-     through the connector and each with its own `idempotency_key`:
+     through the connector and each with its own `idempotency_key` — and
+     telling Claude it is a pilot on the test account, since its
+     instructions record only movements that happened at the bank:
      (a) `record_admin_entry` — a `dépense` of 1,00 $ on the test account,
-     today, any `category` of its list, `ventilation` « sans_taxe »; (b) `clear_register_entries`
-     (`register: admin`) on it at today's date; (c) `reverse_register_entry`
-     on it — a cleared entry's reversal enters « en circulation », a real
-     movement to come; (d) `clear_register_entries` on the reversal, which
-     brings the account back to 0,00 $ with nothing outstanding. After each
-     step, open the entry in the application (its status, the test
-     account's balance) and read it back with `get_admin_ledger` — its
-     `created_via` / `cleared_via` read `"mcp"`, which the application's
-     pages do not display. Then close the
-     test account (« Fermé ») in the application; its four entries stay in
-     the ledger for good, netting to zero.
-  7. **Re-run both integrity scripts** (read-only): exit `0`, or `2` with
-     the notes read. Only then may the first REAL bank movement be
-     recorded through the connector — the lawyer's, at its statement date.
+     today, any `category` of its list, `ventilation` « sans_taxe » (no tax
+     figure: nothing reaches a TPS/TVQ total), a `method` and a
+     `counterparty` (both required) — the account's balance reads
+     **−1,00 $**, the entry « en circulation »; (b) `clear_register_entries`
+     (`register: admin`) on it at today's date — still **−1,00 $**, the
+     entry « compensée » (clearing moves no balance: the ledger balance
+     counts every status); (c) `reverse_register_entry` on it, with a
+     `reason` — a cleared entry's reversal enters « en circulation », a
+     real movement to come, and the balance reads **0,00 $** AT ONCE (the
+     reversal counts from its creation); (d) `clear_register_entries` on
+     the reversal — still **0,00 $**, now with nothing outstanding. A
+     balance other than these after any step is an écart: stop there.
+     After each step, open the entry in the application (its status, the
+     test account's balance) and read it back with `get_admin_ledger` —
+     its `created_via` / `cleared_via` read `"mcp"`, which the
+     application's pages do not display. Then close the test account
+     (« Fermé ») in the application; its TWO entries (the dépense and its
+     reversal) stay in the ledger for good, netting to zero.
+  7. **Re-run both integrity scripts** (read-only): exit `0` (the trust
+     script `2` with the notes read) — the test account's two entries
+     among what the administration script checks (Σ = 0, the pair
+     symmetric). Only then may the first REAL bank movement be recorded
+     through the connector — the lawyer's, at its statement date.
   8. **Incident**: `MCP_COMPTABILITE_ENABLED: "false"` + deploy stops the
      six tools ONLY; `MCP_WRITE_ENABLED: "false"` stops every write,
      accounting included (the read `get_admin_ledger` answers to the
