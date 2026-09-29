@@ -94,3 +94,16 @@ def test_the_phase_gotcha_names_the_function_that_exists():
     from models import protocol
     assert hasattr(protocol, "create_linked_tasks")
     assert not hasattr(protocol, "_auto_create_tasks_for_steps")
+
+
+def test_the_templatize_chain_names_the_argument_it_hands_over():
+    """contracts-9: preview_templatize takes `document_id`, create_template
+    the SAME stored .docx as `source_document_id`; carried over verbatim,
+    `document_id` is refused by additionalProperties:false. Both texts now
+    name the hand-over."""
+    preview = tools.TOOLS["preview_templatize"]
+    create = tools.TOOLS["create_template"]
+    assert "create_template's `source_document_id`" in preview["description"]
+    prop = create["input_schema"]["properties"]["source_document_id"]
+    assert "preview_templatize" in prop["description"]
+    assert "document_id" not in create["input_schema"]["properties"]

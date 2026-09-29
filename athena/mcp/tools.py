@@ -6202,7 +6202,9 @@ TOOLS: dict[str, dict] = {
             "is CASE-SENSITIVE: an ALL-CAPS variant of a name needs its own "
             "substitution, with an ALL-CAPS field name. Adjust and preview "
             "again until ready_to_create, then create_template with each "
-            "expected_occurrences = its `substituted`. Counts the file with "
+            "expected_occurrences = its `substituted` — and this "
+            "`document_id` passed as create_template's `source_document_id` "
+            "(same id, other name). Counts the file with "
             "its document properties emptied, as create_template stores it. "
             "Writes nothing, and never returns the document's text — counts "
             "only."
@@ -6249,8 +6251,9 @@ TOOLS: dict[str, dict] = {
             "type": "object",
             "properties": {
                 "source_document_id": _id(
-                    "The stored .docx (UUIDv4), from list_documents. Its "
-                    "OWN dossier is the one checked."
+                    "The stored .docx (UUIDv4), from list_documents — the "
+                    "`document_id` you gave preview_templatize. Its OWN "
+                    "dossier is the one checked."
                 ),
                 "name": {
                     "type": "string", "minLength": 1,
