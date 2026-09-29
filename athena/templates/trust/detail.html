@@ -2,12 +2,20 @@
 {% block title %}Écriture #{{ entry.sequence }} — Fidéicommis — Pallas Athena{% endblock %}
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6">
-  <div class="flex items-center gap-2 mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-6">
     <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
     <h1 class="text-xl font-semibold text-gray-900">Écriture n<sup>o</sup> {{ entry.sequence }}</h1>
     {% if entry.status == 'compensée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Compensée</span>
     {% elif entry.status == 'en_circulation' %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En circulation</span>
     {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
+    {# La provenance que l'écriture PORTE (created_via / cleared_via, lot 5)
+       — ce que l'écran de consentement promet : « chaque écriture est
+       marquée comme provenant de Claude ». Le juriste relit ce que le
+       connecteur a inscrit ou compensé ; une écriture du registre ne
+       s'efface pas, elle se contre-passe. Les classes de la mention « créée
+       par Claude » d'une facture (aucune recompilation). #}
+    {% if entry.created_via == 'mcp' %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">inscrite par Claude</span>{% endif %}
+    {% if entry.cleared_via == 'mcp' %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">compensée par Claude</span>{% endif %}
   </div>
 
   {# A refusal of « Compenser » (or of any action posting back here) rides

@@ -2972,8 +2972,10 @@ Notes:
      balance other than these after any step is an écart: stop there.
      After each step, open the entry in the application (its status, the
      test account's balance) and read it back with `get_admin_ledger` —
-     its `created_via` / `cleared_via` read `"mcp"`, which the
-     application's pages do not display. Then close the test account
+     its `created_via` / `cleared_via` read `"mcp"`, and the entry's page
+     in the application shows « inscrite par Claude » / « compensée par
+     Claude » beside its status (and « · par Claude » on a revision the
+     connector made). Then close the test account
      (« Fermé ») in the application; its TWO entries (the dépense and its
      reversal) stay in the ledger for good, netting to zero.
   7. **Re-run both integrity scripts** (read-only): exit `0` (the trust

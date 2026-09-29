@@ -3,12 +3,19 @@
 {% block content %}
 {% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-2xl mx-auto px-4 py-6" x-data="{ deleteOpen: false }">
-  <div class="flex items-center gap-2 mb-4">
+  <div class="flex flex-wrap items-center gap-2 mb-4">
     <a href="{{ url_for('admin_ledger.journal', account_id=entry.account_id) }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
     <h1 class="text-xl font-semibold text-gray-900">Écriture n<sup>o</sup> {{ entry.sequence }}</h1>
     {% if entry.status == 'compensée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Compensée</span>
     {% elif entry.status == 'en_circulation' %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En circulation</span>
     {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
+    {# La provenance que l'écriture PORTE (created_via / cleared_via, lot 5)
+       — ce que l'écran de consentement promet : « chaque écriture est
+       marquée comme provenant de Claude ». Une correction par le connecteur
+       se lit dans les révisions ci-dessous (« par Claude »). Les classes de
+       la mention « créée par Claude » d'une facture (aucune recompilation). #}
+    {% if entry.created_via == 'mcp' %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">inscrite par Claude</span>{% endif %}
+    {% if entry.cleared_via == 'mcp' %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">compensée par Claude</span>{% endif %}
   </div>
 
   {# Le bandeau « facture » (écriture inscrite, paiement non porté) a
@@ -81,7 +88,7 @@
       <summary class="text-xs text-gray-500 cursor-pointer">Révisions ({{ entry.revisions | length }})</summary>
       <ul class="mt-2 space-y-1 text-xs text-gray-600">
         {% for rev in entry.revisions | reverse %}
-        <li>{{ (rev.at | to_mtl).strftime('%Y-%m-%d %H:%M') if rev.at and rev.at.strftime is defined else '' }} — {{ rev.changes.keys() | join(', ') }}</li>
+        <li>{{ (rev.at | to_mtl).strftime('%Y-%m-%d %H:%M') if rev.at and rev.at.strftime is defined else '' }} — {{ rev.changes.keys() | join(', ') }}{% if rev.via == 'mcp' %} · par Claude{% endif %}</li>
         {% endfor %}
       </ul>
     </details>
