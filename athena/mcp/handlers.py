@@ -3319,7 +3319,59 @@ def get_trust_snapshot(args: dict) -> dict:
 # silently erased, taking the citation with it.
 _AUTOLINK_URL_RE = re.compile(r"<((?:https?|ftp)://[^<>\s]+)>")
 _AUTOLINK_MAILTO_RE = re.compile(r"<mailto:([^<>\s]+)>")
-_AUTOLINK_EMAIL_RE = re.compile(r"<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>")
+# The bare-address autolink (`<jean@exemple.ca>`) is recognised by a LINEAR
+# scan, never a regex (finitions, robustness-2). The pattern it replaces,
+# `<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>`, was QUADRATIC — the class after
+# « @ » also matches « . », so `<a@` + `b.`×n with no closing « > » tried
+# every split point and rescanned the tail: the normalize_email ReDoS of
+# CLAUDE.md, in a new home. Harmless while its callers were capped at 20 000
+# characters (~0,8 s); update_note and edit_analyse (99 000) and
+# create_document (60 000) pass far longer text through it — 20 s holding
+# the GIL for one call, every thread of the gunicorn worker frozen.
+# _email_autolinks recognises the identical language in one pass.
+
+
+def _is_email_autolink(inner: str) -> bool:
+    """True for the text between « < » and « > » of a bare-address autolink
+    — exactly the language of the retired regex: no whitespace (its
+    backslash-s class, i.e. ``str.isspace``), no « < » / « > », ONE « @ », a
+    non-empty local part, and a « . » strictly inside the domain."""
+    if not inner or any(ch.isspace() or ch in "<>" for ch in inner):
+        return False
+    local, at, domain = inner.partition("@")
+    return bool(local and at and "@" not in domain and "." in domain[1:-1])
+
+
+def _email_autolinks(text: str) -> str:
+    """Rewrite every `<addr@domain.tld>` as `[addr@domain.tld](mailto:…)`,
+    scanning left to right like ``re.sub`` (leftmost, non-overlapping). Each
+    « < » is a candidate ending at the FIRST « > » after it — another « < »
+    before that « > » moves the candidate there. The next « > » is found
+    once and reused while the scan stays before it, so the whole pass is
+    linear in the text."""
+    out: list[str] = []
+    kept = 0
+    close = -1
+    start = text.find("<")
+    while start != -1:
+        if close <= start:
+            close = text.find(">", start + 1)
+            if close == -1:
+                break
+        following = text.find("<", start + 1, close)
+        if following != -1:
+            start = following
+            continue
+        inner = text[start + 1:close]
+        if _is_email_autolink(inner):
+            out.append(text[kept:start])
+            out.append(f"[{inner}](mailto:{inner})")
+            kept = close + 1
+            start = text.find("<", kept)
+        else:
+            start = text.find("<", start + 1)
+    out.append(text[kept:])
+    return "".join(out)
 
 _PROVENANCE_SEPARATOR = "\n\n---\n\n"
 
@@ -3348,10 +3400,7 @@ def _normalize_markdown(text: str) -> str:
     text = _AUTOLINK_MAILTO_RE.sub(
         lambda m: f"[{m.group(1)}](mailto:{m.group(1)})", text
     )
-    text = _AUTOLINK_EMAIL_RE.sub(
-        lambda m: f"[{m.group(1)}](mailto:{m.group(1)})", text
-    )
-    return text
+    return _email_autolinks(text)
 
 
 def _survives_storage(text: str, limit: int) -> bool:
