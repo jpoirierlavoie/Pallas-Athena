@@ -2756,7 +2756,11 @@ Notes:
   `*_presumed` false on a decided status means « tell him »; a detected
   conflict reported to him AT ONCE; notes are appended, never replaced);
   and `update_partie_mandataire`'s (an individual of the same role;
-  `update` for a representation already listed).
+  `update` for a representation already listed); and what « Le dossier
+  n'a pas pu être lu — réessayez. » means (fixes of lot 4 — every write
+  that names a dossier): the store did not answer and NOTHING was
+  written — send the same call again in a moment; never read it as
+  « introuvable », and never create a dossier on the strength of it.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

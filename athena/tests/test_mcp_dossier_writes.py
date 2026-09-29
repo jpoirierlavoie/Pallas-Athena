@@ -260,9 +260,123 @@ def test_an_unreadable_dossier_is_never_read_as_unknown(db, monkeypatch):
         raise gexc.ServiceUnavailable("down")
 
     monkeypatch.setattr(dossier_model, "get_dossier_strict", boom)
-    with pytest.raises(tools.ToolArgumentError, match="pas pu être lu"):
+    with pytest.raises(tools.ToolArgumentError) as err:
         handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    assert str(err.value) == _UNREADABLE
+    assert err.value.reason == "read_unavailable"
     assert db.peek(f"dossiers/{did}")["status"] == "actif"
+
+
+# The ONE refusal of a dossier read that failed (fixes of lot 4) — every
+# write that resolves a dossier, never « Dossier introuvable ».
+_UNREADABLE = "Le dossier n'a pas pu être lu — réessayez."
+
+
+def _fail_reads_of(monkeypatch, db, target: str) -> None:
+    """Every keyed read of *target* fails at the transport — the blip."""
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(str(n).endswith(target) for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+
+
+# Every write tool that resolves ONE dossier it names — the creators, the
+# dossier's own correction and recorders, the two DOSSIERS tools.
+_DOSSIER_RESOLVING_CALLS = {
+    "create_note": lambda did: handlers.create_note(
+        {"dossier_id": did, "title": "Recherche", "content": "Corps"}),
+    "create_task": lambda did: handlers.create_task(
+        {"dossier_id": did, "title": "Préparer la requête"}),
+    "create_hearing": lambda did: handlers.create_hearing(
+        {"dossier_id": did, "title": "Audience", "date": "2026-10-15",
+         "start_time": "09:30"}),
+    "create_time_entry": lambda did: handlers.create_time_entry(
+        {"dossier_id": did, "date": "2026-09-01", "description": "Appel",
+         "hours": 1.0}),
+    "create_expense": lambda did: handlers.create_expense(
+        {"dossier_id": did, "date": "2026-09-01", "description": "Timbre",
+         "amount_cents": 1000}),
+    "create_protocol": lambda did: handlers.create_protocol(
+        {"dossier_id": did, "protocol_type": "conventionnel",
+         "start_date": "2026-09-01"}),
+    "edit_analyse": lambda did: handlers.edit_analyse({"dossier_id": did}),
+    "update_dossier": lambda did: handlers.update_dossier(
+        {"dossier_id": did, "title": "Tremblay c. Lavoie (corrigé)"}),
+    "complete_dossier": lambda did: handlers.complete_dossier(
+        {"dossier_id": did, "domaine": "REC"}),
+    "record_signification": lambda did: handlers.record_signification(
+        {"dossier_id": did, "partie_id": "p1", "date": "2026-07-15"}),
+    "record_prescription_event": lambda did: handlers.record_prescription_event(
+        {"dossier_id": did, "type": "renonciation", "date": "2026-07-15"}),
+    "set_dossier_status": lambda did: handlers.set_dossier_status(
+        {"dossier_id": did, "status": "fermé"}),
+    "update_dossier_party": lambda did: handlers.update_dossier_party(
+        {"action": "update", "dossier_id": did, "partie_id": "p1",
+         "roles": ["intimé"]}),
+    "update_dossier_party.refresh_names": lambda did: (
+        handlers.update_dossier_party(
+            {"action": "refresh_names", "dossier_id": did})),
+}
+
+
+@pytest.mark.parametrize("call", sorted(_DOSSIER_RESOLVING_CALLS))
+def test_an_unreadable_dossier_refuses_every_write_that_names_it(
+        db, monkeypatch, caplog, call):
+    """Fixes of lot 4: _resolve_write_dossier and update_dossier read
+    through the fail-open get_dossier, so an outage answered « Dossier
+    introuvable » — sending the caller hunting for a dossier that exists,
+    or reaching for create_dossier. On the REAL store with the dossier's
+    reads failing: the one message, the reason, nothing written."""
+    did = _dossier(db)
+    _fail_reads_of(monkeypatch, db, f"dossiers/{did}")
+    db.reset_logs()
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        with pytest.raises(tools.ToolArgumentError) as err:
+            _DOSSIER_RESOLVING_CALLS[call](did)
+    assert str(err.value) == _UNREADABLE
+    assert err.value.reason == "read_unavailable"
+    assert "introuvable" not in str(err.value)
+    assert db.commits == []
+    assert [r for r in caplog.records if r.name == "pallas.unexpected"
+            and "mcp dossier write: dossier unreadable" in r.getMessage()]
+
+
+def test_the_write_resolution_no_longer_reads_through_the_fail_open_reader():
+    """Pinned at the source: the two dossier reads that decide a write go
+    through _read_dossier_strict (the fail-open get_dossier stays for the
+    displays and the post-commit re-reads)."""
+    import inspect
+
+    for fn in (handlers._resolve_write_dossier, handlers._update_dossier_impl):
+        source = inspect.getsource(fn)
+        assert "_read_dossier_strict(" in source, fn.__name__
+        assert "dossier_model.get_dossier(" not in source.split(
+            "_raise_if_stale(")[0], fn.__name__
+
+
+def test_a_dossier_that_does_not_exist_is_still_introuvable(db):
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.create_note({"dossier_id": "nope", "title": "T",
+                              "content": "C"})
+    assert "Dossier introuvable" in str(err.value)
+    assert err.value.reason != "read_unavailable"
+
+
+@pytest.mark.parametrize("bad_id", ["__x__", ".."])
+def test_an_id_the_store_refuses_is_introuvable_never_retried(db, bad_id):
+    """A reserved name can hold no dossier (dossier ids are server-minted
+    UUIDv4): « réessayez » would send the caller retrying a call that can
+    never succeed."""
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.create_task({"dossier_id": bad_id, "title": "T"})
+    assert "Dossier introuvable" in str(err.value)
+    assert err.value.reason != "read_unavailable"
+    assert db.commits == []
 
 
 def test_unreadable_members_refuse_the_close_and_write_nothing(db, monkeypatch):
@@ -766,8 +880,8 @@ def test_an_unreadable_dossier_is_never_a_missing_party_dossier(db, monkeypatch)
         handlers.update_dossier_party({
             "action": "update", "dossier_id": did, "partie_id": "p1",
             "roles": ["intimé"]})
-    assert "pas pu être lu" in str(err.value)
-    assert "introuvable" not in str(err.value)
+    assert str(err.value) == _UNREADABLE
+    assert err.value.reason == "read_unavailable"
 
 
 @pytest.mark.parametrize("selector, path", [

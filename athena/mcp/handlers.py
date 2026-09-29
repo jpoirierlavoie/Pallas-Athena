@@ -146,6 +146,7 @@ from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import budget as budget_model
 from models import concurrency
+from models import dav_ids
 from models import doc_template as doc_template_model
 from models import dossier as dossier_model
 from models import document as document_model
@@ -3915,17 +3916,19 @@ def _resolve_write_dossier(
     """Resolve the write target dossier; refuse an unknown id, never
     downgrade (the create_note rule). ``required=False`` allows the
     « Général » fallback for agenda entities; ``advice`` appends a
-    tool-specific sentence to the refusal (create_note's « n'omettez
-    pas… » warning)."""
+    tool-specific sentence to the « introuvable » refusal (create_note's
+    « n'omettez pas… » warning).
+
+    Read STRICTLY since the fixes of lot 4 (:func:`_read_dossier_strict`):
+    through the fail-open ``get_dossier`` a Firestore blip answered
+    « Dossier introuvable » — for every creator, the billing moves,
+    complete_dossier, the two registers — and sent the caller hunting
+    for a dossier that exists, or, worse, reaching for create_dossier.
+    A read failure now refuses « Le dossier n'a pas pu être lu —
+    réessayez. » (reason ``read_unavailable``), nothing written."""
     dossier_id = (args.get("dossier_id") or "").strip()
     if dossier_id:
-        dossier = dossier_model.get_dossier(dossier_id)
-        if dossier is None:
-            raise ToolArgumentError(
-                f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
-                "ou get_dossier pour obtenir un dossier_id valide." + advice
-            )
-        return dossier_id, dossier
+        return dossier_id, _read_dossier_strict(dossier_id, advice=advice)
     if required:
         raise ToolArgumentError(
             "dossier_id est requis pour cette écriture — utilisez "
@@ -7430,12 +7433,8 @@ def _update_dossier_impl(args: dict) -> dict:
             "tâches, ses notes et ses audiences sur le téléphone."
         )
 
-    existing = dossier_model.get_dossier(dossier_id)
-    if existing is None:
-        raise ToolArgumentError(
-            f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers ou "
-            "get_dossier pour obtenir un dossier_id valide."
-        )
+    # STRICT (fixes of lot 4): an outage is never « Dossier introuvable ».
+    existing = _read_dossier_strict(dossier_id)
     # A trust entry regenerates the dossier's etag too, so a movement of the
     # client's funds since the caller's read also refuses the edit: the
     # refusal is right (the stored record changed), and re-reading is the
@@ -7544,25 +7543,40 @@ _DOSSIER_NOT_FOUND = (
     "Dossier introuvable : {id}. Utilisez list_dossiers ou get_dossier pour "
     "obtenir un dossier_id valide."
 )
-_DOSSIER_UNREADABLE = (
-    "Le dossier n'a pas pu être lu : rien n'a été modifié. Réessayez dans un "
-    "instant."
-)
+# The ONE refusal of a dossier read that failed (fixes of lot 4), for every
+# write that resolves a dossier — logged under ``read_unavailable``, never
+# the « argument_refused » of a caller mistake: nothing is wrong with the
+# call, and the same call will run once the store answers.
+_DOSSIER_UNREADABLE = "Le dossier n'a pas pu être lu — réessayez."
 _CLOSED_STATUSES = ("fermé", "archivé")
 # set_dossier_status takes no expected_etag (it compare-and-sets against its
 # own read), so its stale refusal names the reads that show the dossier.
 _DOSSIER_READERS = ("get_dossier", "list_dossiers")
 
 
-def _read_dossier_strict(dossier_id: str) -> dict:
-    """The dossier, read STRICTLY — an outage is never « introuvable »."""
+def _read_dossier_strict(dossier_id: str, *, advice: str = "") -> dict:
+    """The dossier, read STRICTLY — an outage is never « introuvable ».
+
+    « Dossier introuvable » (+ *advice*) only when the store SAID so; a
+    read that failed refuses :data:`_DOSSIER_UNREADABLE` (reason
+    ``read_unavailable``), after an ERROR line carrying the traceback. One
+    exception: an id the store itself refuses (« . », « .. », a reserved
+    ``__x__``, a character a path segment cannot carry) can hold no dossier
+    — dossier ids are server-minted UUIDv4 — so its failed read is
+    « introuvable »: « réessayez » would send the caller retrying a call
+    that can never succeed (the DAV PUT path's rule for resource names,
+    ``models.dav_ids.valid_resource_id``)."""
     try:
         dossier = dossier_model.get_dossier_strict(dossier_id)
     except Exception:
-        log_unexpected("mcp dossier write: dossier unreadable")
-        raise ToolArgumentError(_DOSSIER_UNREADABLE)
+        if dav_ids.valid_resource_id(dossier_id):
+            log_unexpected("mcp dossier write: dossier unreadable")
+            raise ToolArgumentError(
+                _DOSSIER_UNREADABLE, reason="read_unavailable")
+        dossier = None
     if dossier is None:
-        raise ToolArgumentError(_DOSSIER_NOT_FOUND.format(id=dossier_id))
+        raise ToolArgumentError(
+            _DOSSIER_NOT_FOUND.format(id=dossier_id) + advice)
     return dossier
 
 

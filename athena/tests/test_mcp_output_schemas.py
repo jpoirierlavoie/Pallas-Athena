@@ -33,6 +33,20 @@ with mock.patch("google.cloud.firestore.Client"):
     from mcp.output_schemas import OUTPUT_SCHEMAS
     from models import concurrency
 
+
+def _stub_dossier_reads(monkeypatch, reader) -> None:
+    """Stub BOTH dossier readers with *reader* — deliberately (fixes of lot
+    4). The write handlers resolve their dossier STRICTLY
+    (``get_dossier_strict``, through ``_read_dossier_strict``): a read
+    failure is « Le dossier n'a pas pu être lu — réessayez. », never
+    « Dossier introuvable ». The displays and post-commit re-reads still use
+    the fail-open ``get_dossier``. Stubbing only the latter would let the
+    strict read reach the mocked Firestore client, whose MagicMock snapshot
+    « exists » — a test passing on a store that answers anything."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", reader)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_strict", reader)
+
+
 UTC = timezone.utc
 DT = datetime(2026, 7, 2, 14, 30, tzinfo=UTC)
 DATE_ONLY = datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
@@ -344,13 +358,12 @@ def test_get_dossier_both_branches_conform(monkeypatch):
                         lambda d: dict(_INVOICE_SUMMARY))
 
     # Branch: found, all-nullable fields at None (valeur/flat_fee/contingency)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _dossier_doc())
     _conforms("get_dossier", handlers.get_dossier({"dossier_id": "d1"}))
 
     # Branch: found, every nullable field SET
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _dossier_doc(
             valeur=1500000, flat_fee=500000,
             contingency_percent=2500, date_avis=DT, prise_action_date=DT,
@@ -365,7 +378,7 @@ def test_get_dossier_both_branches_conform(monkeypatch):
     _conforms("get_dossier", handlers.get_dossier({"dossier_id": "d1"}))
 
     # Branch: not found
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     _conforms("get_dossier", handlers.get_dossier({"dossier_id": "absent"}))
 
 
@@ -520,7 +533,7 @@ def test_get_billing_snapshot_three_branches_conform(monkeypatch):
     _conforms("get_billing_snapshot", handlers.get_billing_snapshot({}))
 
     # Branch 2: dossier
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _dossier_doc())
     monkeypatch.setattr(handlers.time_entry_model, "get_time_summary",
                         lambda d: dict(_TIME_SUMMARY))
@@ -541,7 +554,7 @@ def test_get_billing_snapshot_three_branches_conform(monkeypatch):
               handlers.get_billing_snapshot({"dossier_id": "d1"}))
 
     # Branch 3: not found
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     _conforms("get_billing_snapshot",
               handlers.get_billing_snapshot({"dossier_id": "absent"}))
 
@@ -591,7 +604,7 @@ def test_list_protocol_steps_conforms(monkeypatch):
                 "notes": "", "steps": [_step_doc()]}
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: protocol)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda d: _dossier_doc())
     payload = handlers.list_protocol_steps({"dossier_id": "d1"})
     _conforms("list_protocol_steps", payload)
@@ -618,7 +631,7 @@ def test_parse_court_file_number_three_branches_conform():
 
 
 def test_get_trust_balance_both_branches_conform(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _dossier_doc())
     monkeypatch.setattr(
         handlers.trust_model, "get_trust_summary",
@@ -631,7 +644,7 @@ def test_get_trust_balance_both_branches_conform(monkeypatch):
     _conforms("get_trust_balance",
               handlers.get_trust_balance({"dossier_id": "d1"}))
 
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     _conforms("get_trust_balance",
               handlers.get_trust_balance({"dossier_id": "absent"}))
 
@@ -692,8 +705,7 @@ def test_get_trust_snapshot_conforms(monkeypatch):
 def write_world(monkeypatch):
     monkeypatch.setattr(handlers, "bump_ctag", lambda n: None)
     monkeypatch.setattr(handlers, "remove_tombstone", lambda n, r: None)
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: {"id": "d1", "file_number": "2026-001",
                    "title": "Tremblay", "status": "actif"})
     monkeypatch.setattr(
@@ -771,8 +783,7 @@ def test_create_time_entry_conforms(write_world, monkeypatch):
 
 
 def test_complete_dossier_conforms(write_world, monkeypatch):
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _dossier_doc(domaine="", action="", valeur=None),
     )
     monkeypatch.setattr(handlers.dossier_model, "field_defaults",
@@ -791,7 +802,7 @@ def test_complete_dossier_conforms(write_world, monkeypatch):
 def test_record_signification_conforms(write_world, monkeypatch):
     dossier = _dossier_doc()
     dossier["significations"] = []
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: dict(dossier))
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
@@ -809,7 +820,7 @@ def test_record_prescription_event_conforms_and_derives(write_world, monkeypatch
     dossier = _dossier_doc()
     dossier["prescription_events"] = []
     dossier["prise_action_date"] = None
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: dict(dossier))
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
@@ -953,7 +964,7 @@ def test_list_documents_conforms_on_both_scopes(monkeypatch):
     # Lot 2A T6: the folder-tree branch, and a filed row in both scopes (its
     # role resolved in dossier scope, null across the firm).
     docs[0]["folder_id"] = "f1"
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda d: {"id": d, "file_number": "2026-001"})
     _conforms("list_documents", handlers.list_documents(
         {"dossier_id": "d1", "include_folders": True}))
@@ -1072,7 +1083,7 @@ def test_import_invoice_conforms(monkeypatch):
     entry = {"id": "e1", "dossier_id": "d1", "amount": 45000,
              "invoiced": False, "description": "Rédaction", "taxable": True}
     monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "file_number": "2019-014",
                                    "title": "T", "status": "fermé",
                                    "clients": [{"id": "p1", "name": "Jean"}]})
@@ -1252,7 +1263,7 @@ def test_dossier_writes_conform(monkeypatch):
     monkeypatch.setattr(handlers.partie_model, "get_partie", parties.get)
     monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
                         lambda fn: None)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: existing)
     monkeypatch.setattr(handlers.dossier_model, "create_dossier",
                         lambda data: ({**data, "id": "d-new"}, []))
@@ -1280,7 +1291,7 @@ def test_get_import_audit_conforms_found_and_not_found(monkeypatch):
     invoice = {"id": "i1", "invoice_number": "2019-F014",
                "status": "brouillon", "subtotal": 45000, "total": 45000,
                "date": DT}
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: dossier if i == "d1" else None)
     monkeypatch.setattr(handlers.dossier_model, "field_defaults",
                         lambda: {"hourly_rate": 30000})
@@ -1306,7 +1317,7 @@ def test_get_import_audit_conforms_found_and_not_found(monkeypatch):
 def test_get_import_audit_conforms_with_unreadable_line_items(monkeypatch):
     """The tri-state branch: subtotal_matches_line_items is null, which the
     schema types as ["boolean", "null"] and the validator must accept."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "file_number": "x", "title": "T",
                                    "status": "actif", "client_ids": []})
     monkeypatch.setattr(handlers.dossier_model, "field_defaults",
@@ -1680,7 +1691,7 @@ def _dossier_world(monkeypatch, doc):
                         lambda d: dict(_EXPENSE_SUMMARY))
     monkeypatch.setattr(handlers.invoice_model, "get_invoice_summary",
                         lambda d: dict(_INVOICE_SUMMARY))
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: doc)
+    _stub_dossier_reads(monkeypatch, lambda i: doc)
 
 
 def _stamped(record: dict) -> dict:
