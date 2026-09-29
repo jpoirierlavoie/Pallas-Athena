@@ -22,6 +22,20 @@ from pagination import decode_cursor, encode_cursor
 from tests import _dummy_accounting  # noqa: E402
 from tz import MTL
 
+
+def _stub_dossier_reads(monkeypatch, reader) -> None:
+    """Stub BOTH dossier readers with *reader* — deliberately (fixes of lot
+    4). The write handlers resolve their dossier STRICTLY
+    (``get_dossier_strict``, through ``_read_dossier_strict``): a read
+    failure is « Le dossier n'a pas pu être lu — réessayez. », never
+    « Dossier introuvable ». The displays and post-commit re-reads still use
+    the fail-open ``get_dossier``. Stubbing only the latter would let the
+    strict read reach the mocked Firestore client, whose MagicMock snapshot
+    « exists » — a test passing on a store that answers anything."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", reader)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_strict", reader)
+
+
 UTC = timezone.utc
 NBSP = " "
 
@@ -955,13 +969,13 @@ def test_get_dossier_requires_exactly_one_selector():
 
 
 def test_get_dossier_not_found_is_data_not_error(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     payload = handlers.get_dossier({"dossier_id": "missing"})
     assert payload["found"] is False
 
 
 def test_get_dossier_composes_summaries(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _dossier())
     monkeypatch.setattr(handlers.task_model, "get_task_summary",
                         lambda d, today=None: {"total": 3, "active": 2,
@@ -1049,7 +1063,7 @@ def _blank_summaries(monkeypatch):
 def test_get_dossier_by_file_number(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
                         lambda fn: _dossier() if fn == "2026-001" else None)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _dossier() if i == "d1" else None)
     monkeypatch.setattr(handlers.task_model, "get_task_summary",
                         lambda d, today=None: {})
@@ -1740,7 +1754,7 @@ def test_list_expenses_truncation_reflects_the_window(monkeypatch):
 
 
 def test_billing_snapshot_unknown_dossier_is_found_false(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     payload = handlers.get_billing_snapshot({"dossier_id": "missing"})
     assert payload["found"] is False
     assert "total_invoiced_cents" not in payload
@@ -1750,7 +1764,7 @@ def test_billing_snapshot_dossier_caps_rows_at_50(monkeypatch):
     entries = [{"id": f"e{i}", "date": datetime(2026, 6, 1, tzinfo=UTC),
                 "description": "Travail", "hours": 1.0, "rate": 25000,
                 "amount": 25000} for i in range(60)]
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": i, "title": "T"})
     monkeypatch.setattr(handlers.time_entry_model, "get_time_summary",
                         lambda d: {"total_hours": 60.0, "total_billable_amount": 0,
@@ -1800,7 +1814,7 @@ def test_list_protocol_steps_derives_overdue_without_writes(monkeypatch):
     monkeypatch.setattr(handlers.protocol_model, "check_overdue_steps", forbidden)
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: protocol)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda d: _dossier(did=d, fn="2026-018"))
     payload = handlers.list_protocol_steps({"dossier_id": "d1"})
     steps = payload["protocols"][0]["steps"]
@@ -1825,7 +1839,7 @@ def test_step_and_task_due_today_are_not_overdue(monkeypatch):
                            "status": "à_venir", "deadline_date": today_midnight}]}
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: protocol)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda d: _dossier(did=d))
     payload = handlers.list_protocol_steps({"dossier_id": "d1"})
     assert payload["protocols"][0]["steps"][0]["is_overdue"] is False
@@ -1869,7 +1883,7 @@ def test_list_documents_folder_filter_survives_query(monkeypatch):
 def test_list_protocol_steps_history(monkeypatch):
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: None)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda d: _dossier(did=d))
     monkeypatch.setattr(handlers.protocol_model, "list_protocols_for_dossier",
                         lambda d: [{"id": "p1"}, {"id": "p2"}])
@@ -2001,7 +2015,7 @@ def created(monkeypatch):
 def test_create_note_bumps_the_dossier_ctag(monkeypatch, bumps, created):
     """models/note.py never bumps — a tool path that forgets makes DavX5
     silently stop syncing the dossier. This is the pin."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     payload = handlers.create_note(
         {"dossier_id": "d1", "title": "Recherche", "content": "Corps"}
     )
@@ -2017,7 +2031,7 @@ def test_append_to_note_bumps_the_dossier_ctag(monkeypatch, bumps):
         handlers.note_model, "get_note",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Déjà là"},
     )
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     monkeypatch.setattr(
         handlers.note_model, "update_note",
         lambda nid, data, *, expected_etag=None: ({"id": nid, "dossier_id": "d1", **data}, []),
@@ -2040,7 +2054,7 @@ def test_ctag_bump_failure_still_reports_the_write_as_a_success(
 
     monkeypatch.setattr(handlers, "bump_ctag", _boom)
     monkeypatch.setattr(handlers, "remove_tombstone", lambda n, r: None)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     payload = handlers.create_note(
         {"dossier_id": "d1", "title": "T", "content": "C"}
     )
@@ -2055,7 +2069,7 @@ def test_ctag_bump_failure_still_reports_the_write_as_a_success(
 def test_create_note_refuses_an_unknown_dossier(monkeypatch, bumps):
     """Never blank the dossier_id like the web route does: that path writes
     an orphan note reachable from nowhere."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
 
     def _must_not_run(_data):
         raise AssertionError("create_note reached the model with a bad dossier")
@@ -2067,7 +2081,7 @@ def test_create_note_refuses_an_unknown_dossier(monkeypatch, bumps):
 
 
 def test_create_note_denormalizes_dossier_labels(monkeypatch, bumps, created):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     handlers.create_note({"dossier_id": "d1", "title": "T", "content": "C"})
     assert created["dossier_file_number"] == "2026-001"
     assert created["dossier_title"] == "Tremblay c. Lavoie"
@@ -2077,8 +2091,7 @@ def test_closed_dossier_write_is_flagged_not_silently_invisible(
     monkeypatch, bumps, created
 ):
     """/dav/dossier-{id}/ only exposes actif/en_attente — say so."""
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier", lambda i: _wdossier("fermé")
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier("fermé")
     )
     payload = handlers.create_note(
         {"dossier_id": "d1", "title": "T", "content": "C"}
@@ -2095,7 +2108,7 @@ def test_create_note_never_forwards_caller_supplied_identity(
 ):
     """models.note.create_note honours a caller `id` and then set()s the whole
     document — forwarding args would silently destroy an existing note."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     handlers.create_note({
         "dossier_id": "d1", "title": "T", "content": "C",
         "id": "victim", "vjournal_uid": "x", "created_at": "2020-01-01",
@@ -2119,7 +2132,7 @@ def test_append_only_ever_updates_content(monkeypatch, bumps):
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "A",
                    "etag": "e-lu"},
     )
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     handed = {}
 
     def _update(nid, data, *, expected_etag=None):
@@ -2143,7 +2156,7 @@ def test_append_only_ever_updates_content(monkeypatch, bumps):
 
 
 def test_create_task_bumps_collection_for_and_pins_status(monkeypatch, bumps):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     created = {}
 
@@ -2185,7 +2198,7 @@ def test_create_task_general_stores_none_and_bumps_tasks(monkeypatch, bumps):
 
 
 def test_create_task_refuses_unknown_dossier_without_writing(monkeypatch, bumps):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
 
     def _must_not_run(_data):
         raise AssertionError("create_task reached the model with a bad dossier")
@@ -2199,7 +2212,7 @@ def test_create_task_refuses_unknown_dossier_without_writing(monkeypatch, bumps)
 def test_create_task_refuses_the_2000_char_ceiling(monkeypatch, bumps):
     """task._sanitize_data truncates at 2000 chars — refuse loudly, never
     let the model truncate a computed deadline's justification silently."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     with pytest.raises(tools.ToolArgumentError, match="2000"):
         handlers.create_task({"dossier_id": "d1", "title": "T",
@@ -2207,7 +2220,7 @@ def test_create_task_refuses_the_2000_char_ceiling(monkeypatch, bumps):
 
 
 def test_create_hearing_times_are_montreal_and_bump_fires(monkeypatch, bumps):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     created = {}
 
@@ -2233,7 +2246,7 @@ def test_create_hearing_times_are_montreal_and_bump_fires(monkeypatch, bumps):
 
 
 def test_create_hearing_defaults_to_rencontre(monkeypatch, bumps):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     created = {}
     monkeypatch.setattr(
@@ -2249,8 +2262,7 @@ def test_create_hearing_defaults_to_rencontre(monkeypatch, bumps):
 
 
 def test_create_time_entry_defaults_to_the_dossier_rate(monkeypatch):
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: {**_wdossier(), "hourly_rate": 32500},
     )
     created = {}
@@ -2272,7 +2284,7 @@ def test_create_time_entry_defaults_to_the_dossier_rate(monkeypatch):
 
 
 def test_create_expense_requires_dossier_and_positive_amount(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     with pytest.raises(tools.ToolArgumentError, match="dossier_id"):
         handlers.create_expense({"date": "2026-07-30",
@@ -2313,8 +2325,7 @@ def _wdossier_parties(**over):
 
 
 def test_complete_dossier_fills_only_the_empty_fields(monkeypatch):
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _wdossier_parties(domaine="", action="", sommaire=""),
     )
     written = {}
@@ -2336,8 +2347,7 @@ def test_complete_dossier_conflict_is_atomic(monkeypatch):
     """One conflicting field poisons the WHOLE call: the empty sommaire
     must not be filled either — a partial fill leaves the caller guessing
     which half happened."""
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _wdossier_parties(domaine="REC", sommaire=""),
     )
 
@@ -2364,8 +2374,7 @@ def test_complete_dossier_default_value_counts_as_empty(monkeypatch):
     hourly_rate 30000 is fillable, not a conflict."""
     defaults = handlers.dossier_model.field_defaults()
     assert defaults["hourly_rate"] == 30000
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _wdossier_parties(hourly_rate=30000),
     )
     written = {}
@@ -2379,8 +2388,7 @@ def test_complete_dossier_default_value_counts_as_empty(monkeypatch):
 
 
 def test_complete_dossier_identical_values_are_a_quiet_skip(monkeypatch):
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _wdossier_parties(domaine="REC", sommaire=""),
     )
     written = {}
@@ -2404,8 +2412,7 @@ def test_complete_dossier_court_file_number_derives_fill_only(monkeypatch):
     """Filling the number mirrors the web form's parse step — but the
     derived fields obey the same fill-only rule (tribunal already set
     stays untouched)."""
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _wdossier_parties(
             court_file_number="", tribunal="Cour d'appel",
         ),
@@ -2426,7 +2433,7 @@ def test_complete_dossier_court_file_number_derives_fill_only(monkeypatch):
 
 
 def test_record_signification_refuses_a_stranger_partie(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier_parties())
 
     def _must_not_run(_did, _data):
@@ -2447,8 +2454,7 @@ def test_record_signification_supersedes_marks_the_old_entry(monkeypatch):
         "mode": "huissier", "huissier_id": "", "pv_document_id": "",
         "superseded_by": "", "confirmee": True,
     }
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
         lambda i: _wdossier_parties(significations=[dict(old)]),
     )
     written = {}
@@ -2474,7 +2480,7 @@ def test_record_signification_supersedes_marks_the_old_entry(monkeypatch):
 
 
 def test_record_prescription_event_validates_through_the_model(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier_parties())
 
     def _must_not_run(_did, _data):
@@ -2498,8 +2504,7 @@ def test_record_prescription_event_answers_the_question_it_was_called_for(
     derivation is the whole reason to call the tool, and it is read from
     the dossier as UPDATED, never from the one that was read in."""
     base = _wdossier_parties(prescription_events=[], prise_action_date=None)
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier", lambda i: dict(base),
+    _stub_dossier_reads(monkeypatch, lambda i: dict(base),
     )
     written = {}
     monkeypatch.setattr(
@@ -2520,7 +2525,7 @@ def test_record_prescription_event_answers_the_question_it_was_called_for(
 
 
 def test_wp17_tools_refuse_an_unknown_dossier(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     for call in (
         lambda: handlers.complete_dossier({"dossier_id": "x", "domaine": "REC"}),
         lambda: handlers.record_signification(
@@ -2535,7 +2540,7 @@ def test_wp17_tools_refuse_an_unknown_dossier(monkeypatch):
 # ── Markdown survival ───────────────────────────────────────────────────
 
 def test_autolinks_are_converted_not_destroyed(monkeypatch, bumps, created):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     handlers.create_note({
         "dossier_id": "d1", "title": "T",
         "content": "Source: <https://canlii.ca/t/abc123> et <me@example.com>.",
@@ -2547,7 +2552,7 @@ def test_autolinks_are_converted_not_destroyed(monkeypatch, bumps, created):
 def test_content_the_sanitizer_would_eat_is_refused_loudly(monkeypatch, bumps):
     """« si a < b et b > c » loses « < b et b > » inside security.sanitize,
     with no error. Refuse instead of losing the research."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
 
     def _must_not_run(_data):
         raise AssertionError("reached the model with content that would be cut")
@@ -2564,7 +2569,7 @@ def test_normalized_content_survives_the_real_sanitizer(monkeypatch, bumps, crea
     """End-to-end against the ACTUAL security.sanitize, so this cannot drift."""
     from security import sanitize
 
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     handlers.create_note({
         "dossier_id": "d1", "title": "T",
         "content": "Voir <https://canlii.ca/t/abc> — art. 2925 C.c.Q.",
@@ -2587,7 +2592,7 @@ def test_append_refuses_rather_than_truncating(monkeypatch, bumps):
             "content": "x" * (note_model.CONTENT_MAX_LENGTH - 10),
         },
     )
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
 
     def _must_not_run(_nid, _data):
         raise AssertionError("update_note called with content that would truncate")
@@ -2618,7 +2623,7 @@ def test_append_refuses_when_the_JOIN_would_eat_existing_content(
         handlers.note_model, "get_note",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": existing},
     )
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
 
     def _must_not_run(_nid, _data):
         raise AssertionError("update_note called with content that would be cut")
@@ -2633,7 +2638,7 @@ def test_refusal_messages_never_quote_the_note_content(monkeypatch, bumps):
     """These messages are recorded on the mcp.tool.* span by span()'s
     record_exception, and the exporter scrubs attributes, not exception
     events — an excerpt would ship privileged research to Cloud Trace."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     monkeypatch.setattr(
         handlers.note_model, "create_note",
         lambda d: (_ for _ in ()).throw(AssertionError("must not write")),
@@ -2658,7 +2663,7 @@ def test_append_does_not_claim_a_closed_dossier_when_the_lookup_merely_failed(
         handlers.note_model, "get_note",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "A"},
     )
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
     monkeypatch.setattr(
         handlers.note_model, "update_note",
         lambda nid, data, *, expected_etag=None: ({"id": nid, "dossier_id": "d1", **data}, []),
@@ -2675,8 +2680,7 @@ def test_closed_dossier_still_reports_the_ctag_bump_as_having_happened(
     """dav_synced and ctag_bumped are different facts: a closed dossier
     bumps correctly but is never advertised to DavX5. Collapsing them makes
     a healthy write look like a sync failure in the audit trail."""
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier", lambda i: _wdossier("archivé")
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier("archivé")
     )
     payload = handlers.create_note(
         {"dossier_id": "d1", "title": "T", "content": "C"}
@@ -2736,7 +2740,7 @@ def test_mcp_list_notes_includes_the_analyse_note(monkeypatch):
 # ── Provenance ──────────────────────────────────────────────────────────
 
 def test_writes_carry_a_dated_provenance_stamp(monkeypatch, bumps, created):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     monkeypatch.setattr(handlers, "_today_mtl", lambda: date(2026, 7, 22))
     handlers.create_note({"dossier_id": "d1", "title": "T", "content": "Corps"})
     assert created["content"].startswith(
@@ -2773,7 +2777,7 @@ def test_general_note_bumps_the_general_ctag(monkeypatch, bumps, created):
     def _must_not_run(_i):
         raise AssertionError("no dossier lookup when dossier_id is absent")
 
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", _must_not_run)
+    _stub_dossier_reads(monkeypatch, _must_not_run)
     payload = handlers.create_note({"title": "Veille", "content": "Corps"})
     assert bumps["bump"] == ["general"]
     assert bumps["tombstone"] == [("general", "n-new")]
@@ -2786,7 +2790,7 @@ def test_general_note_bumps_the_general_ctag(monkeypatch, bumps, created):
 def test_unknown_dossier_is_still_refused_never_downgraded(monkeypatch, bumps):
     """models/note._validate no longer requires a dossier, so a bad id would
     otherwise be filed silently under Général instead of erroring."""
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    _stub_dossier_reads(monkeypatch, lambda i: None)
 
     def _must_not_run(_data):
         raise AssertionError("wrote a note despite an unknown dossier_id")
@@ -3016,7 +3020,7 @@ def test_list_protocol_steps_never_writes_and_derives(monkeypatch):
             "steps": [_step("en_retard", datetime(2026, 8, 5, tzinfo=UTC))],
         },
     )
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "tribunal": "Cour supérieure"})
     _freeze_mtl_today(monkeypatch, date(2026, 7, 31))
     payload = handlers.list_protocol_steps({"dossier_id": "d1"})
@@ -4131,7 +4135,7 @@ def ct(monkeypatch, bumps):
                         lambda i: dict(state["task"]) if state["task"] else None)
     monkeypatch.setattr(handlers.task_model, "update_task", _update)
     monkeypatch.setattr(handlers.task_model, "_validate", lambda d: [])
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "status": "actif",
                                    "file_number": "2026-001", "title": "T"})
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
@@ -4420,7 +4424,7 @@ def test_resolve_phase_pair_ergonomics():
 
 
 def test_create_time_entry_stores_and_echoes_phase(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     seen = {}
 
@@ -4441,7 +4445,7 @@ def test_create_time_entry_stores_and_echoes_phase(monkeypatch):
 
 
 def test_create_expense_without_phase_stays_blank(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
     seen = {}
 
@@ -4459,7 +4463,7 @@ def test_create_expense_without_phase_stays_blank(monkeypatch):
 
 
 def test_create_task_contradictory_pair_refused_before_write(monkeypatch, bumps):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
 
     def _must_not_run(_data):

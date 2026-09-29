@@ -25,6 +25,19 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import concurrency, provenance
 
 
+def _stub_dossier_reads(monkeypatch, reader) -> None:
+    """Stub BOTH dossier readers with *reader* — deliberately (fixes of lot
+    4). The write handlers resolve their dossier STRICTLY
+    (``get_dossier_strict``, through ``_read_dossier_strict``): a read
+    failure is « Le dossier n'a pas pu être lu — réessayez. », never
+    « Dossier introuvable ». The displays and post-commit re-reads still use
+    the fail-open ``get_dossier``. Stubbing only the latter would let the
+    strict read reach the mocked Firestore client, whose MagicMock snapshot
+    « exists » — a test passing on a store that answers anything."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", reader)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_strict", reader)
+
+
 # ── get_reference_vocabulary ───────────────────────────────────────────────
 # Le déblocage : « Domaine invalide. » ne nomme aucun domaine valide, et aucun
 # outil de lecture n'exposait la taxonomie. La classification que le juriste
@@ -199,7 +212,7 @@ def audit(monkeypatch):
         "expenses": [], "expenses_cursor": None,
         "invoices": [], "line_items": {},
     }
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: world["dossier"] if i == "d1" else None)
     monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
                         lambda fn: world["dossier"]
@@ -594,7 +607,7 @@ def dossiers(monkeypatch):
 
     monkeypatch.setattr(handlers.dossier_model, "create_dossier", _create)
     monkeypatch.setattr(handlers.dossier_model, "update_dossier", _update)
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: world["existing"])
     monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
                         lambda fn: world["by_number"].get(fn))
@@ -962,7 +975,7 @@ def test_un_quart_d_heure_s_importe_exactement(billing, monkeypatch):
     réconciliation de la facture par une différence que l'appelant ne pouvait
     pas combler."""
     created = {}
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "file_number": "2019-014",
                                    "title": "T", "status": "actif",
                                    "hourly_rate": 30000})
@@ -1018,7 +1031,7 @@ def facture(monkeypatch):
                 "subtotal_expenses": 5000, "subtotal": 50000,
                 "gst_amount": 2500, "qst_amount": 4988, "total": 57488}, []
 
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+    _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "file_number": "2019-014",
                                    "title": "T", "status": "fermé",
                                    "clients": [{"id": "p1", "name": "Jean"}]}

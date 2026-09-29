@@ -570,7 +570,10 @@ DavOperation = Literal[
     "mkcol",
     "sync_collection",
 ]
-DavCollectionType = Literal["addressbook", "calendar", "tasks", "dossier"]
+# "root" (fixes of lot 4): the /dav/ discovery PROPFIND, which logs only when
+# it could not read what it must list (503, reason lecture_indisponible).
+DavCollectionType = Literal["addressbook", "calendar", "tasks", "dossier",
+                            "root"]
 SecurityEvent = Literal[
     "csrf_failure",
     "request_too_large",

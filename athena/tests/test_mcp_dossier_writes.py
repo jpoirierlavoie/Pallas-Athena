@@ -40,6 +40,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import dav.sync as dav_sync
     import mcp.handlers as handlers
+    import mcp.output_schemas as output_schemas
     import mcp.tools as tools
     import mcp.write_support as write_support
     from models import dossier as dossier_model
@@ -259,9 +260,123 @@ def test_an_unreadable_dossier_is_never_read_as_unknown(db, monkeypatch):
         raise gexc.ServiceUnavailable("down")
 
     monkeypatch.setattr(dossier_model, "get_dossier_strict", boom)
-    with pytest.raises(tools.ToolArgumentError, match="pas pu être lu"):
+    with pytest.raises(tools.ToolArgumentError) as err:
         handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    assert str(err.value) == _UNREADABLE
+    assert err.value.reason == "read_unavailable"
     assert db.peek(f"dossiers/{did}")["status"] == "actif"
+
+
+# The ONE refusal of a dossier read that failed (fixes of lot 4) — every
+# write that resolves a dossier, never « Dossier introuvable ».
+_UNREADABLE = "Le dossier n'a pas pu être lu — réessayez."
+
+
+def _fail_reads_of(monkeypatch, db, target: str) -> None:
+    """Every keyed read of *target* fails at the transport — the blip."""
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(str(n).endswith(target) for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+
+
+# Every write tool that resolves ONE dossier it names — the creators, the
+# dossier's own correction and recorders, the two DOSSIERS tools.
+_DOSSIER_RESOLVING_CALLS = {
+    "create_note": lambda did: handlers.create_note(
+        {"dossier_id": did, "title": "Recherche", "content": "Corps"}),
+    "create_task": lambda did: handlers.create_task(
+        {"dossier_id": did, "title": "Préparer la requête"}),
+    "create_hearing": lambda did: handlers.create_hearing(
+        {"dossier_id": did, "title": "Audience", "date": "2026-10-15",
+         "start_time": "09:30"}),
+    "create_time_entry": lambda did: handlers.create_time_entry(
+        {"dossier_id": did, "date": "2026-09-01", "description": "Appel",
+         "hours": 1.0}),
+    "create_expense": lambda did: handlers.create_expense(
+        {"dossier_id": did, "date": "2026-09-01", "description": "Timbre",
+         "amount_cents": 1000}),
+    "create_protocol": lambda did: handlers.create_protocol(
+        {"dossier_id": did, "protocol_type": "conventionnel",
+         "start_date": "2026-09-01"}),
+    "edit_analyse": lambda did: handlers.edit_analyse({"dossier_id": did}),
+    "update_dossier": lambda did: handlers.update_dossier(
+        {"dossier_id": did, "title": "Tremblay c. Lavoie (corrigé)"}),
+    "complete_dossier": lambda did: handlers.complete_dossier(
+        {"dossier_id": did, "domaine": "REC"}),
+    "record_signification": lambda did: handlers.record_signification(
+        {"dossier_id": did, "partie_id": "p1", "date": "2026-07-15"}),
+    "record_prescription_event": lambda did: handlers.record_prescription_event(
+        {"dossier_id": did, "type": "renonciation", "date": "2026-07-15"}),
+    "set_dossier_status": lambda did: handlers.set_dossier_status(
+        {"dossier_id": did, "status": "fermé"}),
+    "update_dossier_party": lambda did: handlers.update_dossier_party(
+        {"action": "update", "dossier_id": did, "partie_id": "p1",
+         "roles": ["intimé"]}),
+    "update_dossier_party.refresh_names": lambda did: (
+        handlers.update_dossier_party(
+            {"action": "refresh_names", "dossier_id": did})),
+}
+
+
+@pytest.mark.parametrize("call", sorted(_DOSSIER_RESOLVING_CALLS))
+def test_an_unreadable_dossier_refuses_every_write_that_names_it(
+        db, monkeypatch, caplog, call):
+    """Fixes of lot 4: _resolve_write_dossier and update_dossier read
+    through the fail-open get_dossier, so an outage answered « Dossier
+    introuvable » — sending the caller hunting for a dossier that exists,
+    or reaching for create_dossier. On the REAL store with the dossier's
+    reads failing: the one message, the reason, nothing written."""
+    did = _dossier(db)
+    _fail_reads_of(monkeypatch, db, f"dossiers/{did}")
+    db.reset_logs()
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        with pytest.raises(tools.ToolArgumentError) as err:
+            _DOSSIER_RESOLVING_CALLS[call](did)
+    assert str(err.value) == _UNREADABLE
+    assert err.value.reason == "read_unavailable"
+    assert "introuvable" not in str(err.value)
+    assert db.commits == []
+    assert [r for r in caplog.records if r.name == "pallas.unexpected"
+            and "mcp dossier write: dossier unreadable" in r.getMessage()]
+
+
+def test_the_write_resolution_no_longer_reads_through_the_fail_open_reader():
+    """Pinned at the source: the two dossier reads that decide a write go
+    through _read_dossier_strict (the fail-open get_dossier stays for the
+    displays and the post-commit re-reads)."""
+    import inspect
+
+    for fn in (handlers._resolve_write_dossier, handlers._update_dossier_impl):
+        source = inspect.getsource(fn)
+        assert "_read_dossier_strict(" in source, fn.__name__
+        assert "dossier_model.get_dossier(" not in source.split(
+            "_raise_if_stale(")[0], fn.__name__
+
+
+def test_a_dossier_that_does_not_exist_is_still_introuvable(db):
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.create_note({"dossier_id": "nope", "title": "T",
+                              "content": "C"})
+    assert "Dossier introuvable" in str(err.value)
+    assert err.value.reason != "read_unavailable"
+
+
+@pytest.mark.parametrize("bad_id", ["__x__", ".."])
+def test_an_id_the_store_refuses_is_introuvable_never_retried(db, bad_id):
+    """A reserved name can hold no dossier (dossier ids are server-minted
+    UUIDv4): « réessayez » would send the caller retrying a call that can
+    never succeed."""
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.create_task({"dossier_id": bad_id, "title": "T"})
+    assert "Dossier introuvable" in str(err.value)
+    assert err.value.reason != "read_unavailable"
+    assert db.commits == []
 
 
 def test_unreadable_members_refuse_the_close_and_write_nothing(db, monkeypatch):
@@ -295,7 +410,7 @@ def test_an_incomplete_drain_is_reported_and_never_stored_for_replay(db):
     assert first["dav"]["complete"] is False
     assert first["idempotent_replay"] is False
     assert write_support.NO_REPLAY_KEY not in first
-    assert any("MÊME statut" in w for w in first["warnings"])
+    assert any("MÊME appel (même statut)" in w for w in first["warnings"])
     assert _idempotency_entries(db) == {}
     assert _tombstones(db, did) == set()
 
@@ -415,14 +530,14 @@ def test_update_sets_a_lawyer_by_contact_id_and_snapshots_his_name(db):
     did = _dossier(db)
     payload = handlers.update_dossier_party({
         "action": "update", "dossier_id": did, "partie_id": "p3",
-        "avocat_id": "av1"})
+        "avocat_partie_id": "av1"})
     entry = _stored(db, did)["opposing_parties"][0]
     assert entry["avocat_id"] == "av1" and entry["avocat_name"] == "Me Anne Roy"
     assert payload["party"]["avocat_name_after"] == "Me Anne Roy"
 
     handlers.update_dossier_party({
         "action": "update", "dossier_id": did, "partie_id": "p3",
-        "avocat_id": ""})
+        "avocat_partie_id": ""})
     entry = _stored(db, did)["opposing_parties"][0]
     assert entry["avocat_id"] == "" and entry["avocat_name"] == ""
 
@@ -432,7 +547,36 @@ def test_an_unknown_lawyer_is_refused_naming_where_to_find_one(db):
     with pytest.raises(tools.ToolArgumentError, match="list_parties"):
         handlers.update_dossier_party({
             "action": "update", "dossier_id": did, "partie_id": "p3",
-            "avocat_id": "ghost"})
+            "avocat_partie_id": "ghost"})
+
+
+def test_the_lawyer_goes_by_one_name_across_the_connector():
+    """update_dossier_party names a party's lawyer as the party entries of
+    create_dossier and update_dossier do — `avocat_partie_id` (fixes of lot
+    4: it took `avocat_id`, the STORED field's name, so one lawyer had two
+    argument names across the connector). The OUTPUT keeps the stored name
+    (avocat_id_before / avocat_id_after), and the old argument is refused by
+    the schema, which lists the supported one."""
+    tool_props = tools.TOOLS["update_dossier_party"]["input_schema"]["properties"]
+    assert "avocat_partie_id" in tool_props and "avocat_id" not in tool_props
+    for tool, key in (("create_dossier", "clients"),
+                      ("create_dossier", "opposing_parties"),
+                      ("update_dossier", "add_clients"),
+                      ("update_dossier", "add_opposing_parties")):
+        entry = tools.TOOLS[tool]["input_schema"]["properties"][key]["items"]
+        assert "avocat_partie_id" in entry["properties"], (tool, key)
+    description = tools.TOOLS["update_dossier_party"]["description"]
+    assert "`avocat_partie_id`" in description
+    assert "`avocat_id`" not in description
+    errors = tools.validate_args(
+        tools.TOOLS["update_dossier_party"]["input_schema"],
+        {"action": "update", "dossier_id": "d", "partie_id": "p",
+         "avocat_id": "av1"})
+    assert errors and "`avocat_id` is not a supported argument" in errors[0]
+    assert "`avocat_partie_id`" in errors[0]
+    out = output_schemas.OUTPUT_SCHEMAS["update_dossier_party"]
+    party = out["properties"]["party"]["properties"]
+    assert {"avocat_id_before", "avocat_id_after", "avocat_name_after"} <= set(party)
 
 
 def test_the_roles_already_stored_write_nothing(db):
@@ -474,7 +618,7 @@ def test_a_party_not_on_the_dossier_is_refused_pointing_to_update_dossier(db):
 
 @pytest.mark.parametrize("args, stray", [
     ({"action": "remove", "roles": ["demandeur"]}, "roles"),
-    ({"action": "remove", "avocat_id": ""}, "avocat_id"),
+    ({"action": "remove", "avocat_partie_id": ""}, "avocat_partie_id"),
     ({"action": "refresh_names", "side": "clients"}, "side"),
     ({"action": "refresh_names", "expected_etag": "x"}, "expected_etag"),
 ])
@@ -598,6 +742,85 @@ def test_refresh_names_needs_exactly_one_selector(db):
                                        "dossier_id": did, "partie_id": "p1"})
 
 
+def _fail_idempotency_releases(db):
+    """Every DELETE of an idempotency entry fails server-side — the release
+    of a claim, on a store blip. The claim then stays PENDING."""
+    def hook(info):
+        if any(kind == "delete" and path.startswith(
+                f"{write_support.COLLECTION}/") for kind, path in info.ops):
+            raise gexc.ServiceUnavailable("injected release failure")
+
+    return db.add_commit_hook(hook)
+
+
+def _retry_warning(payload) -> str:
+    (text,) = [w for w in payload["warnings"] if "NOUVELLE clé" in w]
+    return text
+
+
+def test_every_way_the_incomplete_drain_s_retry_text_names_leads_to_the_repair(
+        db, monkeypatch):
+    """Fixes of lot 4: the texts promised « the same idempotency_key is
+    fine » without exception. It is not, when the release of this call's
+    claim fails on a store blip: the claim stays pending, and the same-key
+    retry is refused « encore en cours », then « interrompu ». The warning
+    now names all three outcomes and the way out of each — and following it,
+    branch by branch, on the real store, repairs the phone."""
+    did = _dossier(db)
+    members = _members(did)
+    remove_drain_failure = _fail_tombstone_commits(db, did)
+    remove_release_failure = _fail_idempotency_releases(db)
+    args = {"dossier_id": did, "status": "fermé", "idempotency_key": KEY}
+
+    first = handlers.set_dossier_status(dict(args))
+    assert first["dav"]["complete"] is False
+    text = _retry_warning(first)
+    assert "MÊME clé" in text and "« encore en cours »" in text
+    assert "« interrompu »" in text and "get_dossier" in text
+    # The release failed: the claim is still there, pending.
+    (entry,) = _idempotency_entries(db).values()
+    assert entry["status"] == "pending"
+    remove_drain_failure()
+    remove_release_failure()
+
+    # 1. « encore en cours » → wait, then the SAME key.
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.set_dossier_status(dict(args))
+    assert err.value.reason == "idempotency_in_flight"
+    assert "encore en cours" in str(err.value)
+
+    # 2. Past the window: « interrompu » → re-read, then a NEW key.
+    later = write_support._now() + write_support.IN_FLIGHT_WINDOW + (
+        write_support.IN_FLIGHT_WINDOW / 10)
+    monkeypatch.setattr(write_support, "_now", lambda: later)
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.set_dossier_status(dict(args))
+    assert err.value.reason == "idempotency_interrupted"
+    assert "interrompu" in str(err.value)
+
+    reread = handlers.get_dossier({"dossier_id": did})
+    status_read = reread["dossier"]["status"]
+    assert status_read == "fermé"
+    repaired = handlers.set_dossier_status({
+        "dossier_id": did, "status": status_read,
+        "idempotency_key": "cle-statut-0002"})
+    assert repaired["dav"]["complete"] is True
+    assert repaired["outcome"] == "unchanged"
+    assert _tombstones(db, did) == set(members)
+
+
+def test_the_moved_status_repair_names_a_new_key_for_its_other_call(db):
+    """When the status moved during the call, the repair asks for ANOTHER
+    status — other arguments: the same key could then be refused as a
+    conflict while this call's claim is held. The warning says NEW key."""
+    text = handlers._NO_REPLAY_RETRY
+    assert "MÊME clé" in text and "NOUVELLE clé" in text
+    source = pathlib.Path(handlers.__file__).read_text(encoding="utf-8")
+    moved = source.split("if not dav.complete and (moved or moving):")[1]
+    moved = moved.split("elif not dav.complete:")[0]
+    assert "NOUVELLE" in moved and "statut RELU" in moved
+
+
 def test_a_refresh_with_a_refused_dossier_is_never_stored_for_replay(db, monkeypatch):
     """A refused row is repaired by the same call: that result must not be
     replayed to a same-key retry for 24 h."""
@@ -622,6 +845,12 @@ def test_a_refresh_with_a_refused_dossier_is_never_stored_for_replay(db, monkeyp
     assert payload["refused"] == 1 and payload["applied"] == 1
     assert write_support.NO_REPLAY_KEY not in payload
     assert _idempotency_entries(db) == {}
+    # The retry text is true in every case (fixes of lot 4): the same key
+    # normally, « encore en cours » → the same key later, « interrompu » →
+    # a re-read and a NEW key (a name already refreshed reads « inchangé »).
+    text = _retry_warning(payload)
+    assert "MÊME clé" in text and "« encore en cours »" in text
+    assert "« interrompu »" in text and "inchangé" in text
     assert "entity" not in payload        # a contact's batch has no one entity
 
 
@@ -736,8 +965,8 @@ def test_an_unreadable_dossier_is_never_a_missing_party_dossier(db, monkeypatch)
         handlers.update_dossier_party({
             "action": "update", "dossier_id": did, "partie_id": "p1",
             "roles": ["intimé"]})
-    assert "pas pu être lu" in str(err.value)
-    assert "introuvable" not in str(err.value)
+    assert str(err.value) == _UNREADABLE
+    assert err.value.reason == "read_unavailable"
 
 
 @pytest.mark.parametrize("selector, path", [

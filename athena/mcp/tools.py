@@ -4996,10 +4996,14 @@ TOOLS: dict[str, dict] = {
             "application), actif / en_attente RESTORES it. Asking for the "
             "status it already has writes nothing and re-applies that "
             "visibility: the REPAIR when `dav.complete` came back false — call "
-            "again with the SAME status (the same idempotency_key is fine: an "
-            "incomplete result is never stored) — unless `warnings` say the "
-            "status moved during the call: re-read it first, never resend "
-            "yours. Refused, nothing written, "
+            "again with the SAME status. An incomplete result is never stored, "
+            "so the same idempotency_key normally runs it afresh; if that "
+            "retry is refused as still in flight, wait, then retry with the "
+            "same key; if refused as interrupted, re-read the dossier "
+            "(get_dossier) and ask for the status you read under a NEW key — "
+            "unless `warnings` say the status moved during the call: re-read "
+            "it first, never resend yours; ask for the status you read, under "
+            "a NEW key (it is another call). Refused, nothing written, "
             "when the dossier's tasks, notes and events cannot be read. "
             "Closing takes the dossier out of the prescription alerts "
             "(get_agenda, dashboard); reopening erases its closed_date. Every "
@@ -5042,7 +5046,8 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE — one party LINK of a dossier. action \"update\": "
             "REPLACES the party's `roles` (the full list; [] clears them) "
-            "and/or its lawyer (`avocat_id`; \"\" removes him); every other "
+            "and/or its lawyer (`avocat_partie_id`, as in create_dossier's "
+            "party entries; \"\" removes him); every other "
             "entry is written back as stored, and the dossier-level role the "
             "gabarits cite is re-derived. \"remove\": DETACHES the party — "
             "the contact itself is never deleted, the detach is journaled "
@@ -5089,9 +5094,10 @@ TOOLS: dict[str, dict] = {
                         "replacement, no duplicate."
                     ),
                 },
-                "avocat_id": _id(
+                "avocat_partie_id": _id(
                     "update: the party's lawyer, a contact id (list_parties) "
-                    "— or \"\" to remove him. His name is snapshotted here."
+                    "— or \"\" to remove him. His name is snapshotted here; "
+                    "the result reports him as avocat_id_before / _after."
                 ),
                 **_expected_etag_only_for(
                     _DOSSIER_ETAG_READERS, "update / remove"),

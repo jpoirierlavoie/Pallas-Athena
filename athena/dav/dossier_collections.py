@@ -56,7 +56,7 @@ from dav.xml_utils import (
     serialize_multistatus,
 )
 from models.dav_ids import DAV_ID_INVALID, DAV_ID_TAKEN, valid_resource_id
-from models.dossier import get_dossier
+from models.dossier import get_dossier, get_dossier_for_dav
 from models.hearing import (
     create_hearing,
     delete_hearing,
@@ -180,19 +180,61 @@ def _general_pseudo_dossier() -> dict:
             "status": "actif"}
 
 
+class _ScopeUnreadable(Exception):
+    """The store could not say whether a scope's dossier exists."""
+
+
 def _resolve_scope(dossier_id: str) -> tuple[dict | None, bool]:
     """Resolve a scope to (dossier-shaped dict, active).
 
-    ``(None, False)`` means 404 — a dossier that no longer exists. The
-    « Général » scope always resolves and is always active.
+    ``(None, False)`` means 404 — a dossier that no longer exists (or one
+    DAV cannot serve, which the root leaves out of discovery too — see
+    ``models.dossier.get_dossier_for_dav``). The « Général » scope always
+    resolves and is always active.
+
+    RAISES :class:`_ScopeUnreadable` when the READ failed (review of the
+    fixes of lot 4): the caller answers :func:`_scope_unavailable`, a 503
+    with ``Retry-After``, never the 404 the fail-open ``get_dossier``
+    produced. A 404 here is the one answer DavX5 acts on destructively: its
+    collection refresh re-probes, one Depth:0 PROPFIND each, every
+    collection the root did not list — every one of them when the root
+    itself answered 503 — and deletes locally those that answer
+    403/404/410, while another error aborts the refresh and keeps them. The
+    root's 503 alone therefore protected nothing through an outage; this
+    one does. An id the store itself refuses (« .. », a reserved
+    ``__x__``) can hold no dossier — ids are server-minted UUIDv4 — so its
+    failed read stays a 404: « retry » would never end (the MCP connector's
+    rule, ``mcp.handlers._read_dossier_strict``).
     """
     if _is_general(dossier_id):
         return _general_pseudo_dossier(), True
-    with firestore_span("get", "dossiers", doc_id=dossier_id):
-        dossier = get_dossier(dossier_id)
+    try:
+        with firestore_span("get", "dossiers", doc_id=dossier_id):
+            dossier = get_dossier_for_dav(dossier_id)
+    except Exception as exc:
+        if not valid_resource_id(dossier_id):
+            return None, False
+        # Inside the except, so the ERROR line carries the traceback.
+        log_unexpected("dav dossier scope read failed",
+                       dossier_id=dossier_id)
+        raise _ScopeUnreadable() from exc
     if not dossier:
         return None, False
     return dossier, _dossier_is_active(dossier)
+
+
+def _scope_unavailable(dossier_id: str, operation: str) -> Response:
+    """503 — the dossier a collection URL names could not be read.
+
+    The answer :func:`_read_unavailable` gives a failed strict read of a
+    resource, and the root's on a failed discovery read: DavX5 keeps the
+    collection (and a PUT keeps the edit dirty on the phone) and retries.
+    """
+    log_dav_operation(operation, "dossier", dossier_id=dossier_id,
+                      status_code=503, reason="lecture_indisponible")
+    resp = Response("Service Unavailable", status=503)
+    resp.headers["Retry-After"] = "30"
+    return resp
 
 
 # -- OPTIONS -----------------------------------------------------------------
@@ -232,8 +274,12 @@ def propfind_collection(dossier_id: str) -> Response:
     # A deleted dossier is truly gone (404). A closed/archived one still
     # responds but as an empty, draining collection (no live resources) so an
     # enabled DavX5 client can sync it down cleanly instead of erroring.
-    # « Général » always resolves and is always active.
-    dossier, active = _resolve_scope(dossier_id)
+    # « Général » always resolves and is always active. A read that failed is
+    # a 503, never that 404 (DavX5 deletes a collection answering 404).
+    try:
+        dossier, active = _resolve_scope(dossier_id)
+    except _ScopeUnreadable:
+        return _scope_unavailable(dossier_id, "propfind")
     if dossier is None:
         return Response("Not Found", status=404)
 
@@ -443,7 +489,10 @@ def report_collection(dossier_id: str) -> Response:
 
     Supported reports: sync-collection, calendar-multiget, calendar-query.
     """
-    dossier, active = _resolve_scope(dossier_id)
+    try:
+        dossier, active = _resolve_scope(dossier_id)
+    except _ScopeUnreadable:
+        return _scope_unavailable(dossier_id, "report")
     if dossier is None:
         return Response("Not Found", status=404)
     # Closed/archived dossiers report as empty (drained) — see the module note.
@@ -739,7 +788,10 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
     Parses the iCalendar body to determine the component type (VEVENT,
     VTODO or VJOURNAL) and hands it to that component's branch.
     """
-    dossier, _active = _resolve_scope(dossier_id)
+    try:
+        dossier, _active = _resolve_scope(dossier_id)
+    except _ScopeUnreadable:
+        return _scope_unavailable(dossier_id, "put")
     if dossier is None:
         return Response("Not Found", status=404)
 

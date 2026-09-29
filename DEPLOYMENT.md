@@ -2763,6 +2763,52 @@ Notes:
      report   # before: live 3
      ```
 
+     First the DISCOVERY itself (fixes of lot 4 — the root Depth:1 PROPFIND
+     reads its dossiers STRICTLY and answers 503 + `Retry-After` on a read
+     failure instead of a 207 advertising zero dossier collections; a single
+     dossier document it cannot read is skipped and logged, the others
+     listed):
+
+     ```bash
+     root() {
+       curl -s -u "${DAV_USER:?}" -X PROPFIND -H "Depth: 1" \
+         -o /tmp/root.xml -w '%{http_code}\n' "https://yourdomain.example/dav/"
+       echo "dossier collections: $(grep -o '/dav/dossier-' /tmp/root.xml | wc -l)"
+     }
+     root   # 207, and as many collections as actif + en_attente dossiers
+     ```
+
+     The count must equal the number of `actif` and `en_attente` dossiers in
+     the application's list. A 503 (with `Retry-After: 30`) means a read
+     failed — the `unexpected` line « dav root propfind read failed » says
+     which (`check`); retry, and never read it as « no dossier ». A count
+     BELOW the application's is a skipped document: the logs then carry
+     `list_dossiers_by_status_strict: document skipped` or `dav root
+     propfind: dossier skipped`, each naming the `dossier_id` that left
+     discovery. Repair that stored document by hand (a legacy client entry
+     without an `id`, a stored `id` that is not the document's, a file
+     number or title that is not text); its own collection stays out of
+     DavX5 until then.
+
+     Then the probe DavX5 itself makes. When discovery fails — its 503
+     included — DavX5 does NOT keep its list on the strength of that answer:
+     it re-probes every collection at its own URL (Depth:0) and deletes from
+     the phone each one that answers 403, 404 or 410; any other error aborts
+     the refresh, retried later (davx5-ose, read 2026-09-29). So the
+     collection's own answer is the load-bearing one (review of the fixes of
+     lot 4 — it read its dossier fail-open and answered 404 on an outage):
+
+     ```bash
+     curl -s -u "${DAV_USER:?}" -X PROPFIND -H "Depth: 0" -o /dev/null \
+       -w '%{http_code}\n' "https://yourdomain.example/dav/dossier-$D/"   # 207
+     ```
+
+     207 in service. During a Firestore incident it must read **503** (with
+     `Retry-After: 30` and an `unexpected` « dav dossier scope read failed »
+     naming the id) — never 404, which is a deletion on every phone; a 404
+     outside an incident is a dossier that does not exist or a document
+     logged « get_dossier_for_dav: document unusable ».
+
      Then, through Claude: `set_dossier_status` « fermé » on it — the
      result reads `dav.complete: true`, `dav.direction: "drain"`,
      `dav.resources: 3`, with warnings naming what closing does —; `report`
@@ -2800,7 +2846,11 @@ Notes:
 
   Then update BOTH copies of the claude.ai skill `pallas-athena` the same
   day. What lot 4 makes false there (on top of the lot 1, 2A, 2B and 3
-  lists above): every tool count (now 80: 31 + 49 — the synced copies still
+  lists above) — and one NAME to write as shipped: `update_dossier_party`
+  names a party's lawyer `avocat_partie_id`, the key of the party entries
+  of `create_dossier` / `update_dossier` — never `avocat_id`, the stored
+  field's name, which its schema refuses (the RESULT keeps that name:
+  `avocat_id_before` / `avocat_id_after`): every tool count (now 80: 31 + 49 — the synced copies still
   say 49: 27 + 22); SKILL.md « Le `status` choisi à la création d'un dossier
   ne peut plus jamais être changé ici » (`set_dossier_status`); « Les
   écritures qu'aucun outil ne fait : Fermer un dossier; … vérifier une
@@ -2847,13 +2897,22 @@ Notes:
   `conflit_détecté`). Add: `set_dossier_status`'s discipline (the lawyer's
   confirmation first — closing takes the dossier off his phone and out of
   the prescription alerts; read every warning; `dav.complete: false` → the
-  SAME status again, same key, unless the warnings say the status moved
-  during the call — then re-read first); `record_kyc_status`'s (only on the
+  SAME status again, same key — and if that retry is refused « encore en
+  cours », wait, then the same key again; if « interrompu », re-read the
+  dossier, then the status read under a NEW key — unless the warnings say
+  the status moved during the call: then re-read first, and ask for the
+  status read under a NEW key; a `refresh_names` that refused a dossier
+  is retried the same way — never « the same key is fine » without these
+  two exceptions); `record_kyc_status`'s (only on the
   lawyer's instruction, only for a client, never over his own decision —
   `*_presumed` false on a decided status means « tell him »; a detected
   conflict reported to him AT ONCE; notes are appended, never replaced);
   and `update_partie_mandataire`'s (an individual of the same role;
-  `update` for a representation already listed).
+  `update` for a representation already listed); and what « Le dossier
+  n'a pas pu être lu — réessayez. » means (fixes of lot 4 — every write
+  that names a dossier): the store did not answer and NOTHING was
+  written — send the same call again in a moment; never read it as
+  « introuvable », and never create a dossier on the strength of it.
 - **Lot 5 — accounting through the connector (5a: the model, service and
   web half, an ordinary release; 5b: six tools behind their OWN switch —
   branch `mcp-ecriture-lot5`, with lot 4 and any earlier lot of that stack

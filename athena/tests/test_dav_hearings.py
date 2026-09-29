@@ -41,6 +41,17 @@ DAVNS = "DAV:"
 AUTH = {"Authorization": "Basic dGVzdEBleGFtcGxlLmNvbTpwdw=="}
 
 
+def _stub_dossier_lookup(monkeypatch, reader) -> None:
+    """Stub BOTH dossier readers of the collection with *reader* —
+    deliberately (review of the fixes of lot 4). The scope resolves through
+    the STRICT ``get_dossier_for_dav`` (a failed read is a 503, never the
+    404 DavX5 deletes a collection on); the fail-open ``get_dossier`` still
+    serves the served-from dossier of a moved resource. Stubbing only the
+    latter would let the scope read reach the mocked Firestore client."""
+    monkeypatch.setattr(dc, "get_dossier", reader)
+    monkeypatch.setattr(dc, "get_dossier_for_dav", reader)
+
+
 def _hearing(hid="h1", dossier_id="d1", title="Audience Tremblay"):
     return {
         "id": hid,
@@ -232,8 +243,8 @@ def linked_and_standalone(monkeypatch):
     monkeypatch.setattr(dc, "list_notes", lambda dossier_id=None, **kw: [])
     monkeypatch.setattr(dc, "get_task", lambda i: None)
     monkeypatch.setattr(dc, "get_note", lambda i: None)
-    monkeypatch.setattr(
-        dc, "get_dossier",
+    _stub_dossier_lookup(
+        monkeypatch,
         lambda i: {"id": "d1", "file_number": "2026-001",
                    "title": "Tremblay c. Lavoie", "status": "actif"} if i == "d1" else None,
     )
@@ -378,8 +389,8 @@ def test_put_forces_the_dossier_from_the_url(app, monkeypatch):
     seen = {}
     seen_kw = {}
     _nothing_stored(monkeypatch)
-    monkeypatch.setattr(
-        dc, "get_dossier",
+    _stub_dossier_lookup(
+        monkeypatch,
         lambda i: {"id": "d1", "file_number": "2026-001",
                    "title": "Tremblay", "status": "actif"},
     )
@@ -422,8 +433,8 @@ def test_put_created_event_without_type_defaults_to_rencontre(app, monkeypatch):
     keeps its type; and the UPDATE path stays under the non-effacement rule
     (an absent property never re-defaults an existing type)."""
     _nothing_stored(monkeypatch)
-    monkeypatch.setattr(
-        dc, "get_dossier",
+    _stub_dossier_lookup(
+        monkeypatch,
         lambda i: {"id": "d1", "file_number": "2026-001",
                    "title": "Tremblay", "status": "actif"},
     )
@@ -646,8 +657,8 @@ _VJOURNAL_BODY = "BEGIN:VCALENDAR\nBEGIN:VJOURNAL\nEND:VJOURNAL\nEND:VCALENDAR"
 def _put_analyse_setup(monkeypatch, seen):
     """Create-branch PUT of a VJOURNAL whose parsed data claims is_analyse."""
     _nothing_stored(monkeypatch)  # create branch
-    monkeypatch.setattr(
-        dc, "get_dossier",
+    _stub_dossier_lookup(
+        monkeypatch,
         lambda i: {"id": "d1", "file_number": "2026-001",
                    "title": "Tremblay", "status": "actif"},
     )

@@ -621,7 +621,7 @@ def test_an_unreadable_named_contact_is_never_answered_introuvable(
             "mandataire_partie_id": "m2", "kind": "mandataire"}),
         lambda: handlers.update_dossier_party({
             "action": "update", "dossier_id": doc["id"], "partie_id": "p1",
-            "avocat_id": "m2"}),
+            "avocat_partie_id": "m2"}),
     ):
         with pytest.raises(tools.ToolArgumentError) as err:
             call()

@@ -2920,7 +2920,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "The collection's sync trigger fired with the last marker."),
             "complete": _bool(
                 "false = the status IS written but the phone is not in step: "
-                "call again with the SAME status."),
+                "send the call again as its warnings say (the same status "
+                "and key, or — when the status moved — a re-read first)."),
         }, description=(
             "What the status did to the phone's DavX5 collection of the "
             "dossier.")),
