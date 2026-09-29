@@ -666,8 +666,8 @@ def _check_fee_payment_linkage(
                 f"{where}: paiement d'honoraires de {amount} cents, mais les "
                 f"recettes d'administration encore debout qui le portent "
                 f"totalisent {standing_total} cents (D-4) — le compte "
-                f"d'opérations et le paiement inscrit sur la facture en "
-                f"divergent d'autant"
+                f"d'opérations (et, pour un encaissement, le paiement inscrit "
+                f"sur la facture) en diverge d'autant"
             )
         elif standing_total:
             ids = ", ".join(str(r.get("id")) for r in standing)
