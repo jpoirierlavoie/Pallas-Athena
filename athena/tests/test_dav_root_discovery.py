@@ -251,9 +251,11 @@ def test_depth_0_reads_no_dossier(db, monkeypatch):
 def test_a_failed_dossier_query_answers_503_and_lists_nothing(
         db, monkeypatch, caplog):
     _fail_queries_on(monkeypatch, db, "dossiers")
+    db.reset_logs()
     with caplog.at_level(logging.INFO):
         resp = _propfind()
     assert resp.status_code == 503
+    assert db.commits == []                     # a failed read writes nothing
     # The dossier collections' own answer on a failed strict read (lot 1a).
     assert resp.headers["Retry-After"] == "30"
     body = resp.get_data(as_text=True)
@@ -308,9 +310,15 @@ def test_a_failed_ctag_read_answers_503(db, monkeypatch, caplog):
 
 def test_a_malformed_dossier_is_skipped_and_the_others_listed(db, caplog):
     _seed_malformed(db)
+    db.reset_logs()
     with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
         resp = _propfind()
     assert resp.status_code == 207
+    # A skip is a READ decision: nothing is written — no tombstone, no CTag
+    # (a skipped dossier's sync state is not even read), no repair.
+    assert db.commits == []
+    assert db.peek_collection(
+        f"dav_sync/dossier:{D_BAD_PARTY}/tombstones") == {}
     body = resp.get_data(as_text=True)
     # Exactly the ordinary listing: the three skipped dossiers leave no
     # trace — not even a half-built <D:response>.
