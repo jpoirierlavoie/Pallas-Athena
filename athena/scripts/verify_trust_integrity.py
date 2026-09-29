@@ -67,7 +67,9 @@ Checks 5-10 (lot 5a, 2026-09-28):
      receipt of 7 500 $ or more, which the refund must cite); art. 58 (a fee
      payment leaves by cheque or by transfer); no fee payment against an
      invoice carrying a provision (``retainer_applied > 0``); a correction
-     is never reversed again; a two-leg transfer reverses whole. Annulée
+     is never reversed again; a two-leg transfer reverses whole; and every
+     SINGLE-leg ``virement_inter_dossiers`` (no linked counter-leg — the
+     create form offered the purpose) is listed. Annulée
      entries (a cheque that never left the account) and corrections (which
      copy their original's method and withdraw nothing of their own) are
      outside the three withdrawal rules.
@@ -435,6 +437,20 @@ def _check_history_rules(
                     f"{tx.get('related_transaction_id')}) — le solde d'un seul "
                     f"dossier a bougé, sans mouvement bancaire ni contrepartie."
                 )
+
+        # A SINGLE-leg « virement inter-dossiers » (the create form offered
+        # the purpose): one dossier's balance moved with no linked counter-
+        # leg. Still reversible alone; measured before lot 5 reserves the
+        # purpose to the two-leg transfer (design review, S1).
+        if (purpose == trust.TRANSFER_PURPOSE and not is_correction
+                and not tx.get("related_transaction_id")):
+            notes.append(
+                f"{where}: virement inter-dossiers à un seul volet "
+                f"({trust.DIRECTION_LABELS.get(tx.get('direction'), tx.get('direction'))}"
+                f" de {int(tx.get('amount', 0))} cents) — aucun volet "
+                f"contrepartie lié : vérifier avec l'avocat où l'autre moitié "
+                f"a été inscrite."
+            )
 
         # The three withdrawal rules — never on a correction, never on an
         # annulée entry (that cheque never left the account).

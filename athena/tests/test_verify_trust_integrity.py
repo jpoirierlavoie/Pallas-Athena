@@ -595,6 +595,25 @@ def test_un_seul_volet_d_un_virement_contre_passe_est_une_note(fake, monkeypatch
             f"été contre-passé (autre volet {leg['related_transaction_id']})") in out
 
 
+def test_un_virement_inter_dossiers_a_un_seul_volet_est_une_note(
+    fake, monkeypatch, capsys
+):
+    """Le formulaire de création offrait l'objet « virement inter-dossiers » :
+    une écriture sans volet contrepartie lié a déplacé le solde d'un seul
+    dossier. Mesuré avant que le lot 5 réserve l'objet au virement à deux
+    volets ; le virement à deux volets du modèle, lui, n'est pas signalé."""
+    _september(fake, monkeypatch)
+    single = _create(direction="déboursé", amount=10000,
+                     purpose="virement_inter_dossiers", counterparty="Marie Roy",
+                     date=_d(2026, 9, 10))
+    pair_leg = _transfer(fake)
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"(écriture {single['id']}): virement inter-dossiers à un seul volet "
+            f"(Déboursé de 10000 cents)") in out
+    assert f"(écriture {pair_leg['id']}): virement inter-dossiers" not in out
+
+
 def test_une_ecriture_annulee_n_est_pas_un_retrait(fake, monkeypatch, capsys):
     """Un chèque annulé n'a jamais quitté le compte : les règles de retrait
     ne s'y appliquent pas — ni à sa correction, qui copie son mode.

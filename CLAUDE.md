@@ -568,7 +568,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── verify_trust_integrity.py  # Phase K: recompute + cross-check the trust register (read-only);
 │   │   │                           # lot 5a: + re-proof of completed reconciliations,
 │   │   │                           # clearing dates vs closed periods, date order,
-│   │   │                           # lot-0b rules on history (NOTES), per-client
+│   │   │                           # lot-0b rules on history + single-leg
+│   │   │                           # inter-dossier transfers (NOTES), per-client
 │   │   │                           # balances + shortfalls, and (10) every fee
 │   │   │                           # payment ↔ its admin recettes (D-4: Σ standing
 │   │   │                           # == amount; none once reversed; pre-D-4 absence,

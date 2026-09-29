@@ -1585,7 +1585,8 @@ Notes:
   every clearing date — never before its entry, never in the future, never
   inside a period already closed when the clear was made (6) —, checks that
   dates never go backwards in sequence order (7), lists the entries the lot 0b
-  rules would refuse today (8), reads every dossier's stored per-client
+  rules would refuse today and every single-leg « virement inter-dossiers »
+  (8), reads every dossier's stored per-client
   balances, so a balance no entry backs and a client in shortfall both show
   (9), and checks that every fee payment (« paiement d'honoraires ») is backed
   in the administration register by standing recettes adding up to exactly
