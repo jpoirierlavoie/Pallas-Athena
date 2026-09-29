@@ -680,31 +680,57 @@ def list_accounts(status: Optional[str] = None) -> list[dict]:
 
 
 def update_account(account_id: str, data: dict) -> tuple[Optional[dict], list[str]]:
-    """Update account METADATA only — balances and structure are never editable."""
-    existing = get_account(account_id)
-    if not existing:
-        return None, ["Compte introuvable."]
+    """Update account METADATA only — balances and structure are never editable.
+
+    Read, validated and rewritten in ONE transaction (review of lot 5a, step
+    3). The account document CARRIES the denormalized balances every entry
+    moves (``book_balance``, ``bank_balance``), and this function rewrites
+    the whole document: read outside a transaction, an entry committed
+    between the read and the ``set()`` had its balance ERASED — a rename of
+    the account against a deposit, a fee payment — and every later entry's
+    frozen ``balance_after_account`` then started from the wrong figure. The
+    close rule (a zero book balance, §3.1) is judged on the same read: a
+    deposit landing meanwhile re-runs the transaction and refuses the
+    close, where it used to close the account AND reset its balance."""
     editable = {
         k: v
         for k, v in _sanitize_data(data).items()
         if k in ("name", "institution", "transit", "account_number_last4", "notes", "status")
     }
-    merged = {**existing, **editable}
-    errors = _validate_account(merged)
-    if errors:
-        return None, errors
-    now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
-    if merged.get("status") == "fermé":
-        merged["closed_date"] = existing.get("closed_date") or now
-    else:
-        merged["closed_date"] = None
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+    result: dict = {}
+
+    @firestore.transactional
+    def _update(txn) -> None:
+        result.clear()
+        snap = ref.get(transaction=txn)
+        if not snap.exists:
+            result["errors"] = ["Compte introuvable."]
+            return
+        existing = snap.to_dict()
+        merged = {**existing, **editable}
+        errors = _validate_account(merged)
+        if errors:
+            result["errors"] = errors
+            return
+        now = datetime.now(timezone.utc)
+        provenance.stamp_update(merged, now)
+        if merged.get("status") == "fermé":
+            merged["closed_date"] = existing.get("closed_date") or now
+        else:
+            merged["closed_date"] = None
+        txn.set(ref, merged)
+        result["account"] = merged
+
     try:
-        db.collection(ACCOUNTS_COLLECTION).document(account_id).set(merged)
+        _update(transaction)
     except Exception:
         log_unexpected("trust account write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-    return merged, []
+    if result.get("errors"):
+        return None, result["errors"]
+    return result["account"], []
 
 
 # ── Transaction assembly helpers ───────────────────────────────────────────

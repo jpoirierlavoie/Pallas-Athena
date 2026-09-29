@@ -647,3 +647,95 @@ def test_un_virement_inter_dossiers_note_son_commit(fake):
         commits = provenance.committed_writes()
     assert errs == []
     assert {i for _c, i in commits} == {leg["id"], leg["related_transaction_id"]}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. Revue du lot 5a (concurrence) — l'édition d'un compte contre une écriture
+# ══════════════════════════════════════════════════════════════════════
+#
+# update_account (des deux registres) lisait le compte HORS transaction puis
+# réécrivait le document ENTIER — soldes compris — par un set() nu. Une
+# écriture qui commettait entre la lecture et le set() voyait son solde
+# dénormalisé EFFACÉ : le formulaire « Modifier le compte » (un nom, une
+# institution) contre un dépôt, un encaissement, bientôt un paiement du
+# connecteur. Le solde perdu fausse ensuite chaque balance_after_account
+# figée des écritures suivantes. La lecture, la validation et l'écriture
+# tiennent maintenant dans UNE transaction.
+
+
+def _race_on_account_commit(fake, rel: str, rival) -> dict:
+    """The first commit touching *rel* — the account edit's — lets *rival*
+    commit first, as a concurrent writer would between the edit's read and
+    its write."""
+    raced: dict = {}
+
+    def _hook(info):
+        if "done" in raced or not any(path == rel for _op, path in info.ops):
+            return
+        raced["done"] = True
+        raced["result"] = rival()
+
+    raced["remove"] = fake.add_commit_hook(_hook)
+    return raced
+
+
+def test_l_edition_d_un_compte_en_fideicommis_n_efface_pas_un_depot_concurrent(fake):
+    """Régression — un dépôt de 1 000 $ commet pendant qu'on renomme le
+    compte : l'ancien set() nu réécrivait book_balance = 0 par-dessus."""
+    raced = _race_on_account_commit(
+        fake, "trust_accounts/acc1", lambda: trust.create_transaction(_trust_entry()))
+    try:
+        updated, errs = trust.update_account("acc1", {"name": "Général — BN"})
+    finally:
+        raced["remove"]()
+    assert raced["result"][1] == []
+    assert errs == [], errs
+    stored = fake.peek("trust_accounts/acc1")
+    assert stored["book_balance"] == 100000                # the deposit stands
+    assert stored["name"] == "Général — BN"
+    assert updated["book_balance"] == 100000
+
+
+def test_un_compte_en_fideicommis_ne_se_ferme_pas_sur_un_solde_perime(fake):
+    """Régression — la règle « un compte ne se ferme qu'à solde nul » (§ 3.1)
+    se jugeait sur la lecture HORS transaction : un dépôt concurrent laissait
+    fermer le compte ET remettait son solde aux livres à 0. Rejouée sur la
+    lecture réelle, la fermeture est refusée."""
+    raced = _race_on_account_commit(
+        fake, "trust_accounts/acc1", lambda: trust.create_transaction(_trust_entry()))
+    try:
+        updated, errs = trust.update_account("acc1", {"status": "fermé"})
+    finally:
+        raced["remove"]()
+    assert raced["result"][1] == []
+    stored = fake.peek("trust_accounts/acc1")
+    assert stored["book_balance"] == 100000
+    assert stored["status"] == "actif"
+    assert updated is None
+    assert errs == ["Un compte ne peut être fermé que si son solde aux livres est nul."]
+
+
+def test_l_edition_d_un_compte_d_administration_n_efface_pas_une_ecriture(fake):
+    """Régression — le miroir côté administration : un encaissement de 600 $
+    commet pendant qu'on renomme le compte d'opérations ; l'ancien set() nu
+    réécrivait ledger_balance = 0 par-dessus (le « solde dérivé » que
+    reparer_soldes_administration existe pour réparer)."""
+    raced = _race_on_account_commit(
+        fake, "admin_accounts/ops1", lambda: al.create_transaction(_enc()))
+    try:
+        updated, errs = al.update_account("ops1", {"name": "Opérations — BN"})
+    finally:
+        raced["remove"]()
+    assert raced["result"][1] == []
+    assert errs == [], errs
+    stored = fake.peek("admin_accounts/ops1")
+    assert stored["ledger_balance"] == 60000
+    assert stored["name"] == "Opérations — BN"
+    assert updated["ledger_balance"] == 60000
+
+
+def test_l_edition_d_un_compte_introuvable_reste_un_refus(fake):
+    for model in (trust, al):
+        updated, errs = model.update_account("fantome", {"name": "X"})
+        assert updated is None
+        assert errs == ["Compte introuvable."]

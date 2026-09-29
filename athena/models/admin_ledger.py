@@ -660,31 +660,54 @@ def list_accounts(status: Optional[str] = None) -> list[dict]:
 
 
 def update_account(account_id: str, data: dict) -> tuple[Optional[dict], list[str]]:
-    """Update account METADATA only — the balance and type are never editable."""
-    existing = get_account(account_id)
-    if not existing:
-        return None, ["Compte introuvable."]
+    """Update account METADATA only — the balance and type are never editable.
+
+    Read, validated and rewritten in ONE transaction (review of lot 5a, step
+    3 — trust's ``update_account``, mirrored): the document carries
+    ``ledger_balance``, which every entry moves, and this function rewrites
+    the whole document. Read outside a transaction, an entry committed
+    between the read and the ``set()`` had its balance ERASED — the drift
+    ``scripts/reparer_soldes_administration`` exists to repair, attributed
+    until now to out-of-app writes alone."""
     editable = {
         k: v
         for k, v in _sanitize_data(data).items()
         if k in ("name", "institution", "transit", "account_number_last4", "notes", "status")
     }
-    merged = {**existing, **editable}
-    errors = _validate_account(merged)
-    if errors:
-        return None, errors
-    now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
-    if merged.get("status") == "fermé":
-        merged["closed_date"] = existing.get("closed_date") or now
-    else:
-        merged["closed_date"] = None
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+    result: dict = {}
+
+    @firestore.transactional
+    def _update(txn) -> None:
+        result.clear()
+        snap = ref.get(transaction=txn)
+        if not snap.exists:
+            result["errors"] = ["Compte introuvable."]
+            return
+        existing = snap.to_dict()
+        merged = {**existing, **editable}
+        errors = _validate_account(merged)
+        if errors:
+            result["errors"] = errors
+            return
+        now = datetime.now(timezone.utc)
+        provenance.stamp_update(merged, now)
+        if merged.get("status") == "fermé":
+            merged["closed_date"] = existing.get("closed_date") or now
+        else:
+            merged["closed_date"] = None
+        txn.set(ref, merged)
+        result["account"] = merged
+
     try:
-        db.collection(ACCOUNTS_COLLECTION).document(account_id).set(merged)
+        _update(transaction)
     except Exception:
         log_unexpected("admin account write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-    return merged, []
+    if result.get("errors"):
+        return None, result["errors"]
+    return result["account"], []
 
 
 # ── The reconciliation lock ────────────────────────────────────────────────
