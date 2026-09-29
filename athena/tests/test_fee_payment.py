@@ -766,3 +766,168 @@ def test_la_contre_passation_compte_toutes_les_recettes_liees(fake):
     result, errs = fee_payment.reverse_fee_payment(legacy["id"], "x")
     assert errs == [], errs
     assert result["admin_reversals"] == [] and result["linked_recettes"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. Revue du lot 5a (concurrence) — une tentative qui a ABOUTI
+# ══════════════════════════════════════════════════════════════════════
+#
+# Le commit d'une transaction peut ABOUTIR et sa réponse se perdre : le
+# client rejoue alors le commit sous le même identifiant de transaction
+# (« ServiceUnavailable »), la reprise répond « Aborted », et le décorateur
+# « transactional » réexécute le corps PAR-DESSUS les écritures qui ont
+# abouti (la doctrine models/invoice._OwnCommitLandedError, revue des
+# correctifs du lot 3). Ou le commit lève autre chose (« DeadlineExceeded »)
+# après avoir abouti. Dans les deux cas, rien ne prouve que rien n'a été
+# inscrit.
+
+
+def _land_then(fake, monkeypatch, exc, marker: str = "/trust_transactions/") -> dict:
+    """The next commit touching *marker* APPLIES, then its caller is answered
+    *exc* — the real client and its real ``transactional`` loop see what
+    production would: a commit whose answer was lost."""
+    server = fake._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(marker in server._write_name(w) for w in writes):
+            state["armed"] = False
+            raise exc
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+    return state
+
+
+def test_un_paiement_rejoue_par_dessus_son_propre_commit_ne_retire_pas_deux_fois(
+    fake, monkeypatch,
+):
+    """Régression — le commit du paiement de 300 $ ABOUTIT, sa réponse se
+    perd, la reprise répond « Aborted » : l'ancien corps, rejoué, lisait les
+    soldes déjà débités et le compteur déjà avancé, réécrivait la MÊME
+    écriture sous la séquence suivante et appliquait le montant une SECONDE
+    fois — 600 $ sortis des fonds compensés du client, 600 $ encaissés sur la
+    facture, 600 $ au compte d'opérations, pour UN paiement de 300 $ — puis
+    annonçait un succès. Le corps lit maintenant d'abord l'écriture que CET
+    appel a créée : trouvée, l'issue est incertaine, et rien n'est réécrit."""
+    from google.api_core import exceptions as gexc
+
+    _land_then(fake, monkeypatch, gexc.Aborted("the retried commit of a landed transaction"))
+    report: dict = {}
+    result, errs = fee_payment.create_fee_payment(
+        _entry(amount=30000), admin_account_id="ops1", _report_out=report)
+    assert result is None
+    assert errs == [fee_payment.CREATE_OUTCOME_UNCERTAIN]
+    assert report == {"reason": "issue_incertaine", "side": "paiement"}
+    (fee,) = _fees(fake)                                  # ONE withdrawal
+    assert fee["sequence"] == 2                            # never re-sequenced
+    assert fake.peek("counters/trust-acc1")["seq"] == 2
+    assert fake.peek("trust_accounts/acc1")["book_balance"] == 170000
+    dossier = fake.peek("dossiers/dos1")
+    assert dossier["trust_cleared_by_client"]["c1"] == 170000
+    assert dossier["trust_balance_by_client"]["c1"] == 170000
+    assert fake.peek("invoices/inv1")["amount_paid"] == 30000
+    assert fake.peek("admin_accounts/ops1")["ledger_balance"] == 30000
+    assert len(fake.peek_collection("admin_transactions")) == 1
+    assert fake.peek("counters/admin-ops1")["seq"] == 1
+
+
+def test_un_commit_qui_aboutit_puis_expire_ne_dit_jamais_rien_n_a_ete_inscrit(
+    fake, monkeypatch,
+):
+    """Régression — le commit ABOUTIT puis le client reçoit
+    « DeadlineExceeded » (jamais rejoué) : l'ancien message disait « Rien
+    n'a été inscrit. Veuillez réessayer. » par-dessus un paiement inscrit,
+    et l'avocat qui réessayait RETIRAIT UNE SECONDE FOIS les fonds du
+    client."""
+    from google.api_core import exceptions as gexc
+
+    _land_then(fake, monkeypatch, gexc.DeadlineExceeded("answer lost"))
+    report: dict = {}
+    result, errs = fee_payment.create_fee_payment(
+        _entry(amount=30000), admin_account_id="ops1", _report_out=report)
+    assert len(_fees(fake)) == 1                           # it DID land
+    assert result is None
+    assert "Rien n'a été inscrit" not in errs[0]
+    assert errs == [fee_payment.CREATE_OUTCOME_UNCERTAIN]
+    assert report["reason"] == "issue_incertaine"
+
+
+def test_une_lecture_ratee_avant_tout_commit_dit_toujours_rien_n_a_ete_inscrit(
+    fake, monkeypatch,
+):
+    """La certitude reste dite quand elle existe : aucune tentative n'a
+    préparé ses écritures (la PREMIÈRE lecture a échoué), aucun commit n'a
+    été tenté — « rien n'a été inscrit » est vrai, et le reste."""
+    from google.api_core import exceptions as gexc
+
+    server = fake._fake_server
+    real_get = server.batch_get_documents
+
+    def _boom(request, metadata=None, **kwargs):
+        raise gexc.ServiceUnavailable("store down")
+
+    before = _snapshot(fake)
+    monkeypatch.setattr(server, "batch_get_documents", _boom)
+    _, errs = _pay()
+    monkeypatch.setattr(server, "batch_get_documents", real_get)
+    assert errs == ["Erreur lors de l'enregistrement du paiement d'honoraires. "
+                    "Rien n'a été inscrit. Veuillez réessayer."]
+    assert _snapshot(fake) == before
+
+
+def test_une_contre_passation_rejouee_par_dessus_son_commit_n_est_pas_un_refus(
+    fake, monkeypatch,
+):
+    """Régression — la contre-passation ABOUTIT, sa réponse se perd, le
+    corps se rejoue et trouve le paiement… contre-passé, par elle-même :
+    l'ancien code répondait le refus « Cette écriture a déjà été
+    contre-passée », que la page affichait en 400 comme un échec. L'issue
+    est incertaine — et rien n'est contre-passé deux fois."""
+    from google.api_core import exceptions as gexc
+
+    first, errs = _pay(amount=30000)
+    assert errs == []
+    _land_then(fake, monkeypatch, gexc.Aborted("the retried commit of a landed transaction"))
+    report: dict = {}
+    rev, errs = fee_payment.reverse_fee_payment(
+        first["trust_entry"]["id"], "chèque perdu", _report_out=report)
+    assert rev is None
+    assert errs != [trust._ABORT_MESSAGES["déjà_contrepassée"]]
+    assert errs == [fee_payment.REVERSE_OUTCOME_UNCERTAIN]
+    assert report == {"reason": "issue_incertaine", "side": "paiement"}
+    corrections = [t for t in fake.peek_collection("trust_transactions").values()
+                   if t.get("purpose") == "correction"]
+    assert len(corrections) == 1                           # reversed ONCE
+    assert fake.peek("invoices/inv1")["amount_paid"] == 0
+    assert fake.peek("admin_accounts/ops1")["ledger_balance"] == 0
+
+
+def test_un_paiement_qui_commet_pendant_la_contre_passation_la_fait_rejouer(fake):
+    """L'autre ordre de la course du § 5 : un paiement B commet PENDANT la
+    tentative de contre-passation de A. La contre-passation lisait encore la
+    facture sans B ; sans la facture dans son ensemble lu, elle écrirait
+    « 600 − 600 = 0 » par-dessus les 400 $ de B — un paiement réel effacé.
+    Elle est interrompue, rejouée sur la facture réelle, et n'ôte que A."""
+    first, errs = _pay(date=_d(2026, 9, 10))
+    assert errs == []
+    raced: dict = {}
+
+    def _race(info):
+        if raced or not any(p.startswith("trust_transactions/") for _o, p in info.ops):
+            return
+        raced["done"] = True
+        raced["result"], raced["errs"] = _pay(amount=40000, date=_d(2026, 9, 20))
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        _rev, errs = fee_payment.reverse_fee_payment(first["trust_entry"]["id"], "chèque perdu")
+    finally:
+        remove()
+    assert raced["errs"] == [], raced["errs"]
+    assert errs == [], errs
+    assert fake.peek("invoices/inv1")["amount_paid"] == 40000   # B stands, A is gone
+    assert al.sum_invoice_receipts("inv1") == 40000
