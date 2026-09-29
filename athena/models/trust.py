@@ -1931,10 +1931,6 @@ def create_inter_dossier_transfer(
 
     description = sanitize(description or "", max_length=2000)
     reference = sanitize(reference or "", max_length=2000)
-    now = datetime.now(timezone.utc)
-    # Both legs are dated TODAY on Montréal's calendar (never the UTC date,
-    # tomorrow's after 20:00 EDT — see _today_midnight_utc).
-    today = _today_midnight_utc()
     leg_a_id = str(uuid.uuid4())
     leg_b_id = str(uuid.uuid4())
 
@@ -1947,6 +1943,16 @@ def create_inter_dossier_transfer(
 
     @firestore.transactional
     def _transfer(txn) -> None:
+        # The instant is taken PER ATTEMPT, as create/reverse do since lot 5a
+        # (review of step 3): a ``now`` captured before the first attempt
+        # stamped a retried transfer EARLIER than the write that aborted it,
+        # while its sequences come after — and verify_trust_integrity, which
+        # orders a client's entries by creation instant, read the two legs'
+        # running balances as wrong. Both legs are dated TODAY on Montréal's
+        # calendar (never the UTC date, tomorrow's after 20:00 EDT — see
+        # _today_midnight_utc).
+        now = datetime.now(timezone.utc)
+        today = _today_midnight_utc()
         acc_snap = account_ref.get(transaction=txn)
         if not acc_snap.exists:
             raise _TxnAbort("compte_introuvable")

@@ -445,3 +445,65 @@ def test_une_ecriture_rejouee_est_datee_de_l_essai_qui_commet(fake, monkeypatch)
     first = fake.peek(f"trust_transactions/{rival['entry']['id']}")
     assert stored["sequence"] > first["sequence"]
     assert stored["created_at"] > first["created_at"]
+
+
+def test_un_virement_inter_dossiers_rejoue_est_date_de_l_essai_qui_commet(
+    fake, monkeypatch, capsys
+):
+    """Régression (revue de l'étape 3) — le correctif ci-dessus n'avait pas
+    atteint ``create_inter_dossier_transfer``, qui prenait encore ``now``
+    AVANT sa transaction. Un dépôt rival au client source interrompt le
+    virement, qui se rejoue sur le nouveau solde — mais ses deux volets
+    gardaient l'instant du premier essai, ANTÉRIEUR au dépôt : le contrôle
+    d'intégrité, qui ordonne les écritures d'un client par instant de
+    création, calculait le solde courant du volet source sans le dépôt et
+    signalait un écart qui n'existe pas."""
+    fake.seed("dossiers/dos2", {
+        "id": "dos2", "file_number": "2026-002", "title": "Y c. Z",
+        "client_ids": ["c9"], "clients": [{"id": "c9", "name": "Marie Roy"}],
+        "trust_balance": 0, "trust_balance_by_client": {},
+        "trust_cleared_by_client": {},
+    })
+    ticks = iter(range(1, 1000))
+
+    class _Tick(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 20, 12, 0, tzinfo=UTC) + timedelta(seconds=next(ticks))
+
+    monkeypatch.setattr(trust, "datetime", _Tick)
+    deposit, errs = trust.create_transaction(_trust_entry())
+    assert errs == []
+    _, errs = trust.clear_transaction(deposit["id"], _d(2026, 9, 3))
+    assert errs == []
+    rival: dict = {}
+
+    def _race(info):
+        if rival or not any(p.startswith("trust_transactions/") for _o, p in info.ops):
+            return
+        rival["done"] = True
+        rival["entry"], _ = trust.create_transaction(
+            _trust_entry(amount=5000, date=_d(2026, 9, 20)))
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        leg, errs = trust.create_inter_dossier_transfer(
+            "acc1", "dos1", "c1", "dos2", "c9", 20000, "partage", "virement", "")
+    finally:
+        remove()
+    assert errs == [], errs
+    stored = fake.peek(f"trust_transactions/{leg['id']}")
+    first = fake.peek(f"trust_transactions/{rival['entry']['id']}")
+    assert stored["sequence"] > first["sequence"]
+    assert stored["created_at"] > first["created_at"]
+
+    from scripts import verify_trust_integrity as vti
+
+    install(monkeypatch, *_fake_modules(), vti, fake=fake)
+    vti.main()
+    out = capsys.readouterr().out
+    # The per-CLIENT running balances agree with the model. (The account
+    # view keeps ONE known écart on a transfer's first leg — the pair's net
+    # balance stored on both legs, DEPLOYMENT.md « One écart is known »,
+    # its model fix scheduled apart — which this test does not judge.)
+    assert "dossier dos1/c1" not in out and "dossier dos2/c9" not in out, out
