@@ -1340,8 +1340,20 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
     :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`, :data:`PARTIE_DELETE_FAILED`,
     or a reference conflict whose text may name the represented contacts —
     never log it.
+
+    The read is STRICT (review of the finitions, sync-3): the fail-open
+    ``get_partie`` answered a blip with :data:`PARTIE_NOT_FOUND`, which the
+    CardDAV DELETE maps to 404 — « already gone » to DavX5, which dropped
+    its card while the contact stayed (it came back at the address book's
+    next change). A failed read is :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`
+    (503 + Retry-After there, a « réessayez » banner on the web): the
+    deletion could not be checked, nothing was written.
     """
-    existing = get_partie(partie_id)
+    try:
+        existing = get_partie_strict(partie_id)
+    except Exception:
+        log_unexpected("partie delete: read failed", partie_id=partie_id)
+        return False, PARTIE_DELETE_CHECK_UNAVAILABLE
     if not existing:
         return False, PARTIE_NOT_FOUND
 

@@ -1430,6 +1430,11 @@ def _delete_resource(dossier_id: str, resource_id: str) -> Response:
             return Response("Precondition Failed", status=412)
 
         success, error = delete_task(resource_id)
+        if not success and is_read_unavailable([error]):
+            # The MODEL's own read failed (review of the finitions): 503 +
+            # Retry-After, never the 500 below — the phone keeps its DELETE
+            # and retries.
+            return _resource_unavailable(dossier_id, "delete")
         if not success:
             logger.error(
                 "Dossier DAV DELETE (task) failed for %s: %s",
@@ -1467,6 +1472,9 @@ def _delete_resource(dossier_id: str, resource_id: str) -> Response:
             log_dav_operation("delete", "dossier", dossier_id=dossier_id or None,
                               status_code=412, reason="modifiee_entre_temps")
             return Response("Precondition Failed", status=412)
+        if not success and is_read_unavailable([error]):
+            # The MODEL's own read failed (review of the finitions): 503.
+            return _resource_unavailable(dossier_id, "delete")
         if not success:
             logger.error(
                 "Dossier DAV DELETE (note) failed for %s: %s",
@@ -1494,6 +1502,11 @@ def _delete_resource(dossier_id: str, resource_id: str) -> Response:
             return Response("Precondition Failed", status=412)
 
         success, error = delete_hearing(resource_id)
+        if not success and is_read_unavailable([error]):
+            # The MODEL's own read failed (review of the finitions): 503 +
+            # Retry-After, never the 500 below — the phone keeps its DELETE
+            # and retries.
+            return _resource_unavailable(dossier_id, "delete")
         if not success:
             logger.error(
                 "Dossier DAV DELETE (hearing) failed for %s: %s",

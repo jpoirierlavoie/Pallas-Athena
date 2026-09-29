@@ -279,3 +279,57 @@ def test_the_connector_names_the_model_s_failed_read(db, monkeypatch):
             [concurrency.STALE_ETAG_ERROR], tool="update_task",
             subject="Cette tâche a été modifiée", reread=lambda: None)
     assert stale.value.reason == "stale_etag"
+
+
+# ── review of the finitions: the DELETEs' own model re-read ─────────────
+
+
+@pytest.mark.parametrize("collection, rid", [
+    ("tasks", T1), ("notes", N1), ("hearings", H1)])
+def test_a_phone_delete_whose_model_read_fails_is_503_never_500(
+        db, monkeypatch, collection, rid):
+    """The handler's strict read of the resource works; delete_* re-reads
+    STRICTLY since sync-4 and answers READ_UNAVAILABLE_ERROR on a failure —
+    which the DELETE handler turned into 500 « Erreur serveur. ». It is the
+    503 + Retry-After every other failed read answers; nothing deleted,
+    nothing tombstoned."""
+    db.seed(f"notes/{N1}", {
+        "id": N1, "dossier_id": D1, "title": "Note", "content": "C",
+        "category": "recherche", "etag": "e-n", "vjournal_uid": "u-n",
+        "created_at": NOW, "updated_at": NOW,
+    })
+    db.seed(f"hearings/{H1}", {
+        "id": H1, "dossier_id": D1, "title": "Audience",
+        "hearing_type": "audience", "start_datetime": NOW, "end_datetime": NOW,
+        "all_day": False, "status": "confirmée", "etag": "e-h",
+        "vevent_uid": "u-h", "confirmation": "", "source": "",
+        "created_at": NOW, "updated_at": NOW,
+    })
+    _fail_point_reads(monkeypatch, db, collection, after=1)
+    resp = _client().delete(f"/dav/dossier-{D1}/{rid}.ics", headers=AUTH)
+    _503(resp)
+    assert db.peek(f"{collection}/{rid}") is not None
+    assert not db.peek_collection(f"dav_sync/dossier:{D1}/tombstones")
+
+
+def test_a_contact_delete_whose_model_read_fails_is_503_never_404(
+        db, monkeypatch):
+    """delete_partie read the contact fail-open: behind the handler's strict
+    read, a blip of the model's read answered PARTIE_NOT_FOUND — a 404,
+    « already gone » to DavX5, which dropped its card while the contact
+    stayed. It is the « check unavailable » refusal now: 503, the card
+    kept, nothing deleted."""
+    _fail_point_reads(monkeypatch, db, "parties", after=1)
+    resp = _client().delete(f"/dav/addressbook/{P1}.vcf", headers=AUTH)
+    assert resp.status_code == 503, (resp.status_code, resp.data)
+    assert resp.headers["Retry-After"]
+    assert db.peek(f"parties/{P1}") is not None
+    assert not db.peek_collection("dav_sync/parties/tombstones")
+
+
+def test_delete_partie_answers_an_unreadable_contact_as_unverifiable(
+        db, monkeypatch):
+    _fail_point_reads(monkeypatch, db, "parties")
+    ok, error = partie_model.delete_partie(P1)
+    assert not ok
+    assert error == partie_model.PARTIE_DELETE_CHECK_UNAVAILABLE
