@@ -26,14 +26,18 @@ GST/QST, hearings, tasks, case protocols, notes, procedural documents, and
 - **Notes** (Markdown) and a **document store** with folders and signed URLs
 - **Gabarits** — user-managed Word templates filled from case data
 - **DavX5 sync** (CardDAV / CalDAV / VTODO / VJOURNAL) and an **MCP connector**
-  exposing data to Claude — read-only by default; writes (notes, tasks,
-  events, time, disbursements, contacts, dossiers, corrections, imports,
-  document analysis, and the agenda: editing tasks, notes, events and the
-  théorie de la cause, reopening a task, keeping the case protocol,
-  recurring series, deciding a Bookings request — never a deletion or a
-  payment) need the `athena:write` grant, and accounting the separate
-  `athena:comptabilite` grant (dormant until a tool carries it), each
-  ticked on the consent screen
+  exposing data to Claude — read-only by default. Writes need the
+  `athena:write` grant: notes, tasks, events, time, disbursements, contacts
+  and their representations and compliance inscriptions, dossiers with
+  their status and party links, corrections, reclassifications, imports,
+  document analysis, the agenda (editing tasks, notes, events and the
+  théorie de la cause, reopening a task, the case protocol, recurring
+  series, deciding a Bookings request), files and Word projects, templates,
+  and invoices (create, draft edits, status, void) — never a deletion, and
+  never a payment: a payment exists only as a register entry, under the
+  separate `athena:comptabilite` grant (six tools, off unless
+  `MCP_COMPTABILITE_ENABLED` is true). Each grant is ticked on the consent
+  screen
 
 ## Tech stack
 

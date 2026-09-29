@@ -2275,7 +2275,8 @@ Notes:
      conversation, a file filed only within the hour, and the
      `storage.googleapis.com` prerequisite), a separate « Gérer vos
      gabarits » block (a replaced file kept and restorable; a NEW name given
-     to an existing gabarit checked against NO dossier; the active note
+     to an existing gabarit checked against the dossiers its files came
+     from, when recorded — `name_check` says whether it was; the active note
      templates are designated by you alone — though a new file for the
      active one prints at once); and, in the « jamais » list, « modifier le
      fichier d'un document existant », « remplacer le fichier d'un gabarit

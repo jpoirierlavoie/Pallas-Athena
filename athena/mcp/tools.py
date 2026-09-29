@@ -6880,11 +6880,13 @@ def required_scope(name: str) -> str:
 def unavailable_reason(name: str) -> Optional[str]:
     """The kill switch that keeps *name* off, or ``None`` when it is live.
 
-    Two switches, nested. ``MCP_WRITE_ENABLED`` is the master: it governs
-    every write, accounting included, and it is the one NAMED when both are
-    off — it is off, and no other change will bring the tool back while it
-    stays off. ``MCP_COMPTABILITE_ENABLED`` governs the accounting subset
-    alone. A read tool is never switched off here (``MCP_ENABLED`` 404s the
+    Two switches, nested. ``MCP_WRITE_ENABLED`` is the master of the
+    WRITES: it governs every write, accounting included, and it is the one
+    NAMED when both are off — it is off, and no other change will bring the
+    tool back while it stays off. ``MCP_COMPTABILITE_ENABLED`` governs the
+    accounting subset alone — its READ too: ``get_admin_ledger`` is switched
+    off here by that switch, and ONLY by it (writes off, it stays live). No
+    other read tool is ever switched off here (``MCP_ENABLED`` 404s the
     whole endpoint instead, upstream of any tool).
     """
     if name in WRITE_TOOLS and not write_enabled():

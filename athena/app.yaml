@@ -79,8 +79,11 @@ env_variables:
   # is fail-closed): "false" removes the accounting tools — scope
   # athena:comptabilite, trust and administration register entries — from
   # tools/list, refuses them at tools/call, and hides their consent box
-  # (« Autoriser la comptabilité »). MCP_WRITE_ENABLED is the master above
-  # it: when that one is "false", accounting is off whatever this says.
+  # (« Autoriser la comptabilité »). MCP_WRITE_ENABLED is the master of the
+  # WRITES: when that one is "false", every accounting WRITE is off whatever
+  # this says — but the accounting READ, get_admin_ledger, answers to THIS
+  # switch alone, and stays listed and callable for a token holding the
+  # scope (DEPLOYMENT.md step 8 counts it).
   #
   # Since plan lot 5b six tools carry the scope (the ACCOUNTING family and
   # get_admin_ledger). mcp/oauth.py offers the box only while write AND

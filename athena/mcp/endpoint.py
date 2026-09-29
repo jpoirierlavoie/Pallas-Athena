@@ -48,7 +48,12 @@ INSTRUCTIONS_COMPTABILITE = disclosure.build_instructions(accounting=True)
 def instructions_for(scopes) -> str:
     """The INSTRUCTIONS of a token holding *scopes*: the accounting variant
     only while the token holds the scope AND the accounting switch is on —
-    the one state in which it can see an accounting tool."""
+    the one state in which it can see an accounting tool. With
+    ``MCP_WRITE_ENABLED`` off that tool is the READ ``get_admin_ledger``
+    alone, and the variant's ACCOUNTING paragraph still describes the five
+    writes the master switch hides — as both variants describe every other
+    write family whatever the write switch says (the texts are chosen by
+    scope, never re-assembled per switch)."""
     if SCOPE_COMPTABILITE in (scopes or ()) and comptabilite_enabled():
         return INSTRUCTIONS_COMPTABILITE
     return INSTRUCTIONS

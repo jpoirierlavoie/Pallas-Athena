@@ -278,6 +278,8 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # (lot 4b) — IMP-05 said only the creation could (truth-1); create_note
     # has an idempotency_key (contracts-7).
     "ne fixe la date de fermeture qu'à la création",
+    # truth-6: a fee payment is recorded by the accounting tools too.
+    "par un « paiement d'honoraires » inscrit dans l'application.",
     "there is no de-duplication and a retry creates a second note",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (

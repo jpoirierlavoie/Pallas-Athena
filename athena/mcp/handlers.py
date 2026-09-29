@@ -6670,7 +6670,8 @@ def _issuance_warnings(dossier: dict, data: dict) -> list[str]:
             f"Le client détient {format_cents(int(held))} en fidéicommis dans "
             "ce dossier. Aucune provision n'est déduite de la facture : une "
             "provision s'applique APRÈS l'envoi, par un « paiement "
-            "d'honoraires » inscrit dans l'application."
+            "d'honoraires » inscrit au fidéicommis — dans l'application, ou "
+            "par les outils comptables sous leur autorisation distincte."
         )
     if dossier.get("status") in ("fermé", "archivé"):
         out.append(
