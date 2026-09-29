@@ -36,7 +36,7 @@ from dav.sync import (
     collection_for,
     get_ctag,
     get_sync_token,
-    get_tombstones,
+    get_tombstones_strict,
     record_tombstone,
     relocate_resource,
     remove_tombstone,
@@ -63,7 +63,8 @@ from models.hearing import (
     get_hearing,
     get_hearing_strict,
     hearing_to_vevent,
-    list_hearings,
+    list_hearings_strict,
+    list_hearings_without_dossier_strict,
     strip_dav_description_suffix as strip_hearing_description_suffix,
     update_hearing,
     vevent_to_hearing,
@@ -77,7 +78,8 @@ from models.note import (
     find_analyse_note_strict,
     get_note,
     get_note_strict,
-    list_notes,
+    list_notes_strict,
+    list_notes_without_dossier_strict,
     note_to_vjournal,
     update_note,
     vjournal_to_note,
@@ -87,7 +89,8 @@ from models.task import (
     delete_task,
     get_task,
     get_task_strict,
-    list_tasks,
+    list_tasks_strict,
+    list_tasks_without_dossier_strict,
     strip_dav_description_suffix,
     task_to_vtodo,
     update_task,
@@ -224,11 +227,14 @@ def _resolve_scope(dossier_id: str) -> tuple[dict | None, bool]:
 
 
 def _scope_unavailable(dossier_id: str, operation: str) -> Response:
-    """503 — the dossier a collection URL names could not be read.
+    """503 — the dossier a collection URL names, or the collection's
+    MEMBERS (:class:`_MembersUnreadable`), could not be read.
 
     The answer :func:`_read_unavailable` gives a failed strict read of a
     resource, and the root's on a failed discovery read: DavX5 keeps the
     collection (and a PUT keeps the edit dirty on the phone) and retries.
+    Never an empty 207 — that is the answer a client acts on destructively
+    (see :func:`_collection_members`).
     """
     log_dav_operation(operation, "dossier", dossier_id=dossier_id,
                       status_code=503, reason="lecture_indisponible")
@@ -294,7 +300,10 @@ def propfind_collection(dossier_id: str) -> Response:
     _add_collection_props(multistatus, dossier, body)
 
     if depth == "1" and active:
-        hearings, tasks, notes = _collection_members(dossier_id)
+        try:
+            hearings, tasks, notes = _collection_members(dossier_id)
+        except _MembersUnreadable:
+            return _scope_unavailable(dossier_id, "propfind")
         total = len(hearings) + len(tasks) + len(notes)
         with span(
             "dav.serialize_objects",
@@ -367,44 +376,71 @@ def _add_collection_props(
         )
 
 
+class _MembersUnreadable(Exception):
+    """The store could not list a collection's members."""
+
+
 def _collection_members(dossier_id: str) -> tuple[list, list, list]:
     """Return (hearings, tasks, notes) for a scope, each traced.
 
-    One helper so the three places that enumerate a collection (PROPFIND,
-    sync-collection, calendar-query) cannot disagree about what it contains.
+    One helper so the four places that enumerate a collection (PROPFIND
+    Depth:1, sync-collection, calendar-query, the bulk multiget) cannot
+    disagree about what it contains.
+
+    Every read is STRICT (finitions, sync-1) and a failure RAISES
+    :class:`_MembersUnreadable`, which each caller answers with
+    :func:`_scope_unavailable` — 503 + ``Retry-After``. The fail-open
+    ``list_hearings`` / ``list_tasks`` / ``list_notes`` these used to call
+    answer a Firestore blip (or one document their sort cannot order) with
+    ``[]``, and an empty list is a well-formed EMPTY 207: DavX5's calendar
+    sync (past-event limit set — the default) lists the collection by
+    calendar-query whenever the CTag moved and DELETES every local event the
+    server did not list, then stores the new CTag — the dossier's court
+    dates gone from the phone until the collection's next write. On the
+    sync-collection path the same empty answer advanced the client's token
+    past changes it never received. The strict readers share their query
+    body with the fail-open ones, so the membership cannot drift; they are
+    unordered, which no client relies on.
 
     « Général » has no server-side filter available: tasks store ``None`` for
     "no dossier" while notes and hearings store ``""``, so the models cannot
-    express one query covering both. Each list is streamed and filtered in
-    Python — the same shape the retired standalone collections used, and
-    bounded by the same practical dataset size.
+    express one query covering both. Each list is streamed and filtered —
+    the ``*_without_dossier_strict`` readers — the same shape the retired
+    standalone collections used, and bounded by the same practical dataset
+    size.
     """
-    if _is_general(dossier_id):
-        with firestore_span("query", "hearings", filter="general"):
-            hearings = [h for h in list_hearings() if not h.get("dossier_id")]
-        with firestore_span("query", "tasks", filter="general"):
-            tasks = [t for t in list_tasks() if not t.get("dossier_id")]
-        with firestore_span("query", "notes", filter="general"):
-            # include_analyse=True: DAV MUST list the analyse note — the
-            # default would silently drop it from DavX5 (an analyse note
-            # always has a dossier today, but the rule is per-path, not
-            # per-datum).
-            notes = [
-                n for n in list_notes(include_analyse=True)
-                if not n.get("dossier_id")
-            ]
-        return hearings, tasks, notes
+    try:
+        if _is_general(dossier_id):
+            with firestore_span("query", "hearings", filter="general"):
+                hearings = list_hearings_without_dossier_strict(
+                    include_unconfirmed=False)
+            with firestore_span("query", "tasks", filter="general"):
+                tasks = list_tasks_without_dossier_strict()
+            with firestore_span("query", "notes", filter="general"):
+                # include_analyse=True: DAV MUST list the analyse note — the
+                # default would silently drop it from DavX5 (an analyse note
+                # always has a dossier today, but the rule is per-path, not
+                # per-datum).
+                notes = list_notes_without_dossier_strict(include_analyse=True)
+            return hearings, tasks, notes
 
-    with firestore_span("query", "hearings", dossier_id=dossier_id):
-        hearings = list_hearings(dossier_id=dossier_id)
-    with firestore_span("query", "tasks", dossier_id=dossier_id):
-        tasks = list_tasks(dossier_id=dossier_id)
-    with firestore_span("query", "notes", dossier_id=dossier_id):
-        # include_analyse=True is LOAD-BEARING: left on the default, the
-        # « Théorie de la cause » note silently vanishes from DavX5 (the
-        # collection just stops listing the resource — no error anywhere).
-        notes = list_notes(dossier_id=dossier_id, include_analyse=True)
-    return hearings, tasks, notes
+        with firestore_span("query", "hearings", dossier_id=dossier_id):
+            # include_unconfirmed=False: an unconfirmed Bookings import is
+            # never a DAV member (the list_hearings default, stated here).
+            hearings = list_hearings_strict(dossier_id, include_unconfirmed=False)
+        with firestore_span("query", "tasks", dossier_id=dossier_id):
+            tasks = list_tasks_strict(dossier_id)
+        with firestore_span("query", "notes", dossier_id=dossier_id):
+            # include_analyse=True is LOAD-BEARING: left on the default, the
+            # « Théorie de la cause » note silently vanishes from DavX5 (the
+            # collection just stops listing the resource — no error anywhere).
+            notes = list_notes_strict(dossier_id, include_analyse=True)
+        return hearings, tasks, notes
+    except Exception as exc:
+        # Inside the except, so the ERROR line carries the traceback.
+        log_unexpected("dav collection members read failed",
+                       dossier_id=dossier_id)
+        raise _MembersUnreadable() from exc
 
 
 def _add_calendar_resource(
@@ -558,7 +594,10 @@ def _handle_sync_collection(
     tombstone_count = 0
     if not client_token or client_token != current_token:
         if active:
-            hearings, tasks, notes = _collection_members(dossier_id)
+            try:
+                hearings, tasks, notes = _collection_members(dossier_id)
+            except _MembersUnreadable:
+                return _scope_unavailable(dossier_id, "sync_collection")
         else:
             # Draining collection: no live resources, so all tombstones report.
             hearings, tasks, notes = [], [], []
@@ -586,12 +625,20 @@ def _handle_sync_collection(
                     f'"{obj.get("etag", "")}"'
                 )
 
-        with firestore_span(
-            "query",
-            "dav_sync.tombstones",
-            dossier_id=dossier_id,
-        ):
-            tombstones = get_tombstones(sync_name)
+        # STRICT: the answer below carries the CURRENT token, so a deletion
+        # a failed tombstone read omitted would be skipped by this client
+        # for good — the item stays on the phone. 503, and it retries with
+        # its old token.
+        try:
+            with firestore_span(
+                "query",
+                "dav_sync.tombstones",
+                dossier_id=dossier_id,
+            ):
+                tombstones = get_tombstones_strict(sync_name)
+        except Exception:
+            log_unexpected("dav tombstones read failed", dossier_id=dossier_id)
+            return _scope_unavailable(dossier_id, "sync_collection")
 
         # Never report a tombstone for a live resource (RFC 6578) — a
         # resurrected id must not appear as both 200 propstat and 404.
@@ -654,7 +701,11 @@ def _handle_multiget(
 
     members_by_id: dict | None = None
     if active and len(hrefs) > _MULTIGET_BULK_THRESHOLD:
-        hearings, tasks, notes = _collection_members(dossier_id)
+        try:
+            hearings, tasks, notes = _collection_members(dossier_id)
+        except _MembersUnreadable:
+            # Every href would read 404 — which DavX5 takes as « deleted ».
+            return _scope_unavailable(dossier_id, "report")
         members_by_id = {}
         for obj in tasks:
             members_by_id[obj.get("id", "")] = (obj, task_to_vtodo)
@@ -733,7 +784,10 @@ def _handle_calendar_query(
         **{"dav.comp_filter": ",".join(sorted(wanted)) if wanted else "none"}
     )
 
-    hearings, tasks, notes = _collection_members(dossier_id)
+    try:
+        hearings, tasks, notes = _collection_members(dossier_id)
+    except _MembersUnreadable:
+        return _scope_unavailable(dossier_id, "report")
     groups = (
         ("VEVENT", hearings, hearing_to_vevent),
         ("VTODO", tasks, task_to_vtodo),

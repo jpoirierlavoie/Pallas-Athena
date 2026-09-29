@@ -33,6 +33,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import dav.sync as dav_sync
     import models.hearing as hearing_model
 
+from tests._dav_members import patch_members  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 
 UTC = timezone.utc
@@ -230,17 +231,10 @@ def linked_and_standalone(monkeypatch):
     standalone = _hearing("h-solo", "", title="Rendez-vous")
     everything = [linked, standalone]
 
-    def _list(dossier_id=None, **kwargs):
-        if dossier_id:
-            return [h for h in everything if h.get("dossier_id") == dossier_id]
-        return list(everything)
-
-    monkeypatch.setattr(dc, "list_hearings", _list)
+    patch_members(monkeypatch, dc, hearings=everything)
     monkeypatch.setattr(
         dc, "get_hearing", lambda i: next((h for h in everything if h["id"] == i), None)
     )
-    monkeypatch.setattr(dc, "list_tasks", lambda dossier_id=None: [])
-    monkeypatch.setattr(dc, "list_notes", lambda dossier_id=None, **kw: [])
     monkeypatch.setattr(dc, "get_task", lambda i: None)
     monkeypatch.setattr(dc, "get_note", lambda i: None)
     _stub_dossier_lookup(
@@ -251,7 +245,7 @@ def linked_and_standalone(monkeypatch):
     for module in (dc,):
         monkeypatch.setattr(module, "get_ctag", lambda n: "ctag-1")
         monkeypatch.setattr(module, "get_sync_token", lambda n: "token-1")
-        monkeypatch.setattr(module, "get_tombstones", lambda n: [])
+        monkeypatch.setattr(module, "get_tombstones_strict", lambda n: [])
     return linked, standalone
 
 
@@ -321,11 +315,11 @@ def test_calendar_query_vevent_filter_returns_only_hearings(
 ):
     """Without comp-filter support a VEVENT-scoped query hands the client
     every VTODO and VJOURNAL of the dossier too."""
-    monkeypatch.setattr(
-        dc, "list_tasks",
-        lambda dossier_id=None: [{"id": "t1", "etag": "e", "title": "Tâche",
-                                  "dossier_id": "d1", "status": "à_faire",
-                                  "priority": "normale", "vtodo_uid": "u"}],
+    patch_members(
+        monkeypatch, dc, hearings=list(linked_and_standalone),
+        tasks=[{"id": "t1", "etag": "e", "title": "Tâche",
+                "dossier_id": "d1", "status": "à_faire",
+                "priority": "normale", "vtodo_uid": "u"}],
     )
     body = (
         f'<C:calendar-query xmlns:C="{CAL}" xmlns:D="{DAVNS}"><D:prop/>'
@@ -345,11 +339,11 @@ def test_calendar_query_vevent_filter_returns_only_hearings(
 def test_calendar_query_without_filter_still_returns_everything(
     app, linked_and_standalone, monkeypatch
 ):
-    monkeypatch.setattr(
-        dc, "list_tasks",
-        lambda dossier_id=None: [{"id": "t1", "etag": "e", "title": "Tâche",
-                                  "dossier_id": "d1", "status": "à_faire",
-                                  "priority": "normale", "vtodo_uid": "u"}],
+    patch_members(
+        monkeypatch, dc, hearings=list(linked_and_standalone),
+        tasks=[{"id": "t1", "etag": "e", "title": "Tâche",
+                "dossier_id": "d1", "status": "à_faire",
+                "priority": "normale", "vtodo_uid": "u"}],
     )
     body = f'<C:calendar-query xmlns:C="{CAL}"/>'
     resp = app.test_client().open(
@@ -594,20 +588,14 @@ def general_members(monkeypatch):
                  "created_at": datetime(2026, 7, 1, tzinfo=UTC),
                  "updated_at": datetime(2026, 7, 1, tzinfo=UTC)}
 
-    monkeypatch.setattr(dc, "list_hearings",
-                        lambda dossier_id=None, **k: (
-                            [linked_hearing] if dossier_id
-                            else [solo_hearing, linked_hearing]))
-    monkeypatch.setattr(dc, "list_tasks",
-                        lambda dossier_id=None, **k: [] if dossier_id else [solo_task])
-    monkeypatch.setattr(dc, "list_notes",
-                        lambda dossier_id=None, **k: [] if dossier_id else [solo_note])
+    patch_members(monkeypatch, dc, hearings=[solo_hearing, linked_hearing],
+                  tasks=[solo_task], notes=[solo_note])
     monkeypatch.setattr(dc, "get_hearing", lambda i: solo_hearing if i == "h-solo" else None)
     monkeypatch.setattr(dc, "get_task", lambda i: solo_task if i == "t-solo" else None)
     monkeypatch.setattr(dc, "get_note", lambda i: solo_note if i == "n-solo" else None)
     monkeypatch.setattr(dc, "get_ctag", lambda n: "ctag-g")
     monkeypatch.setattr(dc, "get_sync_token", lambda n: "token-g")
-    monkeypatch.setattr(dc, "get_tombstones", lambda n: [])
+    monkeypatch.setattr(dc, "get_tombstones_strict", lambda n: [])
     return solo_hearing, solo_task, solo_note
 
 
@@ -855,9 +843,7 @@ def test_multiget_bulk_path_is_byte_identical_to_the_point_path(monkeypatch):
     hearings = [_hearing(f"h{i}") for i in range(1, 6)]
     by_id = {h["id"]: h for h in hearings}
 
-    monkeypatch.setattr(dc, "list_hearings", lambda **kw: list(hearings))
-    monkeypatch.setattr(dc, "list_tasks", lambda **kw: [])
-    monkeypatch.setattr(dc, "list_notes", lambda **kw: [])
+    patch_members(monkeypatch, dc, hearings=hearings)
     monkeypatch.setattr(dc, "get_hearing", lambda rid: by_id.get(rid))
     monkeypatch.setattr(dc, "get_task", lambda rid: None)
     monkeypatch.setattr(dc, "get_note", lambda rid: None)
@@ -888,9 +874,7 @@ def test_multiget_bulk_path_agrees_with_the_advertised_membership(monkeypatch):
     # "h2" exists in storage but the listing DROPS it — the bulk path must
     # answer 404 for it, never leak its body.
 
-    monkeypatch.setattr(dc, "list_hearings", lambda **kw: [confirmed])
-    monkeypatch.setattr(dc, "list_tasks", lambda **kw: [])
-    monkeypatch.setattr(dc, "list_notes", lambda **kw: [])
+    patch_members(monkeypatch, dc, hearings=[confirmed])
 
     hrefs = [
         "/dav/dossier-d1/h1.ics",

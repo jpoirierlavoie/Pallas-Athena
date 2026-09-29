@@ -319,6 +319,19 @@ def list_tasks_strict(dossier_id: str) -> list[dict]:
     return _raw_tasks(dossier_id)
 
 
+def list_tasks_without_dossier_strict() -> list[dict]:
+    """Every task with NO dossier — the DAV « Général » collection — a read
+    failure PROPAGATES.
+
+    The collection's member listing used :func:`list_tasks`, whose ``[]`` on
+    a blip was served as an empty collection — a jtx client then advanced
+    its sync token past changes it never received. A task stores ``None``
+    for « no dossier » and a note or hearing ``""``, so the filter is
+    Python's falsiness, over the shared body. Unordered.
+    """
+    return [t for t in _raw_tasks(None) if not t.get("dossier_id")]
+
+
 def list_tasks_for_note(note_id: str) -> list[dict]:
     """The tasks whose ``related_note_id`` is *note_id* — STRICT.
 

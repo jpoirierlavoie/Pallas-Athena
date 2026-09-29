@@ -16,7 +16,7 @@ from dav.sync import (
     bump_ctag,
     get_ctag,
     get_sync_token,
-    get_tombstones,
+    get_tombstones_strict,
     record_tombstone,
     remove_tombstone,
 )
@@ -44,12 +44,12 @@ from models.partie import (
     delete_partie,
     display_name,
     get_partie,
-    list_parties,
+    list_parties_strict,
     partie_to_vcard,
     update_partie,
     vcard_to_partie,
 )
-from utils.logging_setup import log_dav_operation, sanitize_log_value
+from utils.logging_setup import log_dav_operation, log_unexpected, sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,35 @@ ADDRESSBOOK_DISPLAY_NAME = "Clients et parties impliqués"
 COLLECTION_PATH = "/dav/addressbook/"
 
 _PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
+
+
+class _ReadUnavailable(Exception):
+    """The store could not answer a read the response depends on."""
+
+
+def _unavailable(operation: str, check: str) -> Response:
+    """503 + ``Retry-After`` — the address book, or its tombstones, could not
+    be read (finitions, sync-1). Never the EMPTY 207 the fail-open
+    ``list_parties`` produced: a PROPFIND-based sync deletes every local card
+    the server did not list, and a sync-collection answer carries the new
+    token, moving the client past changes it never received. DavX5 keeps
+    its contacts and retries."""
+    log_dav_operation(operation, "addressbook", status_code=503,
+                      reason="lecture_indisponible", check=check)
+    resp = Response("Service Unavailable", status=503)
+    resp.headers["Retry-After"] = "30"
+    return resp
+
+
+def _members() -> list[dict]:
+    """Every contact of the address book — STRICT, raising
+    :class:`_ReadUnavailable` on a failed read (the traceback logged)."""
+    try:
+        with firestore_span("query", COLLECTION_NAME):
+            return list_parties_strict()
+    except Exception as exc:
+        log_unexpected("carddav addressbook read failed", check="members")
+        raise _ReadUnavailable() from exc
 
 
 # ── OPTIONS ────────────────────────────────────────────────────────────────
@@ -102,8 +131,10 @@ def propfind_collection() -> Response:
 
     # Depth:1 — include individual resources
     if depth == "1":
-        with firestore_span("query", COLLECTION_NAME):
-            parties = list_parties()
+        try:
+            parties = _members()
+        except _ReadUnavailable:
+            return _unavailable("propfind", "members")
         for partie in parties:
             _add_resource_response(multistatus, partie, body)
         add_attributes(**{"dav.object_count": len(parties)})
@@ -247,7 +278,10 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
 
     if not client_token or client_token != current_token:
         # Full sync — return all current resources
-        parties = list_parties()
+        try:
+            parties = _members()
+        except _ReadUnavailable:
+            return _unavailable("sync_collection", "members")
         live_ids: set[str] = set()
         for partie in parties:
             live_ids.add(partie["id"])
@@ -258,7 +292,13 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
         # Report tombstones (deleted resources) — never for live resources,
         # or the same href would get both a 200 propstat and a 404 status
         # (RFC 6578 violation).
-        tombstones = get_tombstones(COLLECTION_NAME)
+        # STRICT: this answer carries the CURRENT token — a deletion a failed
+        # read omitted would be skipped by this client for good.
+        try:
+            tombstones = get_tombstones_strict(COLLECTION_NAME)
+        except Exception:
+            log_unexpected("carddav addressbook read failed", check="tombstones")
+            return _unavailable("sync_collection", "tombstones")
         for ts in tombstones:
             if ts["id"] in live_ids:
                 continue
@@ -309,7 +349,10 @@ def _handle_multiget(body_root: ET.Element) -> Response:
 def _handle_addressbook_query(body_root: ET.Element) -> Response:
     """Handle CardDAV:addressbook-query REPORT (return all)."""
     multistatus = make_multistatus()
-    parties = list_parties()
+    try:
+        parties = _members()
+    except _ReadUnavailable:
+        return _unavailable("report", "members")
 
     for partie in parties:
         href = f"/dav/addressbook/{partie['id']}.vcf"

@@ -218,13 +218,16 @@ def test_list_hearings_window_honours_the_contract(monkeypatch):
 # ── DAV: _collection_members must exclude unconfirmed ─────────────────────
 
 def test_dav_collection_members_excludes_unconfirmed(monkeypatch):
-    """dav/dossier_collections._collection_members calls list_hearings on the
-    DEFAULT, so a pending Bookings import never lists in DavX5."""
+    """dav/dossier_collections._collection_members reads
+    list_hearings_strict with ``include_unconfirmed=False`` (the DAV
+    default, stated), so a pending Bookings import never lists in DavX5 —
+    through the REAL strict reader, over the staged rows."""
     monkeypatch.setattr(h, "db", _DB([
         _hearing("d-ok"), _hearing("d-pending", "à_confirmer"),
     ]))
-    monkeypatch.setattr(dc, "list_tasks", lambda **k: [])
-    monkeypatch.setattr(dc, "list_notes", lambda **k: [])
+    monkeypatch.setattr(dc, "list_tasks_strict", lambda dossier_id: [])
+    monkeypatch.setattr(dc, "list_notes_strict",
+                        lambda dossier_id, *, include_analyse: [])
     hearings, _tasks, _notes = dc._collection_members("d1")
     assert {x["id"] for x in hearings} == {"d-ok"}
 

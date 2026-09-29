@@ -568,6 +568,27 @@ def list_hearings_strict(
     return _raw_hearings(dossier_id, include_unconfirmed=include_unconfirmed)
 
 
+def list_hearings_without_dossier_strict(
+    *, include_unconfirmed: bool
+) -> list[dict]:
+    """Every hearing with NO dossier — the DAV « Général » collection — a
+    read failure PROPAGATES.
+
+    The member listing of that collection (PROPFIND Depth:1, sync-collection,
+    calendar-query, the bulk multiget) used :func:`list_hearings`, which
+    answers a Firestore blip with ``[]``: a well-formed EMPTY 207, on which
+    DavX5's calendar sync (CTag changed → calendar-query → delete every
+    local event not listed) wiped the phone's calendar until the next write.
+    *include_unconfirmed* is REQUIRED, with no default (the DAV membership
+    is confirmed hearings only — see :func:`list_hearings_strict`). Streams
+    the whole collection — « no dossier » is ``""`` on a hearing, which one
+    equality query could express, but the shared body is what keeps the two
+    readers from ever disagreeing. Unordered.
+    """
+    return [h for h in _raw_hearings(None, include_unconfirmed=include_unconfirmed)
+            if not h.get("dossier_id")]
+
+
 def list_bookings_all() -> list[dict]:
     """Every ``source == "bookings"`` hearing, NO confirmation filter — the
     Bookings sync's reconciliation lookup ONLY.

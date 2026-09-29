@@ -337,6 +337,16 @@ def list_notes_strict(dossier_id: str, *, include_analyse: bool) -> list[dict]:
     return _raw_notes(dossier_id, include_analyse=include_analyse)
 
 
+def list_notes_without_dossier_strict(*, include_analyse: bool) -> list[dict]:
+    """Every note with NO dossier — the DAV « Général » collection — a read
+    failure PROPAGATES (the :func:`list_notes` ``[]`` served an empty
+    collection). *include_analyse* is REQUIRED, with no default: the DAV
+    paths list the analyse note (the ``include_analyse`` lesson). Unordered.
+    """
+    return [n for n in _raw_notes(None, include_analyse=include_analyse)
+            if not n.get("dossier_id")]
+
+
 # Bounded read caps for the default /notes/ list view (no search/category
 # filter). Pinned notes are a small curated set; the recent-unpinned cap
 # covers day-to-day browsing. Older notes stay reachable via search.

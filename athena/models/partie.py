@@ -590,6 +590,18 @@ def get_partie_strict(partie_id: str) -> Optional[dict]:
     return _migrate_mandataires(doc.to_dict() or {})
 
 
+def list_parties_strict() -> list[dict]:
+    """Every contact — the CardDAV address book — a read failure PROPAGATES.
+
+    The address book's member listing (PROPFIND Depth:1, sync-collection,
+    addressbook-query) used :func:`list_parties`, which answers a blip with
+    ``[]``: an EMPTY 207 the client reads as « every contact is gone »
+    (a PROPFIND-based sync deletes each local card not listed). The caller
+    answers 503 + ``Retry-After`` instead. Unordered.
+    """
+    return [doc.to_dict() for doc in db.collection(COLLECTION).stream()]
+
+
 def list_parties(
     type_filter: Optional[str] = None,
     role_filter: Optional[str] = None,

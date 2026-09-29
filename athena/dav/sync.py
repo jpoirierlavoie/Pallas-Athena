@@ -484,34 +484,20 @@ def relocate_resource(
 def get_tombstones(
     collection_name: str, since_token: Optional[str] = None
 ) -> list[dict]:
-    """Return tombstone records for a collection.
+    """Return tombstone records for a collection — FAIL-OPEN (``[]``).
 
     The *since_token* parameter is kept for API compatibility, but sync
     tokens are non-monotonic UUIDs (they mirror the ctag), so tombstones
     cannot be filtered by token ordering.  Retention is TTL-based instead:
     tombstones older than ``TOMBSTONE_TTL_DAYS`` are pruned opportunistically
     while streaming and excluded from the results.
+
+    ⚠ A sync-collection REPORT must use :func:`get_tombstones_strict`: its
+    answer carries the NEW sync token, so a deletion this ``[]`` silently
+    dropped is never reported to that client again.
     """
     try:
-        tombstones_ref = _sync_ref(collection_name).collection("tombstones")
-        cutoff = datetime.now(timezone.utc) - timedelta(days=TOMBSTONE_TTL_DAYS)
-        results = []
-        for doc in tombstones_ref.stream():
-            data = doc.to_dict()
-            deleted_at = data.get("deleted_at")
-            if deleted_at is not None and deleted_at < cutoff:
-                # Opportunistic prune of expired tombstones
-                try:
-                    doc.reference.delete()
-                except Exception as exc:
-                    logger.warning(
-                        "tombstone prune failed for %s/%s: %s",
-                        sanitize_log_value(collection_name), doc.id, exc,
-                    )
-                continue
-            data["id"] = doc.id
-            results.append(data)
-        return results
+        return get_tombstones_strict(collection_name)
     except Exception as exc:
         # Degrade to an empty list (sync omits deletions) rather than 500,
         # but make the failure visible in the logs.
@@ -519,6 +505,38 @@ def get_tombstones(
             "get_tombstones failed for %s: %s", sanitize_log_value(collection_name), exc
         )
         return []
+
+
+def get_tombstones_strict(collection_name: str) -> list[dict]:
+    """:func:`get_tombstones`, a read failure PROPAGATING.
+
+    For the sync-collection REPORTs (CalDAV collections and the address
+    book): each answers with the collection's CURRENT token, so a response
+    that omitted a deletion because the tombstone read failed would move the
+    client past it for good — the phone keeps the deleted item. The caller
+    answers 503 + ``Retry-After`` instead, and the client retries with its
+    old token. (A failed opportunistic PRUNE is not a failed read: it is
+    logged and the stale tombstone skipped, as before.)
+    """
+    tombstones_ref = _sync_ref(collection_name).collection("tombstones")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=TOMBSTONE_TTL_DAYS)
+    results = []
+    for doc in tombstones_ref.stream():
+        data = doc.to_dict()
+        deleted_at = data.get("deleted_at")
+        if deleted_at is not None and deleted_at < cutoff:
+            # Opportunistic prune of expired tombstones
+            try:
+                doc.reference.delete()
+            except Exception as exc:
+                logger.warning(
+                    "tombstone prune failed for %s/%s: %s",
+                    sanitize_log_value(collection_name), doc.id, exc,
+                )
+            continue
+        data["id"] = doc.id
+        results.append(data)
+    return results
 
 
 def clear_tombstones(collection_name: str) -> None:
