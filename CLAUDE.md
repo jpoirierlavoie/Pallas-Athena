@@ -575,7 +575,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # == amount; none once reversed; pre-D-4 absence,
 │   │   │                           # or an unlinked manual recette of the same
 │   │   │                           # amount = NOTE; a linked recette dated before
-│   │   │                           # its fee payment = NOTE, D16). Exit 0 / 1 écart / 2 notes
+│   │   │                           # its fee payment = NOTE, D16). Exit 0 / 1 écart / 2 notes.
+│   │   │                           # A pass a register write crossed (account
+│   │   │                           # update_times moved) is re-read, ≤ 3 passes;
+│   │   │                           # still crossed → an écart says so
 │   │   │                           # (a reconciliation completed before the as-of
 │   │   │                           # rework, 945572a, is a NOTE, never an écart)
 │   │   ├── verify_admin_integrity.py  # Août 2026: recompute + cross-check du registre d'administration

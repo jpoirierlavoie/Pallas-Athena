@@ -17,6 +17,11 @@ Two kinds of findings, and the exit code says which were found:
   is never rewritten, so a note is a decision for the lawyer, never an
   automatic repair. Exit 2 when there are notes and no écart; 0 when clean.
 
+The reads are not one snapshot (see :func:`_write_marks`): a pass a
+register write crossed is re-read, up to ``STABLE_READ_ATTEMPTS`` passes,
+and when every pass was crossed the first écart says so instead of letting
+a half-old, half-new read pass for a finding.
+
 Checks 1-4 (Phase K) recompute the frozen and denormalized balances:
 
   1. ``balance_after_account`` on every row == the running book balance in
@@ -692,6 +697,63 @@ def _check_fee_payment_linkage(
         )
 
 
+# ── a stable read ─────────────────────────────────────────────────────────
+
+#: Full passes the run makes before it stops looking for a stable read.
+STABLE_READ_ATTEMPTS = 3
+
+
+def _write_marks() -> dict:
+    """The ``update_time`` of every trust and administration ACCOUNT.
+
+    The checks read the registers in several NON-transactional passes — the
+    accounts (their denormalized balances) first, then each account's
+    entries, then the dossiers, then the administration register. A write
+    committed between two of those reads (the lawyer in another tab, Claude
+    through the connector) makes a stored figure read BEFORE it disagree
+    with the entries read AFTER it: an « écart » no data carries. Every
+    write to either register rewrites its account in the same transaction
+    (a creation, a clear, a reversal, a transfer, a reconciliation's
+    completion — the balance, or at least the etag the reconciliation
+    sentinel watches; ``test_chaque_ecriture_des_deux_registres_deplace_le_
+    releve`` pins it verb by verb), so two equal marks around a pass prove
+    no register write committed during it. A read failure raises: the run
+    then stops loudly, never concludes.
+    """
+    marks: dict = {}
+    for collection in (trust.ACCOUNTS_COLLECTION, admin_ledger.ACCOUNTS_COLLECTION):
+        for snap in db.collection(collection).stream():
+            marks[(collection, snap.id)] = snap.update_time
+    return marks
+
+
+def collect_stable(attempts: int = STABLE_READ_ATTEMPTS) -> tuple[list[str], list[str]]:
+    """:func:`collect` on a read no write crossed — re-run up to *attempts*
+    times. When every pass was crossed, the last pass's findings are
+    returned with an écart ahead of them saying so: an unstable read never
+    concludes « clean », and never presents its figures as established."""
+    problems: list[str] = []
+    notes: list[str] = []
+    for attempt in range(1, attempts + 1):
+        before = _write_marks()
+        problems, notes = collect()
+        if _write_marks() == before:
+            return problems, notes
+        if attempt < attempts:
+            print(
+                f"Le registre a changé pendant la lecture (une écriture a été "
+                f"validée) — nouvelle passe ({attempt + 1}/{attempts})."
+            )
+    problems.insert(
+        0,
+        f"le registre a changé pendant chacune des {attempts} passes (des "
+        f"écritures sont en cours) : les constats ci-dessous peuvent ne "
+        f"refléter que ces écritures — relancer quand personne n'écrit au "
+        f"fidéicommis ni à l'administration",
+    )
+    return problems, notes
+
+
 # ── the run ───────────────────────────────────────────────────────────────
 
 
@@ -810,7 +872,7 @@ def collect() -> tuple[list[str], list[str]]:
 
 
 def main() -> int:
-    problems, notes = collect()
+    problems, notes = collect_stable()
     print()
     if problems:
         print(f"❌ {len(problems)} écart(s) détecté(s) :")

@@ -1604,7 +1604,14 @@ Notes:
   production, BEFORE the model steps of lot 5 deploy. Its exit
   code says what it found: `0` clean, `1` at least one **écart** (a figure or
   an invariant the register no longer stands on — fix or explain each before
-  going further), `2` **notes** only. A note is history the register keeps
+  going further), `2` **notes** only. Its reads are not one snapshot: a write
+  committed WHILE it reads (another tab, or Claude through the connector)
+  would make a balance read before it disagree with the entries read after
+  it — an écart no data carries. So it compares every trust and
+  administration account's last-write time around each pass (every register
+  write rewrites its account) and re-reads, up to three passes; when every
+  pass was crossed, the FIRST écart says so and the others are not
+  established — re-run it when nobody is writing. A note is history the register keeps
   (it is append-only): an entry written before a rule existed, or a
   reconciliation completed before the as-of rework (commit 945572a,
   2026-07-29 22:37 HAE), which ran under the old « tickable = en circulation

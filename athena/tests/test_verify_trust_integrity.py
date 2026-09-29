@@ -876,3 +876,145 @@ def test_un_registre_d_administration_illisible_est_un_ecart(fake, monkeypatch, 
     code, out = _run(capsys)
     assert code == 1, out
     assert "registre d'administration illisible (RuntimeError)" in out
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Une lecture STABLE : une écriture validée pendant la vérification
+# (revue du lot 5a, étape 1 — concurrence)
+#
+# Le script lit le registre en plusieurs passes non transactionnelles :
+# les comptes d'abord (leurs soldes dénormalisés), puis les écritures de
+# chaque compte, puis les dossiers, puis le registre d'administration. Une
+# écriture validée ENTRE deux de ces lectures — l'avocat dans un autre
+# onglet, ou Claude par le connecteur — fabriquait un « écart » qu'aucune
+# donnée ne porte : le solde stocké lu AVANT l'écriture, les écritures
+# lues APRÈS. Code 1, « à corriger ou à expliquer avant d'aller plus
+# loin ». Chaque écriture du registre réécrit son compte dans la même
+# transaction ; deux relevés égaux de leurs update_time encadrant une
+# passe prouvent donc qu'aucune n'a été validée pendant.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_une_ecriture_validee_pendant_la_lecture_ne_fabrique_pas_d_ecart(
+    fake, monkeypatch, capsys
+):
+    """Un dépôt est validé après la lecture des comptes et avant celle des
+    écritures : l'ancien script comparait le book_balance d'AVANT au registre
+    d'APRÈS et rendait « ❌ book_balance stocké 150000 ≠ recalculé 160000 ».
+    Le script relit : la seconde passe est stable et propre."""
+    _september(fake, monkeypatch)
+    real = vti._account_transactions
+    raced = []
+
+    def racing(account_id):
+        if not raced:
+            raced.append(_create(amount=10000, date=_d(2026, 9, 15)))
+        return real(account_id)
+
+    monkeypatch.setattr(vti, "_account_transactions", racing)
+    code, out = _run(capsys)
+    assert raced, "the concurrent write must have happened"
+    assert code == 0, out
+    assert "book_balance stocké" not in out
+    assert "nouvelle passe" in out
+
+
+def test_un_paiement_d_honoraires_valide_pendant_la_lecture_ne_fabrique_pas_d_ecart(
+    fake, monkeypatch, capsys
+):
+    """Le contrôle 10 lit le registre d'administration EN DERNIER : un
+    paiement d'honoraires et sa recette validés entre la lecture du
+    fidéicommis et celle de l'administration laissaient une recette « liée à
+    une écriture qui n'est pas un paiement d'honoraires du registre »."""
+    _september(fake, monkeypatch)
+    real = vti._check_client_balances
+    raced = []
+
+    def racing(*args, **kwargs):
+        result = real(*args, **kwargs)
+        if not raced:
+            raced.append(_fee_payment(fake, date=_d(2026, 9, 15)))
+        return result
+
+    monkeypatch.setattr(vti, "_check_client_balances", racing)
+    code, out = _run(capsys)
+    assert raced
+    assert code == 0, out
+    assert "qui n'est pas un paiement d'honoraires du registre" not in out
+
+
+def test_un_registre_qui_change_a_chaque_passe_est_un_ecart_nomme(
+    fake, monkeypatch, capsys
+):
+    """Une écriture à CHAQUE passe : le script ne conclut jamais sur une
+    lecture instable. Il le dit en tête des écarts, code 1 — jamais un
+    « ✅ » ni un écart présenté comme établi."""
+    _september(fake, monkeypatch)
+    real = vti._account_transactions
+    writes = []
+
+    def racing(account_id):
+        writes.append(_create(amount=100 + len(writes), date=_d(2026, 9, 15)))
+        return real(account_id)
+
+    monkeypatch.setattr(vti, "_account_transactions", racing)
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert len(writes) == vti.STABLE_READ_ATTEMPTS
+    assert (f"le registre a changé pendant chacune des "
+            f"{vti.STABLE_READ_ATTEMPTS} passes") in out
+
+
+def test_une_lecture_stable_ne_fait_qu_une_passe(fake, monkeypatch, capsys):
+    _september(fake, monkeypatch)
+    real = vti.collect
+    passes = []
+
+    def counting():
+        passes.append(1)
+        return real()
+
+    monkeypatch.setattr(vti, "collect", counting)
+    code, out = _run(capsys)
+    assert code == 0, out
+    assert passes == [1]
+    assert "nouvelle passe" not in out
+
+
+def test_chaque_ecriture_des_deux_registres_deplace_le_releve(fake, monkeypatch):
+    """Le relevé repose sur une propriété des modèles : chaque écriture du
+    fidéicommis ou de l'administration réécrit son COMPTE dans la même
+    transaction. Épinglée ici pour chaque verbe — un verbe qui cesserait de
+    le faire rendrait la garde aveugle à ses écritures."""
+    _today(monkeypatch, "2026-09-20T16:00:00+00:00")
+    marks = vti._write_marks()
+
+    def moved() -> bool:
+        nonlocal marks
+        now = vti._write_marks()
+        changed = now != marks
+        marks = now
+        return changed
+
+    r = _create(amount=100000, date=_d(2026, 9, 1))
+    assert moved(), "trust create"
+    _clear(r["id"], _d(2026, 9, 2))
+    assert moved(), "trust clear"
+    d = _create(direction="déboursé", amount=1000, purpose="déboursé_tiers",
+                counterparty="Huissier", date=_d(2026, 9, 3))
+    assert moved()
+    fee = _fee_payment(fake, date=_d(2026, 9, 10))
+    assert moved(), "fee payment + admin recette"
+    admin_row = _recettes_of(fake, fee["id"])[0]
+    _, errs = admin_ledger.clear_transaction(admin_row["id"], _d(2026, 9, 11))
+    assert errs == [] and moved(), "admin clear"
+    _, errs = trust.reverse_transaction(d["id"], "chèque perdu")
+    assert errs == [] and moved(), "trust reverse"
+    _, errs = trust.create_inter_dossier_transfer(
+        "acc1", "dos1", "c1", "dos2", "c2", 20000, "instruction", "virement", "")
+    assert errs == [] and moved(), "trust transfer"
+    rec, errs = trust.create_reconciliation("acc1", _d(2026, 9, 5), 100000)
+    assert errs == []
+    moved()
+    _, errs = trust.complete_reconciliation(rec["id"], [])
+    assert errs == [] and moved(), "trust reconciliation completed"
