@@ -48,6 +48,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import admin_ledger as al
     from models import concurrency
     from models import invoice as invoice_model
+    from models import provenance
     from models import trust
     import routes.admin_ledger as admin_ledger_routes
     import routes.dossiers as dossiers_routes
@@ -349,6 +350,40 @@ def test_une_facture_disparue_refuse_la_contre_passation(fake):
     assert _entries(fake) == before
 
 
+def test_une_contre_passation_et_un_encaissement_paralleles_se_serialisent(fake):
+    """Revue du lot 5a (concurrence) — régression : l'ancienne réduction
+    lisait la facture HORS transaction, puis y écrivait un montant ABSOLU
+    (``record_payment``) : un encaissement commis entre les deux était
+    effacé. La contre-passation lit maintenant la facture dans sa
+    transaction : l'encaissement rival interrompt son commit, et le rejeu
+    réduit le montant RÉEL — rien n'est perdu, rien n'est compté deux fois."""
+    first, errs = al.create_transaction(_enc(amount=30000))
+    assert errs == []
+    rival: dict = {}
+
+    def _race(info):
+        # The reversal's FIRST commit attempt: another process records a
+        # 200 $ encaissement on the same invoice just before it lands.
+        if rival or not any(p.startswith("admin_transactions/") for _o, p in info.ops):
+            return
+        rival["done"] = True
+        rival["entry"], rival["errs"] = al.create_transaction(
+            _enc(amount=20000, date=_d(2026, 9, 12)))
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        reversal, errs = al.reverse_transaction(first["id"], "chèque sans provision")
+    finally:
+        remove()
+
+    assert rival["errs"] == [] and rival["entry"]
+    assert errs == [], errs
+    invoice = _invoice(fake)
+    assert invoice["amount_paid"] == 20000          # 30 000 + 20 000 − 30 000
+    assert invoice["status"] == "envoyée"
+    assert al.sum_invoice_receipts("fac1") == 20000  # the register agrees
+
+
 def test_une_depense_se_contre_passe_sans_toucher_aucune_facture(fake):
     entry, _ = al.create_transaction(_depense())
     fake.reset_logs()
@@ -480,6 +515,42 @@ def test_sans_etag_le_chemin_historique_reste_ouvert(fake):
     fake.external_write(f"admin_transactions/{entry['id']}", doc)
     updated, errs = al.update_transaction(entry["id"], {"description": "Loyer"})
     assert errs == [], errs
+
+
+def test_une_modification_rejouee_apres_un_essai_sans_effet_reste_notee(fake):
+    """Revue du lot 5a (concurrence) — régression : le décorateur rejoue le
+    corps de la transaction après un commit interrompu, et un commit VIDE
+    s'interrompt aussi (un essai sans effet dont la lecture a changé). Le
+    « rien à écrire » du premier essai survivait au second, qui écrivait
+    pour de vrai : aucun note_commit — le protocole d'écriture lirait « rien
+    n'a été écrit » et inviterait un doublon au rejeu — et aucune ligne de
+    journal."""
+    entry, _ = al.create_transaction(_depense(description="Loyer"))
+    rel = f"admin_transactions/{entry['id']}"
+    state: dict = {}
+
+    def _race(info):
+        # The no-op attempt commits NOTHING — that empty commit is the one
+        # a concurrent writer interrupts.
+        if state or info.ops:
+            return
+        state["done"] = True
+        doc = fake.peek(rel)
+        doc.update(description="Écrit ailleurs", etag=RIVAL_ETAG)
+        fake.external_write(rel, doc)
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        with provenance.writing_via("mcp", tool="update_admin_entry"):
+            updated, errs = al.update_transaction(entry["id"], {"description": "Loyer"})
+            writes = provenance.committed_writes()
+    finally:
+        remove()
+
+    assert state, "the no-op attempt must have run and been interrupted"
+    assert errs == [], errs
+    assert fake.peek(rel)["description"] == "Loyer"        # the retry wrote
+    assert ("admin_transactions", entry["id"]) in writes     # …and said so
 
 
 def test_un_montant_de_debourse_change_sans_ventilation_est_refuse_nommement(fake):
@@ -804,6 +875,36 @@ def test_la_contre_passation_du_virement_contre_passe_toutes_ses_recettes(
     assert _ledger(fake) == 0
 
 
+def test_un_refus_dans_la_cascade_n_arrete_pas_les_recettes_suivantes(
+    client, fake
+):
+    """Revue du lot 5a (atomicité) — régression : la cascade s'arrêtait au
+    PREMIER refus. Le virement au fidéicommis étant déjà contre-passé (il ne
+    peut pas l'être deux fois) et le registre d'administration refusant de
+    contre-passer seul une recette liée, chaque recette suivante — et le
+    paiement qu'elle porte sur sa facture — restait debout sans plus aucun
+    chemin pour la contre-passer, alors que rien ne clochait chez elle."""
+    _seed_trust(fake)
+    fee = _fee_with_recettes(fake, [("inv1", 30000), ("inv2", 20000)])
+    # The FIRST recette's invoice no longer agrees with the register (a
+    # correction out of band): its reversal is refused, nothing written.
+    doc = fake.peek("invoices/inv1")
+    doc.update(amount_paid=10000)
+    fake.external_write("invoices/inv1", doc)
+
+    resp = client.post(f"/fideicommis/{fee['id']}/contrepasser",
+                       data={"reason": "chèque perdu"})
+
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert _avertissement(resp.location) == "administration_contrepassation"
+    by_invoice = {t["invoice_id"]: t for t in _entries(fake).values()
+                  if t.get("trust_transaction_id") == fee["id"]}
+    assert not by_invoice["inv1"].get("reversed_by_id")        # refused, untouched
+    assert fake.peek("invoices/inv1")["amount_paid"] == 10000
+    assert by_invoice["inv2"].get("reversed_by_id")            # …the next one followed
+    assert fake.peek("invoices/inv2")["amount_paid"] == 0
+
+
 def test_une_lecture_ratee_du_lien_est_une_banniere(client, fake, monkeypatch):
     """Régression — l'ancien lecteur échouait OUVERT à None : la cascade
     concluait « rien à contre-passer », sans bannière, et la recette et le
@@ -895,6 +996,9 @@ def test_les_deux_controles_d_integrite_suivent_le_cycle_du_paiement_d_honoraire
     assert f"(écriture {second['id']}): paiement d'honoraires annulé" in out
     assert "restent debout" in out
     assert "encore compté au compte d'opérations" in out
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 6. La reprise historique ne projette plus — jamais deux fois
 # ══════════════════════════════════════════════════════════════════════
 

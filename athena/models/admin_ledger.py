@@ -1156,6 +1156,13 @@ def update_transaction(
 
     @firestore.transactional
     def _update(txn) -> None:
+        # Per ATTEMPT (lot 5a review): the decorator re-runs this body after
+        # an Aborted commit, and an empty commit can abort too — a no-op
+        # attempt whose read changed under it. A « noop » left over from
+        # that first attempt would hide the real write the retry commits:
+        # no note_commit (the write protocol would read « nothing was
+        # written » — a duplicate invited on retry) and no log line.
+        result.clear()
         snap = tx_ref.get(transaction=txn)
         if not snap.exists:
             raise _TxnAbort("écriture_introuvable")

@@ -670,10 +670,20 @@ def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
     second recette and its payment standing for ever. A read failure is
     now a banner. The rows are still reversed one commit each; making the
     trust reversal and its recettes ONE transaction is the fee-payment
-    model's job (lot 5a, step 8)."""
+    model's job (lot 5a, step 8).
+
+    A refused row does NOT stop the loop (lot 5a review). Each recette
+    reverses in its own commit and the trust reversal is already committed,
+    so this call is the ONLY chance any of them gets: the trust entry cannot
+    be reversed a second time, and the administration register refuses a
+    trust-linked reversal on its own (``écriture_liée_fideicommis``).
+    Returning at the first refusal left every LATER recette — and the
+    payment it carries on its invoice — standing with no path left to
+    reverse it, even when nothing was wrong with it."""
     try:
         from models import admin_ledger
 
+        followed = True
         for recette in admin_ledger.list_by_trust_transaction(trust_tx_id):
             if (recette.get("reversed_by_id")
                     or recette.get("status") == "annulée"
@@ -685,8 +695,8 @@ def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
                 allow_linked=True,
             )
             if errors:
-                return False
-        return True
+                followed = False  # keep going: the next row is independent
+        return followed
     except Exception:
         log_unexpected("trust: admin recette reversal failed")
         return False
