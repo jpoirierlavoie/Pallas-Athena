@@ -121,3 +121,59 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
     six and over-report every French description."""
     assert len(json.dumps("é", ensure_ascii=False).encode("utf-8")) == 4  # "é" + quotes
     assert len(json.dumps("é").encode("utf-8")) == 8
+
+
+# ── INSTRUCTIONS (finitions, contracts-1) ────────────────────────────────
+#
+# The descriptors are not the only text paid on every turn: INSTRUCTIONS
+# rides every `initialize`, and nothing measured it — it grew from 4 461
+# characters (21012c0) to 21 579 / 24 636 (the comptabilité variant) with no
+# test noticing. And a real client CUTS the field: this connector's
+# production text reached a Claude Code session truncated at character
+# 2 047. The protocol rules came last, after ~16 KB of family prose.
+# Measured 2026-09-29 with the protocol core in place: 22 852 / 26 037
+# UTF-8 bytes. The caps sit just above.
+INSTRUCTIONS_CAP = 24_500
+INSTRUCTIONS_COMPTABILITE_CAP = 27_500
+# What a client cutting at ~2 048 characters must still have read.
+TRUNCATION_POINT = 2_048
+_CORE_MARKERS = (
+    "idempotency_key",
+    "the SAME key, never a new one",
+    "« ENREGISTRÉE — NE PAS RÉESSAYER »",
+    "`expected_etag`",
+    "stale_etag",
+    "`decide_rendez_vous`",
+    "cancels the client's Outlook meeting",
+    "a deletion",
+    "a payment outside the accounting registers",
+)
+
+
+def _instructions():
+    with mock.patch("google.cloud.firestore.Client"):
+        from mcp import endpoint
+    return endpoint.INSTRUCTIONS, endpoint.INSTRUCTIONS_COMPTABILITE
+
+
+def test_the_instructions_stay_within_their_budget():
+    base, accounting = _instructions()
+    for label, text, cap in (("INSTRUCTIONS", base, INSTRUCTIONS_CAP),
+                             ("INSTRUCTIONS_COMPTABILITE", accounting,
+                              INSTRUCTIONS_COMPTABILITE_CAP)):
+        size = len(text.encode("utf-8"))
+        assert size <= cap, (
+            f"{label} weighs {size} bytes, over its {cap}-byte budget: it "
+            "rides every initialize — move prose the tool descriptions "
+            "already carry out of it")
+
+
+@pytest.mark.parametrize("variant", [0, 1], ids=["base", "comptabilite"])
+def test_the_protocol_core_survives_a_client_that_cuts_at_2048(variant):
+    text = _instructions()[variant]
+    head = text[:TRUNCATION_POINT]
+    missing = [m for m in _CORE_MARKERS if m not in head]
+    assert missing == [], (
+        f"not within the first {TRUNCATION_POINT} characters: {missing}")
+    # And it comes FIRST, right after the header — before any family.
+    assert head.index("BEFORE ANY WRITE") < head.index("READ-CONTENT")

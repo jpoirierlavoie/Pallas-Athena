@@ -1361,6 +1361,36 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
 
 # The paragraph about the ONE content-reading tool — a read, so no family,
 # but the privilege warning belongs in the text every client model reads.
+# The PROTOCOL CORE (finitions, contracts-1): the rules a caller must hold
+# before its FIRST write, stated right after the header so the whole of it
+# fits in the first 2 048 characters of INSTRUCTIONS. A real client cuts the
+# field there — this very connector's production text reached a Claude Code
+# session truncated at character 2 047 — and the text had grown to 22-25 KB
+# with these rules LAST, after ~16 KB of family prose: a truncating client
+# kept the header, CREATE, CORRECT and a line of AGENDA, and lost the
+# outbound Bookings effect, the « never » list, the etag, idempotency and
+# committed-write rules. Each point is restated in full further down; this
+# is the part that must survive a cut. tests/test_mcp_descriptor_budget.py
+# pins both the position and the INSTRUCTIONS size.
+_PROTOCOL_CORE_EN = (
+    "BEFORE ANY WRITE: a write is permanent and may sync to the lawyer's "
+    "phone — read the record first, and confirm with the user unless a "
+    "standing instruction authorizes it. Pass an `idempotency_key` on every "
+    "write (the same key within 24 h replays the result, never writes "
+    "twice); refused as still in flight → wait, then the SAME key, never a "
+    "new one; an outcome reported UNCERTAIN → re-read before any retry, and "
+    "retry only with the SAME key. « ENREGISTRÉE — NE PAS RÉESSAYER » = "
+    "the write COMMITTED and a later step failed: do NOT retry, re-read. "
+    "Where a tool accepts `expected_etag`, pass the `etag` of your latest "
+    "read; a stale refusal (stale_etag) wrote nothing — re-read, then "
+    "retry. The ONE effect reaching anyone outside the practice: "
+    "`decide_rendez_vous` refusing a Bookings request cancels the client's "
+    "Outlook meeting and notifies them. Never: a deletion (detaching "
+    "removes a link), a payment outside the accounting registers, sending "
+    "an invoice, confirming a presumed check, category or analysis — the "
+    "full list follows."
+)
+
 _READ_CONTENT_EN = (
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT LAYER "
     "(PDF and .docx; take ids from list_documents or from the entity of a "
@@ -1436,6 +1466,7 @@ def build_instructions(
         f"manager. {reads} tools read; {len(writes)} write, in "
         f"{len(families)} families ("
         + ", ".join(f.label for f in families) + ").",
+        _PROTOCOL_CORE_EN,
         _READ_CONTENT_EN,
     ]
     for family in families:
