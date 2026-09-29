@@ -318,3 +318,85 @@ def test_legacy_accumulated_blocks_heal_on_the_next_phone_edit(fake, client):
                      etag="e0"))
     _round_trip(client, "/dav/dossier-d1/h1.ics")
     assert fake.peek("hearings/h1")["notes"] == "Apporter les pièces"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Finitions, sync-7 — the block the phone keeps sending back
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("incoming, expected", [
+    # The lawyer types AFTER the block — where the phone shows it.
+    (f"Texte\n{BLOCK}\nAjout du téléphone", "Texte\nAjout du téléphone"),
+    ("Texte\r\n" + BLOCK.replace("\n", "\r\n") + "\r\nAjout",
+     "Texte\r\nAjout"),
+    (f"{BLOCK}\nAjout", "Ajout"),
+    # A retouched line keeps the whole run the lawyer's.
+    (f"Texte\n{BLOCK.replace('Hon. Roy', 'Hon. Roy (remplacé)')}\nAjout",
+     f"Texte\n{BLOCK.replace('Hon. Roy', 'Hon. Roy (remplacé)')}\nAjout"),
+])
+def test_the_block_goes_wherever_it_stands_as_whole_lines(incoming, expected):
+    data = {"notes": incoming}
+    h.strip_dav_description_suffix(data, _visio())
+    assert data["notes"] == expected
+
+
+def test_text_typed_after_the_block_on_the_phone_never_stores_it(fake, client):
+    fake.seed("hearings/h1", _visio(notes="Apporter les pièces", etag="e0"))
+
+    def _append_on_the_phone(body: str) -> str:
+        import icalendar
+        cal = icalendar.Calendar.from_ical(body)
+        for comp in cal.walk():
+            if comp.name == "VEVENT":
+                served = str(comp.get("description"))
+                assert served.endswith("Juge: Hon. Roy")
+                comp["description"] = icalendar.vText(
+                    served + "\nApporter aussi le bordereau")
+        return cal.to_ical().decode("utf-8")
+
+    _round_trip(client, "/dav/dossier-d1/h1.ics", edit=_append_on_the_phone)
+    stored = fake.peek("hearings/h1")
+    assert stored["notes"] == ("Apporter les pièces\n"
+                               "Apporter aussi le bordereau")
+    assert "Dossier:" not in stored["notes"]
+
+
+@pytest.mark.parametrize("served_from", ["d1", ""])
+def test_an_event_moved_between_calendars_does_not_import_its_block(
+        fake, client, served_from):
+    """A calendar app moves an event by re-uploading it under a NEW name in
+    the target collection — the CREATE branch — with the DESCRIPTION it was
+    served. Nothing stripped it there."""
+    fake.seed("dossiers/d2", {"id": "d2", "file_number": "2026-002",
+                              "title": "Autre c. Autre", "status": "actif"})
+    served = _visio(notes="Apporter les pièces", dossier_id=served_from,
+                    dossier_file_number="2026-001" if served_from else "",
+                    dossier_title="Tremblay c. Lavoie" if served_from else "")
+    body = h.hearing_to_vevent(served).replace("UID:uid-h1", "UID:uid-moved")
+    resp = client.put("/dav/dossier-d2/moved-1.ics", data=body.encode("utf-8"),
+                      headers={**AUTH, "Content-Type": "text/calendar",
+                               "If-None-Match": "*"})
+    assert resp.status_code == 201, resp.get_data(as_text=True)
+    stored = fake.peek("hearings/moved-1")
+    assert stored["notes"] == "Apporter les pièces"
+    assert stored["dossier_id"] == "d2"
+    # And what the phone is served back carries ONE block, this dossier's.
+    desc = _description(h.hearing_to_vevent(stored))
+    assert desc.count("Type: Audience") == 1
+    assert "Dossier: 2026-002 - Autre c. Autre" in desc
+
+
+def test_a_phone_typed_event_keeps_every_line_of_its_text(fake, client):
+    """A new event typed on the phone carries no X-PALLAS property: nothing
+    of its description is the serializer's, whatever its lines say."""
+    body = "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//t//t//FR",
+        "BEGIN:VEVENT", "UID:uid-phone", "DTSTAMP:20260920T160000Z",
+        "DTSTART:20261015T130000Z", "DTEND:20261015T140000Z",
+        "SUMMARY:Rendez-vous", "DESCRIPTION:Type: Rencontre\\nMa note",
+        "END:VEVENT", "END:VCALENDAR", ""])
+    resp = client.put("/dav/dossier-d1/phone-1.ics", data=body.encode("utf-8"),
+                      headers={**AUTH, "Content-Type": "text/calendar"})
+    assert resp.status_code == 201
+    assert fake.peek("hearings/phone-1")["notes"] == "Type: Rencontre\nMa note"

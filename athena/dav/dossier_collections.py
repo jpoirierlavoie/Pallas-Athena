@@ -1077,6 +1077,9 @@ def _put_hearing(
     except Exception:
         return Response("Bad Request — invalid iCalendar", status=400)
 
+    # The X-PALLAS-DOSSIER-ID the resource was SERVED with, read before the
+    # URL overwrites it: on a move it names the collection it left.
+    served_dossier_id = data.get("dossier_id")
     _force_scope(data, dossier_id, dossier)
     sync_name = collection_for(dossier_id)
 
@@ -1117,6 +1120,9 @@ def _put_hearing(
     refusal = _create_refusal(dossier_id, resource_id, "VEVENT")
     if refusal is not None:
         return refusal
+    # BEFORE the « rencontre » default below: the served Type line is
+    # rebuilt from the X-PALLAS-HEARING-TYPE the phone round-tripped only.
+    _strip_served_hearing_suffix(data, served_dossier_id, dossier_id, dossier)
     # A phone-created VEVENT (Google Calendar via DavX5) carries no
     # X-PALLAS-HEARING-TYPE, so _default_doc stamped it « audience » — every
     # personal appointment silently became forum="judiciaire" (PA-D01, the
@@ -1138,6 +1144,53 @@ def _put_hearing(
     resp = Response("", status=201)
     resp.headers["ETag"] = f'"{created.get("etag", "")}"'
     return _finish(resp)
+
+
+_SERVED_HEARING_FIELDS = ("hearing_type", "modalite", "conference_uri",
+                          "court", "judge")
+
+
+def _strip_served_hearing_suffix(
+    data: dict, served_dossier_id: str | None, dossier_id: str, dossier: dict
+) -> None:
+    """Take the served « Dossier:/Type:/Modalité:/… » block off a CREATED
+    hearing's notes (finitions, sync-7).
+
+    A calendar app moving an event between DavX5 calendars re-uploads it
+    under a NEW name — the CREATE branch — carrying the DESCRIPTION it was
+    served, metadata block included: the shape :func:`_strip_served_task_suffix`
+    handles for jtx VTODO moves. Nothing stripped it, and the lines landed
+    in the new hearing's notes for good. There is no stored hearing to build
+    the block from, so it is rebuilt from what the phone round-tripped —
+    X-PALLAS-HEARING-TYPE / -MODALITE / -COURT / -JUDGE and CONFERENCE,
+    already parsed into *data* — with the dossier the resource says it was
+    served from (or none: served from « Général »), and with this
+    collection's own dossier (whose block the serializer serves again on
+    every GET — display-neutral). Only the serializer's exact output is
+    removed; a dossier that cannot be read strips nothing more. A
+    phone-typed event carries none of those properties, so nothing of its
+    text can match.
+    """
+    if not isinstance(data.get("notes"), str):
+        return
+    fields = {k: data[k] for k in _SERVED_HEARING_FIELDS if data.get(k)}
+    served: list[dict] = []
+    if served_dossier_id and served_dossier_id != dossier_id:
+        previous = get_dossier(served_dossier_id)
+        if previous:
+            served.append({"dossier_id": served_dossier_id,
+                           "dossier_file_number": previous.get("file_number", ""),
+                           "dossier_title": previous.get("title", ""),
+                           **fields})
+    elif not served_dossier_id:
+        served.append({"dossier_id": "", **fields})   # served from « Général »
+    if not _is_general(dossier_id):
+        served.append({"dossier_id": dossier_id,
+                       "dossier_file_number": dossier.get("file_number", ""),
+                       "dossier_title": dossier.get("title", ""),
+                       **fields})
+    for source in served:
+        strip_hearing_description_suffix(data, source)
 
 
 def _strip_served_task_suffix(

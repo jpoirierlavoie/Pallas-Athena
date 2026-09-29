@@ -16,6 +16,7 @@ from models import concurrency, dav_ids, db, provenance
 from security import sanitize
 from tz import MTL, mtl_to_utc, to_mtl
 from utils import deadlines
+from utils.dav_text import remove_served_block
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -1603,34 +1604,29 @@ def strip_dav_description_suffix(data: dict, existing: dict) -> dict:
     truncated the lawyer's own text.
 
     Exactly the serializer's output is removed, and nothing else: the block
-    built from *existing* (what the phone was last served) when the text
-    ends with ``"\\n" + block`` or IS the block — in LF or CRLF form. It is
-    peeled repeatedly, which also heals the blocks legacy edits already
-    accumulated (each one the serializer's own output). Any other text, a
-    retouched line included, is left untouched. A *data* without ``notes``
-    is returned unchanged (non-effacement: an absent key must stay absent).
-    The conference link stays in the DESCRIPTION the phone is SERVED; only
-    its echo is kept out of the notes.
+    built from *existing* (what the phone was last served), wherever it
+    stands as a run of WHOLE lines — in LF or CRLF form
+    (``utils.dav_text.remove_served_block``). Every occurrence goes, which
+    also heals the blocks legacy edits already accumulated (each one the
+    serializer's own output). It used to be removed only as the exact TAIL,
+    so text the lawyer typed AFTER it on the phone (the natural place: the
+    phone shows the block at the end) stored the block inside the notes for
+    good (finitions, sync-7). Any other text, a retouched line included, is
+    left untouched. A *data* without ``notes`` is returned unchanged
+    (non-effacement: an absent key must stay absent). The conference link
+    stays in the DESCRIPTION the phone is SERVED; only its echo is kept out
+    of the notes.
 
-    Called by the DAV PUT UPDATE branch only. Mutates *data*; returns it.
+    Called by the DAV PUT UPDATE branch, and by the CREATE branch against
+    the hearing the moved resource says it was served as
+    (``dav.dossier_collections._strip_served_hearing_suffix``). Mutates
+    *data*; returns it.
     """
     suffix = dav_description_suffix(existing)
     text = data.get("notes")
     if not suffix or not isinstance(text, str):
         return data
-    blocks = (suffix, suffix.replace("\n", "\r\n"))
-    # CRLF separator first: tried after "\n", it would match the tail of a
-    # "\r\n" join and leave a stray "\r" on the lawyer's text.
-    tails = tuple(sep + b for sep in ("\r\n", "\n") for b in blocks)
-    while True:
-        if text in blocks:
-            text = ""
-            break
-        tail = next((t for t in tails if text.endswith(t)), None)
-        if tail is None:
-            break
-        text = text[: -len(tail)]
-    data["notes"] = text
+    data["notes"] = remove_served_block(text, suffix, blank_line_before=False)
     return data
 
 

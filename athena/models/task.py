@@ -27,6 +27,7 @@ from models.dav_ids import (  # noqa: F401 — RESOURCE_ID_MAX_LENGTH re-exporte
 from tz import MTL
 from security import sanitize
 from utils import deadlines, phases
+from utils.dav_text import remove_served_block
 from utils.logging_setup import (
     log_protocol_event,
     log_unexpected,
@@ -849,29 +850,27 @@ def strip_dav_description_suffix(data: dict, existing: dict) -> dict:
     text.
 
     Exactly the serializer's output is removed, and nothing else: the line
-    built from *existing* (what the phone was last served) when the text
-    ends with ``"\\n\\n" + line`` or IS the line. It is peeled repeatedly,
-    which also heals the blocks legacy edits already accumulated — each one
-    is the serializer's own output. Any other text, a lawyer's edit of the
-    line included, is left untouched. A *data* without a description is
-    returned unchanged (non-effacement: an absent key must stay absent).
+    built from *existing* (what the phone was last served), wherever it
+    stands as a WHOLE line, with the blank line that separated it
+    (``utils.dav_text.remove_served_block``). Every occurrence goes, which
+    also heals the blocks legacy edits already accumulated — each one is
+    the serializer's own output. It used to be removed only as the exact
+    TAIL, so text typed after it on the phone stored it inside the
+    description for good (finitions, sync-7). Any other text, a lawyer's
+    edit of the line included, is left untouched. A *data* without a
+    description is returned unchanged (non-effacement: an absent key must
+    stay absent).
 
-    Called by the DAV PUT UPDATE branch only. Mutates *data*; returns it.
+    Called by the DAV PUT UPDATE branch, and by the CREATE branch of a jtx
+    move (``dav.dossier_collections._strip_served_task_suffix``). Mutates
+    *data*; returns it.
     """
     suffix = dav_description_suffix(existing)
     text = data.get("description")
     if not suffix or not isinstance(text, str):
         return data
-    tails = tuple(sep + suffix for sep in (_DESCRIPTION_SEPARATOR, "\r\n\r\n"))
-    while True:
-        if text == suffix:
-            text = ""
-            break
-        tail = next((t for t in tails if text.endswith(t)), None)
-        if tail is None:
-            break
-        text = text[: -len(tail)]
-    data["description"] = text
+    data["description"] = remove_served_block(text, suffix,
+                                              blank_line_before=True)
     return data
 
 

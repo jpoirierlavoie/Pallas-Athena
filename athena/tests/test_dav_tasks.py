@@ -293,3 +293,20 @@ def test_no_description_key_stays_no_description_key():
     task_model.strip_dav_description_suffix(
         data, {"dossier_file_number": "2026-001", "dossier_title": "T c. L"})
     assert "description" not in data
+
+
+@pytest.mark.parametrize("incoming, expected", [
+    # Finitions, sync-7: text typed AFTER the served line on the phone.
+    (f"Texte\n\n{SUFFIX}\nAjout", "Texte\nAjout"),
+    (f"Texte\n\n{SUFFIX}\n\nAjout", "Texte\n\nAjout"),
+    (f"Texte\r\n\r\n{SUFFIX}\r\nAjout", "Texte\r\nAjout"),
+    (f"{SUFFIX}\nAjout", "Ajout"),
+    (f"Texte\n\n{SUFFIX} (voir)\nAjout", f"Texte\n\n{SUFFIX} (voir)\nAjout"),
+])
+def test_the_dossier_line_goes_wherever_it_stands_as_a_whole_line(
+        incoming, expected):
+    existing = {"dossier_file_number": "2026-001",
+                "dossier_title": "Tremblay c. Lavoie"}
+    data = {"description": incoming}
+    task_model.strip_dav_description_suffix(data, existing)
+    assert data["description"] == expected
