@@ -2635,6 +2635,33 @@ Notes:
      report   # before: live 3
      ```
 
+     First the DISCOVERY itself (fixes of lot 4 — the root Depth:1 PROPFIND
+     reads its dossiers STRICTLY and answers 503 + `Retry-After` on a read
+     failure instead of a 207 advertising zero dossier collections, which
+     DavX5 may read as « all gone »; a single dossier document it cannot
+     read is skipped and logged, the others listed):
+
+     ```bash
+     root() {
+       curl -s -u "${DAV_USER:?}" -X PROPFIND -H "Depth: 1" \
+         -o /tmp/root.xml -w '%{http_code}\n' "https://yourdomain.example/dav/"
+       echo "dossier collections: $(grep -o '/dav/dossier-' /tmp/root.xml | wc -l)"
+     }
+     root   # 207, and as many collections as actif + en_attente dossiers
+     ```
+
+     The count must equal the number of `actif` and `en_attente` dossiers in
+     the application's list. A 503 (with `Retry-After: 30`) means a read
+     failed — the `unexpected` line « dav root propfind read failed » says
+     which (`check`); retry, and never read it as « no dossier ». A count
+     BELOW the application's is a skipped document: the logs then carry
+     `list_dossiers_by_status_strict: document skipped` or `dav root
+     propfind: dossier skipped`, each naming the `dossier_id` that left
+     discovery. Repair that stored document by hand (a legacy client entry
+     without an `id`, a stored `id` that is not the document's, a file
+     number or title that is not text); its own collection stays out of
+     DavX5 until then.
+
      Then, through Claude: `set_dossier_status` « fermé » on it — the
      result reads `dav.complete: true`, `dav.direction: "drain"`,
      `dav.resources: 3`, with warnings naming what closing does —; `report`

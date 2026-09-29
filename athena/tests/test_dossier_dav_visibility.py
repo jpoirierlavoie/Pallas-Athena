@@ -605,13 +605,21 @@ def test_membership_parity_with_the_collection_listing(db, loaded):
 
 def _root_listing_ids(monkeypatch, dossiers: list[dict]) -> set[str]:
     """The dossier ids the root Depth:1 PROPFIND advertises, over a patched
-    list_dossiers (the root reads nothing else about dossiers)."""
+    list_dossiers_by_status_strict (the root reads nothing else about
+    dossiers — since the fixes of lot 4 it reads through the STRICT reader,
+    never the fail-open list_dossiers, which is patched to RAISE here so a
+    regression to it cannot pass silently)."""
     from flask import Flask
 
-    def fake_list(status_filter=None, **_kw):
-        return [d for d in dossiers if d["status"] == status_filter]
+    def fake_list(status):
+        return [d for d in dossiers if d["status"] == status]
 
-    monkeypatch.setattr(dossier_model, "list_dossiers", fake_list)
+    def display_reader(*_a, **_kw):
+        raise AssertionError("discovery read the fail-open list_dossiers")
+
+    monkeypatch.setattr(dossier_model, "list_dossiers_by_status_strict",
+                        fake_list)
+    monkeypatch.setattr(dossier_model, "list_dossiers", display_reader)
     monkeypatch.setattr(dav_sync, "get_ctags_bulk",
                         lambda names: {n: "c" for n in names})
     monkeypatch.setattr("dav.dav_auth._check_credentials", lambda u, p: True)
@@ -645,13 +653,14 @@ def test_every_status_is_classified_the_same_by_discovery_the_collection_and_the
 
 
 def test_every_active_status_is_a_valid_status():
-    """The root PROPFIND asks ``list_dossiers(status_filter=s)`` for each
-    active status, and ``list_dossiers`` IGNORES a filter that is not in
-    ``VALID_STATUSES`` — it then returns EVERY dossier. A status added to
-    ACTIVE_DOSSIER_STATUSES but not to the model's vocabulary would make
-    discovery advertise the whole firm, closed dossiers included, with no
-    error; the parity test above iterates VALID_STATUSES only and cannot
-    see it (revue 4a)."""
+    """The root PROPFIND asks ``list_dossiers_by_status_strict(s)`` for
+    each active status (``list_dossiers(status_filter=s)`` until the fixes
+    of lot 4 — which IGNORES a filter that is not in ``VALID_STATUSES`` and
+    returns EVERY dossier; the strict reader raises instead, so the root
+    would answer 503 for ever). A status added to ACTIVE_DOSSIER_STATUSES
+    but not to the model's vocabulary would make discovery advertise the
+    whole firm, or nothing at all; the parity test above iterates
+    VALID_STATUSES only and cannot see it (revue 4a)."""
     assert dav_sync.ACTIVE_DOSSIER_STATUSES
     assert set(dav_sync.ACTIVE_DOSSIER_STATUSES) <= set(
         dossier_model.VALID_STATUSES)

@@ -1213,6 +1213,66 @@ def list_dossiers(
         return []
 
 
+def list_dossiers_by_status_strict(status: str) -> list[dict]:
+    """Every dossier of *status*, newest opened first — the QUERY strict,
+    each DOCUMENT tolerant (fixes of lot 4, for the DavX5 discovery).
+
+    Written for the root Depth:1 PROPFIND (``dav/__init__.py``), which
+    advertises one collection per active dossier. It used to read through
+    :func:`list_dossiers`, which fails OPEN twice over:
+
+    * a failed QUERY answered ``[]`` — and discovery then advertised ZERO
+      dossier collections in a well-formed 207, which DavX5 reads as « these
+      collections are gone » and may drop from the phone. Here the query
+      failure PROPAGATES: the caller answers 503 + ``Retry-After``;
+    * one DOCUMENT the party migration cannot read (a legacy client entry
+      with no ``id`` — ``_migrate_parties`` raises a ``KeyError``) raised
+      inside the same ``try`` and emptied the WHOLE status. Here it is
+      SKIPPED, logged through the typed helper (ERROR, the document id
+      only — never a title or a name), and every other dossier is listed.
+      Such a dossier's own collection answers 404 anyway (``get_dossier``
+      fails on the same migration), so advertising it would only point the
+      phone at a dead URL.
+
+    A document whose stored ``id`` disagrees with its document id is skipped
+    the same way (the collection URL is the document id, the one
+    ``get_dossier`` resolves); an absent ``id`` is taken from the document
+    id. A stored ``opened_date`` that is not a timezone-aware datetime sorts
+    as the oldest instead of raising in the sort (a ``TypeError`` there
+    would have turned one bad date into a 503 of the whole discovery). An
+    unknown *status* raises ``ValueError`` before any read:
+    :func:`list_dossiers` IGNORES a filter outside :data:`VALID_STATUSES`
+    and returns every dossier, which would advertise the whole firm.
+
+    Same order as :func:`list_dossiers`'s default (newest opened first,
+    same-day ties by creation), so the listing it replaced is reproduced
+    byte for byte.
+    """
+    if status not in VALID_STATUSES:
+        raise ValueError("list_dossiers_by_status_strict needs a valid status")
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("status", "==", status))
+    keyed: list[tuple[tuple[datetime, float], dict]] = []
+    for snap in query.stream():
+        try:
+            doc = snap.to_dict() or {}
+            stored_id = doc.get("id")
+            if stored_id is None:
+                doc["id"] = snap.id
+            elif stored_id != snap.id:
+                raise ValueError("stored id differs from the document id")
+            doc = _migrate_parties(doc)
+            opened, tie = _newest_opened_first_key(doc)
+            if not isinstance(opened, datetime) or opened.tzinfo is None:
+                opened = datetime.min.replace(tzinfo=timezone.utc)
+            keyed.append(((opened, tie), doc))
+        except Exception:
+            log_unexpected("list_dossiers_by_status_strict: document skipped",
+                           dossier_id=snap.id)
+    keyed.sort(key=lambda pair: pair[0], reverse=True)
+    return [doc for _key, doc in keyed]
+
+
 def _newest_opened_first_key(dossier: dict) -> tuple[datetime, float]:
     """Sort key for « newest opened first » in the PYTHON-sorted lists
     (:func:`list_dossiers`, :func:`list_dossiers_for_partie`).

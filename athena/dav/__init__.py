@@ -23,9 +23,33 @@ from dav.xml_utils import (
     propfind_requests_prop,
     serialize_multistatus,
 )
+from utils.logging_setup import log_dav_operation, log_unexpected
 from utils.tracing_setup import add_attributes, firestore_span
 
 dav_bp = Blueprint("dav", __name__)
+
+
+def _root_read_unavailable(check: str) -> Response:
+    """503 — the root could not read what discovery must list.
+
+    The answer the dossier collections give on a failed strict read since
+    lot 1a (``dav.dossier_collections._read_unavailable``): 503 +
+    ``Retry-After``, so DavX5 keeps its collection list and retries. Never
+    a 207 listing fewer collections than exist — DavX5 reads a collection
+    missing from discovery as a collection that is GONE, and may drop it
+    from the phone (fixes of lot 4: the fail-open ``list_dossiers`` turned a
+    Firestore blip into a 207 advertising zero dossier collections).
+
+    Called from inside the ``except``, so the ERROR line carries the
+    traceback. *check* is ``dossiers`` (the per-status queries) or
+    ``ctags`` (the batched CTag read). Never a name or a title.
+    """
+    log_unexpected("dav root propfind read failed", check=check)
+    log_dav_operation("propfind", "root", status_code=503,
+                      reason="lecture_indisponible")
+    resp = Response("Service Unavailable", status=503)
+    resp.headers["Retry-After"] = "30"
+    return resp
 
 
 # ── Well-known redirects (DavX5 discovery) ────────────────────────────────
@@ -113,7 +137,7 @@ def dav_root_propfind() -> Response:
             GENERAL_COLLECTION,
             get_ctags_bulk,
         )
-        from models.dossier import list_dossiers
+        from models import dossier as dossier_model
 
         # -- Static collections (addressbook + \u00ab G\u00e9n\u00e9ral \u00bb) ----------------
         # \u00ab G\u00e9n\u00e9ral \u00bb carries every item belonging to no dossier \u2014 hearings,
@@ -136,26 +160,60 @@ def dav_root_propfind() -> Response:
         # read too, so discovery can never advertise a collection the drain
         # treats as closed, nor hide one it treats as open (lot 4a: this
         # listing used to hard-code its two statuses).
+        #
+        # STRICT on the query, TOLERANT per document (fixes of lot 4). A
+        # failed read answers 503 + Retry-After and lists NOTHING — a 207
+        # missing collections tells DavX5 they are gone. One document the
+        # listing cannot read is skipped (logged by id) and the others are
+        # listed: models.dossier.list_dossiers_by_status_strict skips what
+        # the migration cannot read, the loop below what this listing cannot
+        # render (a display name built from a non-string field). Everything
+        # a collection's <D:response> needs is computed HERE, before any of
+        # them is written, so a skipped dossier never leaves a half-built
+        # response in the multistatus.
         active_dossiers: list[dict] = []
-        for status in ACTIVE_DOSSIER_STATUSES:
-            with firestore_span("query", "dossiers", filter=f"status={status}"):
-                active_dossiers += list_dossiers(status_filter=status)
+        try:
+            for status in ACTIVE_DOSSIER_STATUSES:
+                with firestore_span("query", "dossiers",
+                                    filter=f"status={status}"):
+                    active_dossiers += (
+                        dossier_model.list_dossiers_by_status_strict(status))
+        except Exception:
+            return _root_read_unavailable("dossiers")
         add_attributes(**{"dav.dossier_count": len(active_dossiers)})
 
         seen_ids: set[str] = set()
-        unique_dossiers: list[dict] = []
+        dossier_entries: list[tuple[str, str]] = []
         for dossier in active_dossiers:
-            did = dossier["id"]
-            if did in seen_ids:
+            try:
+                did = dossier["id"]
+                if not isinstance(did, str) or not did:
+                    raise ValueError("dossier without a usable id")
+                if did in seen_ids:
+                    continue
+                # Shared with the collection's own PROPFIND: the two used to
+                # build this string separately and had drifted (one prefixed
+                # the product name, the other did not), so the label a
+                # client showed depended on which response it had last read.
+                display_name = collection_display_name(dossier)
+            except Exception:
+                did = dossier.get("id") if isinstance(dossier, dict) else None
+                log_unexpected(
+                    "dav root propfind: dossier skipped",
+                    dossier_id=did if isinstance(did, str) else None,
+                )
                 continue
             seen_ids.add(did)
-            unique_dossiers.append(dossier)
+            dossier_entries.append((did, display_name))
 
         sync_names = list(ctag_names.values()) + [
-            f"dossier:{d['id']}" for d in unique_dossiers
+            f"dossier:{did}" for did, _name in dossier_entries
         ]
-        with firestore_span("get_all", "dav_sync"):
-            ctags = get_ctags_bulk(sync_names)
+        try:
+            with firestore_span("get_all", "dav_sync"):
+                ctags = get_ctags_bulk(sync_names)
+        except Exception:
+            return _root_read_unavailable("ctags")
 
         for coll_path, coll_name, coll_type, component in static_collections:
             child = add_response(multistatus, coll_path)
@@ -193,14 +251,8 @@ def dav_root_propfind() -> Response:
                 )
 
         # -- Dynamic per-dossier collections -------------------------------
-        for dossier in unique_dossiers:
-            did = dossier["id"]
+        for did, display_name in dossier_entries:
             coll_path = f"/dav/dossier-{did}/"
-            # Shared with the collection's own PROPFIND: the two used to
-            # build this string separately and had drifted (one prefixed the
-            # product name, the other did not), so the label a client showed
-            # depended on which response it had last read.
-            display_name = collection_display_name(dossier)
             sync_name = f"dossier:{did}"
 
             child = add_response(multistatus, coll_path)
