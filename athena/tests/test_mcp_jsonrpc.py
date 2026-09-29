@@ -218,19 +218,29 @@ def test_initialize_shape(client):
     assert "re-read" in instructions
     # What the connector still cannot do. « CREATE-ONLY » and « never
     # writable » died with lot Q — asserting them would now pin a lie.
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS
+    # open on a SAFETY CORE whose « NEVER, whatever the tool: » list states
+    # the promises as clauses, then ONE index line per family — the family
+    # prose these assertions pinned moved into the tool descriptions, where
+    # they are pinned now (tools.TOOLS below).
+    from mcp import tools as _tools
+    desc = {name: spec["description"] for name, spec in _tools.TOOLS.items()}
+    assert instructions.startswith(disclosure.safety_core_en())
+    assert len(instructions.encode("utf-8")) <= 8_000
     assert "NEVER allocates" in instructions
     assert "brouillon" in instructions
-    assert "never records a payment" in instructions
-    assert "DELETED" in instructions
+    assert "record a payment outside the accounting registers" in instructions
+    assert "DELETE anything" in instructions
     assert "trust accounting" in instructions
     # The repair path must be stated: voiding the invoice releases every
     # source. Saying nothing would leave the model believing an import is
     # irreversible. Rewritten deliberately (lot 3b): the connector voids too
     # (update_invoice), and the promises that replaced « never changes an
     # invoice's status » / « never allocates an invoice number » are stated.
-    assert "void the invoice (`update_invoice`, status annulée" in instructions
-    assert "It never SENDS an invoice to anyone" in instructions
-    assert "It never marks an invoice payée" in instructions
+    assert "voided (update_invoice, status annulée" in desc["import_invoice"]
+    assert "SEND an invoice to anyone (marking one envoyée sends nothing)" in (
+        instructions)
+    assert "mark an invoice payée by a status change" in instructions
     assert "never changes an invoice's status" not in instructions
     assert "It never allocates an invoice number" not in instructions
     # Lot 3b (the text step): the BILL paragraph states what the consent
@@ -239,8 +249,10 @@ def test_initialize_shape(client):
     # void, and each budget version is kept as the proof of what the client
     # was told.
     assert "ONLY a brouillon" in instructions
-    assert "frozen, their phase aside, until a void" in instructions
-    assert "the proof of what the client was told, and when" in instructions
+    assert "frozen, their phase aside, until update_invoice voids it" in (
+        desc["create_invoice"])
+    assert "the proof of what the client was told, and when" in (
+        desc["create_budget_version"])
     # Lot 0a (disclosure step): the text is ASSEMBLED from mcp/disclosure,
     # and three things it used to say were false. Voiding does NOT free the
     # number; complete_task does not reopen; the family count is derived.
@@ -249,7 +261,8 @@ def test_initialize_shape(client):
     # complete_task never does it, and that no tool undoes a cancellation
     # without being told to in so many words.
     assert "frees the number" not in instructions
-    assert "the number stays on the voided invoice" in instructions
+    assert "the number itself stays on the voided invoice" in (
+        desc["import_invoice"])
     assert "never reopens a closed one — that is `reopen_task`" in instructions
     assert "never silently undoes a cancellation" in instructions
     assert "five families" not in instructions
@@ -257,7 +270,7 @@ def test_initialize_shape(client):
     # the ACCOUNTING family is not counted, only named as a separate grant.
     families = [f for f in disclosure.FAMILIES
                 if f.tools and f.scope != mcp_pkg.SCOPE_COMPTABILITE]
-    assert f"in {len(families)} families (" in instructions
+    assert f"in {len(families)} families:" in instructions
     assert "ACCOUNTING: " not in instructions
     assert "Accounting tools appear only under the SEPARATE" in instructions
     # The lot 0a write-protocol rules the client model must follow.
@@ -275,11 +288,11 @@ def test_initialize_shape(client):
     assert "fermé / archivé DRAINS its DavX5 collection" in instructions
     # Reworded by the finitions (contracts-8): the repair is the first of
     # three ordered retry cases.
-    assert "the SAME status under the SAME idempotency_key" in instructions
+    assert "the SAME status under the SAME idempotency_key" in (
+        desc["set_dossier_status"])
     assert "counts as NOT done" in instructions
     assert "removes a LINK — the contact stays" in instructions
-    assert "It never CONFIRMS an identity or conflict-of-interest check" in (
-        instructions)
+    assert "CONFIRM an identity or conflict check" in instructions
     assert "can never be changed here" not in instructions
     assert "identity verification or conflict-of-interest checks" not in (
         instructions)

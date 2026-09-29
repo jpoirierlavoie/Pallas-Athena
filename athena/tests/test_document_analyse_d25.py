@@ -605,9 +605,14 @@ def test_the_texts_say_a_kept_confirmation_does_not_vouch_for_the_run():
     assert "« confirmée avant cette analyse », ses alertes affichées" in (
         " ".join(consent.split()))
     families = {f.key: f for f in disclosure.FAMILIES}
-    assert "or one nobody chose" in families["analyse"].instructions_en
-    assert ("`record_document_analysis`'s, unless it is the lawyer's"
-            in families["files"].instructions_en)
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it.
+    assert "never over the lawyer's" in families["analyse"].instructions_en
+    from mcp import tools as _tools
+    assert "or a default nobody chose" in (
+        _tools.TOOLS["record_document_analysis"]["description"])
+    update_doc = _tools.TOOLS["update_document"]["description"]
+    assert "on any OTHER document that carries an analysis" in update_doc
+    assert "an analysis keeps it too" in update_doc
 
 
 @pytest.mark.parametrize("analyse, anterior", [

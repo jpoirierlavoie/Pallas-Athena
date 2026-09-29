@@ -22,9 +22,15 @@ them (:func:`write_tools`), so a write tool cannot ship without a family, and
 the family is what puts it in the texts. Each family names its scope (checked
 against every member's declared scope), its consent partial under
 ``templates/mcp/families/``, its clause of the consent checkbox summary, and
-its INSTRUCTIONS paragraph (which must name every member literally).
+its ONE-LINE entry in the INSTRUCTIONS index (which must name every member
+literally). The rules of each tool live in its DESCRIPTION, never here
+(finitions, contracts-1): INSTRUCTIONS ride every ``initialize``, and a real
+client cuts them at ~2 048 characters.
 
-**NEVERS** are the promises. Each one carries the CALLS it forbids — names
+**NEVERS** are the promises. The ``in_core`` ones are stated by the SAFETY
+CORE that opens INSTRUCTIONS (their ``en`` is a clause of its « NEVER » list);
+the others follow the family index, one sentence each. Each one carries the
+CALLS it forbids — names
 (full-match patterns over identifiers) and modules — which
 ``tests/test_mcp_disclosure.py`` sweeps over the connector's syntax tree
 (calls, attributes, names, imports, ``getattr`` constants — never string
@@ -67,8 +73,10 @@ class Family:
     consent_template: str
     #: This family's clause of the grant checkbox summary (static markup).
     checkbox_summary_fr: str
-    #: The INSTRUCTIONS paragraph after « LABEL: ». May carry
-    #: ``{phase_bulk_max}``, filled from the registry at build time.
+    #: The INSTRUCTIONS index line after « LABEL: » — every member named,
+    #: and the one rule a caller must know before opening the tools; the
+    #: rest is in each tool's description. May carry ``{phase_bulk_max}``,
+    #: filled from the registry at build time.
     instructions_en: str
 
 
@@ -79,7 +87,9 @@ class Never:
     key: str
     #: The consent-screen bullet (static markup, no trailing punctuation).
     fr: str
-    #: The INSTRUCTIONS sentence.
+    #: The INSTRUCTIONS sentence — or, with ``in_core``, the CLAUSE the
+    #: SAFETY CORE's « NEVER, whatever the tool: … » list carries (no
+    #: subject, no trailing punctuation).
     en: str
     #: Identifier patterns (``re.fullmatch``) no connector module may
     #: reference — as a call, an attribute, a name, an import or a
@@ -111,6 +121,11 @@ class Never:
     #: the same page (the « payment » clause: the write box never records
     #: one, the accounting box does).
     summary_fr_comptabilite: str = ""
+    #: Stated in the SAFETY CORE, within the first 2 000 characters of
+    #: INSTRUCTIONS (finitions, contracts-1): the promises a client that
+    #: cuts the field must still read. Only a general promise (never an
+    #: ``accounting_only`` one — the core is the same for every token).
+    in_core: bool = False
     #: A promise about what the ACCOUNTING grant never does (lot 5b): its
     #: bullet stands in the accounting block of the consent screen — not the
     #: write block's list — and its sentence in the INSTRUCTIONS of a token
@@ -139,14 +154,12 @@ FAMILIES: tuple[Family, ...] = (
             "vides, significations, événements de prescription)"
         ),
         instructions_en=(
-            "notes (`create_note`, `append_to_note`), tasks "
-            "(`create_task`), calendar events (`create_hearing`), billable "
-            "time (`create_time_entry`), expenses (`create_expense`), "
-            "contacts (`create_partie`), dossiers (`create_dossier`), plus "
-            "three dossier recorders — `complete_dossier` fills ONLY fields "
-            "that are still empty and refuses to overwrite anything, "
-            "`record_signification` and `record_prescription_event` append "
-            "to the dossier's registers."
+            "`create_note`, `append_to_note`, `create_task`, "
+            "`create_hearing`, `create_time_entry`, `create_expense`, "
+            "`create_partie`, `create_dossier`; `complete_dossier` fills ONLY "
+            "empty fields and refuses to overwrite; `record_signification` "
+            "and `record_prescription_event` append to the dossier's "
+            "registers."
         ),
     ),
     Family(
@@ -164,20 +177,10 @@ FAMILIES: tuple[Family, ...] = (
             "dossier&nbsp;; clore une tâche"
         ),
         instructions_en=(
-            "these REPLACE the values you name, and a field you omit is "
-            "left alone: `update_partie`, `update_dossier`, "
-            "`update_time_entry` and `update_expense` (the last two only "
-            "while the entry is not yet invoiced; their `dossier_id` MOVES "
-            "the entry to another dossier, its amount and phase kept — its "
-            "share of the budget actuals moves with it; non-billable time "
-            "counts in no budget). `complete_task` closes a "
-            "task (terminée, annulée) or puts an open one en_cours; it never "
-            "reopens a closed one — that is `reopen_task` (AGENDA). One "
-            "indirect effect to know: completing a task that a protocol step "
-            "is linked to also completes that step, and if it was the last "
-            "open one the whole protocol closes. The reverse, rare: putting "
-            "an open task en_cours while its linked step is still complété "
-            "reopens that step, and a protocol its last step had closed."
+            "`update_partie`, `update_dossier`, `update_time_entry`, "
+            "`update_expense` REPLACE what you name (an entry only while "
+            "un-invoiced); `complete_task` closes a task and never reopens a "
+            "closed one — that is `reopen_task`."
         ),
     ),
     Family(
@@ -200,49 +203,11 @@ FAMILIES: tuple[Family, ...] = (
             "d'événements"
         ),
         instructions_en=(
-            "`update_task` and `update_note` REPLACE the fields you name (a "
-            "field you omit is left alone; values already stored write "
-            "nothing); a `dossier_id` MOVES the item, and its phone copy "
-            "follows. A task's replaced description is NOT kept; a note's "
-            "replaced content IS kept in its revision history, whatever "
-            "replaced it (the app, the phone, an append or an edit here), "
-            "and `update_note` demands `expected_etag` to replace content. "
-            "`reopen_task` reopens a closed task (an annulée one only with "
-            "reopen_cancelled true) together with the protocol step linked "
-            "to it and a protocol the cascade had closed — and refuses, "
-            "writing nothing, when that step cannot follow. `edit_analyse` "
-            "writes the dossier's « Théorie de la cause »: without "
-            "operations it creates the note if needed and returns its "
-            "structure and etag; with operations it replaces or completes "
-            "whole blocs (entete, A to H), or rewrites the note keeping its "
-            "eight headings — `expected_etag` required, each replaced "
-            "version kept. Protocols: `create_protocol` creates a "
-            "dossier's protocol from its template (one actif per dossier; "
-            "no task unless create_linked_tasks); `update_protocol` replaces "
-            "its title, notes, court, start_date or status — a new "
-            "start_date recomputes the template deadlines except completed "
-            "steps and truly-confirmed CS dates; `add_protocol_step` adds a "
-            "custom step to an actif protocol; `update_protocol_step` "
-            "replaces a step's deadline, notes or phase (a template step's "
-            "C.p.c. text is locked) OR sets its status to a TARGET "
-            "(complété, à_venir — never a toggle): the linked task follows, "
-            "completing the last open step closes the whole protocol, and "
-            "reopening a step of a protocol closed that way reactivates it. "
-            "A protocol's or a step's replaced notes are NOT kept. "
-            "Calendar: `update_hearing` REPLACES an event's fields — a "
-            "reschedule keeps the Montréal hour and the duration you do "
-            "not name; status annulée removes the event's Outlook copy; a "
-            "series occurrence changes dossier only with "
-            "detach_from_series; replaced event notes are NOT kept — and on "
-            "a CONFIRMED Bookings rendez-vous only its dossier and its notes "
-            "change: rescheduling, cancelling or any other edit is REFUSED, "
-            "since the Outlook meeting the client holds is the reference "
-            "(a reschedule or a cancellation is made in Outlook, anything "
-            "else by the lawyer in the application). "
-            "`create_hearing_series` writes a recurring series in one "
-            "atomic batch (idempotency_key required). Never retry an edit "
-            "blindly after a stale_etag refusal: re-read, then redo it on "
-            "the current text."
+            "`update_task`, `reopen_task`, `update_note`, `edit_analyse` (the "
+            "théorie de la cause), `create_protocol`, `update_protocol`, "
+            "`add_protocol_step`, `update_protocol_step`, `update_hearing`, "
+            "`create_hearing_series`; closing or reopening cascades between a "
+            "task, its step and the protocol."
         ),
     ),
     Family(
@@ -257,17 +222,9 @@ FAMILIES: tuple[Family, ...] = (
             "par un texte fixe"
         ),
         instructions_en=(
-            "`decide_rendez_vous` decides a pending « Bookings with me » "
-            "request, listed by `list_hearings` with bookings \"pending\": "
-            "`confirmer` puts it in the calendar (linking the contact "
-            "matched on the requester's exact email unless lier_partie is "
-            "false); `refuser` CANCELS THE OUTLOOK MEETING AND SO NOTIFIES "
-            "THE CLIENT, with a fixed text — the connector's ONLY effect "
-            "that reaches anyone outside the practice. `expected_etag` and "
-            "`idempotency_key` are required; a repeated decision writes "
-            "nothing and contacts nobody. Confirm "
-            "with the user every time. A rendez-vous once CONFIRMED is "
-            "neither refused nor rescheduled nor cancelled here: that is "
+            "`decide_rendez_vous` confirms or refuses a pending Bookings "
+            "request (refusing: the outbound effect above); a CONFIRMED "
+            "rendez-vous is never rescheduled or cancelled here — that is "
             "done in Outlook."
         ),
     ),
@@ -285,16 +242,11 @@ FAMILIES: tuple[Family, ...] = (
             "déboursé, même facturé (la phase ne paraît sur aucune facture)"
         ),
         instructions_en=(
-            "`set_time_entry_phase` and `set_expense_phase` (plus "
-            "`set_time_entry_phase_bulk` and `set_expense_phase_bulk`, up to "
-            "{phase_bulk_max} rows a call) change ONLY the litigation phase, "
-            "and are the only tools that change a row WHILE it stays carried "
-            "to an invoice (a void — BILL — releases the row instead). That "
-            "is safe because the phase is on no invoice — it "
-            "feeds the dossier budget's actuals — and they cannot touch "
-            "hours, rate, amount or description. Use them to classify "
-            "historical work; use `update_time_entry` for anything else, "
-            "and only while the entry is unbilled."
+            "`set_time_entry_phase`, `set_expense_phase`, "
+            "`set_time_entry_phase_bulk`, `set_expense_phase_bulk` (up to "
+            "{phase_bulk_max} rows a call) change ONLY the litigation phase — "
+            "the only writes that change a row WHILE it stays carried to an "
+            "invoice (a void releases it instead)."
         ),
     ),
     Family(
@@ -308,18 +260,9 @@ FAMILIES: tuple[Family, ...] = (
             "numéro d'origine)"
         ),
         instructions_en=(
-            "`import_invoice` recreates an invoice the practice's previous "
-            "system already issued, under its own number and date. It NEVER "
-            "allocates a number — the year counter is untouched — its line "
-            "items can only come from real uninvoiced time entries and "
-            "disbursements of that dossier, and the invoice lands in "
-            "brouillon. Billing an entry freezes everything about it EXCEPT "
-            "its litigation phase. To undo an import: void the invoice "
-            "(`update_invoice`, status annulée — see BILL — or in the "
-            "application); that releases every time entry and disbursement "
-            "it billed, and the number stays on the voided invoice until the "
-            "lawyer deletes that invoice in the application — only then can "
-            "that number be imported again."
+            "`import_invoice` recreates a previous system's invoice under ITS "
+            "number and date: it NEVER allocates a number and lands in "
+            "brouillon."
         ),
     ),
     Family(
@@ -337,38 +280,11 @@ FAMILIES: tuple[Family, ...] = (
             "dossier"
         ),
         instructions_en=(
-            "`preview_invoice` (a read) shows what an invoice would be — the "
-            "SAME computation as the write: run it first. `create_invoice` "
-            "then issues it, always in brouillon, from real billable UNBILLED "
-            "sources of one dossier, with the preview's total as "
-            "expected_total_cents (any difference refuses) and an "
-            "idempotency_key (required). It CONSUMES the year's next "
-            "number (AAAA-F###) for ever: the year counter never reissues "
-            "it, not even after a void. A refusal consumes no number; an "
-            "« Issue INCERTAINE » answer means the invoice MAY exist — "
-            "re-read `list_invoices`, then retry only with the SAME key. The "
-            "sources it bills are frozen, their phase aside, until a void "
-            "releases them. "
-            "`update_invoice` makes ONE change a call against the invoice's "
-            "etag (`get_invoice`): correct a brouillon — ONLY a brouillon; an "
-            "issued invoice is corrected by voiding it and issuing a new one "
-            "— its notes, payment terms, due date or billing address, never "
-            "an amount, a line, its client or its number; set a status — "
-            "brouillon → "
-            "envoyée, envoyée ↔ en_retard (only past its due date) — which "
-            "SENDS NOTHING to anyone, a promotion being undone only by a "
-            "void; envoyée is the lawyer's word that HE sent it (a fee "
-            "payment from trust relies on it, art. 56 2°), so set it only "
-            "on his word; or void it (status annulée, with a void_reason), which "
-            "releases every source it billed and is REFUSED while a payment "
-            "stands. The Word note "
-            "d'honoraires is `create_document` with source invoice_note "
-            "(FILES). Budgets: `get_budget` (a read) gives the version in "
-            "force and its base_version; `create_budget_version` records a "
-            "NEW version — replace or merge — refused when a newer one was "
-            "saved since; it becomes the reference budget, whose estimate "
-            "is a client document, and every earlier version is kept, "
-            "unchanged — the proof of what the client was told, and when."
+            "`create_invoice` issues a NEW brouillon (read `preview_invoice` "
+            "first) and CONSUMES the year's next number for ever; "
+            "`update_invoice` corrects ONLY a brouillon, marks envoyée or "
+            "en_retard (sending NOTHING) or voids; `create_budget_version` "
+            "adds a budget version (read `get_budget` first)."
         ),
     ),
     Family(
@@ -383,23 +299,9 @@ FAMILIES: tuple[Family, ...] = (
             "ou confirmée ; le niveau ne descend jamais)"
         ),
         instructions_en=(
-            "`record_document_analysis` records a document's qualification. "
-            "You supply a `sous_nature` from the closed table "
-            "(`get_reference_vocabulary`) and the `privileges` you identify; "
-            "the CODE derives from them the nature, the family, the "
-            "protection level and the document's category — you never pick "
-            "those here. The derived category replaces a PRESUMED one (yours "
-            "in FILES, or an earlier analysis's) or one nobody chose, never "
-            "one the LAWYER chose "
-            "or confirmed (`category_set_by_lawyer`): that one is KEPT with "
-            "his confirmation, and a gap is flagged "
-            "(`divergence_categorie`) for him to settle. A "
-            "level can only ever "
-            "RISE: a re-analysis retaining fewer privileges keeps the stored "
-            "level and flags the divergence, because under-protecting "
-            "privileged material is a professional fault while "
-            "over-protecting merely costs time. Only the lawyer, in the "
-            "application, can lower one or confirm a qualification."
+            "`record_document_analysis` records a qualification: the CODE "
+            "derives the category — never over the lawyer's — and a "
+            "protection level only ever RISES."
         ),
     ),
     Family(
@@ -421,52 +323,10 @@ FAMILIES: tuple[Family, ...] = (
             "comme nouveau document ou comme gabarit"
         ),
         instructions_en=(
-            "`update_document` REPLACES a document's filing fields you name "
-            "— display name, date, tags, folder — never its file and never "
-            "notes_internes, the lawyer's own text. It may also set the "
-            "category of a document that carries NO analysis: stored "
-            "PRESUMED, shown « présumée » until the lawyer confirms it in the "
-            "application (an analysed document's category is "
-            "`record_document_analysis`'s, unless it is the lawyer's) — "
-            "never over a category the "
-            "LAWYER chose or confirmed (`category_set_by_lawyer`: refused; "
-            "tell him instead — a document filed before that marker counts "
-            "as his unless its category is « autre »). `move_documents` "
-            "refiles several "
-            "documents of one dossier into one folder in one atomic write, "
-            "answering each id. `manage_folder` creates, renames or moves a "
-            "folder of the filing tree; the system folders « Projets » and "
-            "« Reçus du portail » belong to the application and are never "
-            "renamed, moved or recreated here (filing documents INTO them is "
-            "allowed). Ids and etags come from `list_documents` "
-            "(include_folders for the tree). New Word files are always NEW "
-            "documents, drafts never sent: `fill_gabarit` fills a gabarit "
-            "for a dossier, ALWAYS into its « Projets » — you write ONLY the "
-            "blocs and manual fields `list_templates` (with template_id) "
-            "reports, the application resolves every other field, and a "
-            "text holding "
-            # Doubled: this paragraph goes through str.format().
-            "« {{{{ » or « }}}} » is refused; `create_document` prints your "
-            "Markdown on the note-print template the lawyer designated "
-            "ACTIVE (refused when none is), or copies a stored .docx within "
-            "its OWN dossier — the copy keeping the source's protection "
-            "level, presumed, and its category, presumed unless the lawyer "
-            "had set it — into « Projets » unless you give "
-            "folder_id. Reuse across dossiers goes through a gabarit, never "
-            "a copy; with source invoice_note it files an invoice's Word "
-            "note d'honoraires, on the note-d'honoraires template the lawyer "
-            "designated active, into « Projets » — a note identical to what "
-            "it would print is returned rather than filed twice. To bring an "
-            "OUTSIDE file in, `begin_upload` opens a "
-            "one-hour write-only ticket — its `upload_url`, the one link any "
-            "result carries, is for a single PUT from your code sandbox, "
-            "never to be shown to the user; the PUT needs the sandbox to "
-            "reach storage.googleapis.com (a claude.ai organisation "
-            "setting): if the network refuses it, say so and stop — the "
-            "ticket expires unused, nothing filed — and `finalize_upload` "
-            "files the bytes only if their size and MD5 are the ones you "
-            "declared, as a NEW document or a template (see TEMPLATES). "
-            "Refused or expired bytes are discarded: they were never filed."
+            "`update_document`, `move_documents`, `manage_folder` file "
+            "documents (a category set here stays PRESUMED); `fill_gabarit`, "
+            "`create_document` make NEW Word documents; `begin_upload` then "
+            "`finalize_upload` bring an outside file in."
         ),
     ),
     Family(
@@ -482,48 +342,15 @@ FAMILIES: tuple[Family, ...] = (
             "description, catégorie, type, ou nouvelle version de son "
             "fichier, la précédente conservée)"
         ),
-        # A brace is DOUBLED here: build_instructions runs str.format over
-        # this text (for {phase_bulk_max}), which halves it — « {{{{field}}}} »
-        # reads « {{field}} » in INSTRUCTIONS (pinned).
+        # No brace in an index line: build_instructions runs str.format over
+        # it (for {phase_bulk_max}). The {{field}} syntax is create_template's
+        # own description, which is never formatted (tests/test_mcp_generation
+        # pins both).
         instructions_en=(
-            "`create_template` registers a .docx ALREADY in a dossier as a "
-            "NEW template, its bytes unchanged (scrub_properties aside: it "
-            "empties the file's document properties) — or, given "
-            "`substitutions`, a TEMPLATIZED copy, each literal of the matter "
-            "(a name, a number, an address) replaced by its {{{{field}}}}, "
-            "its document properties always emptied: run "
-            "`preview_templatize` (a read) FIRST — it counts every "
-            "occurrence, part by part, says what stays in place and what "
-            "would remain of the dossier — adjust, then pass each count as "
-            "`expected_occurrences`; one count that differs refuses the "
-            "whole call, and matching is case-SENSITIVE, so an ALL-CAPS "
-            "variant needs its own substitution. `update_template` "
-            "corrects a template's name, description, category or kind — or "
-            "installs a stored .docx as a NEW version of its file (the one "
-            "in force kept, restorable in the application). An OUTSIDE .docx "
-            "becomes a template, or a NEW version of one, through "
-            "`begin_upload` (purpose gabarit) and `finalize_upload` — never "
-            "templatized there: to TEMPLATIZE one, file it first as a "
-            "document of its dossier (purpose document), then preview and "
-            "templatize that document. Ids, "
-            "versions and etags come from `list_templates`. A file taken "
-            "from a dossier document is ALWAYS checked against that "
-            "document's own dossier (a templatized one as it will be stored, "
-            "your literals included), an uploaded one against the dossier_id "
-            "you MUST name — unless it comes from no dossier and you declare "
-            "aucun_dossier_source: true, when nothing is checked — refused "
-            "while it, or the name of a "
-            "template it CREATES, still names that dossier's parties, "
-            "numbers or addresses, unless the lawyer accepts each residue. "
-            "A new name you give a template that exists is checked the same "
-            "way against the dossiers its files came from, when the "
-            "application recorded them (`name_check` says whether it was); "
-            "it prints in the name of every document drawn from the "
-            "template, for any client: never put a party's name in it. A "
-            "special kind is never made "
-            "active, and the active template's kind never changes here; a "
-            "new file for the ACTIVE template prints at once on every "
-            "document of its kind."
+            "`create_template`, `update_template` register or correct a "
+            "gabarit, a replaced file kept (templatizing with "
+            "`substitutions`: read `preview_templatize` first); only the "
+            "lawyer designates the ACTIVE ones."
         ),
     ),
     Family(
@@ -540,32 +367,9 @@ FAMILIES: tuple[Family, ...] = (
             "dossier garde de ses parties"
         ),
         instructions_en=(
-            "`set_dossier_status` sets a dossier's status as the application "
-            "does: fermé / archivé DRAINS its DavX5 collection (its tasks, "
-            "notes and events leave the phone, staying in the application) "
-            "and takes it out of the prescription alerts; actif / en_attente "
-            "restores it, and reopening erases the closing date (between "
-            "actif and en_attente nothing changes on the phone or in the "
-            "alerts). The status it already has writes nothing (unless a "
-            "different closed_date is given, which is written) and re-applies "
-            "the phone's view. Retrying: `dav.complete` false → the SAME "
-            "status under the SAME idempotency_key (an incomplete result is "
-            "never stored, so it normally re-runs); refused as still in "
-            "flight → wait, "
-            "then the same key; refused as interrupted, or warnings saying "
-            "the status moved during the call → re-read the dossier and ask "
-            "for the status you read, under a NEW key. "
-            "A refresh_names that refused a dossier is retried the same way. "
-            "`update_dossier_party` edits ONE party "
-            "link: action update replaces its roles or its lawyer "
-            "(`avocat_partie_id`, as in create_dossier's party entries; the "
-            "dossier-level role the gabarits cite is re-derived); remove "
-            "DETACHES it — the contact stays, the detach is journaled — "
-            "refused for the last client, a served party, or a client who "
-            "ever had trust funds on the dossier; refresh_names re-snapshots "
-            "party names from the current contacts (invoices and generated "
-            "documents keep theirs). Adding a party is `update_dossier`'s "
-            "(CORRECT)."
+            "`set_dossier_status` (fermé / archivé DRAINS its DavX5 "
+            "collection) and `update_dossier_party` (a party's roles or "
+            "lawyer; a detach removes a LINK — the contact stays)."
         ),
     ),
     Family(
@@ -583,24 +387,14 @@ FAMILIES: tuple[Family, ...] = (
             "vous-même décidée"
         ),
         instructions_en=(
-            "`update_partie_mandataire` adds, corrects or DETACHES one "
-            "representation of a contact (a mandataire of the same "
-            "contact_role, an individual; the mandataire contact stays, a "
-            "detach is journaled). `record_kyc_status` INSCRIBES a client's "
-            "identity or conflict-of-interest check as PRESUMED: the fiche "
-            "shows it « … (présumé) » — « inscrit par Claude le … — à "
-            "confirmer » — and it counts as NOT done: "
-            "`get_coverage_report` keeps it OPEN until the lawyer confirms it "
-            "in the application — never here. It is REFUSED on a check the "
-            "lawyer decided or confirmed (`get_partie`: `*_presumed` false on "
-            "a decided status); tell him instead. Its notes are APPENDED "
-            "under a dated line. A detected conflict you inscribe must be "
-            "reported to the lawyer at once."
+            "`update_partie_mandataire` and `record_kyc_status`, which "
+            "INSCRIBES a PRESUMED check — it counts as NOT done until the "
+            "lawyer confirms it."
         ),
     ),
     # Lot 5b — ACCOUNTING, the one family under athena:comptabilite (plan
     # D1, D2, D14, D16). Its OWN consent box, never implied by athena:write
-    # and never implying it; INSTRUCTIONS carry this paragraph only for a
+    # and never implying it; INSTRUCTIONS carry this index line only for a
     # token holding the scope (build_instructions(accounting=True)).
     Family(
         key="accounting",
@@ -629,48 +423,13 @@ FAMILIES: tuple[Family, ...] = (
             "écriture"
         ),
         instructions_en=(
-            "(ONLY under the separate `athena:comptabilite` grant, which "
-            "this authorization holds.) Record ONLY movements that happened "
-            "at the bank, dated the day they happened; a register entry is "
-            "NEVER deleted, and a reversal keeps both entries in the "
-            "register for good. `get_admin_ledger` (a "
-            "read) gives the administration accounts, their lock floors and "
-            "entries (with etags); `get_trust_snapshot` gives the trust "
-            "accounts, `list_trust_transactions` the trust entries. "
-            "`record_trust_entry` records a trust recette or déboursé, "
-            "its objet agreeing with its sens; a "
-            "déboursé draws only on the client's CLEARED funds, never in "
-            "cash (art. 57), and purpose virement_honoraires is a FEE "
-            "PAYMENT: by cheque or transfer only, to the lawyer or his firm "
-            "as the firm profile names them (art. 58), against a Pallas "
-            "Athéna invoice the lawyer sent, addressed to THAT client and "
-            "imputing no provision, it "
-            "records in ONE transaction the trust withdrawal, the recette in "
-            "the operations account (`admin_account_id`, `admin_date`) and "
-            "the payment on the invoice — which may turn it payée. "
-            "`record_admin_entry` records a dépense (category and ventilation "
-            "required), another recette, an encaissement_facture — which "
-            "records the payment on its invoice in the same transaction — or "
-            "a paiement_carte (two linked entries); the kind decides the "
-            "sign. `update_admin_entry` corrects an administration entry "
-            "while it stays editable, against its etag. "
-            "`clear_register_entries` marks up to 50 entries of one account "
-            "compensée at the BANK STATEMENT's date (at admin, against "
-            "each entry's etag in `expected_etags`: an entry edited since "
-            "your read refuses the call) — at trust this makes a "
-            "deposit's funds available for a déboursé, so never clear what "
-            "the statement does not show. `reverse_register_entry` is the "
-            "ONLY correction of a trust entry, and of an administration "
-            "entry no longer editable: a fee payment reverses with its "
-            "recettes and invoice payments, a card-payment leg with its "
-            "pair. Nothing is "
-            "ever dated on or before an account's last completed "
-            "reconciliation. Every accounting write REQUIRES an "
-            "idempotency_key and refuses when the replay store is "
-            "unreadable; if an outcome is uncertain, re-read "
-            "list_trust_transactions or get_admin_ledger BEFORE any retry, "
-            "and retry only with the SAME key. Confirm each entry with the "
-            "user unless a standing instruction covers it."
+            "`record_trust_entry`, `record_admin_entry`, "
+            "`update_admin_entry`, `clear_register_entries`, "
+            "`reverse_register_entry` (read: `get_admin_ledger`): record ONLY "
+            "what the bank shows, at its date, each entry confirmed with the "
+            "user; an idempotency_key is REQUIRED (refused when the replay "
+            "store is unreadable); an uncertain outcome → re-read before "
+            "retrying with the SAME key."
         ),
     ),
 )
@@ -731,11 +490,10 @@ NEVERS: tuple[Never, ...] = (
             "d'un contact retire un lien, le contact reste"
         ),
         en=(
-            "NOTHING in Athéna can EVER be DELETED here: a cancelled task or "
-            "event is kept, with its status; detaching a party from a "
-            "dossier or a mandataire from a contact removes a LINK — the "
-            "contact stays, and the detach is journaled (list_deletions)."
+            "DELETE anything (a cancelled item is kept; detaching a party or "
+            "a mandataire removes a LINK — the contact stays)"
         ),
+        in_core=True,
         forbidden=(r"delete_\w+", r"record_deletion"),
         # The protocol layer deletes its own bookkeeping (an expired OAuth
         # client, a released idempotency claim) — never a user record. The
@@ -759,14 +517,14 @@ NEVERS: tuple[Never, ...] = (
         # Lot 5b made the old sentence true for a token WITHOUT the
         # accounting grant only: under it, an encaissement or a trust fee
         # payment records a payment — written by the REGISTER, in the
-        # entry's own transaction. The sentence says both halves, so it is
-        # true for every token.
+        # entry's own transaction. The clause (a SAFETY CORE clause since
+        # contracts-1, part 2) is true for every token: without the grant
+        # nothing records a payment, and under it only a register entry does
+        # — record_trust_entry and record_admin_entry name which.
         en=(
-            "Without the separate `athena:comptabilite` grant this connector "
-            "never records a payment; under it, a payment exists only as a "
-            "register entry (an administration encaissement, or a trust fee "
-            "payment), which the register itself writes onto the invoice."
+            "record a payment outside the accounting registers"
         ),
+        in_core=True,
         # Lot 5a (step 2): the ledger now STAGES the payment itself, through
         # the pure payment_updates — swept too, so a handler cannot build a
         # payment write of its own around the ledger's back. The two retired
@@ -798,9 +556,9 @@ NEVERS: tuple[Never, ...] = (
             "marquer «&nbsp;envoyée&nbsp;» n'envoie rien"
         ),
         en=(
-            "It never SENDS an invoice to anyone: marking one envoyée "
-            "sends nothing."
+            "SEND an invoice to anyone (marking one envoyée sends nothing)"
         ),
+        in_core=True,
         # Sending an invoice is an email: the connector never imports the
         # email module (the client_message promise forbids it too — both
         # stay, each for the claim it backs).
@@ -819,11 +577,9 @@ NEVERS: tuple[Never, ...] = (
             "comptabilité&nbsp;»"
         ),
         en=(
-            "It never marks an invoice payée by a status change: only a "
-            "payment recorded as a register entry does — in the application, "
-            "or, under the separate `athena:comptabilite` grant, through the "
-            "ACCOUNTING tools."
+            "mark an invoice payée by a status change"
         ),
+        in_core=True,
         # A payload promise: update_invoice's status enum has no « payée »,
         # and the model's transitions never offer it (only record_payment's
         # automatic flip writes it — forbidden by « payment »).
@@ -841,8 +597,7 @@ NEVERS: tuple[Never, ...] = (
         ),
         en=(
             "It never drops a named time entry or disbursement from an "
-            "invoice silently: one unusable source refuses the whole "
-            "invoice, and nothing is written."
+            "invoice silently: one unusable source refuses the whole invoice."
         ),
         # create_invoice SKIPS an unusable source in silence unless told
         # otherwise — so every connector call must say so.
@@ -918,11 +673,10 @@ NEVERS: tuple[Never, ...] = (
             "«&nbsp;à confirmer&nbsp;»"
         ),
         en=(
-            "It never CONFIRMS an identity or conflict-of-interest check, "
-            "nor changes one the lawyer decided or confirmed: a check it "
-            "inscribes stays PRESUMED until the lawyer confirms it in the "
-            "application."
+            "CONFIRM an identity or conflict check, or change one the lawyer "
+            "decided or confirmed"
         ),
+        in_core=True,
         forbidden=("confirm_kyc_status", "link_kyc_document"),
         required_keywords=(("update_kyc_status", "source"),),
         forbidden_inputs=tuple(
@@ -975,11 +729,9 @@ NEVERS: tuple[Never, ...] = (
             "texte est fixe"
         ),
         en=(
-            "It never composes a message to anyone outside the practice: "
-            "its ONE effect reaching someone outside the practice is the "
-            "Outlook cancellation a refused Bookings request sends, with a "
-            "fixed text."
+            "compose a message to anyone outside the practice"
         ),
+        in_core=True,
         # The Graph verbs that send or rewrite something in a mailbox or a
         # calendar, and the email module: no connector module and no
         # service a tool reaches may name them. The one outbound call the
@@ -1045,9 +797,8 @@ NEVERS: tuple[Never, ...] = (
             "rétablissable dans l'application"
         ),
         en=(
-            "It never replaces a template's file without keeping the "
-            "previous one: every version stays stored, restorable in the "
-            "application."
+            "It never replaces a template's file without keeping the previous "
+            "one, restorable in the application."
         ),
         behavioural_test=(
             "tests/test_mcp_template_writes.py::"
@@ -1072,10 +823,10 @@ NEVERS: tuple[Never, ...] = (
             "l'heure et seulement s'il est bien celui annoncé"
         ),
         en=(
-            "It never hands out a link that reads or downloads a stored "
-            "file, nor a storage path: the ONE link it mints is "
-            "`begin_upload`'s `upload_url` — write-only, for one file, filed "
-            "only within the hour and only if it is the file declared."
+            "It never hands out a link that reads or downloads a stored file, "
+            "nor a storage path: its ONE link is `begin_upload`'s "
+            "`upload_url` — write-only, for one declared file within the "
+            "hour."
         ),
         forbidden=(
             "get_signed_url", "sign_blob_url", "generate_signed_url",
@@ -1098,9 +849,9 @@ NEVERS: tuple[Never, ...] = (
             "présumées — vous seul le faites, dans l'application"
         ),
         en=(
-            "It never confirms a presumed category or analysis: only the "
-            "lawyer does, in the application."
+            "confirm a presumed category or analysis"
         ),
+        in_core=True,
         forbidden=(
             "confirmer_categorie", "confirmer_analyse", "update_analyse",
         ),
@@ -1127,9 +878,8 @@ NEVERS: tuple[Never, ...] = (
             "désignation — vous seul le faites, dans l'application"
         ),
         en=(
-            "It never designates the ACTIVE note-d'honoraires or note-print "
-            "template, nor withdraws that designation: only the lawyer does, "
-            "in the application."
+            "It never designates, nor withdraws, the ACTIVE note-d'honoraires "
+            "or note-print template: only the lawyer does."
         ),
         forbidden=("set_active_template", "clear_active_template"),
     ),
@@ -1160,10 +910,9 @@ NEVERS: tuple[Never, ...] = (
         ),
         en=(
             "Even under the accounting grant it never deletes a register "
-            "entry: a trust entry is corrected only by a reversal, the "
-            "original and its reversal staying in the register for good; an "
-            "administration entry is corrected with `update_admin_entry` "
-            "while it stays editable, and by a reversal afterwards."
+            "entry: a trust entry is corrected only by a reversal (both kept "
+            "for good), an administration entry with `update_admin_entry` "
+            "while editable, by a reversal afterwards."
         ),
         # The registers' deleters, named beside the « delete » promise's
         # pattern (which matches them too): a promise about ENTRIES keeps
@@ -1180,9 +929,9 @@ NEVERS: tuple[Never, ...] = (
             "faites, dans l'application"
         ),
         en=(
-            "It never starts, completes or abandons a reconciliation, never "
-            "creates or modifies an account and never attaches a receipt: "
-            "only the lawyer does, in the application."
+            "It never starts, completes or abandons a reconciliation, creates "
+            "or modifies an account, or attaches a receipt: only the lawyer "
+            "does, in the application."
         ),
         forbidden=_REGISTER_SETUP_WRITERS,
         summary_fr="de conciliation ni de compte",
@@ -1398,68 +1147,94 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
     }
 
 
-# The paragraph about the ONE content-reading tool — a read, so no family,
-# but the privilege warning belongs in the text every client model reads.
-# The PROTOCOL CORE (finitions, contracts-1): the rules a caller must hold
-# before its FIRST write, stated right after the header so the whole of it
-# fits in the first 2 048 characters of INSTRUCTIONS. A real client cuts the
-# field there — this very connector's production text reached a Claude Code
-# session truncated at character 2 047 — and the text had grown to 22-25 KB
-# with these rules LAST, after ~16 KB of family prose: a truncating client
-# kept the header, CREATE, CORRECT and a line of AGENDA, and lost the
-# outbound Bookings effect, the « never » list, the etag, idempotency and
-# committed-write rules. Each point is restated in full further down; this
-# is the part that must survive a cut. tests/test_mcp_descriptor_budget.py
-# pins both the position and the INSTRUCTIONS size.
-_PROTOCOL_CORE_EN = (
-    "BEFORE ANY WRITE: a write is permanent and may sync to the lawyer's "
-    "phone — read the record first, and confirm with the user unless a "
-    "standing instruction authorizes it. Pass an `idempotency_key` on every "
-    "write (the same key within 24 h replays the result, never writes "
-    "twice); refused as still in flight → wait, then the SAME key, never a "
-    "new one; an outcome reported UNCERTAIN → re-read before any retry, and "
-    "retry only with the SAME key; refused as INTERRUPTED (the key's first "
-    "call can no longer be running) → re-read, and a NEW key only if "
-    "nothing was written. « ENREGISTRÉE — NE PAS RÉESSAYER » = "
-    "the write COMMITTED and a later step failed: do NOT retry, re-read. "
-    "Where a tool accepts `expected_etag`, pass the `etag` of your latest "
-    "read; a stale refusal (stale_etag) wrote nothing — re-read, then "
-    "retry. The ONE effect reaching anyone outside the practice: "
+# ── INSTRUCTIONS (finitions, contracts-1) ──────────────────────────────
+#
+# A real client CUTS the field: this connector's production text reached a
+# Claude Code session truncated at character 2 047, while it had grown to
+# 22-26 KB of family prose with the protocol rules last. The text is now a
+# SAFETY CORE — what can never happen, confirm-before-writing, the
+# idempotency and etag discipline, the one outbound effect, re-read before
+# retrying — complete within the first 2 000 characters, then a short index
+# (one line per family naming its tools), the remaining promises, and two
+# format paragraphs. The detailed rules live in each tool's DESCRIPTION,
+# which a model reads before it calls the tool. tests/test_mcp_descriptor_
+# budget.py pins the core's position and completeness and the total size
+# (INSTRUCTIONS_CAP) of every variant.
+
+# The opening of the core — the product, then what the core is for.
+_CORE_LEAD_EN = (
+    "Pallas Athena is a single-user Quebec civil litigation practice "
+    "manager. SAFETY CORE — read it before ANY write."
+)
+
+# The one effect reaching outside the practice, stated with the promises.
+_CORE_OUTBOUND_EN = (
+    "The ONE effect reaching anyone outside the practice: "
     "`decide_rendez_vous` refusing a Bookings request cancels the client's "
-    "Outlook meeting and notifies them. Never: a deletion (detaching "
-    "removes a link), a payment outside the accounting registers, sending "
-    "an invoice to anyone (marking one envoyée sends nothing), confirming "
-    "a presumed check, category or analysis — the "
-    "full list follows."
+    "Outlook meeting, notifying them."
+)
+
+# The write protocol: confirm, idempotency (in flight / uncertain /
+# interrupted / committed), the etag, and re-read before any retry.
+_CORE_PROTOCOL_EN = (
+    "Before writing: a write is permanent and may sync to the lawyer's "
+    "phone — read the record first, and confirm with the user unless a "
+    "standing instruction authorizes it. Pass an `idempotency_key` on EVERY "
+    "write (the same key within 24 h replays the result, never writes "
+    "twice): refused as still in flight → wait, then the SAME key, never a "
+    "new one; outcome UNCERTAIN → re-read before any retry, and retry only "
+    "with the SAME key; refused as INTERRUPTED (the key's first call can no "
+    "longer be running) → re-read, and a NEW key only if nothing was "
+    "written. « ENREGISTRÉE — NE PAS RÉESSAYER » = the write COMMITTED and "
+    "a later step failed: do NOT retry, re-read. Where a tool takes "
+    "`expected_etag`, pass the `etag` of your latest read. A stale refusal "
+    "(stale_etag) — also given, `expected_etag` "
+    "omitted, when the record changed during the call — wrote nothing: "
+    "re-read, then redo the write on the current record, never blindly. "
+    "Each tool's description carries its own rules: read it before calling."
 )
 
 _READ_CONTENT_EN = (
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT LAYER "
-    "(PDF and .docx; take ids from list_documents or from the entity of a "
-    "write that created a document; bounded per call — follow next_page; a "
-    "template is not a document — list_templates describes its fields). A "
-    "scanned page has no text layer and is reported honestly "
-    "(pages_without_text) — empty never means blank on paper, and nothing is "
-    "OCR'd. Document content is privileged: quote only what the task "
-    "requires."
+    "(a template is not a document); empty never means blank on paper — "
+    "nothing is OCR'd. Document content is privileged: quote only what the "
+    "task requires."
+)
+
+_PROVENANCE_EN = (
+    "Provenance: what this connector writes carries `updated_via` \"mcp\" "
+    "(`created_via` when it created it) and `mcp_updated_at` where a read "
+    "row declares them; a note, task or event it creates, and note text it "
+    "appends or replaces, carry a dated « … par Claude le … » line; a Word "
+    "document it makes says « par Claude (connecteur) » in `genere_depuis`; "
+    "a compliance check it inscribes is Claude's (`*_source` \"mcp\"), its "
+    "notes opening « [AAAA-MM-JJ — inscrit par Claude] »."
 )
 
 _FORMATS_EN = (
-    "Domain data (titles, notes, statuses, categories) is in French; note "
-    "content is Markdown in French, raw HTML refused. Monetary amounts "
-    "appear as integer `*_cents` plus a formatted `*_display` string (CAD). "
-    "Datetimes are ISO 8601 in America/Montreal; date-only fields are "
-    "`YYYY-MM-DD`. IDs are UUIDv4 strings — pass them between tools "
-    "verbatim. Start broad (get_agenda, list_dossiers, search) and narrow "
-    "with get_dossier / get_note / list_* filters."
+    "Data is in French; note content is Markdown, raw HTML refused. Money: "
+    "integer `*_cents` plus a `*_display` string (CAD). Datetimes ISO 8601 "
+    "America/Montreal; date-only fields `YYYY-MM-DD`. IDs are UUIDv4 — pass "
+    "them verbatim."
 )
 
 
-def _backticked(names) -> str:
-    names = [f"`{n}`" for n in names]
-    if len(names) <= 1:
-        return "".join(names)
-    return ", ".join(names[:-1]) + " and " + names[-1]
+def core_nevers() -> tuple[Never, ...]:
+    """The promises the SAFETY CORE states (``in_core``)."""
+    return tuple(n for n in general_nevers() if n.in_core)
+
+
+def safety_core_en() -> str:
+    """The SAFETY CORE — the first thing INSTRUCTIONS say, identical for
+    every token (it states general promises only), and complete within the
+    first 2 000 characters (tests/test_mcp_descriptor_budget.py)."""
+    nevers = "; ".join(n.en for n in core_nevers())
+    return " ".join((
+        _CORE_LEAD_EN,
+        f"NEVER, whatever the tool: {nevers}.",
+        _CORE_OUTBOUND_EN,
+        _CORE_PROTOCOL_EN,
+    ))
 
 
 def build_instructions(
@@ -1471,19 +1246,22 @@ def build_instructions(
 ) -> str:
     """The ``initialize`` instructions, assembled from the registry.
 
-    The counts, the family list and the list of tools accepting
-    ``expected_etag`` are DERIVED — recopied by hand the counts went stale
-    twice, and a model told « 29 read » looks for tools that are not there.
-    The arguments exist for tests; by default the live registry is read
-    (lazily: ``mcp.tools`` imports this module).
+    In order: the SAFETY CORE (:func:`safety_core_en`); the counts and the
+    index, ONE line per family naming its tools; READ-CONTENT; the scope
+    sentence; the promises the core does not state, one sentence each;
+    provenance; formats. The counts and the family list are DERIVED —
+    recopied by hand the counts went stale twice, and a model told « 29
+    read » looks for tools that are not there. The arguments exist for
+    tests; by default the live registry is read (lazily: ``mcp.tools``
+    imports this module).
 
     *accounting* — the variant for a token holding ``athena:comptabilite``
-    (plan lot 5b): only it counts and describes the accounting tools (the
+    (plan lot 5b): only it counts and indexes the accounting tools (the
     ACCOUNTING family and ``get_admin_ledger``) and states the promises the
     accounting grant keeps. Every other token is told only that such tools
     exist under a separate grant — its text never describes a tool it
-    cannot see. The general promises read the same in both variants: each
-    is worded to be true for every token.
+    cannot see. The core and the general promises read the same in both
+    variants: each is worded to be true for every token.
     """
     if registry is None or accounting_tools is None or phase_bulk_max is None:
         from mcp import tools as _tools
@@ -1504,18 +1282,16 @@ def build_instructions(
     ]
     reads = len([n for n in registry if n not in write_tools() and n not in hidden])
     parts = [
-        "Pallas Athena is a single-user Quebec civil litigation practice "
-        f"manager. {reads} tools read; {len(writes)} write, in "
-        f"{len(families)} families ("
-        + ", ".join(f.label for f in families) + ").",
-        _PROTOCOL_CORE_EN,
-        _READ_CONTENT_EN,
+        safety_core_en(),
+        f"TOOLS: {reads} tools read; {len(writes)} write, in "
+        f"{len(families)} families:",
     ]
     for family in families:
         parts.append(
             f"{family.label}: "
             + family.instructions_en.format(phase_bulk_max=phase_bulk_max)
         )
+    parts.append(_READ_CONTENT_EN)
 
     scope = (
         "Write tools appear only when the lawyer granted the `athena:write` "
@@ -1534,80 +1310,9 @@ def build_instructions(
             "for it."
         )
     parts.append(scope)
-    parts.extend(n.en for n in general_nevers())
+    parts.extend(n.en for n in general_nevers() if not n.in_core)
     if accounting:
         parts.extend(n.en for n in accounting_nevers())
-
-    etagged = sorted(
-        name for name, spec in registry.items()
-        if spec.get("concurrency") in ("optional", "required")
-        and name not in hidden
-    )
-    parts.append(
-        "A write is permanent and may sync to the lawyer's phone — read the "
-        "dossier before writing to it, and confirm with the user unless a "
-        "standing instruction (a scheduled job, for example) already "
-        "authorizes the write."
-    )
-    if etagged:
-        parts.append(
-            f"{_backticked(etagged)} accept `expected_etag`: pass the `etag` "
-            "of the record from your latest read (each tool's "
-            "`expected_etag` description names the reads that carry it) or "
-            "from its last write result. If the record changed since — "
-            "in the application, on the phone or through another call — the "
-            "write is REFUSED and nothing is written: re-read, then retry. "
-            "Omitted — where the tool allows it (replacing a note's text, "
-            "editing the théorie de la cause, deciding a Bookings request or "
-            "changing an invoice does not) — the tool still refuses a change "
-            "landing between its own read and its commit."
-        )
-    # The writes that take no etag but rewrite what they READ (a note plus
-    # the appended block, a task's status and description, a dossier's
-    # registers) compare-and-set against their own read too (critique,
-    # lot 0a): a caller seeing their `stale_etag` refusal must know it is
-    # a race, and that the remedy is a re-read — not a changed argument.
-    # Lot 4b (step 4): set_dossier_status takes no etag (a status is a
-    # TARGET) yet compare-and-sets against its own read, and refresh_names
-    # refuses a dossier that moved on ITS row — both belong in this list.
-    parts.append(
-        "The writes that rewrite what they read — appending to a note, "
-        "closing a task, filling or appending to a dossier, setting its "
-        "status — refuse the same way when the record changed during the "
-        "call: nothing is written; re-read, then send the call again "
-        "(`update_dossier_party` refresh_names refuses such a dossier on its "
-        "own row and goes on with the others)."
-    )
-    parts.append(
-        "Every write tool accepts `idempotency_key` (any stable string you "
-        "choose; retrying with the SAME key within 24 h returns the "
-        "original result instead of duplicating). Always pass an "
-        "idempotency_key; if a write without one appeared to fail, re-read "
-        "(list/get) before retrying. A refusal saying a call with that key "
-        "is still in flight means: wait, then retry with the SAME key — "
-        "never a new one. One saying the call was INTERRUPTED means its "
-        "write may have happened and the first call can no longer be "
-        "running: re-read, and use a NEW key only if nothing was written."
-    )
-    parts.append(
-        "A result reading « ENREGISTRÉE — NE PAS RÉESSAYER » means the write "
-        "COMMITTED and a later step failed: do NOT retry — re-read the "
-        "record; a call without the same key would write it twice."
-    )
-    parts.append(
-        "Provenance: every record this connector writes directly is stamped "
-        "`updated_via` \"mcp\" (and `created_via` \"mcp\" when it created "
-        "it), with the time of its last connector write in "
-        "`mcp_updated_at` — returned by the read rows whose output schema "
-        "declares those keys, which not every read does; the notes, tasks "
-        "and events it CREATES, and the text it APPENDS to or REPLACES in a "
-        "note, also carry a dated « … par Claude le … » line; a Word "
-        "document it generates or copies says « par Claude (connecteur) » "
-        "in its provenance (`genere_depuis`); a compliance check it "
-        "inscribes is stored as Claude's (`*_source` \"mcp\" — kept after "
-        "the lawyer's confirmation, which adds `*_confirmed_at`), and the "
-        "notes it appends there open with « [AAAA-MM-JJ — inscrit par "
-        "Claude] »."
-    )
+    parts.append(_PROVENANCE_EN)
     parts.append(_FORMATS_EN)
     return " ".join(parts)

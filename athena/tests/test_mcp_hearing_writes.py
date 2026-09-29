@@ -560,10 +560,12 @@ def test_every_surface_states_the_d10_lock():
     assert "anything else the lawyer edits in the application" in desc
     assert "Outlook" in tools.TOOLS["decide_rendez_vous"]["description"]
     text = disclosure.build_instructions()
-    assert "only its dossier and its notes change" in text
-    assert ("a reschedule or a cancellation is made in Outlook, anything "
-            "else by the lawyer in the application") in text
-    assert "neither refused nor rescheduled nor cancelled here" in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: the BOOKINGS line keeps the lock; its detail is pinned above
+    # (update_hearing) and here (decide_rendez_vous).
+    assert ("a CONFIRMED rendez-vous is never rescheduled or cancelled here "
+            "— that is done in Outlook") in text
+    assert "An already-CONFIRMED rendez-vous is not refused here" in (
+        tools.TOOLS["decide_rendez_vous"]["description"])
     assert not hasattr(handlers, "_BOOKINGS_NOT_UPDATED")
     assert not hasattr(handlers, "_BOOKINGS_UNCANCELLED")
 

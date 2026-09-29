@@ -3005,7 +3005,7 @@ Notes:
      comes first.
   5. **Verify `tools/list` per scope.** The new token (all three scopes):
      **86** tools (32 read, 54 write), and its `initialize` text carries an
-     « ACCOUNTING: » paragraph and the seven accounting « never » sentences
+     « ACCOUNTING: » index line and the seven accounting « never » sentences
      (six until D23 added « fee_payee », 2026-09-29).
      The other token shapes are the deploy gate's literal pins
      (`tests/test_mcp_jsonrpc.py::test_tools_list_counts_per_token_are_the_train_s_checklist`):
@@ -3105,8 +3105,13 @@ Notes:
   tool (still **86**), no index, no dependency, no Tailwind class, no icon,
   no `cron.yaml` or `firestore.rules` change, no DavX5 account re-add. Its
   connector changes ride the stack's own revocation (§15 « Lot 4 », then
-  « Lot 5 »): INSTRUCTIONS open on a protocol core that a client cutting at
-  2 048 characters still reads; `clear_register_entries` takes
+  « Lot 5 »): INSTRUCTIONS open on a SAFETY CORE that a client cutting at
+  2 048 characters reads whole (the « never » list, the one outbound
+  effect, confirm-before-writing, idempotency and etag, re-read before a
+  retry), then ONE index line per family naming its tools — the family
+  prose moved into the tool descriptions, and the text weighs at most
+  8 000 bytes for every token where it weighed 22-26 KB;
+  `clear_register_entries` takes
   `expected_etags` (REQUIRED at the administration register);
   `record_document_analysis` takes an optional `expected_etag` and returns
   `entity` {id, etag}; `list_trust_transactions` rows gain ten optional

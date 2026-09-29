@@ -533,11 +533,17 @@ def test_the_presumed_warning_quotes_the_fiche_as_it_is_composed(db):
     warning = next(w for w in payload["warnings"] if "PRÉSUMÉE" in w)
     assert f"« {view['label']} »" in warning
     assert f"« {view['attribution']} »" in warning
-    for text in (tools.TOOLS["record_kyc_status"]["description"],
-                 next(f for f in disclosure.FAMILIES
-                      if f.key == "contacts").instructions_en):
-        assert "inscrit par Claude, à confirmer" not in text
-        assert "« inscrit par Claude le … — à confirmer »" in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the fiche's
+    # line was quoted by the tool description AND the CONTACTS paragraph of
+    # INSTRUCTIONS. The paragraph became a one-line index entry — the quote
+    # lives in the description alone now; the index line still never
+    # carries the wrong one.
+    description = tools.TOOLS["record_kyc_status"]["description"]
+    assert "inscrit par Claude, à confirmer" not in description
+    assert "« inscrit par Claude le … — à confirmer »" in description
+    index_line = next(f for f in disclosure.FAMILIES
+                      if f.key == "contacts").instructions_en
+    assert "inscrit par Claude, à confirmer" not in index_line
 
 
 def test_replacing_a_presumed_conflict_is_said_to_the_lawyer(db):

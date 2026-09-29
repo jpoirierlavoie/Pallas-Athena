@@ -1037,10 +1037,12 @@ def test_the_preview_is_advertised_read_only(monkeypatch):
 def test_the_texts_name_the_workflow():
     text = endpoint.INSTRUCTIONS
     assert "`preview_templatize`" in text and "`substitutions`" in text
-    assert "ALL-CAPS variant needs its own substitution" in text
-    # The family text goes through str.format: a brace written once there
-    # would read « {field} » — no field syntax at all.
-    assert "replaced by its {{field}}, its document properties always "         "emptied:" in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: the case rule is the preview's, the field syntax
+    # create_template's — neither goes through str.format any more.
+    assert "ALL-CAPS variant of a name needs its own substitution" in (
+        tools.TOOLS["preview_templatize"]["description"])
+    assert "each literal becomes its {{field}}" in (
+        tools.TOOLS["create_template"]["description"])
     templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
     assert "transformé en gabarit" in templates.checkbox_summary_fr
     consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
@@ -1056,8 +1058,13 @@ def test_the_texts_name_the_workflow():
     # to templatize an outside letter is named — and it exists: a ticket of
     # purpose « document » files it in its dossier, where the two tools
     # below read it.
-    assert ("never templatized there: to TEMPLATIZE one, file it first as a "
-            "document of its dossier (purpose document)") in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the route is
+    # create_template's own sentence now — where a caller about to
+    # templatize reads it — since the TEMPLATES paragraph became an index
+    # line.
+    assert ("An OUTSIDE .docx is templatized only once filed as a document "
+            "of its dossier (begin_upload purpose document): purpose gabarit "
+            "never templatizes") in tools.TOOLS["create_template"]["description"]
     assert "substitutions" not in tools.TOOLS["finalize_upload"]["input_schema"][
         "properties"]
     assert "substitutions" not in tools.TOOLS["begin_upload"]["input_schema"][

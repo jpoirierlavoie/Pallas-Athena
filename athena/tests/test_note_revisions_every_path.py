@@ -433,9 +433,13 @@ def test_every_surface_says_the_history_is_kept_whatever_the_path():
     otherwise because nothing said anything: a caller could believe that a
     note edited on the phone had lost its text. The three surfaces now say
     it — and none may claim the revision is the connector's alone."""
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS
+    # no longer restate the AGENDA prose — their index line names the
+    # tools, and the history is said where a caller reads each of them
+    # (append_to_note, update_note, pinned below). INSTRUCTIONS still may
+    # not claim the revision is the connector's alone.
     instructions = mcp_endpoint.INSTRUCTIONS
-    assert ("whatever replaced it (the app, the phone, an append or an "
-            "edit here)") in instructions
+    assert "`update_note`" in instructions
     consent = (_ATHENA / "templates" / "mcp" / "families"
                / "_agenda.html").read_text(encoding="utf-8")
     assert "sur votre téléphone ou par un ajout" in consent

@@ -592,8 +592,12 @@ def test_a_rename_is_checked_against_the_source_dossier_and_the_texts_say_so(
 
     text = endpoint.INSTRUCTIONS
     assert "refused while it or the template's name" not in text
-    assert "the name of a template it CREATES" in text
     assert "checked against no dossier" not in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it.
+    assert "or `name` (literals included too) still carries the source " in (
+        tools.TOOLS["create_template"]["description"])
+    assert "never a party's name" in (
+        tools.TOOLS["update_template"]["description"])
     assert "a new name is checked against the dossiers its files came from" in (
         tools.TOOLS["update_template"]["description"])
     consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
@@ -1133,7 +1137,9 @@ def test_no_template_result_carries_a_path_a_url_or_a_file_name(world):
 def test_the_instructions_and_the_consent_name_the_template_tools():
     text = endpoint.INSTRUCTIONS
     assert "`create_template`" in text and "`update_template`" in text
-    assert "ALWAYS checked against that document's own dossier" in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: a stored file is refused while it names its source dossier.
+    assert "still carries the source dossier's names" in (
+        tools.TOOLS["create_template"]["description"])
     # REWRITTEN in lot 2A (T11): the template paragraph moved with its tools
     # from the FILES partial to the TEMPLATES family's own.
     assert "TEMPLATES: " in text

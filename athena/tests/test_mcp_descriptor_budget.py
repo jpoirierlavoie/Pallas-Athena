@@ -22,7 +22,10 @@ Measured again 2026-09-29 with lot 5b's six accounting tools: 86 tools,
 at 4 640). After lot 5's text step (the same day — two accounting
 descriptions made true: the reversal is the only correction of a TRUST entry,
 the revision trail keeps its latest 25): 251 024 bytes, the six 18 878, the
-largest descriptor overall still `update_partie` at 7 858.
+largest descriptor overall still `update_partie` at 7 858. After the
+finitions (2026-09-29), the family prose of INSTRUCTIONS moved into fourteen
+tool descriptions included (contracts-1, part 2): 257 183 bytes, the largest
+still `update_partie` at 7 904.
 
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
@@ -130,14 +133,32 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
 # characters (21012c0) to 21 579 / 24 636 (the comptabilité variant) with no
 # test noticing. And a real client CUTS the field: this connector's
 # production text reached a Claude Code session truncated at character
-# 2 047. The protocol rules came last, after ~16 KB of family prose.
-# Measured 2026-09-29 with the protocol core in place: 22 852 / 26 037
-# UTF-8 bytes. The caps sit just above.
-INSTRUCTIONS_CAP = 24_500
-INSTRUCTIONS_COMPTABILITE_CAP = 27_500
-# What a client cutting at ~2 048 characters must still have read.
-TRUNCATION_POINT = 2_048
+# 2 047, while the protocol rules came last, after ~16 KB of family prose.
+#
+# Part 1 (0459d60) moved a protocol core to the front and capped the sizes
+# at 24 500 / 27 500 bytes. Part 2 (this file's current form) restructured
+# the text: a SAFETY CORE first — the « never » list, the one outbound
+# effect, confirm-before-writing, idempotency and etag, re-read before a
+# retry —, complete within 2 000 characters; then ONE index line per family
+# naming its tools; the detailed prose moved into the tool descriptions.
+# Measured 2026-09-29: core 1 734 characters; 6 461 / 7 849 UTF-8 bytes.
+# REWRITTEN deliberately: the two caps (24 500 / 27 500) became ONE cap for
+# every token type, and « the core comes before READ-CONTENT » became « the
+# core IS the first characters, and is complete ».
+INSTRUCTIONS_CAP = 8_000
+# What a client cutting at ~2 048 characters must still have read — the
+# SAFETY CORE, whole, within this.
+CORE_LIMIT = 2_000
 _CORE_MARKERS = (
+    "SAFETY CORE",
+    "NEVER, whatever the tool:",
+    "DELETE anything",
+    "record a payment outside the accounting registers",
+    "SEND an invoice to anyone",
+    "CONFIRM an identity or conflict check",
+    "`decide_rendez_vous`",
+    "cancels the client's Outlook meeting",
+    "confirm with the user unless a standing instruction",
     "idempotency_key",
     "the SAME key, never a new one",
     # The third state of a claimed key (review of the finitions): without
@@ -148,10 +169,8 @@ _CORE_MARKERS = (
     "« ENREGISTRÉE — NE PAS RÉESSAYER »",
     "`expected_etag`",
     "stale_etag",
-    "`decide_rendez_vous`",
-    "cancels the client's Outlook meeting",
-    "a deletion",
-    "a payment outside the accounting registers",
+    "re-read, then redo the write on the current record",
+    "Each tool's description carries its own rules",
 )
 
 
@@ -161,24 +180,64 @@ def _instructions():
     return endpoint.INSTRUCTIONS, endpoint.INSTRUCTIONS_COMPTABILITE
 
 
+def _core():
+    from mcp import disclosure
+
+    return disclosure.safety_core_en()
+
+
 def test_the_instructions_stay_within_their_budget():
+    """Every token type — the read-only, write and accounting tokens read
+    one of these two texts (endpoint.instructions_for) — within ONE cap."""
     base, accounting = _instructions()
-    for label, text, cap in (("INSTRUCTIONS", base, INSTRUCTIONS_CAP),
-                             ("INSTRUCTIONS_COMPTABILITE", accounting,
-                              INSTRUCTIONS_COMPTABILITE_CAP)):
+    for label, text in (("INSTRUCTIONS", base),
+                        ("INSTRUCTIONS_COMPTABILITE", accounting)):
         size = len(text.encode("utf-8"))
-        assert size <= cap, (
-            f"{label} weighs {size} bytes, over its {cap}-byte budget: it "
-            "rides every initialize — move prose the tool descriptions "
-            "already carry out of it")
+        assert size <= INSTRUCTIONS_CAP, (
+            f"{label} weighs {size} bytes, over its {INSTRUCTIONS_CAP}-byte "
+            "budget: it rides every initialize — put the rule in the tool's "
+            "description, and keep the family's index line to its tools")
 
 
 @pytest.mark.parametrize("variant", [0, 1], ids=["base", "comptabilite"])
-def test_the_protocol_core_survives_a_client_that_cuts_at_2048(variant):
+def test_the_safety_core_is_the_first_characters_and_complete(variant):
+    """The core opens the text — its first N characters ARE the core — and
+    the whole core fits before a client's cut."""
     text = _instructions()[variant]
-    head = text[:TRUNCATION_POINT]
-    missing = [m for m in _CORE_MARKERS if m not in head]
-    assert missing == [], (
-        f"not within the first {TRUNCATION_POINT} characters: {missing}")
-    # And it comes FIRST, right after the header — before any family.
-    assert head.index("BEFORE ANY WRITE") < head.index("READ-CONTENT")
+    core = _core()
+    assert text.startswith(core + " "), "the SAFETY CORE must open the text"
+    assert len(core) <= CORE_LIMIT, (
+        f"the SAFETY CORE is {len(core)} characters, over {CORE_LIMIT}: a "
+        "client that cuts at ~2 048 would lose its end")
+    missing = [m for m in _CORE_MARKERS if m not in core]
+    assert missing == [], f"not in the SAFETY CORE: {missing}"
+    # Everything after the core is the index and the rest — never a second
+    # copy of the protocol rules.
+    rest = text[len(core):]
+    assert rest.lstrip().startswith("TOOLS: ")
+    assert "idempotency_key` on EVERY write" not in rest
+
+
+def test_the_core_states_only_promises_true_for_every_token():
+    """The core is the same for every token, so no accounting-only promise
+    may stand in it — the accounting variant states those after the
+    index."""
+    from mcp import disclosure
+
+    core = _core()
+    assert disclosure.core_nevers()
+    for never in disclosure.core_nevers():
+        assert not never.accounting_only, never.key
+        assert never.en in core, never.key
+    for never in disclosure.accounting_nevers():
+        assert never.en not in core, never.key
+
+
+def test_each_family_is_one_short_index_line():
+    """The index names a family's tools and its one rule — the prose moved
+    into the tool descriptions. A line past the cap is prose creeping back."""
+    from mcp import disclosure
+
+    for family in disclosure.FAMILIES:
+        size = len(family.instructions_en.encode("utf-8"))
+        assert size <= 450, (family.key, size)

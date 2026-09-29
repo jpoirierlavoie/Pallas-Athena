@@ -864,7 +864,10 @@ def test_the_texts_say_which_half_of_a_copy_is_presumed(world):
     assert copy["category_source"] == "juriste"
     text = endpoint.INSTRUCTIONS
     assert "category and protection level, presumed" not in text
-    assert "its category, presumed unless the lawyer had set it" in text
+    # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it — and says which half is presumed.
+    desc = tools.TOOLS["create_document"]["description"]
+    assert ("the source's protection level, PRESUMED, and its category — "
+            "PRESUMED unless the lawyer had set it") in desc
     consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
                         / "_files.html").read_text(encoding="utf-8").split())
     assert "de l'original, à confirmer" not in consent
@@ -971,10 +974,21 @@ def test_no_generation_result_carries_a_value_a_path_or_a_url(world):
 def test_the_instructions_state_the_rules_verbatim():
     """Regression (review of T8 itself): the FILES paragraph goes through
     str.format(), and a single « {{ » there printed « { » — the rule stated
-    wrong to every client model."""
+    wrong to every client model.
+
+    REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: the brace rule is fill_gabarit's own sentence (never
+    formatted), and no index line may hold a brace but the one field the
+    builder fills."""
+    from mcp import disclosure
+
     text = endpoint.INSTRUCTIONS
-    assert "« {{ » or « }} » is refused" in text
+    assert "« {{ » or « }} » is refused" in (
+        tools.TOOLS["fill_gabarit"]["description"])
+    for family in disclosure.FAMILIES:
+        line = family.instructions_en.replace("{phase_bulk_max}", "")
+        assert "{" not in line and "}" not in line, family.key
     assert "`fill_gabarit`" in text and "`create_document`" in text
     assert "It never changes an existing document's FILE" in text
-    assert "within its OWN dossier" in text
+    assert "in ITS OWN dossier only" in (
+        tools.TOOLS["create_document"]["description"])
     assert "« par Claude (connecteur) »" in text
