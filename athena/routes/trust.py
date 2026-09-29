@@ -24,6 +24,7 @@ from auth import login_required
 from models.dossier import get_dossier
 from models import trust
 from services import comptabilite
+from routes import edit_conflict
 from models.trust import (
     ACCOUNT_STATUS_LABELS,
     ACCOUNT_TYPE_LABELS,
@@ -558,11 +559,19 @@ def entry_reverse_confirm(tx_id: str):
     return _render_reverse_confirm(entry, [])
 
 
-def _render_reverse_confirm(entry: dict, errors: list[str]) -> str:
+def _render_reverse_confirm(entry: dict, errors: list[str], *,
+                            stale: bool = False, reason: str = "") -> str:
     """The confirmation page, told what the model WILL do: refuse outright
     (a correction, an entry already reversed — no form is offered), or
     reverse both legs of an inter-dossier transfer at once. The model stays
-    the verdict; this only keeps the page from promising something else."""
+    the verdict; this only keeps the page from promising something else.
+
+    The form carries the entry's etag (lot 5b review): what the page says —
+    both entries annulée, or a reversal en circulation — depends on the
+    status it was rendered from, and the connector now clears entries. A
+    submission made on a status that changed since is refused by the model
+    (``stale``); the page is then rendered again over the entry as it is
+    NOW, with its current etag, and the lawyer confirms knowingly."""
     refusal = trust.reversal_refusal(entry)
     both_legs = False
     if refusal is None and trust.is_transfer_pair_leg(entry):
@@ -573,7 +582,8 @@ def _render_reverse_confirm(entry: dict, errors: list[str]) -> str:
     return render_template(
         "trust/reverse_confirm.html", entry=entry,
         errors=errors or ([refusal] if refusal else []),
-        refusal=refusal, both_legs=both_legs, **_labels(),
+        refusal=refusal, both_legs=both_legs, stale=stale, reason=reason,
+        **_labels(),
     )
 
 
@@ -581,17 +591,26 @@ def _render_reverse_confirm(entry: dict, errors: list[str]) -> str:
 @login_required
 def entry_reverse(tx_id: str):
     reason = request.form.get("reason", "").strip()
+    # D9 (lot 5b review): the version the confirmation page described. None
+    # for a page rendered before the field — the model then checks nothing,
+    # as before; a malformed value is a French 400 and nothing runs.
+    expected = edit_conflict.submitted_etag()
     # A fee payment reverses with its administration recettes and their
     # invoices' payments in ONE transaction (lot 5a) — the service chooses
     # the path on a STRICT read of the entry. The old route reversed the
     # trust leg, then each recette after the commit, fail-open, under a
     # banner when one did not follow.
-    report = comptabilite.contrepasser_ecriture_fideicommis(tx_id, reason)
+    report = comptabilite.contrepasser_ecriture_fideicommis(
+        tx_id, reason, expected_etag=expected)
     if report["errors"]:
         entry = trust.get_transaction(tx_id)
         if not entry:
             return render_template("errors/404.html"), 404
-        return _render_reverse_confirm(entry, report["errors"]), 400
+        if report.get("stale"):
+            # Re-rendered over the entry as it is NOW — 200, like every
+            # stale re-render (routes/edit_conflict).
+            return _render_reverse_confirm(entry, [], stale=True, reason=reason)
+        return _render_reverse_confirm(entry, report["errors"], reason=reason), 400
     # A reversal that succeeded can still carry something the lawyer must
     # read: a fee payment reversed at trust alone (no linked recette, or
     # recettes already reversed), a client's cleared balance gone negative

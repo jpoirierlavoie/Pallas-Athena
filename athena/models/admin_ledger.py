@@ -1982,6 +1982,7 @@ def reverse_transaction(
     reversal_date=None,
     *,
     allow_linked: bool = False,
+    expected_etag: Optional[str] = None,
     _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Contre-passation: mint an opposite ``correction`` entry (trust's
@@ -2011,6 +2012,16 @@ def reverse_transaction(
     ``max(0, …)`` clamp, which would erase other recorded payments in
     silence. An invoice that no longer exists refuses the same way.
 
+    ``expected_etag`` (lot 5b review) — the version of the entry its caller
+    decided on: the confirmation page that told the lawyer what the
+    reversal would do (the stored status decides it: both annulée, or a
+    reversal en circulation), or the connector's own read. The connector
+    clears entries, so that status can move between the page and the
+    click; a mismatch refuses (``écriture_modifiée``), nothing written.
+    ``None`` asserts nothing (a page rendered before the field). Checked
+    right after « already reversed » — the trust twin's order
+    (``trust._read_reverse``).
+
     ``_report_out``, when given, receives ``reason`` on a refusal, or on
     success ``reversals`` (every leg's) and ``invoices`` —
     ``[(invoice_id, before, after)]``."""
@@ -2035,6 +2046,8 @@ def reverse_transaction(
         original = o_snap.to_dict()
         if original.get("reversed_by_id"):
             raise _TxnAbort("déjà_contrepassée")
+        if not concurrency.matches(original, expected_etag):
+            raise _TxnAbort("écriture_modifiée")
         if original.get("kind") == REVERSAL_KIND:
             # A reversal-of-reversal would double-count the copied ventilation
             # on the reports and can never re-link an invoice (correction rows

@@ -1199,3 +1199,125 @@ def test_un_paiement_dont_l_issue_est_inconnue_le_dit_au_formulaire(
     assert "Rien n'a été inscrit" not in page
     assert html.unescape(fee_payment.CREATE_OUTCOME_UNCERTAIN) in page
     _fee_entry(fake)                                   # it DID land, once
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Revue du lot 5b (concurrence) — la page de confirmation d'une
+# contre-passation dit ce qu'elle fera, et cela dépend du STATUT
+# ══════════════════════════════════════════════════════════════════════
+#
+# En circulation, l'écriture et sa contre-passation deviennent annulée ;
+# compensée, la contre-passation entre en circulation — un mouvement bancaire
+# à venir. Le connecteur compense désormais des écritures : une page ouverte
+# avant sa compensation annonçait « annulée », et le clic contre-passait
+# l'écriture compensée. La page porte maintenant la version qu'elle décrit ;
+# le modèle refuse une confirmation faite sur une autre (plan D9).
+
+_REVERSE_STALE = "Cette écriture a changé depuis l'ouverture de cette page."
+
+
+def _deposit_id(fake) -> str:
+    """A deposit still EN CIRCULATION (the seeded one is cleared)."""
+    _seed_trust(fake)
+    deposit, errs = trust.create_transaction({
+        "account_id": "acc1", "direction": "recette", "amount": 25000,
+        "purpose": "dépôt_client", "method": "chèque", "counterparty": "Client",
+        "dossier_id": "dos1", "client_id": "c1", "date": _d(2026, 9, 4),
+        "description": "", "reference": "",
+    })
+    assert errs == [], errs
+    return deposit["id"]
+
+
+def test_la_confirmation_de_contre_passation_porte_la_version_decrite(client, fake):
+    rid = _deposit_id(fake)
+    page = client.get(f"/fideicommis/{rid}/contrepasser").get_data(as_text=True)
+    assert _etags(page) == [fake.peek(f"trust_transactions/{rid}")["etag"]]
+    entry, errs = al.create_transaction(_depense())
+    assert errs == [], errs
+    page = client.get(f"/administration/{entry['id']}/contrepasser").get_data(as_text=True)
+    assert _etags(page) == [entry["etag"]]
+
+
+def test_une_contre_passation_confirmee_sur_un_statut_depasse_n_ecrit_rien(
+    client, fake,
+):
+    """Régression — la page annonçait « toutes deux marquées annulée », le
+    connecteur compensait l'écriture entre-temps, et le clic créait une
+    contre-passation EN CIRCULATION que la page n'avait jamais annoncée."""
+    from services import comptabilite as svc
+
+    rid = _deposit_id(fake)
+    url = f"/fideicommis/{rid}/contrepasser"
+    page = html.unescape(client.get(url).get_data(as_text=True))
+    assert "toutes deux marquées" in page
+    (shown,) = _etags(page)
+    assert svc.compenser_fideicommis([rid], _d(2026, 9, 5))["ok"]  # Claude
+    before = fake.peek_collection("trust_transactions")
+
+    resp = client.post(url, data={"reason": "Doublon-4K2", "expected_etag": shown})
+    assert resp.status_code == 200
+    page = html.unescape(resp.get_data(as_text=True))
+    assert _REVERSE_STALE in page and "Rien n'a été contre-passé" in page
+    assert "demeure compensée" in page            # what it will do NOW
+    assert "Doublon-4K2" in page                  # the motif is kept
+    current = fake.peek(f"trust_transactions/{rid}")["etag"]
+    assert _etags(page) == [current] and current != shown
+    assert fake.peek_collection("trust_transactions") == before
+
+    again = client.post(url, data={"reason": "Doublon-4K2", "expected_etag": current})
+    assert again.status_code == 302, again.get_data(as_text=True)[:500]
+    stored = fake.peek(f"trust_transactions/{rid}")
+    assert stored["status"] == "compensée" and stored["reversed_by_id"]
+    reversal = fake.peek(f"trust_transactions/{stored['reversed_by_id']}")
+    assert reversal["status"] == "en_circulation"
+
+
+def test_une_contre_passation_d_administration_sur_un_statut_depasse_n_ecrit_rien(
+    client, fake,
+):
+    from services import comptabilite as svc
+
+    entry, errs = al.create_transaction(_depense())
+    assert errs == [], errs
+    url = f"/administration/{entry['id']}/contrepasser"
+    (shown,) = _etags(client.get(url).get_data(as_text=True))
+    assert svc.compenser_administration([entry["id"]], _d(2026, 9, 12))["ok"]
+    before = _entries(fake)
+
+    resp = client.post(url, data={"reason": "Doublon-7P1", "expected_etag": shown,
+                                  "reversal_date": "2026-09-15"})
+    assert resp.status_code == 200
+    page = html.unescape(resp.get_data(as_text=True))
+    assert _REVERSE_STALE in page and "demeure compensée" in page
+    assert "Doublon-7P1" in page
+    current = _entries(fake)[entry["id"]]["etag"]
+    assert _etags(page) == [current] and current != shown
+    assert _entries(fake) == before
+
+    again = client.post(url, data={"reason": "Doublon-7P1", "expected_etag": current,
+                                   "reversal_date": "2026-09-15"})
+    assert again.status_code == 302, again.get_data(as_text=True)[:500]
+    assert _entries(fake)[entry["id"]]["reversed_by_id"]
+
+
+def test_une_page_de_contre_passation_sans_le_champ_ne_verifie_rien(client, fake):
+    """Une page ouverte AVANT ce déploiement ne porte aucune version : elle
+    contre-passe comme avant (le modèle ne vérifie rien), jamais un refus
+    qu'aucune page ouverte ne pourrait passer."""
+    rid = _deposit_id(fake)
+    resp = client.post(f"/fideicommis/{rid}/contrepasser", data={"reason": "Doublon"})
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert fake.peek(f"trust_transactions/{rid}")["status"] == "annulée"
+
+
+def test_une_version_illisible_a_la_contre_passation_est_un_400_en_francais(
+    client, fake,
+):
+    rid = _deposit_id(fake)
+    before = fake.peek_collection("trust_transactions")
+    resp = client.post(f"/fideicommis/{rid}/contrepasser", data={
+        "reason": "Doublon", "expected_etag": '"><script>x</script>'})
+    assert resp.status_code == 400
+    assert "Rien n'a été enregistré" in resp.get_data(as_text=True)
+    assert fake.peek_collection("trust_transactions") == before

@@ -522,13 +522,26 @@ def entry_reverse(tx_id: str):
         return render_template("errors/404.html"), 404
     reason = request.form.get("reason", "").strip()
     reversal_date = _parse_date(request.form.get("reversal_date", ""))
+    # D9 (lot 5b review): the version the confirmation page described — its
+    # text (both entries annulée, or a reversal en circulation) follows the
+    # stored status, which the connector's clearing can move. None for a
+    # page rendered before the field: nothing is checked, as before.
+    expected = edit_conflict.submitted_etag()
     report = comptabilite.contrepasser_ecriture_administration(
-        tx_id, reason, reversal_date=reversal_date,
+        tx_id, reason, reversal_date=reversal_date, expected_etag=expected,
     )
     if report["errors"]:
+        if report.get("stale"):
+            # Re-rendered over the entry as it is NOW, with its etag — 200,
+            # like every stale re-render (routes/edit_conflict).
+            current = al.get_transaction(tx_id) or original
+            return render_template(
+                "administration/reverse_confirm.html", entry=current,
+                errors=[], stale=True, reason=reason, **_labels(),
+            )
         return render_template(
             "administration/reverse_confirm.html", entry=original,
-            errors=report["errors"], **_labels(),
+            errors=report["errors"], reason=reason, **_labels(),
         ), 400
     # An encaissement's payment was reduced on its invoice in the reversal's
     # own commit (lot 5a) — or the reversal was refused with it.

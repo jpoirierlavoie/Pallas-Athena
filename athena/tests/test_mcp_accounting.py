@@ -822,6 +822,174 @@ def test_an_uncertain_outcome_keeps_the_claim_and_never_writes_twice(fake, monke
     assert len(_entries(fake, "trust_transactions")) == 1
 
 
+# ── Une compensation glissée entre la lecture et la contre-passation ─────
+#
+# Revue du lot 5b (concurrence). Le statut d'une écriture DÉCIDE ce que fait
+# sa contre-passation : en circulation, les deux écritures deviennent
+# annulée ; compensée, la contre-passation entre en circulation (un vrai
+# mouvement à venir). Le gestionnaire lisait l'écriture, jugeait dessus et
+# annonçait la transition lue — puis le modèle contre-passait l'écriture
+# telle qu'elle était DEVENUE. Une compensation web (ou un appel parallèle)
+# entre les deux : la réponse disait « annulée » à côté d'une contre-passation
+# entrée en circulation. Le gestionnaire compare maintenant à SA lecture.
+
+
+def _web_clear_right_after_the_handlers_read(monkeypatch, clear) -> list:
+    """The handler's read of the entry returns, THEN a concurrent web request
+    clears it — in its own thread, as a separate request is served (nested
+    here, its commit would be handed up to this call's writing block and
+    read as the connector's own)."""
+    import threading
+
+    real = svc.lire_ecriture
+    fired: list = []
+
+    def racing(register, tx_id):
+        entry = real(register, tx_id)
+        if not fired:
+            fired.append(True)
+            worker = threading.Thread(target=lambda: fired.append(clear()))
+            worker.start()
+            worker.join()
+            assert fired[1]["ok"], fired[1]
+        return entry
+
+    monkeypatch.setattr(svc, "lire_ecriture", racing)
+    return fired
+
+
+def test_a_trust_reversal_raced_by_a_clearing_is_refused_never_misreported(
+    fake, monkeypatch,
+):
+    rec = _call("record_trust_entry", **_deposit())
+    tx_id = rec["entity"]["id"]
+    fired = _web_clear_right_after_the_handlers_read(
+        monkeypatch, lambda: svc.compenser_fideicommis([tx_id], _d(2026, 9, 3)))
+    args = {"register": "trust", "tx_id": tx_id, "reason": "Doublon",
+            "idempotency_key": "cle-course-contrepassation-fid"}
+
+    refusal = _refused("reverse_register_entry", **args)
+    assert fired and refusal.reason == "stale_etag"
+    message = str(refusal)
+    assert "Rien n'a été écrit" in message and "list_trust_transactions" in message
+    assert "etag actuel" not in message          # its schema takes no etag
+    stored = fake.peek(f"trust_transactions/{tx_id}")
+    assert stored["status"] == "compensée"       # the clearing stands…
+    assert not stored.get("reversed_by_id")      # …and nothing was reversed
+    assert len(_entries(fake, "trust_transactions")) == 1
+
+    # The refusal released the key: sent again, on a fresh read, the call
+    # reverses the entry as it NOW is — and reports exactly that.
+    payload = _call("reverse_register_entry", **args)
+    _conforms("reverse_register_entry", payload)
+    assert payload["idempotent_replay"] is False
+    assert payload["original"] == {"id": tx_id, "status_before": "compensée",
+                                   "status_after": "compensée"}
+    assert payload["entity"]["status"] == "en_circulation"
+    assert fake.peek(f"trust_transactions/{tx_id}")["status"] == "compensée"
+
+
+def test_a_fee_payment_reversal_raced_by_a_clearing_writes_nowhere(
+    fake, monkeypatch,
+):
+    _cleared_deposit(fake)
+    fee = _call("record_trust_entry", **_fee())
+    fee_id = fee["entity"]["id"]
+    fired = _web_clear_right_after_the_handlers_read(
+        monkeypatch, lambda: svc.compenser_fideicommis([fee_id], _d(2026, 9, 11)))
+
+    refusal = _refused("reverse_register_entry", register="trust",
+                       tx_id=fee_id, reason="Facture erronée")
+    assert fired and refusal.reason == "stale_etag"
+    trust_rows = _entries(fake, "trust_transactions")
+    assert trust_rows[fee_id]["status"] == "compensée"
+    assert not trust_rows[fee_id].get("reversed_by_id")
+    assert not any(t.get("reverses_id") for t in trust_rows.values())
+    assert not any(a.get("reverses_id") for a in
+                   _entries(fake, "admin_transactions").values())
+    invoice = fake.peek("invoices/inv1")
+    assert invoice["amount_paid"] == 100000 and invoice["status"] == "payée"
+
+
+def test_an_admin_reversal_raced_by_a_clearing_is_refused_never_misreported(
+    fake, monkeypatch,
+):
+    made = _call("record_admin_entry", **_depense())["entity"]
+    fired = _web_clear_right_after_the_handlers_read(
+        monkeypatch,
+        lambda: svc.compenser_administration([made["id"]], _d(2026, 9, 6)))
+    args = {"register": "admin", "tx_id": made["id"], "reason": "Doublon",
+            "idempotency_key": "cle-course-contrepassation-adm"}
+
+    refusal = _refused("reverse_register_entry", **args)
+    assert fired and refusal.reason == "stale_etag"
+    assert "get_admin_ledger" in str(refusal)
+    stored = fake.peek(f"admin_transactions/{made['id']}")
+    assert stored["status"] == "compensée" and not stored.get("reversed_by_id")
+    assert len(_entries(fake, "admin_transactions")) == 1
+
+    payload = _call("reverse_register_entry", **args)
+    _conforms("reverse_register_entry", payload)
+    assert payload["original"] == {"id": made["id"], "status_before": "compensée",
+                                   "status_after": "compensée"}
+    assert payload["entity"]["status"] == "en_circulation"
+
+
+def test_two_parallel_encaissements_through_the_tool_let_one_through(fake, monkeypatch):
+    """Two calls, two keys, one invoice: the second call runs to completion
+    right after the FIRST call's handler read the invoice (balance 1 000 $,
+    both 600 $ fit). The handler's read is only a courtesy: the model reads
+    the invoice again inside its transaction, and the first call is refused
+    — exactly one payment recorded, the ledger and the invoice agreeing."""
+    import contextvars
+
+    real = svc.lire_facture
+    fired: list = []
+
+    def interleaved(invoice_id):
+        invoice = real(invoice_id)
+        if not fired:
+            fired.append(True)
+            # A separate request: a FRESH context, so its commit is never
+            # handed up to this call's writing block (models.provenance).
+            fired.append(contextvars.Context().run(
+                _call, "record_admin_entry", account_id="ops1",
+                kind="encaissement_facture", amount_cents=60000,
+                date="2026-09-06", method="virement", invoice_id="inv1",
+                counterparty="Jean Tremblay"))
+        return invoice
+
+    monkeypatch.setattr(svc, "lire_facture", interleaved)
+    refusal = _refused("record_admin_entry", account_id="ops1",
+                       kind="encaissement_facture", amount_cents=60000,
+                       date="2026-09-06", method="virement", invoice_id="inv1",
+                       counterparty="Jean Tremblay")
+    assert fired and fired[1]["recorded"] is True
+    assert refusal.reason == "accounting_refused" and "solde" in str(refusal)
+    (entry,) = _entries(fake, "admin_transactions").values()
+    assert entry["id"] == fired[1]["entity"]["id"]
+    assert fake.peek("invoices/inv1")["amount_paid"] == 60000
+    assert fake.peek("admin_accounts/ops1")["ledger_balance"] == 60000
+
+def test_an_edit_raced_by_a_clearing_names_the_lock_not_a_retry(fake, monkeypatch):
+    """The edit read the entry editable; it was cleared before the model's
+    transaction. « Redo it with its current etag » would lead straight into
+    the lock refusal: the refusal says the entry is no longer editable and
+    names the reversal — the web edit route's redirect, for the same case."""
+    made = _call("record_admin_entry", **_depense())["entity"]
+    fired = _web_clear_right_after_the_handlers_read(
+        monkeypatch,
+        lambda: svc.compenser_administration([made["id"]], _d(2026, 9, 6)))
+    refusal = _refused("update_admin_entry", tx_id=made["id"],
+                       expected_etag=made["etag"], description="Loyer")
+    assert fired and refusal.reason == "stale_etag"
+    message = str(refusal)
+    assert "n'est plus modifiable" in message and "reverse_register_entry" in message
+    assert "etag actuel" not in message
+    stored = fake.peek(f"admin_transactions/{made['id']}")
+    assert stored["status"] == "compensée" and stored["description"] != "Loyer"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 6. La portée — les registres ne sont atteints QUE par ces outils
 # ══════════════════════════════════════════════════════════════════════

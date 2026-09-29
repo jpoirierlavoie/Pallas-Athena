@@ -16372,6 +16372,12 @@ _ACCOUNTING_UNREADABLE = (
     "Réessayez dans un instant avec la MÊME idempotency_key."
 )
 _ADMIN_SUBJECT = "Cette écriture d'administration a changé"
+# reverse_register_entry accepts no expected_etag: it compares against its
+# OWN read, and its stale refusal names the read tools of each register.
+_REVERSAL_SUBJECTS = {"trust": "Cette écriture du fidéicommis a changé",
+                      "admin": _ADMIN_SUBJECT}
+_REVERSAL_READERS = {"trust": ("list_trust_transactions",),
+                     "admin": ("get_admin_ledger",)}
 _REPLAY_WARNING = (
     "Rejeu : cette réponse est celle du premier appel fait sous cette "
     "idempotency_key — rien n'a été inscrit de nouveau. Les états « avant » "
@@ -17247,6 +17253,27 @@ def _update_admin_entry_impl(args: dict) -> dict:
                 current = comptabilite_service.lire_ecriture("admin", tx_id)
             except Exception:
                 current = None
+            lock = None
+            if current is not None:
+                try:
+                    lock = comptabilite_service.motif_verrou_administration(
+                        current, comptabilite_service.plancher_conciliation(
+                            "admin", current.get("account_id") or ""))
+                except Exception:
+                    lock = None
+            if lock:
+                # Changed since the read AND no longer editable — typically
+                # cleared meanwhile (the web « Compenser », a parallel call).
+                # « Redo it with its current etag » would send the caller
+                # into the lock refusal next; the way out is the reversal
+                # (the web edit route's redirect, for the same case).
+                raise ToolArgumentError(
+                    "Cette écriture d'administration a changé depuis votre "
+                    "lecture et n'est plus modifiable : "
+                    + _ADMIN_LOCK_ADVICE.get(lock, "elle est verrouillée")
+                    + ". Rien n'a été écrit. Corrigez-la par "
+                    "reverse_register_entry (register « admin »).",
+                    reason="stale_etag")
             raise _stale_refusal("update_admin_entry", _ADMIN_SUBJECT, current)
         _raise_register_refusal(report)
 
@@ -17422,13 +17449,30 @@ def _reverse_register_entry_impl(args: dict) -> dict:
                     f"({date_str(day)}).")
     status_before = original.get("status") or ""
 
+    # Compare-and-set against THIS read (plan rule 3; lot 5b review). Every
+    # guard above, and the status_before / status_after reported below, were
+    # decided on it — and the status decides what the reversal DOES (both
+    # entries annulée, or a reversal en circulation). An entry cleared
+    # between this read and the model's transaction (a web « Compenser », a
+    # parallel call) used to be reversed on its new status while the result
+    # announced the old transition: « annulée » beside a reversal entering
+    # en circulation. It is now refused, nothing written.
+    read_etag = concurrency.etag_of(original)
     if register == "trust":
         report = comptabilite_service.contrepasser_ecriture_fideicommis(
-            tx_id, reason)
+            tx_id, reason, expected_etag=read_etag)
     else:
         report = comptabilite_service.contrepasser_ecriture_administration(
-            tx_id, reason, reversal_date=reversal_date)
+            tx_id, reason, reversal_date=reversal_date, expected_etag=read_etag)
     if not report["ok"]:
+        if report.get("stale"):
+            try:
+                current = comptabilite_service.lire_ecriture(register, tx_id)
+            except Exception:
+                current = None
+            raise _stale_refusal(
+                "reverse_register_entry", _REVERSAL_SUBJECTS[register], current,
+                readers=_REVERSAL_READERS[register])
         _raise_register_refusal(report)
 
     # ── Committed: nothing below may refuse. ───────────────────────────

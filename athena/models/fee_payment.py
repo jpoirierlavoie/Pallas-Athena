@@ -493,7 +493,8 @@ def _standing(row: dict) -> bool:
 
 
 def reverse_fee_payment(
-    tx_id: str, reason: str, *, _report_out: Optional[dict] = None,
+    tx_id: str, reason: str, *, expected_etag: Optional[str] = None,
+    _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Reverse a fee payment: the trust entry, EVERY standing
     administration recette linked to it, and each recette's payment on its
@@ -515,6 +516,9 @@ def reverse_fee_payment(
     row linked to the fee payment, already-reversed ones included, so an
     empty ``admin_reversals`` can be told apart: nothing was ever linked
     (0), or everything linked was already reversed (> 0).
+
+    ``expected_etag`` — the version of the TRUST entry the caller decided
+    on (``trust._read_reverse``): a mismatch refuses, nothing written.
     """
     # Sanitized like every stored text (tags stripped, bounded): the motif is
     # printed in both registers.
@@ -541,7 +545,8 @@ def reverse_fee_payment(
         today = trust._today_midnight_utc()
         # 1. READS — the trust original and its reversal context, then the
         # linked recettes (fail CLOSED), then what their reversals touch.
-        t_ctx = trust._read_reverse(txn, tx_id, today, fee_payment_ok=True)
+        t_ctx = trust._read_reverse(txn, tx_id, today, fee_payment_ok=True,
+                                    expected_etag=expected_etag)
         if t_ctx["original"].get("purpose") != TRUST_PURPOSE:
             raise _FeeAbort("pas_un_paiement_honoraires")
         try:

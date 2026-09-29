@@ -618,7 +618,10 @@ TRANSITIONS: dict[str, tuple[tuple[str, ...], str, str]] = {
     "trust": (
         ("clear_transactions_bulk", "reverse_transaction"),
         "the trust register is append-only: a clearing and a reversal are "
-        "decided inside the model's transaction on the stored status",
+        "decided inside the model's transaction on the stored status — and "
+        "the reversal confirmation page carries the version it describes "
+        "(its text depends on that status), a stale one refused (lot 5b "
+        "review, tests/test_admin_payment_atomic)",
         "tests/test_mcp_accounting.py::"
         "test_a_stale_web_transition_never_undoes_the_connectors",
     ),

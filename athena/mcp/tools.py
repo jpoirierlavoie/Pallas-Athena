@@ -6764,8 +6764,9 @@ TOOLS: dict[str, dict] = {
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
             "a reversal decided inside the model's transaction on the stored "
-            "entry: one already reversed is refused there, and its status "
-            "decides the reversal's"
+            "entry: one already reversed is refused there, and the handler "
+            "compare-and-sets against its OWN read — the status that decides "
+            "the reversal's, and the one it reports"
         ),
     },
 }

@@ -100,6 +100,12 @@ def _refused(errors, reason, **fields) -> dict:
     return _report(False, errors=errors, reason=reason or "refus", **fields)
 
 
+#: The refusal reason of a write judged on a version its caller no longer
+#: has — the three money models share it (``écriture_modifiée``). A report
+#: carrying it says ``stale: True``: re-read, then ask again.
+STALE_REASON = "écriture_modifiée"
+
+
 # ── Report helpers ─────────────────────────────────────────────────────────
 
 
@@ -288,14 +294,21 @@ def _empty_fee() -> dict:
             "client_balance": None}
 
 
-def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
+def contrepasser_ecriture_fideicommis(
+    tx_id: str, reason: str, *, expected_etag: Optional[str] = None,
+) -> dict:
     """Reverse a trust entry — a fee payment through its composite (the
     recettes and their invoices follow in the same transaction), any other
     entry through the register.
 
     The original is read STRICTLY to choose the path: an absent entry is
     refused, an UNREADABLE one too — never « not a fee payment », which
-    used to skip the administration side without a word."""
+    used to skip the administration side without a word.
+
+    ``expected_etag`` — the version of the entry the caller decided on (the
+    confirmation page's hidden field, the connector's read), checked inside
+    the reversal's transaction: a stale one refuses (``stale: True``),
+    nothing written. ``None`` asserts nothing."""
     try:
         original = trust.get_transaction_strict(tx_id)
     except Exception:
@@ -311,9 +324,11 @@ def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
     codes: list[str] = []
     if original.get("purpose") == trust.FEE_PAYMENT_PURPOSE:
         report: dict = {}
-        result, errors = fee_payment.reverse_fee_payment(tx_id, reason, _report_out=report)
+        result, errors = fee_payment.reverse_fee_payment(
+            tx_id, reason, expected_etag=expected_etag, _report_out=report)
         if errors:
             return _refused(errors, report.get("reason"), side=report.get("side"),
+                            stale=report.get("reason") == STALE_REASON,
                             **_empty_reversal())
         if not result["admin_reversals"]:
             # Two different facts (lot 5a review): nothing was ever linked (a
@@ -336,9 +351,12 @@ def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
         )
 
     report = {}
-    reversal, errors = trust.reverse_transaction(tx_id, reason, _report_out=report)
+    reversal, errors = trust.reverse_transaction(
+        tx_id, reason, expected_etag=expected_etag, _report_out=report)
     if errors:
-        return _refused(errors, report.get("reason"), **_empty_reversal())
+        return _refused(errors, report.get("reason"),
+                        stale=report.get("reason") == STALE_REASON,
+                        **_empty_reversal())
     cleared_after = report.get("client_cleared_after")
     codes = _negative_cleared(cleared_after)
     return _report(
@@ -352,6 +370,7 @@ def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
 def _empty_reversal() -> dict:
     return {"reversal": None, "reversals": [], "original": None,
             "admin_reversals": [], "invoices": [], "client_cleared_after": None}
+
 
 
 def _negative_cleared(cleared_after: Optional[int]) -> list[str]:
@@ -429,7 +448,7 @@ def modifier_ecriture_administration(
                                           _report_out=report)
     if errors:
         return _refused(errors, report.get("reason"), entry=None, changed_fields=[],
-                        stale=report.get("reason") == "écriture_modifiée")
+                        stale=report.get("reason") == STALE_REASON)
     return _report(True, entry=entry, changed_fields=report.get("fields", []),
                    stale=False)
 
@@ -453,19 +472,22 @@ def compenser_administration(tx_ids: list, cleared_date) -> dict:
 
 
 def contrepasser_ecriture_administration(
-    tx_id: str, reason: str, reversal_date=None,
+    tx_id: str, reason: str, reversal_date=None, *,
+    expected_etag: Optional[str] = None,
 ) -> dict:
     """Reverse an administration entry (a card-payment leg carries its
     pair; an encaissement reduces its invoice in the same commit). A
     recette linked to a fee payment is REFUSED here
     (``écriture_liée_fideicommis``): it reverses from the trust side, with
-    its fee payment — never alone."""
+    its fee payment — never alone. ``expected_etag`` — as
+    :func:`contrepasser_ecriture_fideicommis`."""
     report: dict = {}
     reversal, errors = al.reverse_transaction(tx_id, reason, reversal_date=reversal_date,
+                                              expected_etag=expected_etag,
                                               _report_out=report)
     if errors:
         return _refused(errors, report.get("reason"), reversal=None, reversals=[],
-                        invoices=[])
+                        invoices=[], stale=report.get("reason") == STALE_REASON)
     return _report(
         True, reversal=reversal, reversals=report.get("reversals", [reversal]),
         invoices=[invoice_payment_block(before, after)

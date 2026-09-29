@@ -33,7 +33,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import aggregation_values, db, provenance
+from models import aggregation_values, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
@@ -408,6 +408,10 @@ _ABORT_MESSAGES = {
     "compteur_indisponible": "Impossible d'allouer le numéro de séquence. Veuillez réessayer.",
     "motif_requis": "Un motif de contre-passation est requis.",
     "déjà_contrepassée": "Cette écriture a déjà été contre-passée.",
+    # A reversal judged on a version the caller no longer has (lot 5b
+    # review): the page — or the connector's read — decided on the entry's
+    # status, and the status decides what the reversal does.
+    "écriture_modifiée": concurrency.STALE_ETAG_ERROR,
     "correction_non_contre_passable": (
         "Une écriture de correction ne se contre-passe pas : réinscrivez plutôt "
         "l'écriture voulue, datée d'aujourd'hui."
@@ -1578,6 +1582,7 @@ def is_transfer_pair_leg(entry: dict) -> bool:
 
 def _read_reverse(
     txn, tx_id: str, today: datetime, *, fee_payment_ok: bool = False,
+    expected_etag: Optional[str] = None,
 ) -> dict:
     """Every read a reversal needs, inside *txn* — the read phase of
     :func:`reverse_transaction`, split out so a composite can run it beside
@@ -1587,7 +1592,20 @@ def _read_reverse(
     already reversed, a correction, a fee payment, a transfer pair out of
     shape, the lock floor covering *today* — the reversal's date).
     ``fee_payment_ok`` lifts the fee-payment refusal — only
-    ``models/fee_payment.reverse_fee_payment`` passes it."""
+    ``models/fee_payment.reverse_fee_payment`` passes it.
+
+    ``expected_etag`` (lot 5b review) — the version of the entry its caller
+    decided on: the confirmation page that TOLD the lawyer what the
+    reversal would do (both entries annulée, or a reversal en circulation —
+    the stored status decides), or the connector's own read. Since the
+    connector clears entries, that status can change between the page and
+    the click: the reversal was then committed on a status the lawyer never
+    saw. A mismatch refuses (``écriture_modifiée``), nothing written;
+    ``None`` asserts nothing (a page rendered before the field). Checked
+    right AFTER « already reversed », never before it: a transaction re-run
+    over this call's OWN landed reversal must still read
+    ``déjà_contrepassée`` — the signal ``reverse_fee_payment`` turns into an
+    uncertain outcome instead of a refusal."""
     orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
     o_snap = orig_ref.get(transaction=txn)
     if not o_snap.exists:
@@ -1595,6 +1613,8 @@ def _read_reverse(
     original = o_snap.to_dict()
     if original.get("reversed_by_id"):
         raise _TxnAbort("déjà_contrepassée")
+    if not concurrency.matches(original, expected_etag):
+        raise _TxnAbort("écriture_modifiée")
     if original.get("purpose") == REVERSAL_PURPOSE or original.get("reverses_id"):
         raise _TxnAbort("correction_non_contre_passable")
     if original.get("purpose") == FEE_PAYMENT_PURPOSE and not fee_payment_ok:
@@ -1747,7 +1767,8 @@ def _stage_reverse(txn, ctx: dict, reason: str, today: datetime, now: datetime) 
 
 
 def reverse_transaction(
-    tx_id: str, reason: str, *, _report_out: Optional[dict] = None,
+    tx_id: str, reason: str, *, expected_etag: Optional[str] = None,
+    _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Contre-passation: create an opposite « correction » entry; never edit the
     original's amount or direction (§5.2). Reversing an ``en_circulation`` entry
@@ -1777,6 +1798,11 @@ def reverse_transaction(
       ``models/fee_payment.reverse_fee_payment``. Reversing the trust leg
       alone put the money back into trust while the operations account
       still counted it and the invoice still read « payée ».
+
+    ``expected_etag`` — the version of the entry the caller decided on (the
+    confirmation page, the connector's read): a mismatch refuses with
+    ``écriture_modifiée`` (see :func:`_read_reverse`); ``None`` asserts
+    nothing.
 
     ``_report_out``, when given, receives ``reason`` on a refusal, or
     ``client_cleared_after`` and ``original_status_after`` on success.
@@ -1808,7 +1834,7 @@ def reverse_transaction(
         # read that as a running-balance error.
         now = datetime.now(timezone.utc)
         today = _today_midnight_utc()
-        ctx = _read_reverse(txn, tx_id, today)
+        ctx = _read_reverse(txn, tx_id, today, expected_etag=expected_etag)
         result.update(_stage_reverse(txn, ctx, reason, today, now))
 
     try:

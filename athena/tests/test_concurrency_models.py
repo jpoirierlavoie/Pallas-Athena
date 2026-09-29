@@ -1386,7 +1386,12 @@ def test_a_chained_edit_presents_the_etag_the_first_one_returned(
 #   réouverture refusée) et la description combinée viennent de la tâche lue ;
 # * complete_dossier — le « remplir si vide » a été jugé sur le dossier lu ;
 # * record_signification / record_prescription_event — le registre est la
-#   liste lue plus l'entrée neuve, réécrite en bloc.
+#   liste lue plus l'entrée neuve, réécrite en bloc ;
+# * reverse_register_entry (revue du lot 5b) — le statut LU décide ce que
+#   fait la contre-passation (annulée, ou en circulation) et ce que la
+#   réponse annonce : une compensation glissée entre la lecture et le
+#   commit faisait contre-passer une écriture compensée sous l'annonce
+#   « annulée ».
 #
 # Sans garde, une écriture glissée entre la lecture et le commit était
 # EFFACÉE sous une enveloppe de succès — deux appels parallèles de Claude à
@@ -1423,6 +1428,13 @@ _OWN_READ_CASES = {
         lambda i: {"dossier_id": i, "sommaire": "Rempli par Claude."},
         (dossier_model, "get_dossier"), {"sommaire": "Écrit dans l'appli."},
         "sommaire"),
+    "reverse_register_entry": (
+        "admin_transactions", _admin_entry,
+        lambda i: {"register": "admin", "tx_id": i, "reason": "Doublon",
+                   "idempotency_key": "cle-contrepassation-lecture"},
+        (admin_ledger_model, "get_transaction_strict"),
+        {"status": "compensée", "cleared_date": DT},
+        "reversed_by_id"),
     "record_signification": (
         "dossiers", _dossier_with_parties,
         lambda i: {"dossier_id": i, "partie_id": "p2",

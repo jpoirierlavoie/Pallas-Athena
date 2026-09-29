@@ -716,15 +716,22 @@ def test_un_avertissement_de_contre_passation_voyage_jusqu_a_la_fiche(web_trust,
     """Un paiement d'honoraires contre-passé au fidéicommis SEUL (aucune
     recette liée) ou un solde compensé devenu négatif — un manque à combler :
     la route redirigeait sans rien en dire."""
-    monkeypatch.setattr(
-        rt.comptabilite, "contrepasser_ecriture_fideicommis",
-        lambda tx_id, reason: {"ok": True, "errors": [], "reason": None,
-                               "warnings": ["…"],
-                               "warning_codes": ["sans_recette_liee", "solde_compense_negatif"],
-                               "reversal": {"id": "r1"}},
-    )
+    # Widened deliberately (lot 5b review): the route now hands the service
+    # the version its confirmation page described — here none, the form
+    # carrying no field (a page rendered before it): nothing is asserted.
+    passed: dict = {}
+
+    def _reverse(tx_id, reason, *, expected_etag=None):
+        passed["expected_etag"] = expected_etag
+        return {"ok": True, "errors": [], "reason": None,
+                "warnings": ["…"],
+                "warning_codes": ["sans_recette_liee", "solde_compense_negatif"],
+                "reversal": {"id": "r1"}}
+
+    monkeypatch.setattr(rt.comptabilite, "contrepasser_ecriture_fideicommis", _reverse)
     resp = web_trust.post("/fideicommis/t1/contrepasser", data={"reason": "erreur"})
     assert resp.status_code == 302
+    assert passed == {"expected_etag": None}
     assert "/fideicommis/r1?" in resp.headers["Location"]
     assert "avertissement=sans_recette_liee,solde_compense_negatif" in resp.headers["Location"]
 
