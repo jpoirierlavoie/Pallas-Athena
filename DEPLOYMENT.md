@@ -2637,9 +2637,9 @@ Notes:
 
      First the DISCOVERY itself (fixes of lot 4 — the root Depth:1 PROPFIND
      reads its dossiers STRICTLY and answers 503 + `Retry-After` on a read
-     failure instead of a 207 advertising zero dossier collections, which
-     DavX5 may read as « all gone »; a single dossier document it cannot
-     read is skipped and logged, the others listed):
+     failure instead of a 207 advertising zero dossier collections; a single
+     dossier document it cannot read is skipped and logged, the others
+     listed):
 
      ```bash
      root() {
@@ -2661,6 +2661,25 @@ Notes:
      without an `id`, a stored `id` that is not the document's, a file
      number or title that is not text); its own collection stays out of
      DavX5 until then.
+
+     Then the probe DavX5 itself makes. When discovery fails — its 503
+     included — DavX5 does NOT keep its list on the strength of that answer:
+     it re-probes every collection at its own URL (Depth:0) and deletes from
+     the phone each one that answers 403, 404 or 410; any other error aborts
+     the refresh, retried later (davx5-ose, read 2026-09-29). So the
+     collection's own answer is the load-bearing one (review of the fixes of
+     lot 4 — it read its dossier fail-open and answered 404 on an outage):
+
+     ```bash
+     curl -s -u "${DAV_USER:?}" -X PROPFIND -H "Depth: 0" -o /dev/null \
+       -w '%{http_code}\n' "https://yourdomain.example/dav/dossier-$D/"   # 207
+     ```
+
+     207 in service. During a Firestore incident it must read **503** (with
+     `Retry-After: 30` and an `unexpected` « dav dossier scope read failed »
+     naming the id) — never 404, which is a deletion on every phone; a 404
+     outside an incident is a dossier that does not exist or a document
+     logged « get_dossier_for_dav: document unusable ».
 
      Then, through Claude: `set_dossier_status` « fermé » on it — the
      result reads `dav.complete: true`, `dav.direction: "drain"`,

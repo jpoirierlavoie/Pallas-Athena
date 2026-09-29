@@ -34,11 +34,21 @@ def _root_read_unavailable(check: str) -> Response:
 
     The answer the dossier collections give on a failed strict read since
     lot 1a (``dav.dossier_collections._read_unavailable``): 503 +
-    ``Retry-After``, so DavX5 keeps its collection list and retries. Never
-    a 207 listing fewer collections than exist — DavX5 reads a collection
-    missing from discovery as a collection that is GONE, and may drop it
-    from the phone (fixes of lot 4: the fail-open ``list_dossiers`` turned a
-    Firestore blip into a 207 advertising zero dossier collections).
+    ``Retry-After``. Never a 207 listing fewer collections than exist (fixes
+    of lot 4: the fail-open ``list_dossiers`` turned a Firestore blip into a
+    207 advertising zero dossier collections — a false statement about the
+    firm).
+
+    What this 503 does NOT do by itself is keep the phone's collections
+    (review of the fixes, davx5-ose read 2026-09-29): DavX5's
+    ``HomeSetRefresher`` swallows any home-set error but 403/404/410, marks
+    every collection it did not rediscover « without home-set » — all of
+    them here —, and ``CollectionsWithoutHomeSetRefresher`` then PROPFINDs
+    each at Depth:0 and deletes it locally on a 403/404/410. What keeps them
+    through an outage is each collection's OWN answer, a 503 on a failed
+    read too (``dav.dossier_collections._resolve_scope``,
+    ``models.dossier.get_dossier_for_dav``): any other error aborts the
+    refresh, which DavX5 retries later, and deletes nothing.
 
     Called from inside the ``except``, so the ERROR line carries the
     traceback. *check* is ``dossiers`` (the per-status queries) or
@@ -162,8 +172,10 @@ def dav_root_propfind() -> Response:
         # listing used to hard-code its two statuses).
         #
         # STRICT on the query, TOLERANT per document (fixes of lot 4). A
-        # failed read answers 503 + Retry-After and lists NOTHING — a 207
-        # missing collections tells DavX5 they are gone. One document the
+        # failed read answers 503 + Retry-After and lists NOTHING — never a
+        # 207 missing collections that exist (DavX5 then re-probes each one
+        # at its own URL, whose 503 on the same outage is what keeps it:
+        # see _root_read_unavailable). One document the
         # listing cannot read is skipped (logged by id) and the others are
         # listed: models.dossier.list_dossiers_by_status_strict skips what
         # the migration cannot read, the loop below what this listing cannot

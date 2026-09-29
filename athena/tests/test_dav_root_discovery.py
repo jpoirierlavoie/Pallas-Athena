@@ -6,10 +6,16 @@ collection « Général » et UNE collection par dossier actif. Jusqu'aux
 correctifs du lot 4, elle bâtissait la liste des dossiers par
 ``list_dossiers``, qui échoue OUVERT : une panne Firestore répondait « aucun
 dossier », la découverte annonçait ZÉRO collection de dossier dans un 207
-bien formé — et DavX5, qui lit une collection absente de la découverte comme
-une collection disparue, pouvait les retirer toutes du téléphone. Pire, la
-même lecture avalait une exception de MIGRATION : un seul document de
-dossier illisible vidait la liste entière de son statut.
+bien formé — une affirmation fausse sur le cabinet. Pire, la même lecture
+avalait une exception de MIGRATION : un seul document de dossier illisible
+vidait la liste entière de son statut.
+
+Ce que DavX5 fait d'une collection absente de la découverte (davx5-ose, lu
+le 2026-09-29 — revue des correctifs) : il la marque « sans home-set » et la
+sonde à SA propre URL, Depth:0 ; un 403/404/410 l'efface du téléphone, toute
+autre erreur interrompt le rafraîchissement (repris plus tard) et la garde.
+Le 503 de la racine ne garde donc rien à lui seul : c'est la collection qui
+doit répondre 503 pendant la même panne — § 5.
 
 Deux règles, désormais, épinglées ici sur le VRAI modèle au-dessus du faux
 Firestore partagé (``tests/_fake_firestore.py``) :
@@ -385,3 +391,172 @@ def test_one_malformed_document_no_longer_empties_its_status(db):
     assert [d["id"] for d in
             dossier_model.list_dossiers_by_status_strict("actif")] == [
         D_NEW, D_BAD_NUMBER, D_OLD]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Ce que DavX5 fait d'une découverte en échec — la collection décide
+# ══════════════════════════════════════════════════════════════════════
+#
+# Revue des correctifs du lot 4. Le 503 de la racine ne protège RIEN à lui
+# seul : le rafraîchissement des collections de DavX5 (davx5-ose, branche
+# main, lu le 2026-09-29) fait
+#
+# * ``HomeSetRefresher.refreshHomesetsAndTheirCollections`` — un PROPFIND
+#   Depth:1 du home-set ; son ``catch (e: HttpException)`` ne SUPPRIME le
+#   home-set que sur 403/404/410 et n'en relance aucune : sur un 503, rien
+#   n'est redécouvert, et CHAQUE collection connue est marquée « sans
+#   home-set » ;
+# * ``CollectionsWithoutHomeSetRefresher.refreshCollectionsWithoutHomeSet``
+#   — un PROPFIND Depth:0 de chacune : 403/404/410 (ou une réponse en
+#   échec) → la collection est SUPPRIMÉE du téléphone ; toute autre erreur
+#   HTTP est relancée, le rafraîchissement échoue et sera repris, la
+#   collection est gardée.
+#
+# C'est donc la réponse de la collection ELLE-MÊME qui tranche : pendant la
+# panne elle doit être un 503, jamais le 404 que donnait le get_dossier qui
+# échoue ouvert (models.dossier.get_dossier_for_dav).
+
+_DELETING = (403, 404, 410)
+
+
+def _app():
+    from flask import Flask
+
+    from dav.dossier_collections import dossier_dav_bp
+
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "t"
+    app.register_blueprint(dav_pkg.dav_bp)
+    app.register_blueprint(dossier_dav_bp)
+    return app
+
+
+_AUTH = {"Authorization": "Basic dGVzdEBleGFtcGxlLmNvbTpwdw=="}
+
+
+def _request(method, path, *, depth="0", data=None):
+    return _app().test_client().open(
+        path, method=method, data=data,
+        headers={"Depth": depth, **_AUTH,
+                 "Content-Type": "text/calendar; charset=utf-8"})
+
+
+def _fail_keyed_reads_on(monkeypatch, db, collection: str):
+    """Every keyed get() of a *collection* document fails — the blip."""
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(f"/documents/{collection}/" in str(n)
+               for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+
+
+def _davx5_refresh(known: list[str]) -> dict[str, int]:
+    """The DavX5 collection refresh, reduced to what decides a deletion:
+    the answer each HOMELESS collection gives to its Depth:0 re-probe.
+
+    Returns ``{url: status}`` for every collection the root did not list;
+    a status in :data:`_DELETING` is a collection DavX5 deletes locally.
+    (DavX5 stops at the first other error — the refresh aborts, retried
+    later —, so probing them ALL is the order-independent, stricter check.)
+    """
+    root = _propfind()
+    assert root.status_code not in _DELETING, "the home set itself would go"
+    listed = (set(_hrefs(root.get_data(as_text=True)))
+              if root.status_code == 207 else set())
+    return {url: _request("PROPFIND", url).status_code
+            for url in known if url not in listed}
+
+
+def _known_collections() -> list[str]:
+    return ["/dav/general/"] + [
+        f"/dav/dossier-{did}/" for did in (D_NEW, D_OLD, D_PENDING)]
+
+
+def test_an_outage_never_makes_davx5_delete_a_collection(db, monkeypatch):
+    """The dossier queries AND the keyed dossier reads fail: the root is a
+    503, every collection is re-probed — and every dossier collection is a
+    503 too, never the 404 DavX5 deletes it on."""
+    _fail_queries_on(monkeypatch, db, "dossiers")
+    _fail_keyed_reads_on(monkeypatch, db, "dossiers")
+    probes = _davx5_refresh(_known_collections())
+    assert set(probes) == set(_known_collections())      # all homeless
+    assert not [u for u, s in probes.items() if s in _DELETING], probes
+    for did in (D_NEW, D_OLD, D_PENDING):
+        assert probes[f"/dav/dossier-{did}/"] == 503
+
+
+def test_a_root_only_blip_keeps_every_collection(db, monkeypatch):
+    """Only the listing query fails: every collection is re-probed, answers
+    207 and is kept (homeless until the next refresh lists it again)."""
+    _fail_queries_on(monkeypatch, db, "dossiers")
+    probes = _davx5_refresh(_known_collections())
+    assert set(probes.values()) == {207}, probes
+
+
+def test_a_malformed_dossier_leaves_the_phone_alone_of_its_kind(db):
+    """The one document DAV cannot serve is skipped by the root AND 404s at
+    its own URL — DavX5 deletes that collection alone (documented: it
+    returns once the document is repaired); every other one is listed and
+    never re-probed."""
+    _seed_malformed(db)
+    known = _known_collections() + [f"/dav/dossier-{D_BAD_PARTY}/",
+                                    f"/dav/dossier-{D_BAD_ID}/"]
+    probes = _davx5_refresh(known)
+    assert probes == {f"/dav/dossier-{D_BAD_PARTY}/": 404,
+                      f"/dav/dossier-{D_BAD_ID}/": 404}
+
+
+@pytest.mark.parametrize("method", ["PROPFIND", "REPORT", "PUT"])
+def test_a_collection_whose_dossier_cannot_be_read_answers_503(
+        db, monkeypatch, caplog, method):
+    """The three handlers that resolve the collection's dossier (PROPFIND,
+    REPORT, PUT): a failed read is a 503 + Retry-After — the answer of a
+    failed strict read everywhere in this layer —, logged by id with the
+    traceback, and a PUT writes nothing (DavX5 keeps the edit dirty)."""
+    _fail_keyed_reads_on(monkeypatch, db, "dossiers")
+    db.reset_logs()
+    body = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:t1\r\n"
+            "SUMMARY:x\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+            if method == "PUT" else None)
+    path = (f"/dav/dossier-{D_OLD}/t1.ics" if method == "PUT"
+            else f"/dav/dossier-{D_OLD}/")
+    with caplog.at_level(logging.INFO):
+        resp = _request(method, path, depth="1", data=body)
+    assert resp.status_code == 503
+    assert resp.headers["Retry-After"] == "30"
+    assert resp.get_data(as_text=True) == "Service Unavailable"
+    (error,) = _unexpected(caplog, "dav dossier scope read failed")
+    assert error.json_fields["dossier_id"] == D_OLD
+    assert error.exc_info is not None
+    dav_lines = [(r.json_fields["operation"], r.json_fields["collection_type"],
+                  r.json_fields["status_code"], r.json_fields["reason"])
+                 for r in caplog.records if r.name == "pallas.dav"]
+    assert dav_lines == [(method.lower(), "dossier", 503,
+                          "lecture_indisponible")]
+    assert db.commits == []
+
+
+def test_a_dossier_that_does_not_exist_is_still_a_404(db):
+    resp = _request("PROPFIND", "/dav/dossier-d0000000-0000-4000-8000-00000000ffff/")
+    assert resp.status_code == 404
+
+
+def test_an_id_the_store_refuses_is_a_404_never_a_503(db, monkeypatch):
+    """A reserved name can hold no dossier: « retry » would never end."""
+    _fail_keyed_reads_on(monkeypatch, db, "dossiers")
+    assert _request("PROPFIND", "/dav/dossier-__x__/").status_code == 404
+
+
+def test_the_collection_and_the_root_share_the_per_document_rule(db):
+    """A stored id absent is taken from the document, as in discovery."""
+    doc = _dossier(D_NO_ID, "actif", "2026-008", 1)
+    del doc["id"]
+    db.seed(f"dossiers/{D_NO_ID}", doc)
+    resp = _request("PROPFIND", f"/dav/dossier-{D_NO_ID}/")
+    assert resp.status_code == 207
+    assert _hrefs(resp.get_data(as_text=True)) == [f"/dav/dossier-{D_NO_ID}/"]

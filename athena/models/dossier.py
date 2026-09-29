@@ -1222,22 +1222,25 @@ def list_dossiers_by_status_strict(status: str) -> list[dict]:
     :func:`list_dossiers`, which fails OPEN twice over:
 
     * a failed QUERY answered ``[]`` — and discovery then advertised ZERO
-      dossier collections in a well-formed 207, which DavX5 reads as « these
-      collections are gone » and may drop from the phone. Here the query
-      failure PROPAGATES: the caller answers 503 + ``Retry-After``;
+      dossier collections in a well-formed 207, a false statement about the
+      firm (DavX5 then re-probes every collection it holds, one PROPFIND
+      each, and deletes those that answer 403/404/410 — see
+      :func:`get_dossier_for_dav`, whose strictness is what actually keeps
+      them through an outage). Here the query failure PROPAGATES: the
+      caller answers 503 + ``Retry-After``;
     * one DOCUMENT the party migration cannot read (a legacy client entry
       with no ``id`` — ``_migrate_parties`` raises a ``KeyError``) raised
       inside the same ``try`` and emptied the WHOLE status. Here it is
       SKIPPED, logged through the typed helper (ERROR, the document id
       only — never a title or a name), and every other dossier is listed.
-      Such a dossier's own collection answers 404 anyway (``get_dossier``
-      fails on the same migration), so advertising it would only point the
-      phone at a dead URL.
+      Such a dossier's own collection answers 404 (:func:`get_dossier_for_dav`
+      applies the same per-document rule, :func:`_dav_document`), so
+      advertising it would only point the phone at a dead URL.
 
     A document whose stored ``id`` disagrees with its document id is skipped
-    the same way (the collection URL is the document id, the one
-    ``get_dossier`` resolves); an absent ``id`` is taken from the document
-    id. A stored ``opened_date`` that is not a timezone-aware datetime sorts
+    the same way (the collection URL is the document id); an absent ``id``
+    is taken from the document id. A stored ``opened_date`` that is not a
+    timezone-aware datetime sorts
     as the oldest instead of raising in the sort (a ``TypeError`` there
     would have turned one bad date into a 503 of the whole discovery). An
     unknown *status* raises ``ValueError`` before any read:
@@ -1255,13 +1258,7 @@ def list_dossiers_by_status_strict(status: str) -> list[dict]:
     keyed: list[tuple[tuple[datetime, float], dict]] = []
     for snap in query.stream():
         try:
-            doc = snap.to_dict() or {}
-            stored_id = doc.get("id")
-            if stored_id is None:
-                doc["id"] = snap.id
-            elif stored_id != snap.id:
-                raise ValueError("stored id differs from the document id")
-            doc = _migrate_parties(doc)
+            doc = _dav_document(snap)
             opened, tie = _newest_opened_first_key(doc)
             if not isinstance(opened, datetime) or opened.tzinfo is None:
                 opened = datetime.min.replace(tzinfo=timezone.utc)
@@ -1271,6 +1268,66 @@ def list_dossiers_by_status_strict(status: str) -> list[dict]:
                            dossier_id=snap.id)
     keyed.sort(key=lambda pair: pair[0], reverse=True)
     return [doc for _key, doc in keyed]
+
+
+def _dav_document(snap) -> dict:
+    """*snap*'s dossier as the DAV layer serves it — RAISES when it cannot.
+
+    The per-document half of the discovery rule, shared by
+    :func:`list_dossiers_by_status_strict` (the root listing) and
+    :func:`get_dossier_for_dav` (a dossier collection's own requests), so
+    the root and the collection can never disagree about which documents
+    they serve: a stored ``id`` that is not the document id raises (every
+    href is built from the document id), an absent one is taken from it,
+    and the party migration runs — a legacy entry it cannot read raises.
+    """
+    doc = snap.to_dict() or {}
+    stored_id = doc.get("id")
+    if stored_id is None:
+        doc["id"] = snap.id
+    elif stored_id != snap.id:
+        raise ValueError("stored id differs from the document id")
+    return _migrate_parties(doc)
+
+
+def get_dossier_for_dav(dossier_id: str) -> Optional[dict]:
+    """The dossier a DAV collection URL names — STRICT on the read, TOLERANT
+    on the document (review of the fixes of lot 4).
+
+    For ``dav.dossier_collections._resolve_scope`` (PROPFIND, REPORT and
+    PUT of ``/dav/dossier-<id>/``), which read through the fail-open
+    :func:`get_dossier`: a Firestore blip answered **404** — the one answer
+    DavX5 acts on destructively. Its collection refresh (davx5-ose
+    ``HomeSetRefresher``, then ``CollectionsWithoutHomeSetRefresher``) marks
+    every collection the home-set listing did not return « without
+    home-set » — ALL of them when the root PROPFIND itself failed, a 503
+    included, since that catch rethrows nothing but 403/404/410 — then
+    PROPFINDs each one at Depth:0 and DELETES it locally on a 403/404/410,
+    while any other HTTP error aborts the refresh (retried later) and keeps
+    it. So during an outage the root's 503 protects nothing by itself: the
+    collection's own answer decides, and it must be a 503 too. Here the
+    READ propagates (the caller answers 503 + ``Retry-After``).
+
+    ``None``: the document does not exist — or exists but DAV cannot serve
+    it (:func:`_dav_document` raised: a stored ``id`` not its own, a legacy
+    party entry the migration cannot read), logged by id. The collection
+    then answers 404 exactly as the root leaves it out of discovery: a
+    legacy entry behaves as it did before (the fail-open read swallowed the
+    same error), and a stored ``id`` not its own — once served under an
+    href naming that stored id, itself a dead URL — now 404s too. A 503
+    there would abort, refresh after refresh, the re-probe of every
+    collection queued behind it. Same shape as :func:`get_dossier`
+    (migrations applied, removed fields purged).
+    """
+    snap = db.collection(COLLECTION).document(dossier_id).get()
+    if not snap.exists:
+        return None
+    try:
+        return _strip_removed_fields(_dav_document(snap))
+    except Exception:
+        log_unexpected("get_dossier_for_dav: document unusable",
+                       dossier_id=snap.id)
+        return None
 
 
 def _newest_opened_first_key(dossier: dict) -> tuple[datetime, float]:
