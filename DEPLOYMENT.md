@@ -1592,9 +1592,11 @@ Notes:
   its amount — and by none once it was reversed (10: the D-4 linkage; the web
   writes that recette after the trust commit and fails open, and the reversal
   cascade reverses only the first linked recette, so both directions drift in
-  silence). A fee payment with no recette at all, written before the D-4 rule
-  (commit e719588, 2026-08-17 11:23 HAE), is a note; every other mismatch is
-  an écart. Step 8 of lot 5 (`models/fee_payment`) relies on this measure: its
+  silence). A fee payment with no linked recette at all is a note when it was
+  written before the D-4 rule (commit e719588, 2026-08-17 11:23 HAE), or when
+  an UNLINKED recette of the same amount exists — the manual entry the trust
+  page's banner asks for when the automatic one fails, which can never carry
+  the link; every other mismatch is an écart. Step 8 of lot 5 (`models/fee_payment`) relies on this measure: its
   reversal treats a fee payment with zero linked recettes as legacy. Run it in
   production, BEFORE the model steps of lot 5 deploy. Its exit
   code says what it found: `0` clean, `1` at least one **écart** (a figure or

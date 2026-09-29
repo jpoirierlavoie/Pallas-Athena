@@ -719,6 +719,42 @@ def test_un_paiement_d_honoraires_sans_recette_avant_la_regle_d4_est_une_note(
     assert "avant la règle D-4 du 2026-08-17" in notes
 
 
+def test_une_recette_inscrite_a_la_main_apres_le_bandeau_est_une_note(
+    fake, monkeypatch, capsys
+):
+    """Quand la recette automatique échoue, la fiche du fidéicommis dit
+    « inscrivez-la manuellement au registre d'administration » — et une
+    recette inscrite à la main ne peut JAMAIS porter le lien (il ne voyage
+    que par un argument nommé qu'aucun formulaire n'atteint). Suivre la
+    consigne de l'application ne doit pas produire un écart : une recette
+    non liée du même montant — un encaissement de la même facture — fait du
+    lien manquant une NOTE à confirmer. Un montant différent n'en est pas
+    une."""
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake, recette=False)
+    _set(fake, _tx(fee["id"]), created_at=_at(9, 10))
+    recette, errs = admin_ledger.create_transaction({
+        "account_id": "ops1", "kind": "encaissement_facture", "amount": 29999,
+        "method": "virement", "counterparty": "Fidéicommis",
+        "date": _d(2026, 9, 11), "invoice_id": "inv1",
+    })
+    assert errs == []
+    assert _run(capsys)[0] == 1          # 299,99 $ is not the 300 $ that left
+    manual, errs = admin_ledger.create_transaction({
+        "account_id": "ops1", "kind": "encaissement_facture", "amount": 30000,
+        "method": "virement", "counterparty": "Fidéicommis",
+        "date": _d(2026, 9, 11), "invoice_id": "inv1",
+    })
+    assert errs == []
+    code, out = _run(capsys)
+    assert code == 2, out
+    notes = out.split("Notes à revoir", 1)[1]
+    assert (f"(écriture {fee['id']}): paiement d'honoraires de 30000 cents sans "
+            f"recette d'administration LIÉE ; une recette non liée du même "
+            f"montant existe ({manual['id']})") in notes
+    assert recette["id"] not in out
+
+
 def test_une_recette_qui_ne_couvre_pas_le_paiement_est_un_ecart(
     fake, monkeypatch, capsys
 ):

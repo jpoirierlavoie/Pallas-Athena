@@ -26,7 +26,7 @@ Checks 1-4 (Phase K) recompute the frozen and denormalized balances:
      ``balance_after_client`` and the dossier's two maps == Σ deltas;
   4. per dossier with register rows: ``trust_balance`` == Σ its clients.
 
-Checks 5-9 (lot 5a, 2026-09-28):
+Checks 5-10 (lot 5a, 2026-09-28):
 
   5. every COMPLETED reconciliation still re-proves at its ``period_end``
      (the as-of context and variance the completion gate itself uses:
@@ -88,12 +88,16 @@ Checks 5-9 (lot 5a, 2026-09-28):
      FIRST linked recette, so both directions can drift in silence: the
      operations account then under- or over-states the firm's cash, and the
      invoice's recorded payment follows it. A fee payment with NO linked
-     recette at all, written before the D-4 rule (commit e719588, 2026-08-17
-     11:23 HAE — the admin account became mandatory; the reprise of the same
-     day back-filled the history), is a NOTE; every other mismatch, and a
-     standing recette linked to an entry that is not a trust fee payment, is
-     an écart. An unreadable admin register is an écart too: a check that
-     cannot read must say so, never pass.
+     recette at all is a NOTE when it was written before the D-4 rule
+     (commit e719588, 2026-08-17 11:23 HAE — the admin account became
+     mandatory; the reprise of the same day back-filled the history), or
+     when an UNLINKED standing recette of the same amount (an encaissement
+     of the same invoice, when it names one) dated on or after it exists —
+     the one the trust page's banner tells the lawyer to enter by hand, which
+     can never carry the link. Every other mismatch, and a standing recette
+     linked to an entry that is not a trust fee payment, is an écart. An
+     unreadable admin register is an écart too: a check that cannot read
+     must say so, never pass.
 """
 
 import sys
@@ -517,11 +521,12 @@ def _check_client_balances(couple_rows: dict, dossier_book: dict, problems: list
 # ── check 10 ──────────────────────────────────────────────────────────────
 
 
-def _admin_rows_by_trust_link(problems: list) -> Optional[dict]:
-    """Every administration entry carrying a ``trust_transaction_id``, keyed
-    by it — ONE stream of the (small) admin register, read-only. ``None``
-    when the read fails, reported as an écart: the linkage is then unknown,
-    and an unknown linkage must never read as a clean one."""
+def _admin_rows_by_trust_link(problems: list) -> Optional[tuple[dict, list]]:
+    """``(linked, unlinked_recettes)`` — every administration entry carrying
+    a ``trust_transaction_id``, keyed by it, and every STANDING recette that
+    carries none. ONE stream of the (small) admin register, read-only.
+    ``None`` when the read fails, reported as an écart: the linkage is then
+    unknown, and an unknown linkage must never read as a clean one."""
     try:
         snaps = list(db.collection(admin_ledger.TRANSACTIONS_COLLECTION).stream())
     except Exception as exc:
@@ -532,12 +537,44 @@ def _admin_rows_by_trust_link(problems: list) -> Optional[dict]:
         )
         return None
     by_link: dict = defaultdict(list)
+    unlinked: list = []
     for snap in snaps:
-        row = snap.to_dict() or {}
+        row = {**(snap.to_dict() or {})}
+        row["id"] = row.get("id") or snap.id
         link = row.get("trust_transaction_id")
         if link:
-            by_link[link].append({**row, "id": row.get("id") or snap.id})
-    return by_link
+            by_link[link].append(row)
+        elif (row.get("direction") == "recette"
+              and row.get("kind") in ("encaissement_facture", "recette_autre")
+              and _admin_standing(row)):
+            unlinked.append(row)
+    return by_link, unlinked
+
+
+def _manual_recettes(fee: dict, unlinked: list) -> list[dict]:
+    """The UNLINKED standing recettes that can be the one the lawyer entered
+    by hand for *fee* — what the trust page's banner tells him to do when
+    the automatic recette fails (« inscrivez-la manuellement »): the link
+    itself travels only as a keyword no form can fill, so a manual recette
+    is never linked. Same amount, dated on or after the fee payment, and —
+    when the fee payment names an Athéna invoice — an encaissement of THAT
+    invoice (which also carries the payment onto it). A candidate turns a
+    missing link into a NOTE to confirm, never into a silent pass."""
+    amount = int(fee.get("amount", 0))
+    fee_day = _day(fee.get("date"))
+    out = []
+    for row in unlinked:
+        if int(row.get("amount", 0)) != amount:
+            continue
+        row_day = _day(row.get("date"))
+        if fee_day is not None and (row_day is None or row_day < fee_day):
+            continue
+        if fee.get("invoice_id"):
+            if (row.get("kind") != "encaissement_facture"
+                    or row.get("invoice_id") != fee.get("invoice_id")):
+                continue
+        out.append(row)
+    return out
 
 
 def _admin_standing(row: dict) -> bool:
@@ -549,7 +586,7 @@ def _admin_standing(row: dict) -> bool:
 
 
 def _check_fee_payment_linkage(
-    fee_payments: list[tuple[str, dict]], by_link: dict,
+    fee_payments: list[tuple[str, dict]], by_link: dict, unlinked: list,
     problems: list, notes: list,
 ) -> None:
     fee_ids = {tx.get("id") for _aid, tx in fee_payments}
@@ -571,8 +608,19 @@ def _check_fee_payment_linkage(
                     f"l'adosse (D-4) — le compte d'opérations ne voit pas cet "
                     f"argent"
                 )
+                manual = _manual_recettes(tx, unlinked)
                 created = _instant(tx.get("created_at"))
-                if created is not None and created >= D4_RULE_AT:
+                if manual:
+                    ids = ", ".join(str(r.get("id")) for r in manual)
+                    notes.append(
+                        f"{where}: paiement d'honoraires de {amount} cents sans "
+                        f"recette d'administration LIÉE ; une recette non liée "
+                        f"du même montant existe ({ids}), probablement "
+                        f"inscrite à la main après l'échec de la recette "
+                        f"automatique — à confirmer avec l'avocat (le lien ne "
+                        f"se pose pas depuis l'application)."
+                    )
+                elif created is not None and created >= D4_RULE_AT:
                     problems.append(line)
                 else:
                     notes.append(
@@ -722,9 +770,10 @@ def collect() -> tuple[list[str], list[str]]:
     _check_client_balances(couple_rows, dossier_book, problems)
 
     # 10. Every fee payment's administration recette (D-4), both directions.
-    by_link = _admin_rows_by_trust_link(problems)
-    if by_link is not None:
-        _check_fee_payment_linkage(fee_payments, by_link, problems, notes)
+    admin_rows = _admin_rows_by_trust_link(problems)
+    if admin_rows is not None:
+        by_link, unlinked = admin_rows
+        _check_fee_payment_linkage(fee_payments, by_link, unlinked, problems, notes)
     return problems, notes
 
 
