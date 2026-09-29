@@ -181,3 +181,51 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
     visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
     assert len(visible) == 80 and len(visible & tools.WRITE_TOOLS) == 49
     assert len(tools.TOOLS) == 86 and len(tools.WRITE_TOOLS) == 54
+
+
+def test_review_e3_the_accounting_index_line_says_what_its_tools_say():
+    """Review of E3: the ACCOUNTING index line said « record ONLY what the
+    bank shows » where both writers' descriptions say « a movement that
+    HAPPENED at the bank, dated the day it happened » — and a cheque just
+    written is recorded en_circulation, shown on no statement until it
+    clears. DEPLOYMENT.md's lot 5 pilot quotes the rule the tools state.
+    Fails on 3191774."""
+    from mcp import disclosure, endpoint
+
+    accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
+    assert "what the bank shows" not in accounting.instructions_en
+    assert "movements that HAPPENED at the bank" in accounting.instructions_en
+    assert "movements that HAPPENED at the bank" in (
+        endpoint.INSTRUCTIONS_COMPTABILITE)
+    for name in ("record_trust_entry", "record_admin_entry"):
+        assert "HAPPENED" in tools.TOOLS[name]["description"], name
+    deployment = _flat(_REPO / "DEPLOYMENT.md")
+    assert "record only movements that happened at the bank" in deployment
+
+
+def test_review_e3_the_d22_runbook_writes_only_what_it_says():
+    """Review of E3: the post-push steps promised « checks that write
+    nothing, or only on test data », then deleted the test data at step 9
+    while steps 10-13 still needed an event, a task and a dossier; asked for
+    ONE test dossier where its relocation check needs two; sent step 12 to a
+    note d'honoraires that needs a REAL invoice (a test one burns a number)
+    without saying it files a draft into that dossier; and folded every
+    re-consent into step 7 where lot 5's is step 17. Fails on 3191774."""
+    text = _flat(_REPO / "DEPLOYMENT.md")
+    runbook = _section_15(text)
+    head = "**Déploiement unique (D22) — the whole MCP write-expansion program"
+    body = runbook[runbook.index(head):runbook.index("**Storage identity (lot 0a")]
+    assert "the re-consents into step 7." not in body
+    assert "lot 5's arming, revocation and re-consent are steps 16 and 17" in body
+    assert "on TWO test dossiers" in body
+    step_9 = body[body.index("*DavX5, on the wire then on the device*"):
+                  body.index("*A phone edit*")]
+    assert "Delete the test data" not in step_9
+    step_10 = body[body.index("*A phone edit*"):body.index("*The Outlook mirror*")]
+    assert "the test dossiers'" in step_10
+    step_12 = body[body.index("*Word opens every generated document"):
+                   body.index("*The upload ticket, once*")]
+    assert "a REAL invoice" in step_12 and "burns a number" in step_12
+    tail = body[body.index("*No invoice number burned*"):
+                body.index("*Tell the lawyer*")]
+    assert "delete the test data of steps 9 to 13" in tail

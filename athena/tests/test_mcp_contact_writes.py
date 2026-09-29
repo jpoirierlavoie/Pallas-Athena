@@ -633,3 +633,20 @@ def test_an_unreadable_named_contact_is_never_answered_introuvable(
             call()
         assert "pas pu être lu" in str(err.value)
         assert "introuvable" not in str(err.value)
+
+
+def test_a_detected_conflict_is_the_caller_s_to_report(db):
+    """Review of E3: the CONTACTS prose moved into this tool's description
+    turned « a detected conflict you inscribe MUST BE reported to the lawyer
+    at once » into « … IS reported … » — a claim that the system notifies
+    him. Nothing does: the result's warning tells the CALLER to say it, and
+    the fiche merely shows it in red. A model told the alarm is raised for
+    it would stay silent on the one it must raise. Fails on 3191774."""
+    _contact(db, "p1", "Jean", "Tremblay")
+    payload = handlers.record_kyc_status({"partie_id": "p1", "check": "conflict",
+                                          "status": "conflit_détecté"})
+    assert any("signalez-le au juriste sans délai" in w
+               for w in payload["warnings"])
+    description = tools.TOOLS["record_kyc_status"]["description"]
+    assert "is reported to the lawyer" not in description
+    assert "tell the lawyer at once — nothing notifies him" in description

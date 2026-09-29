@@ -5282,7 +5282,8 @@ TOOLS: dict[str, dict] = {
             "Claude] » line, never replacing the stored ones. The status "
             "already stored with no notes writes nothing; non_vérifié "
             "withdraws your own presumed inscription. A detected conflict "
-            "you inscribe is reported to the lawyer at once."
+            "you inscribe: tell the lawyer at once — nothing notifies him "
+            "(the fiche shows it in red)."
         ),
         "input_schema": {
             "type": "object",

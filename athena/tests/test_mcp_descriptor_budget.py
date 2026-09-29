@@ -25,7 +25,8 @@ the revision trail keeps its latest 25): 251 024 bytes, the six 18 878, the
 largest descriptor overall still `update_partie` at 7 858. After the
 finitions (2026-09-29), the family prose of INSTRUCTIONS moved into fourteen
 tool descriptions included (contracts-1, part 2): 257 183 bytes, the largest
-still `update_partie` at 7 904.
+still `update_partie` at 7 904 — 257 227 after the review of E3 (the
+detected-conflict sentence of `record_kyc_status` made true).
 
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
@@ -141,7 +142,9 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
 # effect, confirm-before-writing, idempotency and etag, re-read before a
 # retry —, complete within 2 000 characters; then ONE index line per family
 # naming its tools; the detailed prose moved into the tool descriptions.
-# Measured 2026-09-29: core 1 734 characters; 6 461 / 7 849 UTF-8 bytes.
+# Measured 2026-09-29: core 1 734 characters; 6 504 / 7 892 UTF-8 bytes
+# (base / accounting variant) — 6 504 / 7 904 after the review of E3, the
+# ACCOUNTING line restating its tools' rule.
 # REWRITTEN deliberately: the two caps (24 500 / 27 500) became ONE cap for
 # every token type, and « the core comes before READ-CONTENT » became « the
 # core IS the first characters, and is complete ».

@@ -1485,8 +1485,9 @@ Notes:
   bullets below keep their detail and their recipes; each step here names
   the one it runs. Where they differ — each lot's own « push the lot as ONE
   deploy », its own revocation and its own re-consent — **this order
-  wins**: the revocations collapse into step 5, the pushes into step 6, the
-  re-consents into step 7. What the release ships: **80** tools under the
+  wins**: the revocations of lots 1b to 4 collapse into step 5, every
+  lot's push into step 6, their re-consents into step 7 — lot 5's arming,
+  revocation and re-consent are steps 16 and 17. What the release ships: **80** tools under the
   write grant (31 read, 49 write) and six accounting tools hidden behind
   `MCP_COMPTABILITE_ENABLED: "false"`; one TTL `fieldOverride`
   (`mcp_upload_tickets.expire_at`) and no composite index; no dependency;
@@ -1580,29 +1581,42 @@ Notes:
      the descriptor budget (`tests/test_mcp_descriptor_budget.py`: about
      257 KB of its 280 KB cap).
 
-  **After the push** — checks that write nothing, or only on test data:
+  **After the push** — checks that write nothing, or only on test data,
+  but for ONE deletable draft (step 12). They share their test data, so
+  keep it until step 14 says to delete it:
   9. *DavX5, on the wire then on the device* (Change Impact item 2 — it
-     fails silently): on a TEST dossier, the lot 4 curl checks (« Lot 4 »,
-     step 6: `root` — 207, as many dossier collections as actif +
-     en_attente dossiers —, the Depth:0 PROPFIND — 207 —, and the `report`
-     counts); a PROPFIND Depth:1 on one active dossier collection and on
-     `/dav/addressbook/` (« Finitions », item 1); and the wire checks of lot
-     0a/0b — a task moved between two dossiers (« DAV relocation »), a
-     contact and a task created by PUT (« Contacts created on the phone »,
-     « Tasks, hearings… » item 1). Delete the test data afterwards.
-  10. *A phone edit*: « Finitions » item 3 (a line typed after the metadata
-      block of an event and of a task survives, and no block is
-      re-imported), and « Tasks, hearings… » item 3 (a « Reportée »
-      hearing moved on the phone stays « Reportée »).
-  11. *The Outlook mirror*: « Lot 1b », C1, on a scratch event — a
-      reschedule through `update_hearing` moves its Outlook copy within
-      10 minutes (`outlook_mirror: "follows"`), a cancellation removes it.
+     fails silently): on TWO test dossiers, both `actif`, the first with
+     one task, one note and one confirmed event and a TEST contact of role
+     « client » as its only client (the set-up of « Lot 4 », step 2) — the
+     lot 4 curl checks (« Lot 4 », step 6: `root` — 207, as many dossier
+     collections as actif + en_attente dossiers —, the Depth:0 PROPFIND —
+     207 —, and the `report` counts); a PROPFIND Depth:1 on one active
+     dossier collection and on `/dav/addressbook/` (« Finitions », item 1);
+     and the wire checks of lot 0a/0b — a test task moved from the first
+     test dossier to the second (« DAV relocation »), a contact and a task
+     created by PUT (« Contacts created on the phone », « Tasks,
+     hearings… » item 1).
+  10. *A phone edit*, on the test dossiers' events and tasks only:
+      « Finitions » item 3 (a line typed after the metadata block of an
+      event and of a task survives, and no block is re-imported; the event
+      moved from one test dossier's calendar to the other's), and « Tasks,
+      hearings… » item 3 (a « Reportée » test hearing moved on the phone
+      stays « Reportée »).
+  11. *The Outlook mirror*: « Lot 1b », C1, on a scratch event of a test
+      dossier — a reschedule through `update_hearing` moves its Outlook
+      copy within 10 minutes (`outlook_mirror: "follows"`), a cancellation
+      removes it.
   12. *Word opens every generated document WITHOUT repair* (Change Impact
-      item 3 — no test sees Word's prompt): the « Lot 2A » step 9 list,
-      the note d'honoraires of « Lot 3 » step 3 (the web) and step 7e (the
-      connector), and a document drawn from a template version restored on
-      its page (« Active gabarits »).
-  13. *The upload ticket, once*, on a SCRATCH dossier (« Lot 2A », step 8):
+      item 3 — no test sees Word's prompt): the « Lot 2A » step 9 list, on
+      a test dossier; a document drawn from a SCRATCH template whose first
+      version was restored on its page (« Active gabarits »); and the note
+      d'honoraires of « Lot 3 » step 3 (the web) and step 7e (the
+      connector). That note needs a REAL invoice — a test invoice burns a
+      number for ever (step 14) — so it files ONE draft into that invoice's
+      dossier, in « Projets » (the connector's call returns the same note
+      when it is identical, `reused: true`): the one write outside the test
+      data. Delete it in the application once opened.
+  13. *The upload ticket, once*, on a test dossier (« Lot 2A », step 8):
       one PDF through `begin_upload` → PUT → `finalize_upload`, and one
       deliberately wrong `md5_base64` that files nothing — note which of the
       two refusals happened.
@@ -1610,7 +1624,12 @@ Notes:
       and after the « Lot 3 » step 7 smoke test (`preview_invoice`, the
       same-status `update_invoice` no-op, `get_budget` → an unchanged
       `create_budget_version`) — never `create_invoice`; the counter must
-      read exactly what it read.
+      read exactly what it read. Then delete the test data of steps 9 to 13
+      in the application, in the order the deletion guards allow: the
+      tasks, notes and events, the documents and their folders, then the
+      two test dossiers (a dossier with a child record is refused), then
+      the test contacts (a contact a dossier still names is refused), and
+      the scratch template.
   15. *Tell the lawyer* what changed on the web (each lot's « Changements
       web à annoncer » in CLAUDE.md's Phase History; « Finitions », items
       4-6), and that the next REAL fee payment is the pilot of the one-

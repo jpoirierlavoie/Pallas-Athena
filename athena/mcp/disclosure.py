@@ -422,12 +422,16 @@ FAMILIES: tuple[Family, ...] = (
             "écritures à la date du relevé bancaire et contre-passer une "
             "écriture"
         ),
+        # The writers' own rule, verbatim (review of E3): the index line once
+        # read « what the bank shows », which excludes a cheque just written
+        # — recorded en_circulation, on no statement until it clears.
         instructions_en=(
             "`record_trust_entry`, `record_admin_entry`, "
             "`update_admin_entry`, `clear_register_entries`, "
             "`reverse_register_entry` (read: `get_admin_ledger`): record ONLY "
-            "what the bank shows, at its date, each entry confirmed with the "
-            "user; an idempotency_key is REQUIRED (refused when the replay "
+            "movements that HAPPENED at the bank, at their date, each "
+            "confirmed with the user; an idempotency_key is REQUIRED (refused "
+            "when the replay "
             "store is unreadable); an uncertain outcome → re-read before "
             "retrying with the SAME key."
         ),
