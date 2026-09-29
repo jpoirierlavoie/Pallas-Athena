@@ -73,7 +73,9 @@ composite:
 The trust side's rules stay the trust model's: art. 58 (cheque or transfer
 only), art. 59 (cleared funds), the backdating guard, the lock floor, an
 issued invoice of the same dossier — addressed to the client whose funds
-are withdrawn (D21: ``facture_autre_client``, no override) —, no provision
+are withdrawn (D21: ``facture_autre_client``, no override; an invoice that
+names NO client is refused too when the dossier has more than one,
+``facture_sans_client`` — ``trust.fee_invoice_client_refusal``) —, no provision
 imputed on it, the live balance. The trust purpose ``virement_honoraires``
 is RESERVED to this module on the public create and reverse paths.
 

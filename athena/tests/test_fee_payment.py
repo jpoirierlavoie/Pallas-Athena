@@ -33,7 +33,9 @@ Les décisions de l'avocat du 2026-09-29 (section 7) : D20 — le refus d'une
 facture non envoyée nomme le juriste comme celui qui atteste l'envoi, sans
 jamais dire comment passer outre ; D21 — les fonds d'un client n'acquittent
 jamais la facture d'un AUTRE client du dossier, refus dans la transaction,
-sans dérogation (c'était un avertissement après le commit) ; D23 — le
+sans dérogation (c'était un avertissement après le commit) — et une facture
+qui ne nomme aucun client, dans un dossier qui en compte plusieurs, n'est
+acquittée par les fonds d'aucun ; D23 — le
 bénéficiaire est l'avocat ou son cabinet, tels que les nomme le profil du
 cabinet (art. 58).
 
@@ -1078,15 +1080,70 @@ def test_d21_suit_le_client_de_la_facture_telle_qu_elle_est_stockee(fake):
     assert errs == [trust._ABORT_MESSAGES["facture_autre_client"]]
 
 
-def test_d21_une_facture_sans_client_ne_nomme_aucun_autre_client(fake):
-    """Une facture qui ne nomme aucun client (une reprise qui n'en portait
-    pas) n'est pas refusée sur ce motif : elle n'est adressée à aucun AUTRE
-    client."""
+def _invoice_without_client(fake) -> None:
     doc = fake.peek("invoices/inv1")
     doc.update(client_id="")
     fake.external_write("invoices/inv1", doc)
-    _, errs = _pay()
+
+
+def test_d21_une_facture_sans_client_est_refusee_dans_un_dossier_a_plusieurs_clients(fake):
+    """Régression — D21, suite (2026-09-29) : une facture qui ne nomme aucun
+    client (seule une reprise peut n'en porter aucun) passait dans un
+    dossier à DEUX clients — rien ne disait de quels fonds elle devait
+    s'acquitter, et ceux de c1 comme ceux de c2 la payaient. Refusée
+    désormais dans la transaction du paiement : rien d'écrit, nulle part,
+    ni nom ni montant. (Réécrit délibérément : ce test s'appelait « une
+    facture sans client ne nomme aucun autre client » et affirmait
+    l'acceptation ; sur l'ancien code, le paiement passait.)"""
+    _fund_c2()
+    _invoice_without_client(fake)
+    before = _snapshot(fake)
+    for client in ("c1", "c2"):
+        report: dict = {}
+        result, errs = fee_payment.create_fee_payment(
+            _entry(client_id=client), admin_account_id="ops1",
+            _report_out=report)
+        assert result is None, client
+        assert errs == [trust._ABORT_MESSAGES["facture_sans_client"]], client
+        assert report == {"reason": "facture_sans_client",
+                          "side": "fidéicommis"}, client
+        for word in ("Jean", "Tremblay", "Marie", "Roy", "600", "$"):
+            assert word not in errs[0], word
+    assert _snapshot(fake) == before
+
+
+def test_d21_une_facture_sans_client_passe_quand_le_dossier_n_en_a_qu_un(fake):
+    """Avec UN seul client, une facture qui n'en nomme aucun ne peut être
+    adressée à personne d'autre : le paiement passe, comme avant."""
+    dossier = fake.peek("dossiers/dos1")
+    dossier.update(client_ids=["c1"],
+                   clients=[{"id": "c1", "name": "Jean Tremblay"}])
+    fake.external_write("dossiers/dos1", dossier)
+    _invoice_without_client(fake)
+    result, errs = _pay()
     assert errs == [], errs
+    assert result["trust_entry"]["client_id"] == "c1"
+    assert fake.peek("invoices/inv1")["amount_paid"] == 60000
+
+
+@pytest.mark.parametrize("invoice_client, client_ids, expected", [
+    ("c1", ["c1", "c2"], None),
+    ("c2", ["c1", "c2"], "facture_autre_client"),
+    ("c2", ["c1"], "facture_autre_client"),
+    ("", ["c1", "c2"], "facture_sans_client"),
+    (None, ["c1", "c2", "c1"], "facture_sans_client"),
+    ("", ["c1"], None),
+    ("", ["c1", "c1", ""], None),        # one client, however spelled
+    ("  ", ["c1"], None),
+])
+def test_d21_la_regle_est_une_seule_fonction_pure(invoice_client, client_ids,
+                                                  expected):
+    """Le modèle et le connecteur lisent la même règle
+    (``trust.fee_invoice_client_refusal``) : ils ne peuvent pas refuser
+    différemment la même facture."""
+    assert trust.fee_invoice_client_refusal(
+        {"client_id": invoice_client}, {"client_ids": client_ids}, "c1",
+    ) == expected
 
 
 def test_d23_le_beneficiaire_est_l_avocat_ou_son_cabinet(fake):

@@ -237,8 +237,9 @@ def enregistrer_paiement_honoraires(
     connector's (D1). Every other rule is the model's, judged inside the
     payment's transaction — among them D21 (an invoice addressed to another
     client of the dossier than the one whose funds leave trust is REFUSED,
-    ``facture_autre_client``) and D23 (the payee is the lawyer or his firm,
-    :func:`beneficiaires_honoraires`)."""
+    ``facture_autre_client``, and so is one naming NO client in a dossier
+    of several, ``facture_sans_client``) and D23 (the payee is the lawyer
+    or his firm, :func:`beneficiaires_honoraires`)."""
     data = dict(data or {})
     invoice = None
     number = (data.pop("invoice_number", "") or "").strip()

@@ -344,6 +344,32 @@ INVOICES_COLLECTION = "invoices"
 _ISSUED_INVOICE_STATUSES = ("envoyée", "en_retard")
 
 
+def fee_invoice_client_refusal(
+    invoice: dict, dossier: Optional[dict], client_id: Optional[str],
+) -> Optional[str]:
+    """D21 (2026-09-29) — the abort reason a fee payment drawing *client_id*'s
+    trust funds against *invoice* is refused on, or ``None``. PURE: the
+    model judges it on the invoice and the dossier ITS transaction read, and
+    the connector repeats it on its own read, one rule for both.
+
+    * ``facture_autre_client`` — the invoice is addressed to ANOTHER client
+      than the one whose funds would leave trust: one client's funds never
+      settle another client's invoice, whatever he may have authorised (no
+      override).
+    * ``facture_sans_client`` — the invoice names NO client (only an import
+      can lack one) and the dossier has MORE THAN ONE: nothing says whose
+      funds pay it, so none may. With exactly one client there is no one
+      else it could be addressed to, and the payment stands (the rule
+      before this refusal).
+    """
+    invoice_client = str((invoice or {}).get("client_id") or "").strip()
+    if invoice_client:
+        return "facture_autre_client" if invoice_client != client_id else None
+    clients = {str(c).strip() for c in ((dossier or {}).get("client_ids") or [])
+               if str(c or "").strip()}
+    return "facture_sans_client" if len(clients) > 1 else None
+
+
 class _TxnAbort(Exception):
     """Raised inside a trust transaction to abort with a machine-stable reason
     (mirrors invoice._SourceConflictError). ``value`` carries an optional int
@@ -454,6 +480,15 @@ _ABORT_MESSAGES = {
         "La facture est adressée à un autre client du dossier : un paiement "
         "d'honoraires ne tire que sur les fonds en fidéicommis du client à "
         "qui la facture est adressée."
+    ),
+    # D21, suite (2026-09-29) — an invoice that names no client, in a
+    # dossier of several: whose funds pay it is unknowable. Neither a name
+    # nor an amount, and no way around it (the D20 discipline).
+    "facture_sans_client": (
+        "La facture n'est adressée à aucun client, et le dossier en compte "
+        "plusieurs : rien ne dit de quel client les fonds en fidéicommis "
+        "l'acquitteraient. Un paiement d'honoraires ne tire que sur les fonds "
+        "du client à qui la facture est adressée."
     ),
     "virement_excède_facture": "Le montant dépasse le solde dû de la facture.",
     "facture_avec_provision": (
@@ -1245,13 +1280,14 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
             # — never another client's of the same dossier, whatever he may
             # have authorised (no override; until then a warning shown after
             # the commit, the fees already out), judged here on the invoice
-            # this transaction read, so web and connector cannot differ. An
-            # invoice that names no client (an import that carried none)
-            # names no OTHER client either, and is not refused on this
-            # ground.
-            invoice_client = str(invoice.get("client_id") or "").strip()
-            if invoice_client and invoice_client != client_id:
-                raise _TxnAbort("facture_autre_client")
+            # and the dossier this transaction read, so web and connector
+            # cannot differ. An invoice that names no client (only an
+            # import can lack one) is refused when the dossier has more than
+            # one client — whose funds pay it is then unknowable — and
+            # stands with exactly one (:func:`fee_invoice_client_refusal`).
+            refusal = fee_invoice_client_refusal(invoice, dossier, client_id)
+            if refusal:
+                raise _TxnAbort(refusal)
             # A provision imputed BY THE INVOICE (retainer_applied) is
             # the client's trust money, already deducted from
             # amount_due: withdrawing it again as a fee payment counts

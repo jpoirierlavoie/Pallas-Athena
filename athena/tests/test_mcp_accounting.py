@@ -384,8 +384,12 @@ def test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_i
     invoice_external_ref, and the service call turns the external path
     off), none on an invoice that imputes a provision, none on an invoice
     not yet sent, and — decision D21, 2026-09-29 — none on another client's
-    invoice — each refused, and nothing written anywhere."""
+    invoice, nor on one naming no client in this two-client dossier — each
+    refused, and nothing written anywhere."""
     _cleared_deposit(fake)
+    fake.seed("invoices/inv4", {
+        **fake.peek("invoices/inv1"), "id": "inv4",
+        "invoice_number": "2026-F043", "client_id": "", "client_name": ""})
     before = {c: _entries(fake, c) for c in (
         "trust_transactions", "admin_transactions", "invoices")}
 
@@ -416,6 +420,10 @@ def test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_i
     other_client = _refused("record_trust_entry", **_fee(20000, client_id="c2"))
     assert other_client.reason == "accounting_refused"
     assert trust._ABORT_MESSAGES["facture_autre_client"] in str(other_client)
+
+    no_client = _refused("record_trust_entry", **_fee(20000, invoice_id="inv4"))
+    assert no_client.reason == "accounting_refused"
+    assert trust._ABORT_MESSAGES["facture_sans_client"] in str(no_client)
 
     assert {c: _entries(fake, c) for c in before} == before
 
@@ -500,6 +508,62 @@ def test_d21_the_model_decides_even_past_the_handler(fake, monkeypatch):
     refusal = _refused("record_trust_entry", **_fee(client_id="c2"))
     assert trust._ABORT_MESSAGES["facture_autre_client"] in str(refusal)
     assert _entries(fake, "trust_transactions") == before
+
+
+def _invoice_names_no_client(fake) -> None:
+    fake.external_write("invoices/inv1", {
+        **fake.peek("invoices/inv1"), "client_id": "", "client_name": ""})
+
+
+def test_d21_an_invoice_naming_no_client_is_refused_in_a_dossier_of_several(
+        fake, monkeypatch):
+    """Régression — D21, suite (2026-09-29): an invoice that names NO client
+    (only an import lacks one), in a dossier of two clients, was paid from
+    whichever client the caller named — whose funds it owed was unknowable.
+    The handler refuses it before any model call, in the model's own words
+    (the model's own predicate), nothing written, no name, no amount."""
+    _cleared_deposit(fake)
+    _invoice_names_no_client(fake)
+    monkeypatch.setattr(svc, "enregistrer_paiement_honoraires",
+                        lambda *a, **k: pytest.fail("the handler refuses first"))
+    before = {c: _entries(fake, c) for c in (
+        "trust_transactions", "admin_transactions", "invoices")}
+    refusal = _refused("record_trust_entry", **_fee(20000))
+    assert refusal.reason == "accounting_refused"
+    text = str(refusal)
+    assert trust._ABORT_MESSAGES["facture_sans_client"] in text
+    assert "Rien n'a été inscrit." in text
+    for word in ("Jean", "Marie", "Tremblay", "200"):
+        assert word not in text, word
+    assert {c: _entries(fake, c) for c in before} == before
+
+
+def test_d21_the_model_refuses_a_client_less_invoice_even_past_the_handler(
+        fake, monkeypatch):
+    """With the handler's read made to see c1 on the invoice, the MODEL —
+    which reads the stored invoice and the dossier inside the payment's
+    transaction — still refuses: the rule is the model's."""
+    _cleared_deposit(fake)
+    _invoice_names_no_client(fake)
+    real = svc.resolve_fee_invoice
+    monkeypatch.setattr(svc, "resolve_fee_invoice",
+                        lambda **kw: {**real(**kw), "client_id": "c1"})
+    before = _entries(fake, "trust_transactions")
+    refusal = _refused("record_trust_entry", **_fee(20000))
+    assert trust._ABORT_MESSAGES["facture_sans_client"] in str(refusal)
+    assert _entries(fake, "trust_transactions") == before
+
+
+def test_d21_a_client_less_invoice_is_paid_when_the_dossier_has_one_client(fake):
+    """No one else it could be addressed to: the payment stands."""
+    fake.external_write("dossiers/dos1", {
+        **fake.peek("dossiers/dos1"), "client_ids": ["c1"],
+        "clients": [{"id": "c1", "name": "Jean Tremblay"}]})
+    _cleared_deposit(fake)
+    _invoice_names_no_client(fake)
+    payload = _call("record_trust_entry", **_fee(20000))
+    _conforms("record_trust_entry", payload)
+    assert fake.peek("invoices/inv1")["amount_paid"] == 20000
 
 
 def test_d23_the_payee_is_the_lawyer_or_his_firm(fake):

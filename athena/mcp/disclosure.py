@@ -992,17 +992,22 @@ NEVERS: tuple[Never, ...] = (
             "facture papier, sur une facture <strong>pas encore "
             "envoyée</strong>, sur une facture qui impute une "
             "<strong>provision</strong> ou sur la facture d'un "
-            "<strong>autre client</strong> que celui dont les fonds sortent"
+            "<strong>autre client</strong> que celui dont les fonds sortent "
+            "(ni sur celle qui n'en nomme aucun, dans un dossier qui en "
+            "compte plusieurs)"
         ),
         en=(
             "It never backs a fee payment with a paper invoice, with an "
             "invoice not yet sent, with an invoice that imputes a "
             "provision, or with another client's invoice than the one whose "
-            "funds leave trust."
+            "funds leave trust (nor one naming no client, in a dossier of "
+            "several)."
         ),
         # The model refuses an unsent invoice (facture_non_émise), a
         # provision (facture_avec_provision) and — decision D21, 2026-09-29 —
-        # another client's invoice (facture_autre_client) on every path, and
+        # another client's invoice (facture_autre_client) — or one naming
+        # no client in a dossier of several (facture_sans_client) — on
+        # every path, and
         # the external-invoice path unless its caller turns it on — the web
         # form does, the connector never (allow_external_ref=False): no
         # tool may even DECLARE the paper-invoice input. The same test pins

@@ -17249,12 +17249,16 @@ def _record_trust_entry_impl(args: dict) -> dict:
             raise ToolArgumentError(
                 comptabilite_service.message_refus_fideicommis("facture_non_émise")
                 + " Rien n'a été inscrit.", reason="accounting_refused")
-        invoice_client = str(invoice.get("client_id") or "").strip()
-        if invoice_client and invoice_client != client_id:
+        client_refusal = trust_model.fee_invoice_client_refusal(
+            invoice, dossier, client_id)
+        if client_refusal:
             # D21: one client's trust funds never settle another client's
-            # invoice — no override. Names neither client nor amount.
+            # invoice — and an invoice that names none, in a dossier of
+            # several, settles from nobody's (whose funds is unknowable).
+            # No override; the model's own predicate, so the two cannot
+            # disagree. Names neither client nor amount.
             raise ToolArgumentError(
-                comptabilite_service.message_refus_fideicommis("facture_autre_client")
+                comptabilite_service.message_refus_fideicommis(client_refusal)
                 + " Rien n'a été inscrit.", reason="accounting_refused")
         if int(invoice.get("retainer_applied") or 0) > 0:
             raise ToolArgumentError(

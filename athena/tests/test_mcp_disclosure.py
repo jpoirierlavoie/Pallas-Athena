@@ -1382,6 +1382,8 @@ def test_the_lot_5_texts_state_the_final_never_set():
         # D21 and D23 (2026-09-29).
         ("la facture d'un <strong>autre client</strong>",
          "another client's invoice than the one whose funds leave trust"),
+        ("ni sur celle qui n'en nomme aucun, dans un dossier qui en compte "
+         "plusieurs", "nor one naming no client, in a dossier of several"),
         ("à l'ordre de quelqu'un d'autre que <strong>vous ou votre cabinet</strong>",
          "to anyone but the lawyer or his firm"),
         ("<strong>numéro de compte</strong>", "a bank transit or account number"),
@@ -1402,16 +1404,16 @@ def test_the_lot_5_texts_state_the_final_never_set():
         "test_a_transfer_between_dossiers_is_never_reversed_here")
     assert keys["trust_withdrawal"].forbidden_inputs == (("*", "cash_receipt_id"),)
     assert keys["fee_invoice"].forbidden_inputs == (("*", "invoice_external_ref"),)
-    # The behavioural test the fee-invoice promise names refuses all four
+    # The behavioural test the fee-invoice promise names refuses all five
     # invoices — the paper one, the provision, the UNSENT draft and (D21)
-    # another client's.
+    # another client's, or one naming no client in a dossier of several.
     source = (_ATHENA / "tests" / "test_mcp_accounting.py").read_text(encoding="utf-8")
     body = source[source.index(
         "def " + keys["fee_invoice"].behavioural_test.partition("::")[2]):]
     body = body[:body.index("\ndef ")]
     assert 'invoice_external_ref' in body and '"provision" in str(provision)' in body
     assert '"envoyée" in str(draft)' in body
-    assert 'facture_autre_client' in body
+    assert 'facture_autre_client' in body and 'facture_sans_client' in body
     assert keys["fee_payee"].behavioural_test.endswith(
         "test_d23_the_payee_is_the_lawyer_or_his_firm")
 

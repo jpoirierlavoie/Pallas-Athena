@@ -1339,8 +1339,9 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   start, complete or abandon a reconciliation, create or modify an
   account, transfer funds between dossiers (or reverse one leg of such a
   transfer), withdraw trust funds in cash, back a fee payment with a
-  paper invoice, an invoice not yet sent, one that imputes a provision or
-  another client's invoice (D21), make a fee payment to anyone but you or
+  paper invoice, an invoice not yet sent, one that imputes a provision,
+  another client's invoice or — in a dossier of several clients — one
+  naming none (D21), make a fee payment to anyone but you or
   your firm as « Paramètres » names you (D23), show a bank number. Arming
   it is its own train: §15 « Lot 5 », run as step 16 of « Déploiement
   unique (D22) ».
@@ -3209,7 +3210,8 @@ Notes:
      reconciliation, create or modify an account or attach a receipt,
      transfer between dossiers or reverse a leg of such a transfer,
      withdraw cash, back a fee payment with a paper, unsent or
-     provision-imputing invoice or with another client's invoice, make a fee
+     provision-imputing invoice or with another client's invoice (or one
+     naming no client, in a dossier of several), make a fee
      payment to anyone but the lawyer or his firm, show a bank number (the
      last two joined on the lawyer's decisions of 2026-09-29 — D21, D23).
      The write block's list
@@ -3308,7 +3310,8 @@ Notes:
      REVERSED, never re-entered on top, and an administration mistake is
      corrected with `update_admin_entry` while the entry stays editable;
      never a paper, unsent or provision-imputing invoice for a fee payment
-     — nor another client's invoice (D21), nor a payee other than the
+     — nor another client's invoice, nor one naming no client in a
+     dossier of several (D21), nor a payee other than the
      lawyer or his firm as « Paramètres » names them (D23, art. 58; omitted,
      the lawyer on a cheque — art. 58 draws a fee cheque « à l'ordre de
      l'avocat » —, the firm on a transfer); an invoice is marked « envoyée »
@@ -3341,7 +3344,8 @@ Notes:
   decisions of 2026-09-29 — `record_trust_entry` refuses a fee payment's
   `counterparty` other than the lawyer or his firm (D23; omitted, the
   lawyer on a cheque, the firm on a transfer)
-  and another client's invoice (D21), its refusal of an unsent invoice
+  and another client's invoice — or, in a dossier of several clients, one
+  naming none (D21) —, its refusal of an unsent invoice
   names the lawyer as the one who attests the sending (D20), and the
   accounting INSTRUCTIONS carry a seventh « never » (`fee_payee`) — all
   under the accounting grant, which no token holds before §15 « Lot 5 »

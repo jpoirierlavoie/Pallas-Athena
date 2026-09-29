@@ -10,7 +10,9 @@ les mêmes mots ; ici, ce que le formulaire en fait :
 * **D21** — les fonds en fidéicommis d'un client n'acquittent jamais la
   facture d'un AUTRE client du dossier : un refus en ligne au formulaire,
   sans dérogation, là où un bandeau disait après coup « vérifiez que ce
-  client a autorisé ce paiement », les honoraires déjà sortis.
+  client a autorisé ce paiement », les honoraires déjà sortis ; et une
+  facture qui ne nomme AUCUN client, dans un dossier qui en compte
+  plusieurs, n'est acquittée par les fonds d'aucun.
 * **D23** (art. 58) — le bénéficiaire d'un paiement d'honoraires est
   l'avocat ou son cabinet, tels que les nomme le profil du cabinet : le
   formulaire offre ces deux noms, jamais un texte libre, et le modèle refuse
@@ -446,6 +448,45 @@ def test_d21_le_client_facture_paie_toujours(fake, client):
     resp = client.post("/fideicommis/", data=_fee_form(client_id="c1"))
     assert resp.status_code == 302, _html(resp)
     assert "avertissement" not in resp.headers["Location"]
+    assert fake.peek("invoices/inv1")["amount_paid"] == 60000
+
+
+def _invoice_without_client(fake) -> None:
+    doc = fake.peek("invoices/inv1")
+    doc.update(client_id="", client_name="")
+    fake.external_write("invoices/inv1", doc)
+
+
+def test_d21_une_facture_sans_client_est_refusee_en_ligne(fake, client):
+    """Régression — une facture qui ne nomme aucun client (une reprise), dans
+    un dossier à deux clients : le formulaire tirait les fonds de c1 ou de
+    c2 au choix, sans que rien ne dise lequel la devait. Désormais le
+    formulaire se réaffiche avec le refus du modèle, sans nom ni montant, et
+    RIEN n'est inscrit — quel que soit le client choisi."""
+    _invoice_without_client(fake)
+    before = _registers(fake)
+    message = trust._ABORT_MESSAGES["facture_sans_client"]
+    for cid in ("c1", "c2"):
+        resp = client.post("/fideicommis/", data=_fee_form(client_id=cid))
+        assert resp.status_code == 400, cid
+        assert "Location" not in resp.headers
+        html = _html(resp)
+        assert message in html
+        errors = html[html.index("bg-red-50"):]
+        errors = errors[:errors.index("</div>")]
+        for word in ("Jean Tremblay", "Marie Roy", "600,00"):
+            assert word not in errors, word
+    assert _registers(fake) == before
+
+
+def test_d21_une_facture_sans_client_paie_quand_le_dossier_n_en_a_qu_un(fake, client):
+    dossier = fake.peek("dossiers/dos1")
+    dossier.update(client_ids=["c1"],
+                   clients=[{"id": "c1", "name": "Jean Tremblay"}])
+    fake.external_write("dossiers/dos1", dossier)
+    _invoice_without_client(fake)
+    resp = client.post("/fideicommis/", data=_fee_form(client_id="c1"))
+    assert resp.status_code == 302, _html(resp)
     assert fake.peek("invoices/inv1")["amount_paid"] == 60000
 
 
