@@ -3156,6 +3156,15 @@ def _parse_ymd(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+# The accounting-entity fields each list_trust_transactions row also carries
+# (mcp.output_schemas._TRUST_ROW_EXTRA, the same names).
+_TRUST_LIST_EXTRA = (
+    "account_id", "dossier_id", "client_id", "reference", "description",
+    "invoice_id", "reverses_id", "reversed_by_id", "created_via",
+    "cleared_via",
+)
+
+
 def list_trust_transactions(args: dict) -> dict:
     """The trust register — carte-client (dossier_id + client_id) or the full
     journal. date / cleared_date are date-only via date_str; never emits the
@@ -3221,6 +3230,11 @@ def list_trust_transactions(args: dict) -> dict:
             "balance_after_client_cents": int(r.get("balance_after_client", 0)),
         }
         _money(item, "amount", r.get("amount", 0))
+        # What the trust writes record and the clearing matches against the
+        # statement (finitions, contracts-3) — the accounting entity's own
+        # builder, so the read and the write results name them alike.
+        register = _trust_register_row(r)
+        item.update({k: register[k] for k in _TRUST_LIST_EXTRA})
         out.append(item)
     return {
         "transactions": out,

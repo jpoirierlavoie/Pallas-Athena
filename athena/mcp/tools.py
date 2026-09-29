@@ -2881,6 +2881,10 @@ TOOLS: dict[str, dict] = {
             "they are displayed newest-first. When `truncated` is true on a "
             "filtered call, narrow with date_from/date_to, or drop the "
             "filters and pass account_id alone. "
+            "Each row names its account, dossier and client, the reference "
+            "(cheque number) and description recorded, the invoice a fee "
+            "payment settled, its reversal links and who wrote and cleared "
+            "it — what clear_register_entries matches against a statement. "
             "Amounts in cents; date and cleared_date are date-only (YYYY-MM-DD). "
             "Read-only; never exposes the bank transit or account number."
         ),

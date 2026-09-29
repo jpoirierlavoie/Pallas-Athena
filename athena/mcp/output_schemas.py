@@ -1737,6 +1737,23 @@ def _reverse_branch(register: str, row: dict, extra: dict[str, Any]) -> dict:
     })
 
 
+
+# The register fields list_trust_transactions rows carry beside their
+# original columns (finitions, contracts-3) — the accounting entities'
+# (_trust_register_row) names, never a bank number.
+_TRUST_ROW_EXTRA = {
+    "account_id": _str("The trust account the entry is in."),
+    "dossier_id": _str("'' for a bank interest or fee entry."),
+    "client_id": _str("'' when none."),
+    "reference": _str("The cheque number or bank reference, as recorded."),
+    "description": _str(),
+    "invoice_id": _str("The Athéna invoice a fee payment settled; '' otherwise."),
+    "reverses_id": _str("The entry this correction reverses; '' otherwise."),
+    "reversed_by_id": _str("The correction that reversed it; '' otherwise."),
+    "created_via": _str("web | dav | mcp | cron | script; '' for a legacy row."),
+    "cleared_via": _str("Who cleared it; '' when not cleared or legacy."),
+}
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -3236,7 +3253,13 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "balance_after_client_cents": _int(
                 "FROZEN running balance (carte-client view)."),
             **_money("amount"),
-        })),
+            # Finitions (contracts-3): what record_trust_entry WRITES and
+            # clear_register_entries needs to match a statement line — the
+            # read the trust writes name as theirs could show none of it.
+            # OPTIONAL: added to an existing contract (a replay, a client
+            # pinned to the older shape).
+            **_TRUST_ROW_EXTRA,
+        }, optional=tuple(_TRUST_ROW_EXTRA))),
         "count": _int(),
         "truncated": _bool(),
         **_next_cursor(

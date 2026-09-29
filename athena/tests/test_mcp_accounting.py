@@ -1722,3 +1722,47 @@ def test_the_integrity_scripts_agree_with_what_the_connector_wrote(fake, monkeyp
         code = script.main()
         out = capsys.readouterr().out
         assert code == 0, out
+
+
+def test_the_trust_journal_shows_back_what_the_trust_writes_record(fake):
+    """Finitions, contracts-3. record_trust_entry and clear_register_entries
+    name list_trust_transactions as their read; its rows carried neither the
+    cheque number, nor the description, nor the account, nor the invoice a
+    fee payment settled — Claude could never read back what it wrote, nor
+    match a statement line by cheque number, nor tell two accounts apart."""
+    deposit = _call("record_trust_entry", **_deposit(
+        reference="CHQ-1042", description="Provision pour frais"))["entity"]
+    _cleared_deposit(fake)
+    fee = _call("record_trust_entry", **_fee())["entity"]
+    listing = handlers.list_trust_transactions({"account_id": "acc1"})
+    _conforms("list_trust_transactions", listing)
+    rows = {r["id"]: r for r in listing["transactions"]}
+    row = rows[deposit["id"]]
+    assert row["reference"] == "CHQ-1042"
+    assert row["description"] == "Provision pour frais"
+    assert row["account_id"] == "acc1"
+    assert (row["dossier_id"], row["client_id"]) == ("dos1", "c1")
+    assert row["created_via"] == "mcp"
+    assert rows[fee["id"]]["invoice_id"] == "inv1"
+    # The same names, the same values as the write's own entity.
+    for key in ("reference", "description", "account_id", "created_via"):
+        assert row[key] == deposit[key], key
+    # Still never a bank number.
+    flat = json.dumps(listing, ensure_ascii=False)
+    assert TRANSIT not in flat and LAST4 not in flat
+    # The filtered (window) shape carries them too.
+    carte = handlers.list_trust_transactions({"dossier_id": "dos1",
+                                              "client_id": "c1"})
+    _conforms("list_trust_transactions", carte)
+    assert {r["reference"] for r in carte["transactions"]} >= {"CHQ-1042"}
+
+
+def test_the_new_trust_row_keys_are_optional_in_the_schema():
+    """Added to an existing contract: never required (a replay stored or a
+    client pinned before them)."""
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+    item = OUTPUT_SCHEMAS["list_trust_transactions"]["properties"][
+        "transactions"]["items"]
+    for key in handlers._TRUST_LIST_EXTRA:
+        assert key in item["properties"], key
+        assert key not in item.get("required", []), key
