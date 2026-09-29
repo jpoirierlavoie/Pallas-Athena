@@ -2908,11 +2908,22 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "list_deletions": _list_envelope(_obj({
         "id": _str(),
         "at": _nstr("ISO-8601 Montréal — the deletion instant."),
-        "entity_type": _str(),
-        "entity_id": _str(),
+        # Lot 4b (step 4): the two LINK rows name something else in each
+        # column — said here, where a reader of a row looks. Descriptions
+        # only: no key, type or `required` moved.
+        "entity_type": _str(
+            "dossier_party / mandataire = a LINK detached, never a record: "
+            "the contact stays."),
+        "entity_id": _str(
+            "The deleted entity; dossier_party: the contact; mandataire: "
+            "the mandataire."),
         "dossier_id": _str("Empty when the entity had no dossier."),
-        "title": _str("Minimal snapshot — never the deleted content."),
-        "status": _str("The entity's status/category at deletion."),
+        "title": _str(
+            "Minimal snapshot — never the deleted content. mandataire: the "
+            "name of the contact it REPRESENTED."),
+        "status": _str(
+            "The entity's status/category at deletion; dossier_party: the "
+            "side it left; mandataire: the kind of representation."),
     })),
 
     "list_protocol_steps": _obj({

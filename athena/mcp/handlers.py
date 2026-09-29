@@ -38,7 +38,17 @@ entry — never its « actif » designation; lot 2B: ``create_template`` given
 ``substitutions`` stores a TEMPLATIZED copy of the stored document, whose
 own record and object are only read), ``mcp_upload_tickets`` (the
 ticket's own record) and
-``dossiers``. Storage is written only by those creators — and, for the
+``dossiers`` (since lot 4b also its STATUS — through
+``services/dossier_dav.run_status_transition``, which tombstones or
+un-tombstones the dossier's DAV members in ``dav_sync`` exactly as the web
+form's save does — one party link's roles or lawyer, its DETACHMENT and
+the party-name snapshots). Since lot 4b ``parties`` gains its
+``mandataires`` entries (added, corrected, detached — one at a time) and
+an identity or conflict check INSCRIBED as presumed
+(``update_kyc_status(source="mcp")`` — never confirmed here), and a
+detached link is journaled in ``audit_events`` by the MODEL that
+commits it (``dossier_party`` / ``mandataire`` — no handler calls
+``record_deletion``). Storage is written only by those creators — and, for the
 upload ticket, by ``models/upload_ticket``, which holds every Storage verb
 on its staging object (the session opened for the sandbox's PUT; the
 object consumed once the ticket settles). ``begin_upload``'s ``upload_url``
@@ -57,7 +67,10 @@ client it was built for: the practice moved to a Claude for Work account
 under a data-processing agreement, so the reason the chat existed — keeping
 privileged material out of a consumer product — no longer holds. Nothing
 was ever stored in ``chat_drafts``; the feature never saw use.
-**NOTHING is ever deleted**, no payment is ever recorded and no invoice is
+**NOTHING is ever deleted** — a detached party or mandataire is a LINK
+leaving an array, the contact staying, and a reopened dossier's DAV
+tombstones are sync bookkeeping, not records —, no payment is ever
+recorded and no invoice is
 ever marked « payée » (``mcp.disclosure.NEVERS`` — the sweep would catch a
 handler reaching one). Since lot 3b (BILL) an invoice IS created from real
 unbilled sources — consuming the year's next number, allocated inside the

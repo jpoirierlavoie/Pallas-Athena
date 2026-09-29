@@ -29,9 +29,9 @@ its INSTRUCTIONS paragraph (which must name every member literally).
 ``tests/test_mcp_disclosure.py`` sweeps over the connector's syntax tree
 (calls, attributes, names, imports, ``getattr`` constants — never string
 literals, so this file, which names them only as strings, cannot trip it).
-A never that no call can express (a dossier's status is a PAYLOAD) is backed
-by the input properties no write tool may declare and by a named behavioural
-test that must exist. A later lot that falsifies a never DELETES it here —
+A never that no call can express (the stored compliance fields are a
+PAYLOAD) is backed by the input properties no write tool may declare and by
+a named behavioural test that must exist. A later lot that falsifies a never DELETES it here —
 the texts, the sweep and the consent follow — and appends its family.
 
 Pure on purpose: it imports the scope constants and :mod:`markupsafe`,
@@ -526,11 +526,14 @@ FAMILIES: tuple[Family, ...] = (
             "does: fermé / archivé DRAINS its DavX5 collection (its tasks, "
             "notes and events leave the phone, staying in the application) "
             "and takes it out of the prescription alerts; actif / en_attente "
-            "restores it, and reopening erases the closing date. The status "
-            "it already has writes nothing and re-applies the phone's view — "
-            "when `dav.complete` comes back false, call it again with the "
-            "SAME status (the same idempotency_key is fine: an incomplete "
-            "result is never stored). `update_dossier_party` edits ONE party "
+            "restores it, and reopening erases the closing date (between "
+            "actif and en_attente nothing changes on the phone or in the "
+            "alerts). The status it already has writes nothing and re-applies "
+            "the phone's view — when `dav.complete` comes back false, call it "
+            "again with the SAME status (the same idempotency_key is fine: an "
+            "incomplete result is never stored), unless its warnings say the "
+            "status moved during the call: then re-read first. "
+            "`update_dossier_party` edits ONE party "
             "link: action update replaces its roles or its lawyer (the "
             "dossier-level role the gabarits cite is re-derived); remove "
             "DETACHES it — the contact stays, the detach is journaled — "
@@ -562,7 +565,7 @@ FAMILIES: tuple[Family, ...] = (
             "detach is journaled). `record_kyc_status` INSCRIBES a client's "
             "identity or conflict-of-interest check as PRESUMED: the fiche "
             "shows it « … (présumé) » — « inscrit par Claude le … — à "
-            "confirmer » — and "
+            "confirmer » — and it counts as NOT done: "
             "`get_coverage_report` keeps it OPEN until the lawyer confirms it "
             "in the application — never here. It is REFUSED on a check the "
             "lawyer decided or confirmed (`get_partie`: `*_presumed` false on "
@@ -1122,11 +1125,16 @@ def build_instructions(
     # registers) compare-and-set against their own read too (critique,
     # lot 0a): a caller seeing their `stale_etag` refusal must know it is
     # a race, and that the remedy is a re-read — not a changed argument.
+    # Lot 4b (step 4): set_dossier_status takes no etag (a status is a
+    # TARGET) yet compare-and-sets against its own read, and refresh_names
+    # refuses a dossier that moved on ITS row — both belong in this list.
     parts.append(
         "The writes that rewrite what they read — appending to a note, "
-        "closing a task, filling or appending to a dossier — refuse the "
-        "same way when the record changed during the call: nothing is "
-        "written; re-read, then send the call again."
+        "closing a task, filling or appending to a dossier, setting its "
+        "status — refuse the same way when the record changed during the "
+        "call: nothing is written; re-read, then send the call again "
+        "(`update_dossier_party` refresh_names refuses such a dossier on its "
+        "own row and goes on with the others)."
     )
     parts.append(
         "Every write tool accepts `idempotency_key` (any stable string you "
@@ -1151,7 +1159,11 @@ def build_instructions(
         "and events it CREATES, and the text it APPENDS to or REPLACES in a "
         "note, also carry a dated « … par Claude le … » line; a Word "
         "document it generates or copies says « par Claude (connecteur) » "
-        "in its provenance (`genere_depuis`)."
+        "in its provenance (`genere_depuis`); a compliance check it "
+        "inscribes is stored as Claude's (`*_source` \"mcp\" — kept after "
+        "the lawyer's confirmation, which adds `*_confirmed_at`), and the "
+        "notes it appends there open with « [AAAA-MM-JJ — inscrit par "
+        "Claude] »."
     )
     parts.append(_FORMATS_EN)
     return " ".join(parts)

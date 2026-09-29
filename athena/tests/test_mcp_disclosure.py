@@ -15,9 +15,9 @@ Two properties are pinned here, both DERIVED:
    literals and comments are invisible to the walk by construction, which
    is why the registry can NAME a forbidden function in order to forbid it
    (a raw-text sweep would have matched the registry itself). A promise no
-   call can express (a dossier's status is a PAYLOAD) is backed by the input
-   properties no write tool may declare, and by a behavioural test that must
-   EXIST.
+   call can express (the stored compliance fields are a PAYLOAD) is backed
+   by the input properties no write tool may declare, and by a behavioural
+   test that must EXIST.
 
 The consent screen's rendering is pinned in test_mcp_oauth.py (where the
 consent-flow fixtures live): every family partial and every NEVER bullet
@@ -236,6 +236,22 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # (DavX5 syncs its tasks, notes and events — separate documents),
     # so a phone edit can never be what refuses a dossier write.
     "au fidéicommis ou sur votre téléphone",
+    # Lot 4b, the text step: the claude.ai skill's phrasings of the same
+    # falsified promises (DEPLOYMENT.md §15 « Lot 4 » lists them for the
+    # skill's own update) — none may ever enter a connector text.
+    "ne peut plus jamais être changé ici",           # a dossier's status
+    "status` jamais modifiable ensuite",
+    "ne ferme pas un dossier",
+    "cannot close a dossier",
+    "closing a dossier is done in the application",
+    "ne sont inscriptibles par aucun outil",         # identity / conflict
+    "not writable by any tool",
+    # « Rien ne peut être supprimé » stays true only WITH its precision:
+    # a detached party or mandataire is a link. The two English forms of
+    # the never that ended without it — before lot 1b, and before lot 4b —
+    # are the claims lot 4b narrowed.
+    "nothing can ever be deleted here.",
+    "event is kept, with its status.",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -250,6 +266,11 @@ KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"définitivement immodifiables",
     r"nothing here can touch it",
     r"neither this connector nor the application can modify it",
+    # Review of lot 4 (the design's honesty test): record_kyc_status
+    # INSCRIBES a presumed check — « cannot … verify an identity » in any
+    # phrasing is false now, as « cannot … file a signification » was.
+    r"\bcannot\b[^.]{0,80}\bverify an identity",
+    r"\bne peut\b[^.]{0,80}\bvérifier une identité",
 )
 
 
@@ -980,3 +1001,63 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
     assert "record_kyc_status" in desc["create_partie"]
     assert "update_partie_mandataire" in desc["update_partie"]
     assert "`*_presumed`" in desc["get_partie"]
+
+
+def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
+    """Lot 4b, the text step (step 4). What the step-3 texts left unsaid,
+    each pinned where it is TRUE — every assertion fails on the texts of
+    4c802f9:
+
+    * an incomplete drain is REPORTED and repaired by the same status again
+      (or the application's « Resynchroniser le téléphone ») — and between
+      actif and en_attente nothing changes on the phone;
+    * a presumed compliance check counts as NOT done until the lawyer
+      confirms it, and its notes carry Claude's dated line;
+    * setting a dossier's status compare-and-sets like the other writes
+      that rewrite what they read (it takes no etag);
+    * list_deletions says it lists the LINKS detached, and its row schema
+      says what each column names on a link row.
+    """
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+
+    dossiers = next(f for f in disclosure.FAMILIES if f.key == "dossiers")
+    assert ("between actif and en_attente nothing changes on the phone"
+            in dossiers.instructions_en)
+    assert ("unless its warnings say the status moved during the call"
+            in dossiers.instructions_en)
+    contacts = next(f for f in disclosure.FAMILIES if f.key == "contacts")
+    assert "it counts as NOT done" in contacts.instructions_en
+
+    text = endpoint.INSTRUCTIONS
+    assert ("filling or appending to a dossier, setting its status — refuse "
+            "the same way") in text
+    assert "refresh_names refuses such a dossier on its own row" in text
+    assert "`*_source` \"mcp\"" in text
+    assert "« [AAAA-MM-JJ — inscrit par Claude] »" in text
+
+    flat_dossiers = " ".join((_TEMPLATES / "mcp" / "families" / "_dossiers.html")
+                             .read_text(encoding="utf-8").split())
+    assert "le connecteur le <strong>signale</strong>" in flat_dossiers
+    assert "un nouvel appel au même statut le reprend" in flat_dossiers
+    assert "«&nbsp;Resynchroniser le téléphone&nbsp;»" in flat_dossiers
+    assert ("<strong>en attente</strong> ne change rien au téléphone ni aux "
+            "alertes") in flat_dossiers
+    flat_contacts = " ".join((_TEMPLATES / "mcp" / "families" / "_contacts.html")
+                             .read_text(encoding="utf-8").split())
+    assert "ne compte <strong>pas comme faite</strong>" in flat_contacts
+
+    deletions = tools.TOOLS["list_deletions"]["description"]
+    assert "each LINK detached" in deletions
+    assert "the contact stays" in deletions
+    row = OUTPUT_SCHEMAS["list_deletions"]["properties"]["items"]["items"][
+        "properties"]
+    assert "a LINK detached" in row["entity_type"]["description"]
+    assert "REPRESENTED" in row["title"]["description"]
+    assert "the side it left" in row["status"]["description"]
+
+    # The two patterns the text step added are live, and spare the truth.
+    assert _false_claims_in(
+        "this connector cannot create a protocol, verify an identity or file")
+    assert _false_claims_in("le connecteur ne peut pas vérifier une identité")
+    assert not _false_claims_in(
+        "It never CONFIRMS an identity or conflict-of-interest check")

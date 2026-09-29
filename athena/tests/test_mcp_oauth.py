@@ -622,6 +622,29 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "<strong>rouvrir une tâche</strong> terminée" in flat
     assert "<strong>défaire une annulation</strong> en silence" in flat
     assert "le texte remplacé est conservé" in flat
+    # Lot 4b (the text step): the screen the lawyer reads says what a
+    # dossier status change does to his PHONE — and that an incomplete
+    # drain is reported and repaired —, that a detached party or mandataire
+    # is a LINK (the contact stays, the detach journaled), and that a
+    # compliance check Claude inscribes is PRESUMED and counts as not done
+    # until he confirms it. The two « jamais » entries the lot falsified
+    # are gone from the list (the dossier-status bullet, and « … à la
+    # vérification d'identité ou … des conflits » beside the trust one).
+    assert "changer le <strong>statut</strong> d'un dossier" in flat
+    assert ("retire ses tâches, notes et événements de votre téléphone"
+            in flat)
+    assert "le connecteur le <strong>signale</strong>" in flat
+    assert "«&nbsp;Resynchroniser le téléphone&nbsp;»" in flat
+    assert "<strong>détacher</strong> une partie" in flat
+    assert ("retire un lien — le contact reste, et le retrait est inscrit au "
+            "journal des suppressions") in flat
+    assert "inscrit par Claude le … — à confirmer" in flat
+    assert "ne compte <strong>pas comme faite</strong>" in flat
+    assert ("<strong>confirmer</strong> une vérification d'identité ou de "
+            "conflits d'intérêts") in flat
+    assert "fermer un dossier doit vider sa collection DavX5" not in flat
+    assert ("à la vérification d'identité ou à la vérification des conflits"
+            not in flat)
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)

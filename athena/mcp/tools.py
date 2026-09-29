@@ -2580,13 +2580,16 @@ TOOLS: dict[str, dict] = {
         "description": (
             "The append-only deletion trail, newest first: what was "
             "deleted, when, and the minimal snapshot (title + status) it "
-            "carried. Use it when something that used to appear has "
-            "vanished — it distinguishes « deleted » from « never "
-            "existed ». Two honest limits: the trail starts at its own "
-            "deployment (silence about anything earlier), and the read "
-            "window is the 200 most recent events — an empty answer past "
-            "that means « not in the recent window », never « never "
-            "deleted »."
+            "carried — and each LINK detached (a party from a dossier, a "
+            "mandataire from a contact; the contact stays), by the "
+            "application or this connector. Use it when something that used "
+            "to appear has vanished — it distinguishes « deleted » from "
+            "« never existed ». Two honest limits: the trail starts at its "
+            "own deployment (silence about anything earlier — for a link, "
+            "about any detach before its journaling shipped), and the read "
+            "window is the 200 most "
+            "recent events — an empty answer past that means « not in the "
+            "recent window », never « never deleted »."
         ),
         "input_schema": {
             "type": "object",
