@@ -140,6 +140,11 @@ TRUNCATION_POINT = 2_048
 _CORE_MARKERS = (
     "idempotency_key",
     "the SAME key, never a new one",
+    # The third state of a claimed key (review of the finitions): without
+    # it, « retry only with the SAME key » after an uncertain outcome was a
+    # dead end once the key's refusal turned « interrompu ».
+    "refused as INTERRUPTED",
+    "a NEW key only if nothing was written",
     "« ENREGISTRÉE — NE PAS RÉESSAYER »",
     "`expected_etag`",
     "stale_etag",

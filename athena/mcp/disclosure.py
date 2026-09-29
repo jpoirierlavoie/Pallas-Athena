@@ -1379,7 +1379,9 @@ _PROTOCOL_CORE_EN = (
     "write (the same key within 24 h replays the result, never writes "
     "twice); refused as still in flight → wait, then the SAME key, never a "
     "new one; an outcome reported UNCERTAIN → re-read before any retry, and "
-    "retry only with the SAME key. « ENREGISTRÉE — NE PAS RÉESSAYER » = "
+    "retry only with the SAME key; refused as INTERRUPTED (the key's first "
+    "call can no longer be running) → re-read, and a NEW key only if "
+    "nothing was written. « ENREGISTRÉE — NE PAS RÉESSAYER » = "
     "the write COMMITTED and a later step failed: do NOT retry, re-read. "
     "Where a tool accepts `expected_etag`, pass the `etag` of your latest "
     "read; a stale refusal (stale_etag) wrote nothing — re-read, then "
@@ -1387,7 +1389,8 @@ _PROTOCOL_CORE_EN = (
     "`decide_rendez_vous` refusing a Bookings request cancels the client's "
     "Outlook meeting and notifies them. Never: a deletion (detaching "
     "removes a link), a payment outside the accounting registers, sending "
-    "an invoice, confirming a presumed check, category or analysis — the "
+    "an invoice to anyone (marking one envoyée sends nothing), confirming "
+    "a presumed check, category or analysis — the "
     "full list follows."
 )
 
@@ -1543,7 +1546,9 @@ def build_instructions(
         "idempotency_key; if a write without one appeared to fail, re-read "
         "(list/get) before retrying. A refusal saying a call with that key "
         "is still in flight means: wait, then retry with the SAME key — "
-        "never a new one."
+        "never a new one. One saying the call was INTERRUPTED means its "
+        "write may have happened and the first call can no longer be "
+        "running: re-read, and use a NEW key only if nothing was written."
     )
     parts.append(
         "A result reading « ENREGISTRÉE — NE PAS RÉESSAYER » means the write "
