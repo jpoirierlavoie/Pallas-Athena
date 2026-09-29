@@ -61,6 +61,26 @@ TRANSIT = "12345"
 LAST4 = "6789"
 RECEIPT_PATH = "users/kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s/administration/rx/recu.pdf"
 
+# The text a run GENERATES: a uuid4 (every id and etag), a hex digest, a
+# clock reading's seconds and fraction. A bare « LAST4 in dump » over dozens
+# of them was a random false alarm on the deploy gate — « 6789 » turns up in
+# a uuid4 or a microsecond fraction a few runs in a hundred (it failed once
+# on the finitions branch, then passed forty times alone). The scan removes
+# exactly those tokens, nothing else: any other occurrence of either number
+# — a « ••••6789 », a « 12345 » beside an institution — still fails.
+_GENERATED_TOKEN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|(?<![0-9A-Za-z])[0-9a-f]{32,64}(?![0-9A-Za-z])"
+    r"|\d{2}:\d{2}:\d{2}\.\d+"
+)
+
+
+def _bank_numbers_in(text: str) -> list[str]:
+    """The seeded transit or last 4 digits found in *text*, generated
+    tokens set aside (see :data:`_GENERATED_TOKEN`)."""
+    scrubbed = _GENERATED_TOKEN.sub("", text)
+    return [n for n in (TRANSIT, LAST4) if n in scrubbed]
+
 
 def _d(y: int, m: int, d: int) -> datetime:
     return datetime(y, m, d, tzinfo=UTC)
@@ -1133,7 +1153,7 @@ def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
                           tx_id=dep["entity"]["id"], reason="Doublon"))
 
     dumped = json.dumps(payloads, ensure_ascii=False, default=str)
-    assert TRANSIT not in dumped and LAST4 not in dumped
+    assert _bank_numbers_in(dumped) == []
     assert RECEIPT_PATH not in dumped and "administration/rx" not in dumped
     for forbidden in ("transit", "account_number", "last4",
                       "receipt_storage_path", "storage_path"):
@@ -1144,6 +1164,33 @@ def test_no_accounting_payload_ever_carries_a_transit_or_account_number(fake):
     snapshot = json.dumps(payloads[7], ensure_ascii=False, default=str)
     assert "Desjardins" in snapshot and "Général" in snapshot
     assert payloads[8]["transactions"]
+
+
+def test_the_bank_number_scan_sets_aside_generated_ids_never_a_leak():
+    """Final check of the branch (2026-09-29): the scan above was a bare
+    substring test, and a run's ids, etags and clock readings are random —
+    « 6789 » inside one failed the deploy gate once, and a red gate on push
+    day comes AFTER the connector's revocation (DEPLOYMENT.md §15, D22,
+    step 4). The generated tokens are set aside; every other occurrence of
+    the transit or the last 4 digits still fails the scan."""
+    generated = {
+        "id": "0a1b6789-2c3d-4e5f-8a9b-0c1d2e312345",      # a uuid4
+        "etag": "5F3A6789-12AB-4CDE-9F01-23456789ABCD",    # upper-case too
+        "args_hash": "0123456789abcdef" * 2,               # a hex digest
+        "updated_at": str(datetime(2026, 9, 3, 12, 34, 56, 467890, tzinfo=UTC)),
+    }
+    noise = json.dumps(generated)
+    # Every value holds a bank number by chance: the bare check the scan
+    # replaces fails on each of them alone.
+    for value in generated.values():
+        assert LAST4 in value or TRANSIT in value, value
+    assert _bank_numbers_in(noise) == []
+    # Anything that is not a generated token is a leak, and is caught —
+    # beside the noise as well as alone.
+    for leak in ("Compte ••••6789", "Transit 12345", "6789",
+                 '{"account_number_last4": "6789"}', "Desjardins 12345-6789"):
+        text = json.dumps({"x": leak, **generated}, ensure_ascii=False)
+        assert _bank_numbers_in(text), leak
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1919,7 +1966,7 @@ def test_the_trust_journal_shows_back_what_the_trust_writes_record(fake):
         assert row[key] == deposit[key], key
     # Still never a bank number.
     flat = json.dumps(listing, ensure_ascii=False)
-    assert TRANSIT not in flat and LAST4 not in flat
+    assert _bank_numbers_in(flat) == []
     # The filtered (window) shape carries them too.
     carte = handlers.list_trust_transactions({"dossier_id": "dos1",
                                               "client_id": "c1"})
