@@ -395,6 +395,19 @@ _ABORT_MESSAGES = {
         "le rendre : le contre-passer créerait un découvert dans son dossier."
     ),
     "écriture_introuvable": "Écriture introuvable.",
+    # Lot 5a — the fee payment's trust leg never stands alone.
+    "paiement_honoraires_composite": (
+        "Un paiement d'honoraires ne s'inscrit pas comme une écriture isolée : "
+        "il s'inscrit en une seule opération avec sa recette au compte "
+        "d'administration et le paiement porté sur la facture (formulaire "
+        "« Nouvelle écriture », objet « Paiement d'honoraires », compte "
+        "d'administration indiqué)."
+    ),
+    "paiement_honoraires_contre_passation": (
+        "Un paiement d'honoraires se contre-passe en une seule opération avec "
+        "sa recette au compte d'administration et le paiement porté sur la "
+        "facture — jamais l'écriture au fidéicommis seule."
+    ),
     "compensation_invalide": (
         "Impossible de compenser : écriture déjà compensée ou annulée, "
         "date de compensation antérieure à l'écriture, ou future."
@@ -828,6 +841,13 @@ def _precheck_reason(clean: dict, *, reserved_ok: tuple = ()) -> Optional[str]:
     # correction is reserved for reverse_transaction — reject it on the create path.
     if purpose not in VALID_PURPOSES or purpose == REVERSAL_PURPOSE:
         return "objet_invalide"
+    # A fee payment is ONE operation with its administration recette and the
+    # payment on its invoice (lot 5a, D-4 made structural): its trust leg is
+    # never written alone, whoever the caller. Until lot 5a the rule lived
+    # in the route alone, and a direct model call let fees leave trust with
+    # no trace in the operations account — the July 2026 incident class.
+    if purpose == FEE_PAYMENT_PURPOSE and FEE_PAYMENT_PURPOSE not in reserved_ok:
+        return "paiement_honoraires_composite"
     if method not in VALID_METHODS:
         return "mode_invalide"
     # Art. 58 — a fee payment leaves trust by cheque or by transfer, never by
@@ -1187,12 +1207,18 @@ def create_transaction(
 
     account_id = ctx["account_id"]
     dossier_id = ctx["dossier_id"]
-    now = datetime.now(timezone.utc)
     transaction = db.transaction()
     result: dict = {}
 
     @firestore.transactional
     def _create(txn) -> None:
+        # The instant is taken PER ATTEMPT (lot 5a): the decorator re-runs
+        # this body after an Aborted commit, and a ``now`` captured before
+        # the first attempt would stamp the entry EARLIER than the write
+        # that aborted it — while its sequence comes after. The integrity
+        # check orders a client's entries by creation instant, and would
+        # read that as a running-balance error.
+        now = datetime.now(timezone.utc)
         reads = _read_create(txn, ctx)
         result.update(_stage_create(txn, ctx, reads, now))
 
@@ -1460,14 +1486,18 @@ def is_transfer_pair_leg(entry: dict) -> bool:
     return entry.get("purpose") == TRANSFER_PURPOSE and bool(entry.get("related_transaction_id"))
 
 
-def _read_reverse(txn, tx_id: str, today: datetime) -> dict:
+def _read_reverse(
+    txn, tx_id: str, today: datetime, *, fee_payment_ok: bool = False,
+) -> dict:
     """Every read a reversal needs, inside *txn* — the read phase of
     :func:`reverse_transaction`, split out so a composite can run it beside
     the administration register's reads (lot 5a).
 
     Raises ``_TxnAbort`` for every refusal the reads alone decide (absent,
-    already reversed, a correction, a transfer pair out of shape, the lock
-    floor covering *today* — the reversal's date)."""
+    already reversed, a correction, a fee payment, a transfer pair out of
+    shape, the lock floor covering *today* — the reversal's date).
+    ``fee_payment_ok`` lifts the fee-payment refusal — only
+    ``models/fee_payment.reverse_fee_payment`` passes it."""
     orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
     o_snap = orig_ref.get(transaction=txn)
     if not o_snap.exists:
@@ -1477,6 +1507,8 @@ def _read_reverse(txn, tx_id: str, today: datetime) -> dict:
         raise _TxnAbort("déjà_contrepassée")
     if original.get("purpose") == REVERSAL_PURPOSE or original.get("reverses_id"):
         raise _TxnAbort("correction_non_contre_passable")
+    if original.get("purpose") == FEE_PAYMENT_PURPOSE and not fee_payment_ok:
+        raise _TxnAbort("paiement_honoraires_contre_passation")
 
     pair = None
     if is_transfer_pair_leg(original):
@@ -1633,7 +1665,7 @@ def reverse_transaction(
     ``en_circulation`` reversal. The overdraft control does NOT apply here —
     with ONE exception, below.
 
-    Two shapes are special:
+    Three shapes are special:
 
     * A **correction** is never reversed again (lot 0b, D14). Re-reversing
       one re-applied the original movement with none of its guards — for a
@@ -1649,11 +1681,19 @@ def reverse_transaction(
       is): a reversal must not open a shortfall in a dossier that already
       spent the money. If the other leg was already reversed alone (before
       this rule), this leg reverses alone too, completing the pair.
+    * A **fee payment** is REFUSED here (``paiement_honoraires_contre_passation``,
+      lot 5a): it reverses together with its administration recette(s) and
+      the payment each carries on its invoice, in ONE transaction —
+      ``models/fee_payment.reverse_fee_payment``. Reversing the trust leg
+      alone put the money back into trust while the operations account
+      still counted it and the invoice still read « payée ».
 
     ``_report_out``, when given, receives ``reason`` on a refusal, or
     ``client_cleared_after`` and ``original_status_after`` on success.
     """
-    reason = (reason or "").strip()
+    # Sanitized like every stored text (lot 5a): the motif becomes the
+    # correction's description, printed in the register.
+    reason = sanitize((reason or "").strip(), max_length=2000)
     if not reason:
         # Logged like every other refusal (OBSERVABILITY: a refused reversal
         # logs under trust_transaction_refused) — reason code only.
@@ -1665,13 +1705,19 @@ def reverse_transaction(
             _report_out["reason"] = "motif_requis"
         return None, [_ABORT_MESSAGES["motif_requis"]]
 
-    now = datetime.now(timezone.utc)
-    today = _today_midnight_utc()
     transaction = db.transaction()
     result: dict = {}
 
     @firestore.transactional
     def _reverse(txn) -> None:
+        # The instant is taken PER ATTEMPT (lot 5a): the decorator re-runs
+        # this body after an Aborted commit, and a ``now`` captured before
+        # the first attempt would stamp the entry EARLIER than the write
+        # that aborted it — while its sequence comes after. The integrity
+        # check orders a client's entries by creation instant, and would
+        # read that as a running-balance error.
+        now = datetime.now(timezone.utc)
+        today = _today_midnight_utc()
         ctx = _read_reverse(txn, tx_id, today)
         result.update(_stage_reverse(txn, ctx, reason, today, now))
 

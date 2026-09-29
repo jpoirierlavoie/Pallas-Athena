@@ -32,7 +32,7 @@ les vrais ; on relit ce qui est STOCKÉ.
 import os
 import pathlib
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -404,3 +404,44 @@ def test_l_administration_refuse_aussi_une_ecriture_listee_deux_fois(fake):
     assert count == 0 and len(failed) == 2
     assert report["reason"] == "compensation_doublon"
     assert fake.peek(f"admin_transactions/{entry['id']}") == before
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. Une écriture rejouée prend l'instant de l'essai qui commet
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_une_ecriture_rejouee_est_datee_de_l_essai_qui_commet(fake, monkeypatch):
+    """Régression (lot 5a, étape 3) — ``now`` était pris AVANT la
+    transaction : interrompue par une écriture rivale puis rejouée, l'écriture
+    gardait l'instant de son premier essai, ANTÉRIEUR à la rivale, alors que
+    sa séquence vient après. Le contrôle d'intégrité ordonne les écritures
+    d'un client par instant de création : il y lisait une erreur de solde
+    courant. L'horloge du module est remplacée par un compteur pour que
+    l'ordre ne dépende pas de la résolution de l'horloge murale."""
+    ticks = iter(range(1, 1000))
+
+    class _Tick(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 20, 12, 0, tzinfo=UTC) + timedelta(seconds=next(ticks))
+
+    monkeypatch.setattr(trust, "datetime", _Tick)
+    rival: dict = {}
+
+    def _race(info):
+        if rival or not any(p.startswith("trust_transactions/") for _o, p in info.ops):
+            return
+        rival["done"] = True
+        rival["entry"], _ = trust.create_transaction(_trust_entry(amount=1000))
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        entry, errs = trust.create_transaction(_trust_entry(amount=2000))
+    finally:
+        remove()
+    assert errs == []
+    stored = fake.peek(f"trust_transactions/{entry['id']}")
+    first = fake.peek(f"trust_transactions/{rival['entry']['id']}")
+    assert stored["sequence"] > first["sequence"]
+    assert stored["created_at"] > first["created_at"]

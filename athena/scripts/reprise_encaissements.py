@@ -23,10 +23,10 @@ UN VIREMENT PEUT PORTER PLUSIEURS ÉCRITURES (depuis le 2026-08-17 : un
 virement qui acquitte deux factures), mais la somme de ses lignes égale son
 montant au cent près, et la clé d'idempotence est le COUPLE
 (virement, facture, montant). Depuis le lot 5a, la contre-passation du
-virement au fidéicommis les contre-passe TOUTES
-(`routes/trust._contrepasser_recette_administration` lit
-`list_by_trust_transaction`, qui rend chaque ligne et propage une panne) —
-elle ne contre-passait que la première.
+virement au fidéicommis les contre-passe TOUTES, dans la MÊME transaction que
+le fidéicommis depuis l'étape 3 (`models/fee_payment.reverse_fee_payment`
+lit `list_by_trust_transaction` dans sa transaction, qui rend chaque ligne et
+propage une panne) — elle ne contre-passait que la première.
 
 LE PAIEMENT DE LA FACTURE S'ÉCRIT DANS LA TRANSACTION DE L'ÉCRITURE (lot 5a) :
 `models/admin_ledger.create_transaction` porte `amount_paid` sur la facture

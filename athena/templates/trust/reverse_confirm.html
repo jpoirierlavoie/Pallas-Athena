@@ -24,6 +24,11 @@
     Une contre-passation crée une écriture « Correction » de sens inverse.
     {% if entry.status == 'en_circulation' %}L'écriture originale et sa contre-passation seront toutes deux marquées <strong>annulée</strong>.
     {% else %}L'écriture originale demeure compensée; la contre-passation entre <strong>en circulation</strong>.{% endif %}
+    {% if entry.purpose == 'virement_honoraires' %}
+    La recette que ce paiement d'honoraires a inscrite au compte d'administration est
+    contre-passée <strong>dans la même opération</strong>, et le paiement porté sur la facture
+    réduit d'autant — si l'une ne peut pas suivre, rien n'est contre-passé.
+    {% endif %}
     {% endif %}
     L'écriture n'est jamais modifiée ni supprimée.
   </div>

@@ -198,13 +198,15 @@
       <p class="text-xs text-gray-500">Une facture antérieure (hors Pallas Athéna) n'est pas vérifiée automatiquement — seul son numéro est consigné.</p>
       <p class="text-xs text-gray-500">Mode : chèque à l'ordre de l'avocat ou virement à un compte qui n'est pas en fidéicommis (art. 58).</p>
 
-      {# Recette automatique au compte d'administration (décision 2026-08-13),
-         devenue OBLIGATOIRE le 2026-08-17 : le virement crée l'écriture
-         recette correspondante — et, pour une facture Athéna, met à jour son
-         montant encaissé. L'option « Aucune » a disparu parce qu'elle sortait
-         les fonds du fidéicommis sans laisser AUCUNE trace comptable ; c'est
-         par elle que les trois virements de juillet 2026 se sont perdus. La
-         garde vit dans la route — ce champ ne fait que la refléter. #}
+      {# Recette au compte d'administration (décision 2026-08-13), devenue
+         OBLIGATOIRE le 2026-08-17 : le paiement inscrit l'écriture recette
+         correspondante — et, pour une facture Athéna, son montant encaissé.
+         L'option « Aucune » a disparu parce qu'elle sortait les fonds du
+         fidéicommis sans laisser AUCUNE trace comptable ; c'est par elle que
+         les trois virements de juillet 2026 se sont perdus. Depuis le lot 5a
+         la garde vit dans le MODÈLE (models/fee_payment) et les trois
+         écritures se font en UNE opération : si la recette ne peut pas
+         s'inscrire, rien n'est inscrit. Ce champ ne fait que la refléter. #}
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Compte d'administration <span class="text-gray-400 font-normal">(recette automatique)</span></label>
         {% if admin_accounts %}
@@ -220,6 +222,19 @@
            invitation à en créer un — ce serait un doublon. #}
         <p class="text-xs text-amber-600">Comptes d'administration indisponibles pour le moment. Réessayez dans un instant : un paiement d'honoraires ne peut pas s'inscrire sans son compte.</p>
         {% endif %}
+      </div>
+
+      {# D16 (lot 5a) : la recette porte SA date — celle où les honoraires
+         sont arrivés au compte d'opérations. Vide = la date du retrait au
+         fidéicommis. C'est ce qui permet d'inscrire un retrait du 30 août
+         déposé le 2 septembre, même une fois août concilié au compte
+         d'opérations. Réaffiché tel que saisi après un refus. #}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Date du dépôt au compte d'administration <span class="text-gray-400 font-normal">(facultatif)</span></label>
+        <input type="date" name="admin_date" value="{{ entry.admin_date_raw if entry and entry.admin_date_raw else '' }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <p class="text-xs text-gray-500 mt-1">Laissez vide si les honoraires sont arrivés au compte d'opérations le jour même du retrait. Sinon, indiquez la date réelle du dépôt : ni antérieure au retrait du fidéicommis, ni future, ni dans une période déjà conciliée du compte d'opérations.</p>
+        <p class="text-xs text-gray-500 mt-1">Le retrait au fidéicommis, la recette au compte d'administration et le paiement porté sur la facture s'inscrivent ensemble : si l'un est refusé, rien n'est inscrit.</p>
       </div>
     </div>
 

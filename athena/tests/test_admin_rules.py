@@ -528,7 +528,9 @@ def _link_calls(tree) -> tuple[list[int], list[int]]:
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-        if name != "create_transaction":
+        # The public create AND its prepare phase (lot 5a, step 3): the fee
+        # payment composite reaches the link through ``_prepare_create``.
+        if name not in ("create_transaction", "_prepare_create"):
             continue
         if any(kw.arg == "trust_transaction_id" for kw in node.keywords):
             keyworded.append(node.lineno)
@@ -551,7 +553,12 @@ def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
 
     Et les appelants du MOT-CLÉ sont exactement les deux que CLAUDE.md
     nomme : un troisième doit mettre la documentation à jour en même temps
-    (preuve, aussi, que le balayage voit de vrais appels)."""
+    (preuve, aussi, que le balayage voit de vrais appels).
+
+    Réécrit délibérément au lot 5a (étape 3) : la route du fidéicommis ne
+    crée plus la recette après coup — le paiement d'honoraires l'écrit dans
+    SA transaction (``models/fee_payment``, par ``_prepare_create``), et le
+    balayage suit la phase de préparation autant que la fonction publique."""
     import ast
 
     offenders, keyworded = [], set()
@@ -565,7 +572,10 @@ def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
         if good:
             keyworded.add(rel)
     assert offenders == []
-    assert keyworded == {"routes/trust.py", "scripts/reprise_encaissements.py"}
+    # The model's own create composes its phases (it forwards the keyword
+    # to _prepare_create): the definition, not a caller.
+    keyworded.discard("models/admin_ledger.py")
+    assert keyworded == {"models/fee_payment.py", "scripts/reprise_encaissements.py"}
 
 
 @pytest.mark.parametrize("source, offending", [

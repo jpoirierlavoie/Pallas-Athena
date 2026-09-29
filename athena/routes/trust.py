@@ -23,6 +23,7 @@ from markupsafe import escape
 from auth import login_required
 from models.dossier import get_dossier
 from models import trust
+from services import comptabilite
 from models.trust import (
     ACCOUNT_STATUS_LABELS,
     ACCOUNT_TYPE_LABELS,
@@ -303,32 +304,12 @@ def _entry_form_data() -> dict:
         "reference": f.get("reference", "").strip(),
         "description": f.get("description", "").strip(),
         "date": _parse_date(f.get("date", "")),
+        # D16 (lot 5a) — the day the fees reached the operations account;
+        # blank = the trust date. The raw text rides along so a refusal's
+        # re-render shows what was typed.
+        "admin_date": _parse_date(f.get("admin_date", "")),
+        "admin_date_raw": f.get("admin_date", "").strip(),
     }
-
-
-def _resolve_invoice_number(data: dict) -> list[str]:
-    """Resolve the Pallas Athéna invoice NUMBER (e.g. « 2026-F001 ») to its id
-    within the dossier, setting ``data['invoice_id']``. A number that does not
-    resolve is a HARD error — never silently treated as external, which would
-    skip the amount check. Only meaningful for a fee transfer."""
-    data["invoice_id"] = None
-    number = (data.get("invoice_number") or "").strip()
-    if data.get("purpose") != "virement_honoraires" or not number:
-        return []
-    dossier_id = data.get("dossier_id")
-    if not dossier_id:
-        return ["Sélectionnez le dossier avant d'indiquer une facture."]
-    from models.invoice import list_invoices
-
-    matches = [
-        inv
-        for inv in list_invoices(dossier_id=dossier_id)
-        if inv.get("invoice_number") == number
-    ]
-    if not matches:
-        return [f"Aucune facture « {number} » dans ce dossier de Pallas Athéna."]
-    data["invoice_id"] = matches[0]["id"]
-    return []
 
 
 _MAX_SEQUENCE = 2**63 - 1  # Firestore integers are int64
@@ -378,7 +359,8 @@ def _factures_emises(dossier_id) -> list[dict]:
     plafonne. Le sélecteur n'est qu'une aide à la transcription — depuis le
     retour au schéma annuel (décision 2026-08-12), DEUX formes de numéros
     coexistent dans le registre — et le verdict final reste
-    _resolve_invoice_number + la transaction.
+    services.comptabilite.resolve_fee_invoice (lecture STRICTE) + la
+    transaction du paiement d'honoraires.
     """
     if not dossier_id:
         return []
@@ -406,77 +388,6 @@ def _factures_emises(dossier_id) -> list[dict]:
     return out
 
 
-def _comptes_administration() -> tuple[list[dict], bool]:
-    """Active OPERATIONS accounts for the auto-recette select (décision
-    utilisateur 2026-08-13 : un paiement d'honoraires crée automatiquement la
-    recette au compte d'administration ; le compte est REQUIS depuis le
-    2026-08-17).
-
-    Rend ``(comptes, lisible)``. La liste échoue OPEN à ``[]`` — mais le
-    second membre distingue « aucun compte » d'« illisible », et le gabarit
-    en a besoin : la doctrine du hub Comptabilité veut qu'une panne affiche
-    « indisponibles » SANS invitation à créer un compte, un état vide pendant
-    une panne invitant à en ouvrir un en double."""
-    try:
-        from models import admin_ledger
-
-        return [
-            a for a in admin_ledger.list_accounts(status="actif")
-            if a.get("account_type") == "opérations"
-        ], True
-    except Exception:
-        log_unexpected("trust: admin accounts read failed")
-        return [], False
-
-
-def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
-    """AFTER the committed fee transfer: mint the matching recette in the
-    administration register, linked via ``trust_transaction_id``. An
-    invoice-backed transfer becomes an « encaissement de facture », whose
-    payment on the invoice the MODEL writes in the recette's own commit
-    (lot 5a — ``models/admin_ledger.create_transaction``); an external-ref
-    transfer becomes an « autre recette » citing the paper number. So the
-    recette and the invoice's payment land together or not at all, and
-    this helper projects nothing itself (a second projection would count
-    the payment twice). Fail-open: the trust write is already committed and
-    NEVER blocked; a refused recette surfaces as a banner."""
-    from models import admin_ledger
-
-    comptes, _lisible = _comptes_administration()
-    if not any(a["id"] == admin_account_id for a in comptes):
-        return False
-    invoice_id = entry.get("invoice_id") or None
-    description = (
-        f"Paiement d'honoraires du fidéicommis — dossier "
-        f"{entry.get('dossier_file_number', '')}"
-    )
-    if not invoice_id and entry.get("invoice_external_ref"):
-        description += f" (facture {entry['invoice_external_ref']})"
-    # The link to the trust entry travels as a KEYWORD: the model refuses a
-    # trust_transaction_id inside the data dict (lot 0b — only this helper
-    # and the reprise script mint a trust-linked recette). No direction is
-    # sent either: the model derives « recette » from the kind.
-    recette, errors = admin_ledger.create_transaction({
-        "account_id": admin_account_id,
-        "kind": "encaissement_facture" if invoice_id else "recette_autre",
-        "amount": int(entry.get("amount", 0)),
-        "method": "virement",
-        "counterparty": entry.get("client_name", "") or "Fidéicommis",
-        "date": entry.get("date"),
-        "description": description,
-        "reference": entry.get("reference", ""),
-        "invoice_id": invoice_id,
-        "dossier_id": None if invoice_id else (entry.get("dossier_id") or None),
-    }, trust_transaction_id=entry.get("id"))
-    if errors or recette is None:
-        log_trust_event(
-            "trust_transaction_created", "refused",
-            transaction_id=entry.get("id"), reason="recette_administration_echec",
-        )
-        return False
-    return True
-
-
 @trust_bp.route("/factures-du-dossier")
 @login_required
 def factures_du_dossier() -> str:
@@ -497,7 +408,7 @@ def entry_new():
     dossier_id = request.args.get("dossier_id", "").strip() or None
     locked = request.args.get("locked") == "1"
     dossier = get_dossier(dossier_id) if dossier_id else None
-    admin_accounts, admin_lisible = _comptes_administration()
+    admin_accounts, admin_lisible = comptabilite.comptes_operations_actifs()
     return render_template(
         "trust/form.html", accounts=accounts, entry=None, dossier=dossier,
         locked=locked, errors=[],
@@ -515,25 +426,39 @@ def entry_create():
     # correction is reserved for reversals — refuse it at the route (spec §7).
     if data.get("purpose") == "correction":
         data["purpose"] = ""
-    errors = _resolve_invoice_number(data) + _resolve_cash_receipt(data)
+    errors = _resolve_cash_receipt(data)
     admin_account_id = request.form.get("admin_account_id", "").strip()
-    # D-4 (2026-08-17) : un paiement d'honoraires NOMME son compte
-    # d'administration. Sans lui, les fonds quittent le fidéicommis sans la
-    # moindre écriture comptable et sans rien inscrire sur la facture — c'est
-    # ce qui est arrivé aux trois virements de juillet 2026. Le refus est ici,
-    # AVANT toute écriture : le formulaire n'est pas une garde.
-    if data.get("purpose") == "virement_honoraires" and not admin_account_id:
+    fee_payment = data.get("purpose") == trust.FEE_PAYMENT_PURPOSE
+    if fee_payment and data["admin_date"] is None and data["admin_date_raw"]:
         errors = list(errors) + [
-            "Sélectionnez le compte d'administration où le paiement d'honoraires "
-            "est déposé : la recette correspondante doit être inscrite au registre."
+            "La date du dépôt au compte d'administration est invalide."
         ]
-    entry = None
+    entry_id = None
     if not errors:
-        entry, errors = trust.create_transaction(data)
+        payload = {k: v for k, v in data.items()
+                   if k not in ("cash_receipt_sequence", "admin_date", "admin_date_raw")}
+        if fee_payment:
+            # ONE transaction (lot 5a): the trust entry, its recette at the
+            # administration account — REQUIRED (D-4), the model refuses
+            # without it — at its own deposit date (D16), and the invoice's
+            # payment. A refusal on EITHER side writes nothing: the old route
+            # committed the withdrawal first and followed with a fail-open
+            # recette under a banner. The paper-invoice path stays the
+            # lawyer's (decision 2026-07-17), atomic with its recette too.
+            report = comptabilite.enregistrer_paiement_honoraires(
+                payload, admin_account_id=admin_account_id,
+                admin_date=data["admin_date"], allow_external_ref=True,
+            )
+            entry = report["trust_entry"]
+        else:
+            report = comptabilite.enregistrer_ecriture_fideicommis(payload)
+            entry = report["entry"]
+        errors = report["errors"]
+        entry_id = entry["id"] if entry else None
     if errors:
         accounts = trust.list_accounts(status="actif")
         dossier = get_dossier(data["dossier_id"]) if data.get("dossier_id") else None
-        admin_accounts, admin_lisible = _comptes_administration()
+        admin_accounts, admin_lisible = comptabilite.comptes_operations_actifs()
         return render_template(
             "trust/form.html", accounts=accounts, entry=data, dossier=dossier,
             locked=request.form.get("locked") == "1", errors=errors,
@@ -542,11 +467,7 @@ def entry_create():
             admin_account_id=admin_account_id,
             **_labels(),
         ), 400
-    params = {}
-    if data.get("purpose") == "virement_honoraires":
-        if not _creer_recette_administration(entry, admin_account_id):
-            params["avertissement"] = "administration"
-    return redirect(url_for("trust.entry_detail", tx_id=entry["id"], **params))
+    return redirect(url_for("trust.entry_detail", tx_id=entry_id))
 
 
 @trust_bp.route("/<tx_id>")
@@ -574,8 +495,10 @@ def entry_detail(tx_id: str):
 @trust_bp.route("/<tx_id>/compenser", methods=["POST"])
 @login_required
 def entry_clear(tx_id: str):
+    # The form pre-fills today (Montréal); a field emptied by hand keeps
+    # that default HERE — the service itself requires a statement date.
     cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
-    _, errors = trust.clear_transaction(tx_id, cleared_date)
+    errors = comptabilite.compenser_fideicommis([tx_id], cleared_date)["errors"]
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), url_for("trust.entry_detail", tx_id=tx_id)
     )
@@ -590,12 +513,11 @@ def entry_clear(tx_id: str):
 def entry_clear_bulk():
     tx_ids = request.form.getlist("tx_ids")
     cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
-    refusal: dict = {}
-    trust.clear_transactions_bulk(tx_ids, cleared_date, _reason_out=refusal)
+    report = comptabilite.compenser_fideicommis(tx_ids, cleared_date)
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), url_for("trust.journal")
     )
-    return _redirect_with(return_to, erreur=refusal.get("message", ""))
+    return _redirect_with(return_to, erreur=report["errors"][0] if report["errors"] else "")
 
 
 # ── Reversal (contre-passation) ────────────────────────────────────────────
@@ -632,74 +554,19 @@ def _render_reverse_confirm(entry: dict, errors: list[str]) -> str:
 @trust_bp.route("/<tx_id>/contrepasser", methods=["POST"])
 @login_required
 def entry_reverse(tx_id: str):
-    original = trust.get_transaction(tx_id)
     reason = request.form.get("reason", "").strip()
-    reversal, errors = trust.reverse_transaction(tx_id, reason)
-    if errors:
+    # A fee payment reverses with its administration recettes and their
+    # invoices' payments in ONE transaction (lot 5a) — the service chooses
+    # the path on a STRICT read of the entry. The old route reversed the
+    # trust leg, then each recette after the commit, fail-open, under a
+    # banner when one did not follow.
+    report = comptabilite.contrepasser_ecriture_fideicommis(tx_id, reason)
+    if report["errors"]:
         entry = trust.get_transaction(tx_id)
         if not entry:
             return render_template("errors/404.html"), 404
-        return _render_reverse_confirm(entry, errors), 400
-    params = {}
-    if original and original.get("purpose") == "virement_honoraires":
-        # The fee transfer may have auto-created its admin recette (décision
-        # 2026-08-13) — reverse it too, and reduce the invoice's recorded
-        # payment. Best-effort: the trust reversal is already committed.
-        # Its OWN banner, never the creation's (lot 5a review): the creation
-        # banner tells the lawyer to enter the missing recette by hand,
-        # while here a recette STANDS that the administration register
-        # refuses to reverse on its own (écriture_liée_fideicommis) — the
-        # creation's instruction is one he could not follow.
-        if not _contrepasser_recette_administration(tx_id, reason):
-            params["avertissement"] = "administration_contrepassation"
-    return redirect(url_for("trust.entry_detail", tx_id=reversal["id"], **params))
-
-
-def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
-    """Reverse EVERY admin recette the reversed fee transfer carries — each
-    reversal reducing its invoice's recorded payment in its own commit (lot
-    5a, ``models/admin_ledger.reverse_transaction``). True when there was
-    nothing to do or everything followed; False → banner.
-
-    The lookup is ``list_by_trust_transaction``: it returns EVERY linked
-    row and PROPAGATES a read failure. Its fail-open predecessor
-    (``find_by_trust_transaction``, deleted) turned a read blip into
-    « nothing was auto-created » — True, no banner, the recette and the
-    invoice's payment left standing — and returned only the FIRST row, so a
-    transfer split across two invoices (the reprise's shape) left the
-    second recette and its payment standing for ever. A read failure is
-    now a banner. The rows are still reversed one commit each; making the
-    trust reversal and its recettes ONE transaction is the fee-payment
-    model's job (lot 5a, step 8).
-
-    A refused row does NOT stop the loop (lot 5a review). Each recette
-    reverses in its own commit and the trust reversal is already committed,
-    so this call is the ONLY chance any of them gets: the trust entry cannot
-    be reversed a second time, and the administration register refuses a
-    trust-linked reversal on its own (``écriture_liée_fideicommis``).
-    Returning at the first refusal left every LATER recette — and the
-    payment it carries on its invoice — standing with no path left to
-    reverse it, even when nothing was wrong with it."""
-    try:
-        from models import admin_ledger
-
-        followed = True
-        for recette in admin_ledger.list_by_trust_transaction(trust_tx_id):
-            if (recette.get("reversed_by_id")
-                    or recette.get("status") == "annulée"
-                    or recette.get("kind") == admin_ledger.REVERSAL_KIND):
-                continue  # already reversed (or a reversal row itself)
-            _, errors = admin_ledger.reverse_transaction(
-                recette["id"],
-                f"Contre-passation du virement au fidéicommis — {reason}",
-                allow_linked=True,
-            )
-            if errors:
-                followed = False  # keep going: the next row is independent
-        return followed
-    except Exception:
-        log_unexpected("trust: admin recette reversal failed")
-        return False
+        return _render_reverse_confirm(entry, report["errors"]), 400
+    return redirect(url_for("trust.entry_detail", tx_id=report["reversal"]["id"]))
 
 
 # ── Inter-dossier transfer ─────────────────────────────────────────────────

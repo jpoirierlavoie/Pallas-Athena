@@ -44,9 +44,10 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import admin_ledger, trust
+    from models import admin_ledger, fee_payment, trust
     from scripts import verify_trust_integrity as vti
 
+from tests._accounting_history import legacy_fee_entry, legacy_fee_reversal  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 
 UTC = timezone.utc
@@ -452,23 +453,33 @@ def test_un_numero_de_sequence_duplique_est_un_ecart(fake, monkeypatch, capsys):
 
 
 def _fee_payment(fake, *, recette: bool = True, **over) -> dict:
-    """A fee payment the way the web writes it since D-4: the trust entry,
-    then its administration recette linked by ``trust_transaction_id``
-    (check 10). ``recette=False`` is the fee payment whose recette never
-    came (the fail-open after-commit write)."""
+    """A fee payment the way the model writes it since lot 5a (step 3): the
+    trust entry, its administration recette linked by
+    ``trust_transaction_id`` (check 10) and the invoice's payment, in ONE
+    transaction (``models/fee_payment``). ``recette=False`` is HISTORY —
+    the fee payment whose recette never came (the pre-lot-5a fail-open
+    after-commit write), rebuilt through the trust model's own phases
+    (``tests/_accounting_history``).
+
+    Rewritten deliberately in lot 5a (step 3): the trust purpose is now
+    refused on the public create path, so the old two-call recipe (trust
+    entry, then ``_admin_recette``) can no longer write a NEW fee payment."""
     fake.seed("invoices/inv1", {
         "id": "inv1", "invoice_number": "2026-F001", "dossier_id": "dos1",
         "status": "envoyée", "total": 50000, "amount_due": 50000,
         "amount_paid": 0, "retainer_applied": 0,
     })
-    fee = _create(**{
+    data = _entry(**{
         "direction": "déboursé", "amount": 30000, "purpose": "virement_honoraires",
         "counterparty": "Me Avocat", "invoice_id": "inv1", "date": _d(2026, 9, 10),
         **over,
     })
-    if recette:
-        _admin_recette(fee)
-    return fee
+    if not recette:
+        return legacy_fee_entry(data)
+    result, errs = fee_payment.create_fee_payment(
+        data, admin_account_id="ops1", allow_external_ref=True)
+    assert errs == [], errs
+    return result["trust_entry"]
 
 
 def _admin_recette(fee: dict, **over) -> dict:
@@ -619,21 +630,16 @@ def test_une_ecriture_annulee_n_est_pas_un_retrait(fake, monkeypatch, capsys):
     ne s'y appliquent pas — ni à sa correction, qui copie son mode.
 
     Réécrit à la revue du lot 5a (contrôle 10) : la contre-passation du
-    paiement d'honoraires entraîne, comme la route (``routes/trust.
-    _contrepasser_recette_administration``), celle de sa recette
-    d'administration — sans elle, l'argent revenu au fidéicommis resterait
-    compté au compte d'opérations, ce que le contrôle 10 signale."""
+    paiement d'honoraires entraîne celle de sa recette d'administration —
+    sans elle, l'argent revenu au fidéicommis resterait compté au compte
+    d'opérations, ce que le contrôle 10 signale. Réécrit de nouveau à
+    l'étape 3 : les deux se font en UNE transaction
+    (``models/fee_payment.reverse_fee_payment``), plus en deux appels."""
     _september(fake, monkeypatch)
     fee = _fee_payment(fake)
-    _, errs = trust.reverse_transaction(fee["id"], "chèque perdu")
-    assert errs == []
-    recette = next(
-        r for r in fake.peek_collection("admin_transactions").values()
-        if r.get("trust_transaction_id") == fee["id"])
-    _, errs = admin_ledger.reverse_transaction(
-        recette["id"], "Contre-passation du virement au fidéicommis",
-        allow_linked=True)
+    result, errs = fee_payment.reverse_fee_payment(fee["id"], "chèque perdu")
     assert errs == [], errs
+    assert len(result["admin_reversals"]) == 1
     assert fake.peek(_tx(fee["id"]))["status"] == "annulée"
     _set(fake, _tx(fee["id"]), method="traite")
     code, out = _run(capsys)
@@ -818,14 +824,16 @@ def test_un_virement_partage_entre_deux_recettes_passe_mais_une_seule_contre_pas
     cascade lit désormais ``list_by_trust_transaction`` et les contre-passe
     toutes) : une seconde restée debout — la forme que ce test construit à
     la main — laisse le compte d'opérations compter l'argent revenu au
-    fidéicommis, et le contrôle doit le dire."""
+    fidéicommis, et le contrôle doit le dire. (Depuis l'étape 3 la
+    contre-passation est UNE transaction qui les prend toutes ; la forme
+    ci-dessous est l'HISTORIQUE, rebâtie par les phases du modèle —
+    ``tests/_accounting_history``.)"""
     _september(fake, monkeypatch)
     fee = _fee_payment(fake, recette=False)
     first = _admin_recette(fee, amount=10000)
     _admin_recette(fee, amount=20000)
     assert _run(capsys)[0] == 0
-    _, errs = trust.reverse_transaction(fee["id"], "chèque perdu")
-    assert errs == []
+    legacy_fee_reversal(fee["id"], "chèque perdu")
     _, errs = admin_ledger.reverse_transaction(
         first["id"], "Contre-passation du virement au fidéicommis", allow_linked=True)
     assert errs == []
@@ -838,13 +846,14 @@ def test_un_virement_partage_entre_deux_recettes_passe_mais_une_seule_contre_pas
 def test_un_paiement_contre_passe_dont_la_recette_reste_debout_est_un_ecart(
     fake, monkeypatch, capsys
 ):
-    """La cascade de la route échoue ouverte : la contre-passation du
-    fidéicommis tient, la recette d'administration aussi."""
+    """L'HISTORIQUE d'avant l'étape 3 du lot 5a : la cascade de la route
+    échouait ouverte — la contre-passation du fidéicommis tenait, la recette
+    d'administration aussi. (Rebâtie par les phases du modèle ; le chemin
+    actuel ne peut plus la produire, test_fee_payment le prouve.)"""
     _september(fake, monkeypatch)
     fee = _fee_payment(fake)
     _clear(fee["id"], _d(2026, 9, 11))
-    _, errs = trust.reverse_transaction(fee["id"], "honoraires remboursés")
-    assert errs == []
+    legacy_fee_reversal(fee["id"], "honoraires remboursés")
     assert fake.peek(_tx(fee["id"]))["status"] == "compensée"
     code, out = _run(capsys)
     assert code == 1, out

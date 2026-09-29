@@ -665,51 +665,31 @@ def _fund_cleared(store, amount=100000, day=2):
     return r
 
 
-def test_virement_honoraires_exceeds_invoice_refused(store):
+def test_a_fee_payment_is_never_a_lone_trust_entry(store):
+    """Lot 5a (step 3) — D-4 made structural. A fee payment's trust leg
+    used to be an ordinary create, the administration recette following
+    from the ROUTE after the commit (fail-open): a direct model call let
+    fees leave trust with no trace in the operations account. The public
+    create now refuses the purpose; ``models/fee_payment`` is the one path.
+
+    Rewritten deliberately: the three tests that stood here
+    (``test_virement_honoraires_exceeds_invoice_refused``,
+    ``…_caps_on_the_live_balance_since_lot_p``,
+    ``…_on_draft_invoice_refused``) called ``create_transaction`` with this
+    purpose; their assertions moved, unchanged, to
+    ``tests/test_fee_payment.py`` on the shared fake store."""
     store["invoices"]["inv1"] = {
         "id": "inv1", "status": "envoyée", "dossier_id": "dos1", "amount_due": 50000,
     }
     _fund_cleared(store)
-    _, errs = trust.create_transaction(
-        _new(direction="déboursé", purpose="virement_honoraires", invoice_id="inv1",
-             amount=60000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
-    )
-    assert errs and "solde dû" in errs[0].lower()
-
-
-def test_virement_honoraires_caps_on_the_live_balance_since_lot_p(store):
-    """Since 2026-08-13 the cap reads amount_due − amount_paid: a recorded
-    payment (Lot P) shrinks what may still be transferred out of trust —
-    the frozen amount_due alone would let the transfer take MORE of the
-    client's money than the invoice still owes. Pre-Lot-P invoices carry
-    no amount_paid (→ 0), so their behavior is unchanged."""
-    store["invoices"]["inv1"] = {
-        "id": "inv1", "status": "envoyée", "dossier_id": "dos1",
-        "amount_due": 100000, "amount_paid": 60000,
-    }
-    _fund_cleared(store, amount=100000)
-    _, errs = trust.create_transaction(
-        _new(direction="déboursé", purpose="virement_honoraires", invoice_id="inv1",
-             amount=50000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
-    )
-    assert errs and "solde dû" in errs[0].lower()
+    before = copy.deepcopy(store)
     entry, errs = trust.create_transaction(
         _new(direction="déboursé", purpose="virement_honoraires", invoice_id="inv1",
-             amount=40000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
+             amount=10000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
     )
-    assert errs == []
-
-
-def test_virement_honoraires_on_draft_invoice_refused(store):
-    store["invoices"]["inv1"] = {
-        "id": "inv1", "status": "brouillon", "dossier_id": "dos1", "amount_due": 100000,
-    }
-    _fund_cleared(store)
-    _, errs = trust.create_transaction(
-        _new(direction="déboursé", purpose="virement_honoraires", invoice_id="inv1",
-             amount=50000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
-    )
-    assert errs and "émise" in errs[0].lower()
+    assert entry is None
+    assert errs == [trust._ABORT_MESSAGES["paiement_honoraires_composite"]]
+    assert store == before
 
 
 # ── reverse_transaction (§13) ──────────────────────────────────────────────
@@ -1401,53 +1381,15 @@ def test_dossier_rows_carry_their_clients_for_the_select():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_virement_with_external_ref_allowed(store):
-    _fund_cleared(store, amount=100000)  # cleared 100000 for c1
-    entry, errs = trust.create_transaction(_new(
-        direction="déboursé", purpose="virement_honoraires", amount=60000,
-        invoice_external_ref="INV-2019-042",
-        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
-    ))
-    assert errs == []
-    assert entry["invoice_external_ref"] == "INV-2019-042"
-    assert entry["invoice_id"] is None
-
-
-def test_virement_without_any_invoice_refused(store):
-    _fund_cleared(store, amount=100000)
-    _, errs = trust.create_transaction(_new(
-        direction="déboursé", purpose="virement_honoraires", amount=50000,
-        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
-    ))
-    assert errs and "facture" in errs[0].lower()
-
-
-def test_virement_with_both_invoice_and_external_refused(store):
-    store["invoices"]["inv1"] = {
-        "id": "inv1", "status": "envoyée", "dossier_id": "dos1", "amount_due": 100000,
-    }
-    _fund_cleared(store, amount=100000)
-    _, errs = trust.create_transaction(_new(
-        direction="déboursé", purpose="virement_honoraires", amount=50000,
-        invoice_id="inv1", invoice_external_ref="INV-2019-042",
-        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
-    ))
-    assert errs and "jamais les deux" in errs[0].lower()
-
-
-def test_valid_athena_invoice_still_verified_with_no_external(store):
-    store["invoices"]["inv1"] = {
-        "id": "inv1", "status": "envoyée", "dossier_id": "dos1", "amount_due": 100000,
-    }
-    _fund_cleared(store, amount=100000)
-    entry, errs = trust.create_transaction(_new(
-        direction="déboursé", purpose="virement_honoraires", amount=40000,
-        invoice_id="inv1",
-        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
-    ))
-    assert errs == []
-    assert entry["invoice_id"] == "inv1"
-    assert entry["invoice_external_ref"] == ""
+# Rewritten deliberately (lot 5a, step 3): the four tests that stood here
+# (``test_virement_with_external_ref_allowed``,
+# ``test_virement_without_any_invoice_refused``,
+# ``test_virement_with_both_invoice_and_external_refused``,
+# ``test_valid_athena_invoice_still_verified_with_no_external``) wrote a fee
+# payment through ``create_transaction``, which now refuses the purpose.
+# Their assertions moved, unchanged, to ``tests/test_fee_payment.py`` — the
+# external reference is accepted there only under ``allow_external_ref``
+# (the web form's path), never by default (the connector's).
 
 
 def test_invoice_fields_ignored_on_non_virement(store):
@@ -1461,31 +1403,13 @@ def test_invoice_fields_ignored_on_non_virement(store):
     assert entry["invoice_id"] is None
 
 
-# ── The route's Athena-invoice NUMBER -> id resolver (routes/trust.py) ──────
-
-
-def test_resolve_invoice_number_hard_errors_on_typo(monkeypatch):
-    """A typo'd Athena invoice number must be a HARD error, never a silent
-    downgrade to 'external' (which would skip the amount check)."""
-    import routes.trust as rt
-    import models.invoice as invoice_model
-
-    monkeypatch.setattr(
-        invoice_model, "list_invoices",
-        lambda dossier_id=None: [{"id": "i1", "invoice_number": "2026-F001"}],
-    )
-
-    ok = {"purpose": "virement_honoraires", "dossier_id": "d1", "invoice_number": "2026-F001"}
-    assert rt._resolve_invoice_number(ok) == []
-    assert ok["invoice_id"] == "i1"
-
-    typo = {"purpose": "virement_honoraires", "dossier_id": "d1", "invoice_number": "2026-F009"}
-    assert rt._resolve_invoice_number(typo)  # non-empty error
-    assert typo["invoice_id"] is None  # NOT downgraded to external
-
-    non_transfer = {"purpose": "dépôt_client", "dossier_id": "d1", "invoice_number": "2026-F001"}
-    assert rt._resolve_invoice_number(non_transfer) == []
-    assert non_transfer["invoice_id"] is None
+# ── The Athena-invoice NUMBER -> id resolver ───────────────────────────────
+# Rewritten deliberately (lot 5a, step 3): ``routes/trust._resolve_invoice_number``
+# resolved through ``list_invoices``, which fails OPEN — a read blip answered
+# « Aucune facture ». Its successor is STRICT and lives in the service:
+# ``services.comptabilite.resolve_fee_invoice``, pinned by
+# ``tests/test_comptabilite_services.py`` (a typo still hard-errors, never a
+# silent downgrade to « external »).
 
 
 # ── Le sélecteur de factures du paiement d'honoraires (2026-08-12) ──────────

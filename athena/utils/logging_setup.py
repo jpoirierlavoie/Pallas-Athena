@@ -685,6 +685,11 @@ TrustEvent = Literal[
     "trust_transaction_reversed",
     "trust_overdraft_refused",
     "trust_transaction_refused",
+    # Lot 5a (step 3) — the fee payment, ONE transaction for the trust
+    # entry, its administration recette and the invoice's payment.
+    "trust_fee_payment_recorded",
+    "trust_fee_payment_refused",
+    "trust_fee_payment_reversed",
     "trust_reconciliation_completed",
     "trust_reconciliation_variance",
     "trust_reconciliation_abandoned",

@@ -1590,10 +1590,11 @@ Notes:
   balances, so a balance no entry backs and a client in shortfall both show
   (9), and checks that every fee payment (« paiement d'honoraires ») is backed
   in the administration register by standing recettes adding up to exactly
-  its amount — and by none once it was reversed (10: the D-4 linkage; the web
-  writes that recette after the trust commit and fails open, and the reversal
-  cascade reverses only the first linked recette, so both directions drift in
-  silence). A fee payment with no linked recette at all is a note when it was
+  its amount — and by none once it was reversed (10: the D-4 linkage; until
+  lot 5a step 3 the web wrote that recette after the trust commit and failed
+  open, and the reversal cascade reversed the recettes one commit at a time
+  — the first only, before step 2 — so both directions drifted in silence;
+  since step 3 both are ONE transaction, and check 10 measures the history). A fee payment with no linked recette at all is a note when it was
   written before the D-4 rule (commit e719588, 2026-08-17 11:23 HAE), or when
   an UNLINKED recette of the same amount exists — the manual entry the trust
   page's banner asks for when the automatic one fails, which can never carry
@@ -1627,6 +1628,44 @@ Notes:
   column (and which trips the PDF's carried-forward cross-check when that leg
   opens a period). The register is append-only, so the historical legs keep
   it; the model fix for new transfers belongs to lot 5a step 7.
+- **The fee payment is ONE transaction (lot 5a, step 3):** « Paiement
+  d'honoraires » on the trust entry form now writes the trust withdrawal, its
+  recette in the operations account and the invoice's payment in ONE
+  Firestore transaction (`models/fee_payment`), and its « Contre-passer »
+  reverses the withdrawal, EVERY linked recette and their invoices' payments
+  the same way. No index, no dependency, no Tailwind class, no MCP surface.
+  **Before deploying it**, the two read-only integrity scripts must be clean
+  of écarts — `verify_admin_integrity` check n° 8 above all (an invoice whose
+  `amount_paid` is below what a linked recette took makes its fee payment's
+  reversal REFUSE: the model never clamps), and `verify_trust_integrity`
+  check n° 10 (a fee payment with no linked recette reverses at trust alone —
+  legacy — and says so). **Web behaviour changes to tell the lawyer:**
+  1. a fee payment the administration side refuses (a closed account, a
+     credit card, a date inside a reconciled period of the operations
+     account, a payment the invoice refuses) is now refused WHOLE, on the
+     form, and nothing is written at trust either — the old
+     « la recette n'a pas pu suivre — inscrivez-la manuellement » banner, and
+     the withdrawal it followed, are gone;
+  2. a new optional field « Date du dépôt au compte d'administration » dates
+     the recette (D16) — blank = the withdrawal's date; it may be LATER (a
+     cheque of 30 August deposited on 2 September, even once August is
+     reconciled on the operations account), never earlier, never future;
+  3. the reversal of a fee payment is all-or-nothing too: a recette that
+     cannot follow refuses the whole reversal, with its reason (the old
+     « administration_contrepassation » banner is gone), and the confirmation
+     page says the recette is reversed in the same operation;
+  4. « Déjà compensée » on the administration form is ONE create born
+     « compensée » (it could half-fail, leaving the entry « en circulation »
+     under a banner);
+  5. a bulk clear listing the same entry twice is refused (it cleared it
+     twice and doubled the client's cleared balance — latent: no web form
+     posts a bulk clear today).
+  **Pilot on REAL movements only** — the registers cannot be cleaned up, and
+  there is no preproduction: the next real fee payment on an issued invoice,
+  then check the trust entry, the operations account's encaissement (dated
+  as the form said) and the invoice's « Paiements » block and status. Never
+  « test » a reversal on the trust register. Re-run both integrity scripts
+  afterwards.
 - **Invoice void (lot 0b, B1):** voiding now reads, inside ONE transaction,
   the `trust_transactions`, `admin_transactions`, `timeentries` and
   `expenses` rows whose `invoice_id` names the invoice — single-field

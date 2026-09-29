@@ -1160,9 +1160,10 @@ def create_transaction(
     undeletable and reversible only from the trust side
     (``_entry_lock_reason``), so it must never ride in a payload a form or
     a tool argument can fill: ``request.form`` and MCP arguments build
-    ``data`` and cannot reach a keyword. Its callers are the trust fee
-    payment (``routes/trust._creer_recette_administration``) and the
-    reprise script (``scripts/reprise_encaissements``).
+    ``data`` and cannot reach a keyword. Its callers are the fee payment
+    (``models/fee_payment``, through :func:`_prepare_create`, since lot 5a
+    step 3 — ONE transaction with the trust entry) and the reprise script
+    (``scripts/reprise_encaissements``).
 
     ``_report_out``, when given, receives ``reason`` on a refusal, or the
     invoice's ``invoice_before`` / ``invoice_after`` on an encaissement.
@@ -1935,7 +1936,9 @@ def reverse_transaction(
     ``_report_out``, when given, receives ``reason`` on a refusal, or on
     success ``reversals`` (every leg's) and ``invoices`` —
     ``[(invoice_id, before, after)]``."""
-    reason = (reason or "").strip()
+    # Sanitized like every stored text (lot 5a): the motif becomes the
+    # correction's description.
+    reason = sanitize((reason or "").strip(), max_length=2000)
     if not reason:
         if _report_out is not None:
             _report_out["reason"] = "motif_requis"

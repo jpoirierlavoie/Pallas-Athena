@@ -55,7 +55,7 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import trust
+    from models import fee_payment, trust
     import routes.admin_ledger as admin_ledger_routes
     import routes.dossiers as dossiers_routes
     import routes.invoices as invoices_routes
@@ -104,7 +104,26 @@ def fake(monkeypatch):
             "trust_balance": 0, "trust_balance_by_client": {},
             "trust_cleared_by_client": {},
         })
+    # The operations account a fee payment deposits into (D-4) — since
+    # lot 5a (step 3) the fee payment writes its recette in its own
+    # transaction, so the account must exist for one to succeed.
+    f.seed("admin_accounts/ops1", {
+        "id": "ops1", "name": "Opérations", "status": "actif",
+        "account_type": "opérations", "ledger_balance": 0, "etag": "a0",
+    })
     return f
+
+
+def _fee(**fields):
+    """A fee payment through the ONE path that writes one since lot 5a
+    (step 3) — the trust purpose is refused on the public create. Rewritten
+    deliberately: these art. 58 and provision pins used to call
+    ``trust.create_transaction``; the rules they pin are the trust model's
+    own, reached identically through the composite. Returns ``(trust
+    entry | None, errors)``."""
+    result, errs = fee_payment.create_fee_payment(
+        _entry(**fields), admin_account_id="ops1", allow_external_ref=True)
+    return (result["trust_entry"] if result else None), errs
 
 
 def _evening(monkeypatch, iso: str = "2026-09-26T01:30:00+00:00") -> None:
@@ -500,23 +519,24 @@ def test_un_paiement_d_honoraires_ne_sort_que_par_cheque_ou_virement(fake, monke
     _evening(monkeypatch)
     _funded(day=2)
     before = fake.peek("dossiers/dos1")
-    _, errs = trust.create_transaction(_entry(
+    _, errs = _fee(
         direction="déboursé", purpose="virement_honoraires", method=method,
         amount=10000, date=_d(2026, 9, 5), invoice_external_ref="P-12",
-    ))
+    )
     assert errs == [trust._ABORT_MESSAGES["mode_retrait_honoraires"]]
     assert "art. 58" in errs[0]
     assert fake.peek("dossiers/dos1") == before
+    assert fake.peek_collection("admin_transactions") == {}
 
 
 @pytest.mark.parametrize("method", ["chèque", "virement"])
 def test_le_cheque_et_le_virement_restent_permis(fake, monkeypatch, method):
     _evening(monkeypatch)
     _funded(day=2)
-    entry, errs = trust.create_transaction(_entry(
+    entry, errs = _fee(
         direction="déboursé", purpose="virement_honoraires", method=method,
         amount=10000, date=_d(2026, 9, 5), invoice_external_ref="P-12",
-    ))
+    )
     assert errs == [] and entry["method"] == method
 
 
@@ -709,7 +729,7 @@ def _fee_payment(amount: int = 50000, **over):
                   method="chèque", amount=amount, date=_d(2026, 9, 5),
                   invoice_id="inv1")
     fields.update(over)
-    return trust.create_transaction(_entry(**fields))
+    return _fee(**fields)
 
 
 def test_un_paiement_d_honoraires_sur_une_facture_a_provision_est_refuse(fake, monkeypatch):
@@ -726,6 +746,7 @@ def test_un_paiement_d_honoraires_sur_une_facture_a_provision_est_refuse(fake, m
     assert "compterait la provision deux fois" in errs[0]
     assert fake.peek("dossiers/dos1") == before
     assert len(fake.peek_collection("trust_transactions")) == 1
+    assert fake.peek_collection("admin_transactions") == {}
 
 
 def test_une_facture_sans_provision_reste_payable(fake, monkeypatch):

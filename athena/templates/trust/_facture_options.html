@@ -4,8 +4,9 @@
    « rafraichir-factures »). N'offre QUE les factures ÉMISES
    (envoyée/en_retard) : exactement ce que la vérification transactionnelle
    de models/trust acceptera, avec le solde dû qu'elle plafonne. La garde
-   _resolve_invoice_number (égalité exacte dans le dossier) reste le
-   verdict final ; un select désactivé ne soumet rien — le champ « facture
+   services.comptabilite.resolve_fee_invoice (égalité exacte dans le
+   dossier, lecture STRICTE — lot 5a) puis la transaction du paiement
+   d'honoraires restent le verdict final ; un select désactivé ne soumet rien — le champ « facture
    antérieure » demeure la voie des factures papier pré-Athéna.
    Contexte requis : factures ([{invoice_number, solde_fmt, provision}]),
    selected. #}

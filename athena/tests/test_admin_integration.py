@@ -7,9 +7,10 @@ payment — and a reversal's reduction — in the entry's own commit, so no
 route projects anything any more; the behaviour itself is proved on the
 shared fake store in tests/test_admin_payment_atomic.py), the receipt
 endpoints' guards (whitelist, size, staging-path ownership, sniff
-agreement), the fidéicommis auto-recette orchestration (fail-open, never
-blocking the trust write), and the template pins the house keeps for
-HTMX/OOB wiring.
+agreement), the fidéicommis fee-payment wiring (since lot 5a, step 3 ONE
+transaction in ``models/fee_payment``, reached through
+``services/comptabilite`` — the route orchestrates nothing any more), and
+the template pins the house keeps for HTMX/OOB wiring.
 """
 
 import json
@@ -30,7 +31,6 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
     import models.invoice as invoice_model
-    import models.admin_ledger as al
     import routes.admin_ledger as ra
     import routes.trust as rt
 
@@ -144,8 +144,9 @@ def test_la_contre_passation_d_un_encaissement_ne_reduit_rien(web, monkeypatch):
     _trap_payment_writers(monkeypatch)
     monkeypatch.setattr(ra.al, "get_transaction",
                         lambda t: {"id": t, "invoice_id": "fac1", "amount": 60000})
+    # **kw: the service passes its report channel (lot 5a, step 3).
     monkeypatch.setattr(ra.al, "reverse_transaction",
-                        lambda tx_id, reason, reversal_date=None: ({"id": "rev1"}, []))
+                        lambda tx_id, reason, reversal_date=None, **kw: ({"id": "rev1"}, []))
     resp = web.post("/administration/t1/contrepasser", data={"reason": "NSF"})
     assert resp.status_code == 302
     assert resp.location.endswith("/administration/rev1")
@@ -243,133 +244,58 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Fidéicommis → recette automatique (orchestration route, fail-open)
+# Fidéicommis → la route n'écrit plus au registre d'administration
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# Rewritten deliberately (lot 5a, step 3). The eight tests that stood here
+# pinned routes/trust's two after-commit helpers:
+# _creer_recette_administration (the recette minted AFTER the trust commit,
+# fail-open — « failure is a banner, never an exception ») and
+# _contrepasser_recette_administration (each recette reversed after the
+# trust reversal, a refusal or a read failure answering with a banner).
+# Both helpers are DELETED: the fee payment writes the trust entry, its
+# recette and the invoice's payment in ONE transaction, and reverses them
+# the same way (models/fee_payment). The banner doctrine is REVERSED — an
+# administration-side refusal now refuses the whole payment, nothing
+# written. Every property those tests pinned is proved on the model, on
+# the shared fake store, in tests/test_fee_payment.py:
+#   * the link travels as a keyword, never in the data (and the
+#     sweep test_admin_rules::test_aucun_appelant_ne_glisse_le_lien_… sees
+#     the composite's _prepare_create call);
+#   * an invoice-backed payment mints an encaissement, an external
+#     reference a « recette_autre » citing the paper number;
+#   * an unknown / closed / card admin account refuses — before, the
+#     trust withdrawal had already committed;
+#   * EVERY linked recette is reversed, a split transfer's two included;
+#   * an unreadable link REFUSES the reversal (it once meant « nothing to
+#     do »), and a refused recette refuses the whole reversal.
+# What stays here is the ROUTE's half: it reaches no administration writer.
 
 
-def _virement(**over):
-    entry = {
-        "id": "ttx1", "amount": 60000, "invoice_id": "fac1",
-        "invoice_external_ref": "", "client_name": "Jean Tremblay",
-        "dossier_id": "dos1", "dossier_file_number": "2026-001",
-        "date": datetime(2026, 7, 10, tzinfo=timezone.utc), "reference": "",
-    }
-    entry.update(over)
-    return entry
+def test_la_route_du_fideicommis_n_atteint_aucun_ecrivain_d_administration():
+    """The trust blueprint writes through services/comptabilite only — a
+    helper reborn here would be the fail-open after-commit write again."""
+    import ast
 
-
-def test_creer_recette_administration_invoice_backed(monkeypatch):
-    """Réécrit au lot 0b (B6) : le lien au fidéicommis voyage en MOT-CLÉ —
-    le modèle refuse désormais un trust_transaction_id glissé dans les
-    données — et le sens n'est plus envoyé (le modèle le déduit du type).
-
-    Réécrit de nouveau au lot 5a (étape 2) : la projection bouchonnée ici a
-    disparu. Le modèle écrit le paiement de la facture dans la transaction
-    de la recette ; une seconde projection par la route le compterait deux
-    fois — le piège ci-dessous l'interdit."""
-    created, keywords = {}, {}
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
-    _trap_payment_writers(monkeypatch)
-
-    def _ct(data, **kw):
-        created.update(data)
-        keywords.update(kw)
-        return {**data, "id": "adm1"}, []
-    monkeypatch.setattr(al, "create_transaction", _ct)
-
-    assert rt._creer_recette_administration(_virement(), "ops1") is True
-    assert created["kind"] == "encaissement_facture"
-    assert created["invoice_id"] == "fac1"
-    assert keywords == {"trust_transaction_id": "ttx1"}
-    assert "trust_transaction_id" not in created
-    assert "direction" not in created
-    assert created["amount"] == 60000
-    assert created["counterparty"] == "Jean Tremblay"
-
-
-def test_creer_recette_administration_external_ref(monkeypatch):
-    created = {}
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
-
-    def _ct(data, **kw):
-        created.update(data)
-        created["_kw"] = kw
-        return {**data, "id": "adm1"}, []
-    monkeypatch.setattr(al, "create_transaction", _ct)
-
-    virement = _virement(invoice_id=None, invoice_external_ref="F-1999-12")
-    assert rt._creer_recette_administration(virement, "ops1") is True
-    assert created["kind"] == "recette_autre"
-    assert created["invoice_id"] is None
-    assert "F-1999-12" in created["description"]
-    assert created["_kw"] == {"trust_transaction_id": "ttx1"}
-
-
-def test_creer_recette_refuses_an_unknown_admin_account(monkeypatch):
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
-    assert rt._creer_recette_administration(_virement(), "forgé") is False
-
-
-def test_creer_recette_failure_is_a_banner_never_an_exception(monkeypatch):
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
-    monkeypatch.setattr(al, "create_transaction",
-                        lambda data, **kw: (None, ["Compte d'administration introuvable."]))
-    assert rt._creer_recette_administration(_virement(), "ops1") is False
-
-
-def test_contrepasser_recette_reverses_every_linked_row(monkeypatch):
-    """Réécrit délibérément au lot 5a (étape 2). L'ancienne cascade lisait
-    find_by_trust_transaction — UNE recette, la première — puis réduisait la
-    facture elle-même, après coup. Elle lit maintenant TOUTES les lignes
-    (list_by_trust_transaction) et ne réduit rien : chaque contre-passation
-    du modèle réduit sa facture dans son propre commit. Une ligne déjà
-    contre-passée est sautée."""
-    rows = [
-        {"id": "adm1", "invoice_id": "fac1", "amount": 30000, "reversed_by_id": None,
-         "status": "compensée", "kind": "encaissement_facture"},
-        {"id": "adm2", "invoice_id": "fac2", "amount": 20000, "reversed_by_id": None,
-         "status": "en_circulation", "kind": "encaissement_facture"},
-        {"id": "adm0", "invoice_id": "fac3", "amount": 10000, "reversed_by_id": "r0",
-         "status": "annulée", "kind": "encaissement_facture"},
-    ]
-    calls = []
-    _trap_payment_writers(monkeypatch)
-    monkeypatch.setattr(al, "list_by_trust_transaction", lambda t: rows)
-
-    def _rev(tx_id, reason, reversal_date=None, allow_linked=False):
-        calls.append((tx_id, allow_linked))
-        return {"id": f"rev-{tx_id}"}, []
-    monkeypatch.setattr(al, "reverse_transaction", _rev)
-
-    assert rt._contrepasser_recette_administration("ttx1", "erreur") is True
-    # allow_linked — the trust side calls; the already-reversed row skipped.
-    assert calls == [("adm1", True), ("adm2", True)]
-
-
-def test_contrepasser_recette_noop_when_nothing_was_created(monkeypatch):
-    monkeypatch.setattr(al, "list_by_trust_transaction", lambda t: [])
-    monkeypatch.setattr(al, "reverse_transaction",
-                        lambda *a, **k: pytest.fail("rien à contre-passer"))
-    assert rt._contrepasser_recette_administration("ttx1", "x") is True
-
-
-def test_contrepasser_recette_read_failure_is_a_banner(monkeypatch):
-    """Réécrit délibérément au lot 5a (étape 2) : l'ancien lecteur échouait
-    OUVERT à None, et la cascade rendait True — « rien à faire », sans
-    bannière — sur une simple panne de lecture."""
-    def _boom(_t):
-        raise RuntimeError("firestore indisponible")
-    monkeypatch.setattr(al, "list_by_trust_transaction", _boom)
-    assert rt._contrepasser_recette_administration("ttx1", "x") is False
-
-
-def test_contrepasser_recette_refusal_is_a_banner(monkeypatch):
-    monkeypatch.setattr(al, "list_by_trust_transaction", lambda t: [
-        {"id": "adm1", "reversed_by_id": None, "status": "compensée",
-         "kind": "encaissement_facture"}])
-    monkeypatch.setattr(al, "reverse_transaction",
-                        lambda *a, **k: (None, ["Rien n'a été écrit."]))
-    assert rt._contrepasser_recette_administration("ttx1", "x") is False
+    source = open(os.path.join(_ATHENA, "routes", "trust.py"), encoding="utf-8").read()
+    tree = ast.parse(source)
+    writers = {"create_transaction", "reverse_transaction", "clear_transaction",
+               "clear_transactions_bulk", "list_by_trust_transaction"}
+    reached = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in writers:
+            owner = node.value
+            if isinstance(owner, ast.Name) and owner.id in ("trust", "admin_ledger", "al"):
+                reached.add(f"{owner.id}.{node.attr}")
+        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("admin_ledger"):
+            reached.add(f"import {node.module}")
+        if isinstance(node, ast.Import) and any(
+                a.name.endswith("admin_ledger") for a in node.names):
+            reached.add("import admin_ledger")
+    assert reached == set(), reached
+    assert not hasattr(rt, "_creer_recette_administration")
+    assert not hasattr(rt, "_contrepasser_recette_administration")
+    assert not hasattr(rt, "_resolve_invoice_number")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -633,7 +559,8 @@ def _bouchonner_rendu(monkeypatch):
     monkeypatch.setattr(rt.trust, "list_accounts", lambda **kw: [])
     monkeypatch.setattr(rt, "get_dossier", lambda _d: None)
     monkeypatch.setattr(rt, "_factures_emises", lambda _d=None: [])
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
+    monkeypatch.setattr(rt.comptabilite, "comptes_operations_actifs",
+                        lambda: ([{"id": "ops1"}], True))
 
 
 def test_un_paiement_dhonoraires_sans_compte_est_refuse_avant_toute_ecriture(
@@ -641,78 +568,104 @@ def test_un_paiement_dhonoraires_sans_compte_est_refuse_avant_toute_ecriture(
 ):
     """Sans compte d'administration, les fonds quittent le fidéicommis sans la
     moindre écriture comptable et sans rien inscrire sur la facture — les trois
-    virements perdus de juillet 2026. Le refus tombe AVANT create_transaction,
-    sinon le registre porterait un mouvement que rien ne compense."""
-    _bouchonner_rendu(monkeypatch)
-    appels = []
-    monkeypatch.setattr(rt.trust, "create_transaction",
-                        lambda d: appels.append(d) or ({"id": "t1"}, []))
+    virements perdus de juillet 2026.
 
+    Réécrit délibérément au lot 5a (étape 3) : la garde a quitté la route
+    pour le MODÈLE (``models/fee_payment``) — le formulaire n'est pas une
+    garde, et la route non plus. Le refus tombe avant toute lecture : ni le
+    fidéicommis ni le registre d'administration ne sont atteints."""
+    _bouchonner_rendu(monkeypatch)
+    from models import fee_payment
+
+    monkeypatch.setattr(fee_payment.trust, "_prepare_create",
+                        lambda *a, **k: pytest.fail("rien ne doit se préparer"))
     resp = web_trust.post("/fideicommis/", data=_form_virement(admin_account_id=""))
 
     assert resp.status_code == 400
-    assert appels == []          # RIEN n'a été écrit au registre
     assert "compte d'administration" in resp.get_data(as_text=True)
 
 
 def test_la_garde_ne_vise_que_le_paiement_dhonoraires(web_trust, monkeypatch):
     """Une provision, un déboursé à un tiers : aucun compte d'administration
-    n'entre en jeu, et exiger le champ bloquerait des saisies légitimes."""
+    n'entre en jeu, et exiger le champ bloquerait des saisies légitimes.
+    (Réécrit au lot 5a, étape 3 : l'écriture ordinaire passe par le service,
+    qui transmet son canal de rapport — le paiement d'honoraires n'est pas
+    atteint.)"""
     _bouchonner_rendu(monkeypatch)
     appels = []
 
-    def _ct(data):
+    def _ct(data, **kw):
         appels.append(data)
         return {"id": "t1", **data}, []
     monkeypatch.setattr(rt.trust, "create_transaction", _ct)
-    monkeypatch.setattr(rt, "_creer_recette_administration",
-                        lambda *a, **k: pytest.fail("aucune recette attendue"))
+    monkeypatch.setattr(rt.comptabilite.fee_payment, "create_fee_payment",
+                        lambda *a, **k: pytest.fail("aucun paiement d'honoraires attendu"))
 
     resp = web_trust.post("/fideicommis/", data=_form_virement(
-        purpose="provision", direction="recette", admin_account_id=""))
+        purpose="dépôt_client", direction="recette", admin_account_id=""))
 
     assert resp.status_code == 302
     assert len(appels) == 1
 
 
-def test_avec_un_compte_le_comportement_reste_celui_du_13_aout(
+def test_le_paiement_d_honoraires_passe_par_l_operation_unique(
     web_trust, monkeypatch
 ):
-    """La recette automatique était déjà là — D-4 ne change que son caractère
-    facultatif. Le chemin nominal doit rester octet pour octet le même."""
+    """Réécrit délibérément au lot 5a (étape 3) — il s'appelait
+    « avec un compte, le comportement reste celui du 13 août » : la route
+    inscrivait le virement puis la recette. Elle remet maintenant tout au
+    service, qui écrit les trois écritures en une transaction ; ce test
+    épingle ce qu'elle lui transmet — le compte, la date de dépôt (D16) et
+    le chemin de la facture papier, que seul le formulaire web ouvre."""
     _bouchonner_rendu(monkeypatch)
-    monkeypatch.setattr(rt.trust, "create_transaction",
-                        lambda d: ({"id": "t1", **d}, []))
     recus = {}
+
+    def _paiement(data, **kw):
+        recus.update(data=data, **kw)
+        return {"ok": True, "errors": [], "reason": None, "warnings": [],
+                "trust_entry": {"id": "t1"}, "admin_recette": {"id": "a1"},
+                "invoice": None, "client_balance": None}
+    monkeypatch.setattr(rt.comptabilite, "enregistrer_paiement_honoraires", _paiement)
+
+    resp = web_trust.post("/fideicommis/", data=_form_virement(admin_date="2026-07-12"))
+
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/fideicommis/t1")
+    assert "avertissement" not in resp.headers["Location"]
+    assert recus["admin_account_id"] == "ops1"
+    assert recus["admin_date"] == datetime(2026, 7, 12, tzinfo=timezone.utc)
+    assert recus["allow_external_ref"] is True
+    assert "admin_date" not in recus["data"] and "admin_date_raw" not in recus["data"]
+
+
+def test_un_refus_de_la_recette_refuse_tout_le_paiement(web_trust, monkeypatch):
+    """Doctrine RENVERSÉE au lot 5a (étape 3) — ce test s'appelait « un échec
+    de la recette reste une bannière » : le virement était COMMIS quand la
+    recette échouait, et une bannière demandait de l'inscrire à la main.
+    Désormais les trois écritures sont une seule transaction : un refus côté
+    administration est un refus de TOUT, rendu au formulaire (400), et rien
+    n'est inscrit (preuve sur le vrai magasin : tests/test_fee_payment.py)."""
+    _bouchonner_rendu(monkeypatch)
     monkeypatch.setattr(
-        rt, "_creer_recette_administration",
-        lambda entry, compte: recus.update(entry=entry, compte=compte) or True,
+        rt.comptabilite, "enregistrer_paiement_honoraires",
+        lambda data, **kw: {"ok": False, "errors": ["Ce compte d'administration est fermé."],
+                            "reason": "compte_administration_fermé", "warnings": [],
+                            "trust_entry": None, "admin_recette": None,
+                            "invoice": None, "client_balance": None},
     )
 
     resp = web_trust.post("/fideicommis/", data=_form_virement())
 
-    assert resp.status_code == 302
-    assert "avertissement" not in resp.headers["Location"]
-    assert recus["compte"] == "ops1"
+    assert resp.status_code == 400
+    assert "Ce compte d'administration est fermé." in resp.get_data(as_text=True)
 
 
-def test_un_echec_de_la_recette_reste_une_banniere(web_trust, monkeypatch):
-    """Le virement est COMMIS quand la recette échoue : le bloquer serait pire
-    (les fonds du client resteraient immobilisés sur une panne du module
-    comptable). L'avertissement reste la seule réponse correcte.
-
-    Précisé au lot 5a (étape 2) : la recette et le paiement de sa facture
-    échouent désormais ENSEMBLE — il n'existe plus de recette debout sans
-    son paiement (preuve sur le vrai magasin :
-    test_admin_payment_atomic::test_une_recette_refusee_ne_laisse_ni_recette_ni_paiement).
-    Rendre le virement lui-même atomique avec sa recette est l'étape 8 du
-    lot."""
+def test_une_date_de_depot_illisible_est_refusee_avant_toute_ecriture(
+    web_trust, monkeypatch
+):
     _bouchonner_rendu(monkeypatch)
-    monkeypatch.setattr(rt.trust, "create_transaction",
-                        lambda d: ({"id": "t1", **d}, []))
-    monkeypatch.setattr(rt, "_creer_recette_administration", lambda *a: False)
-
-    resp = web_trust.post("/fideicommis/", data=_form_virement())
-
-    assert resp.status_code == 302
-    assert "avertissement=administration" in resp.headers["Location"]
+    monkeypatch.setattr(rt.comptabilite, "enregistrer_paiement_honoraires",
+                        lambda *a, **k: pytest.fail("rien ne doit s'inscrire"))
+    resp = web_trust.post("/fideicommis/", data=_form_virement(admin_date="31/02/2026"))
+    assert resp.status_code == 400
+    assert "date du dépôt au compte d'administration est invalide" in resp.get_data(as_text=True)
