@@ -12359,6 +12359,9 @@ def record_document_analysis(args: dict) -> dict:
     )
 
 
+_DOCUMENT_ANALYSIS_SUBJECT = "Ce document a été modifié"
+
+
 def _record_document_analysis_impl(args: dict) -> dict:
     document_id = (args.get("document_id") or "").strip()
     existing = _read_for_write(
@@ -12384,6 +12387,13 @@ def _record_document_analysis_impl(args: dict) -> dict:
     # inconnue : X » plutôt qu'une erreur de modèle nue. Un appel EST une
     # écriture — il n'existe aucun aperçu —, donc son refus doit être
     # immédiatement réparable par l'appelant, sans second aller-retour.
+    # The version the call is judged on (finitions, contracts-6): the
+    # caller's `expected_etag` (list_documents), refused here when stale;
+    # omitted, the handler's OWN read — a lawyer's edit or confirmation of
+    # the analysis landing before the model's transaction is refused,
+    # never silently replaced.
+    expected = _expected_etag(args, existing, tool="record_document_analysis",
+                              subject=_DOCUMENT_ANALYSIS_SUBJECT)
     champ, erreurs = document_model._analyse_derivee(
         sortie, document=existing, dossier=dossier
     )
@@ -12397,6 +12407,12 @@ def _record_document_analysis_impl(args: dict) -> dict:
         declenche_par="mcp",
         modele=_ANALYSIS_MODEL_LABEL,
         dossier=dossier,
+        expected_etag=expected,
+    )
+    _raise_if_stale(
+        erreurs, tool="record_document_analysis",
+        subject=_DOCUMENT_ANALYSIS_SUBJECT,
+        reread=lambda: document_model.get_document(document_id),
     )
     if erreurs or updated is None:
         raise ToolArgumentError(" ".join(erreurs or ["Enregistrement refusé."]))
@@ -12437,6 +12453,7 @@ def _record_document_analysis_impl(args: dict) -> dict:
         "category": updated.get("category", ""),
         "category_source": updated.get("category_source", ""),
         "analyse": {k: stocke.get(k) for k in _ANALYSE_ECHO if k in stocke},
+        "entity": {"id": document_id, "etag": concurrency.etag_of(updated)},
         "warnings": _analyse_warnings(stocke, existing),
     }
 

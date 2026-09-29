@@ -5552,6 +5552,7 @@ TOOLS: dict[str, dict] = {
                         "is what would justify a dedicated OCR pass."
                     ),
                 },
+                **_expected_etag_prop(("list_documents",)),
                 **_write_protocol_props(),
             },
             "required": ["document_id", "sous_nature"],
@@ -5559,12 +5560,13 @@ TOOLS: dict[str, dict] = {
         },
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
-        "concurrency": CONCURRENCY_EXEMPT,
-        "concurrency_reason": (
-            "Adopts expected_etag with the document edit tools (plan lot "
-            "2); the analysis never lowers a protection level, so an "
-            "overwrite cannot under-protect."
-        ),
+        # Optional (finitions, contracts-6): the exemption this replaced
+        # promised « adopts expected_etag with the document edit tools
+        # (plan lot 2) », which lot 2 never did — and a lawyer's edit or
+        # confirmation of the analysis landing mid-analysis was overwritten.
+        # Omitted, the handler compare-and-sets against its own read.
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": ("list_documents",),
         "handler": "record_document_analysis",
     },
     # ── Lot 2A (T7) — FILES: the document and folder edits ─────────────

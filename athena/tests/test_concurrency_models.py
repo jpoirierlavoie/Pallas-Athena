@@ -340,6 +340,11 @@ _CASES = {
                           lambda i, **kw: document_model.confirmer_analyse(
                               i, "juriste@example.com", **kw),
                           "category_source", "juriste"),
+    # Finitions (contracts-6): an analysis is judged on the version read.
+    "record_analyse": ("documents", _document,
+                       lambda i, **kw: document_model.record_analyse(
+                           i, {"sous_nature": "CORR_CLIENT"}, **kw),
+                       "category", "correspondance"),
 }
 _ALL = pytest.mark.parametrize("case", sorted(_CASES), ids=sorted(_CASES))
 
@@ -369,6 +374,7 @@ _GETTERS = {
     "update_metadata": (document_model, "get_document"),
     "update_analyse": (document_model, "get_document"),
     "confirmer_analyse": (document_model, "get_document"),
+    "record_analyse": (document_model, "get_document"),
     "move_document": (document_model, "get_document"),
     "confirmer_categorie": (document_model, "get_document"),
 }
@@ -385,7 +391,7 @@ _READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
 # to take the plain legacy set() without an etag; move_document and
 # confirmer_categorie join with this lot.
 _DOCUMENT_PARTIAL = {"update_metadata", "update_analyse", "confirmer_analyse",
-                     "move_document", "confirmer_categorie"}
+                     "move_document", "confirmer_categorie", "record_analyse"}
 # Lot 3a (step 2): the two moves read only inside their transaction and
 # write a PARTIAL update() of the dossier link and its stamp.
 _MOVES = {"move_time_entry", "move_expense"}
@@ -1139,6 +1145,10 @@ _HANDLER_CASES = {
     "update_document": ("documents", _document, "document_id",
                         {"display_name": "Mise en demeure"},
                         ("display_name", "Mise en demeure")),
+    # Finitions (contracts-6).
+    "record_document_analysis": ("documents", _document, "document_id",
+                                 {"sous_nature": "CORR_CLIENT"},
+                                 ("category", "correspondance")),
     "manage_folder": ("folders", _folder, None,
                       {"name": "Expertises"}, ("name", "Expertises")),
     # Lot 2A (T10) — a template's metadata (its file path is the lot's own
@@ -1187,6 +1197,7 @@ _SECOND_ARGS = {
     # different call (write_support's fingerprint).
     "update_admin_entry": {"description": "Deuxième version",
                            "idempotency_key": "cle-admin-e2e-bis"},
+    "record_document_analysis": {"sous_nature": "JUG_JUGEMENT"},
 }
 
 # Tools that DEMAND expected_etag for the change the case makes (plan rule
@@ -1222,6 +1233,7 @@ _HANDLER_GETTERS = {
     "update_hearing": (hearing_model, "get_hearing_strict"),
     "decide_rendez_vous": (hearing_model, "get_hearing_strict"),
     "update_document": (document_model, "get_document_strict"),
+    "record_document_analysis": (document_model, "get_document_strict"),
     "manage_folder": (folder_model, "list_dossier_folders"),
     "update_template": (doc_template_model, "get_template"),
     "update_invoice": (invoice_model, "get_invoice_strict"),

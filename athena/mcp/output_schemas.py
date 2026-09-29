@@ -3805,6 +3805,16 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "category": {"type": "string"},
             "category_source": {"type": "string"},
             "analyse": {"type": "object"},
+            # Finitions (contracts-6): the document's NEW etag, for a next
+            # expected_etag. Optional — a key added to a shipped output.
+            "entity": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "etag": {"type": "string",
+                             "description": "The etag AS STORED now."},
+                },
+            },
             "warnings": {
                 "type": "array",
                 "items": {"type": "string"},

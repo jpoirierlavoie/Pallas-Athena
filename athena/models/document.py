@@ -2617,6 +2617,7 @@ def record_analyse(
     declenche_par: str = "mcp",
     modele: str = "",
     dossier: Optional[dict] = None,
+    expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Enregistre une analyse : le cache, la catégorie dérivée, le journal.
 
@@ -2643,6 +2644,13 @@ def record_analyse(
     :func:`is_addressable_id`) : le connecteur le transmet tel quel, et
     ``document("{id}/analyses/{a}")`` désignait une entrée du journal, sur
     laquelle ce modèle écrivait un cache et ouvrait un journal à elle.
+
+    ``expected_etag`` (mot-clé, finitions contracts-6) : la version du
+    document que l'appelant a LUE. La transaction ne protégeait que contre
+    une autre analyse : une édition ou une confirmation de l'analyse par le
+    juriste, glissée entre la lecture du texte par Claude et son
+    enregistrement, était remplacée en silence. Une version dépassée rend
+    ``[STALE_ETAG_ERROR]``, rien d'écrit ; ``None``, la règle d'avant.
     """
     if not is_addressable_id(document_id):
         return None, ["Document introuvable."]
@@ -2654,6 +2662,8 @@ def record_analyse(
         if not snap.exists:
             raise _Refused(["Document introuvable."])
         existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
 
         # La dérivation lit CETTE lecture — c'est elle que le plancher de
         # non-déclassement doit voir.
