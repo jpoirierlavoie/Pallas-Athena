@@ -491,6 +491,11 @@ _ABORT_MESSAGES = {
         "Impossible de compenser : écriture déjà compensée ou annulée, "
         "date de compensation antérieure à l'écriture, ou future."
     ),
+    "compensation_doublon": (
+        "La même écriture figure plus d'une fois dans la demande de "
+        "compensation : rien n'a été compensé. Chaque écriture ne se "
+        "compense qu'une fois."
+    ),
     "comptes_incompatibles": (
         "Un paiement de carte va d'un compte d'opérations vers une carte de crédit."
     ),
@@ -1572,6 +1577,12 @@ def _clear_entries(
         _reason_out = {}
     if not tx_ids:
         return [], []
+    # The same entry twice in one request is refused — never cleared, and
+    # counted, twice (the trust register's rule, where the duplicate
+    # released cleared funds).
+    if len(set(tx_ids)) != len(list(tx_ids)):
+        _reason_out["reason"] = "compensation_doublon"
+        return [], list(tx_ids)
     cd = _midnight_utc(cleared_date)
     now = datetime.now(timezone.utc)
     # Montréal clock, like every date guard in this module — a UTC check

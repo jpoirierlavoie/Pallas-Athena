@@ -415,6 +415,11 @@ _ABORT_MESSAGES = {
     ),
     "compensation_future": "La date de compensation ne peut être dans le futur.",
     "compensation_erreur": "Erreur lors de la compensation. Veuillez réessayer.",
+    "compensation_doublon": (
+        "La même écriture figure plus d'une fois dans la demande de "
+        "compensation : rien n'a été compensé. Chaque écriture ne se "
+        "compense qu'une fois."
+    ),
     "mode_retrait_honoraires": (
         "Un paiement d'honoraires ne se retire du fidéicommis que par chèque à "
         "l'ordre de l'avocat ou par virement à un compte qui n'est pas en "
@@ -1239,6 +1244,14 @@ def _clear_entries(
     in silence."""
     if not tx_ids:
         return [], []
+    # The same entry twice in one request is refused, never cleared twice:
+    # each copy added its amount to the bank balance and — for a recette —
+    # to the client's CLEARED balance, the one figure the overdraft control
+    # reads. A 1 000 $ deposit listed twice released 2 000 $ to withdraw.
+    if len(set(tx_ids)) != len(list(tx_ids)):
+        if _reason_out is not None:
+            _reason_out.update(reason="compensation_doublon", detail=None)
+        return [], list(tx_ids)
     cd = _midnight_utc(cleared_date)
     now = datetime.now(timezone.utc)
     if cd is None:

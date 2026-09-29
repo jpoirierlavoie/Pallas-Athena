@@ -366,3 +366,41 @@ def test_la_modification_rapporte_ses_champs_et_le_conflit(fake):
     _, errs = al.update_transaction(entry["id"], {"description": "Autre"},
                                     expected_etag=entry["etag"], _report_out=report)
     assert errs and report["reason"] == "écriture_modifiée"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Une écriture listée deux fois ne se compense jamais deux fois
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_un_depot_liste_deux_fois_ne_libere_pas_deux_fois_les_fonds(fake):
+    """Régression (vérifiée sur le code antérieur : 200 000 ¢ au solde
+    bancaire et au solde COMPENSÉ du client pour un dépôt de 100 000 ¢) —
+    chaque copie de l'identifiant ajoutait son montant, et le solde
+    compensé est le seul chiffre que le contrôle de découvert lit : le
+    client pouvait retirer deux fois ce qu'il avait déposé. La compensation
+    en lot est encore latente au web ; l'outil du connecteur la rendra
+    courante (lot 5b)."""
+    entry, _ = trust.create_transaction(_trust_entry())
+    before_account = fake.peek("trust_accounts/acc1")
+    before_dossier = fake.peek("dossiers/dos1")
+    report: dict = {}
+    count, failed = trust.clear_transactions_bulk(
+        [entry["id"], entry["id"]], _d(2026, 9, 3), _reason_out=report)
+    assert count == 0 and failed == [entry["id"], entry["id"]]
+    assert report["reason"] == "compensation_doublon"
+    assert report["message"] == trust._ABORT_MESSAGES["compensation_doublon"]
+    assert fake.peek("trust_accounts/acc1") == before_account
+    assert fake.peek("dossiers/dos1") == before_dossier
+    assert fake.peek(f"trust_transactions/{entry['id']}")["status"] == "en_circulation"
+
+
+def test_l_administration_refuse_aussi_une_ecriture_listee_deux_fois(fake):
+    entry, _ = al.create_transaction(_depense())
+    before = fake.peek(f"admin_transactions/{entry['id']}")
+    report: dict = {}
+    count, failed = al.clear_transactions_bulk(
+        [entry["id"], entry["id"]], _d(2026, 9, 11), _report_out=report)
+    assert count == 0 and len(failed) == 2
+    assert report["reason"] == "compensation_doublon"
+    assert fake.peek(f"admin_transactions/{entry['id']}") == before
