@@ -755,6 +755,21 @@ def test_une_recette_inscrite_a_la_main_apres_le_bandeau_est_une_note(
     assert recette["id"] not in out
 
 
+def test_une_recette_datee_avant_son_paiement_d_honoraires_est_une_note_d16(
+    fake, monkeypatch, capsys
+):
+    """D16 sur l'historique : l'argent arrive au compte d'opérations le jour
+    où il quitte le fidéicommis, ou après — jamais avant."""
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake, recette=False)
+    early = _admin_recette(fee, date=_d(2026, 9, 9))
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"(écriture {fee['id']}): recette d'administration {early['id']} "
+            f"datée du 2026-09-09, AVANT le paiement d'honoraires qu'elle porte "
+            f"(2026-09-10)") in out.split("Notes à revoir", 1)[1]
+
+
 def test_une_recette_qui_ne_couvre_pas_le_paiement_est_un_ecart(
     fake, monkeypatch, capsys
 ):

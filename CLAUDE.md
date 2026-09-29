@@ -573,7 +573,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # payment ↔ its admin recettes (D-4: Σ standing
 │   │   │                           # == amount; none once reversed; pre-D-4 absence,
 │   │   │                           # or an unlinked manual recette of the same
-│   │   │                           # amount = NOTE). Exit 0 / 1 écart / 2 notes
+│   │   │                           # amount = NOTE; a linked recette dated before
+│   │   │                           # its fee payment = NOTE, D16). Exit 0 / 1 écart / 2 notes
 │   │   │                           # (a reconciliation completed before the as-of
 │   │   │                           # rework, 945572a, is a NOTE, never an écart)
 │   │   ├── verify_admin_integrity.py  # Août 2026: recompute + cross-check du registre d'administration

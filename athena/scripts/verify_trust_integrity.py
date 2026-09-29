@@ -97,7 +97,8 @@ Checks 5-10 (lot 5a, 2026-09-28):
      can never carry the link. Every other mismatch, and a standing recette
      linked to an entry that is not a trust fee payment, is an écart. An
      unreadable admin register is an écart too: a check that cannot read
-     must say so, never pass.
+     must say so, never pass. And, as a NOTE (D16 applied to history), a
+     linked recette dated BEFORE the fee payment it carries.
 """
 
 import sys
@@ -597,6 +598,21 @@ def _check_fee_payment_linkage(
         standing = [r for r in linked if _admin_standing(r)]
         standing_total = sum(int(r.get("amount", 0)) for r in standing)
         fee_standing = tx.get("status") != "annulée" and not tx.get("reversed_by_id")
+
+        # D16 on history: the money reaches the operations account on or
+        # after the day it leaves trust, never before.
+        fee_day = _day(tx.get("date"))
+        for r in standing:
+            r_day = _day(r.get("date"))
+            if fee_day is not None and r_day is not None and r_day < fee_day:
+                notes.append(
+                    f"{where}: recette d'administration {r.get('id')} datée du "
+                    f"{r_day}, AVANT le paiement d'honoraires qu'elle porte "
+                    f"({fee_day}) — l'argent n'a pas pu arriver au compte "
+                    f"d'opérations avant de quitter le fidéicommis ; la règle "
+                    f"D16 (date d'administration ≥ date du fidéicommis) la "
+                    f"refusera."
+                )
 
         if fee_standing:
             if standing_total == amount:

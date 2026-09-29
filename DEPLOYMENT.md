@@ -1596,7 +1596,9 @@ Notes:
   written before the D-4 rule (commit e719588, 2026-08-17 11:23 HAE), or when
   an UNLINKED recette of the same amount exists — the manual entry the trust
   page's banner asks for when the automatic one fails, which can never carry
-  the link; every other mismatch is an écart. Step 8 of lot 5 (`models/fee_payment`) relies on this measure: its
+  the link; every other mismatch is an écart. A linked recette dated BEFORE
+  the fee payment it carries is a note (D16 on history: the new fee-payment
+  model will refuse it). Step 8 of lot 5 (`models/fee_payment`) relies on this measure: its
   reversal treats a fee payment with zero linked recettes as legacy. Run it in
   production, BEFORE the model steps of lot 5 deploy. Its exit
   code says what it found: `0` clean, `1` at least one **écart** (a figure or
