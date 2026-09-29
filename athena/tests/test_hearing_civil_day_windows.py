@@ -223,9 +223,11 @@ def test_get_agenda_at_the_evening_before_does_not_list_tomorrow_as_today(
 def test_get_agenda_keeps_an_all_day_hearing_of_the_day_after_to_out(
     fake, monkeypatch
 ):
-    """The upper bound is the instant `now + days_ahead`; at 21:00 it falls
-    after the next day's midnight UTC. A row whose civil day is after the
-    window's own `to` is not listed under it."""
+    """The read runs to civil_day_ceiling(`to`) (finitions, sync-5 — it
+    stopped at the instant `now + days_ahead` before), which admits the next
+    day's all-day hearing (stored at midnight UTC, before midnight
+    Montréal). A row whose civil day is after the window's own `to` is not
+    listed under it."""
     _agenda_stubs(monkeypatch, date(2026, 10, 14))
     _freeze_now(monkeypatch, handlers, _mtl(2026, 10, 14, 21))
     payload = handlers.get_agenda({"days_ahead": 1})
@@ -233,6 +235,48 @@ def test_get_agenda_keeps_an_all_day_hearing_of_the_day_after_to_out(
     ids = {h["id"] for h in payload["hearings"]}
     assert "allday-tomorrow" not in ids         # the 16th: after `to`
     assert "allday-today" in ids                # the 15th: inside
+
+
+def test_get_agenda_lists_every_hearing_of_its_last_day(fake, monkeypatch):
+    """Finitions, sync-5. The window reports `to` = the 16th; the read used
+    to stop at the INSTANT now + days_ahead (07:00 on the 16th), dropping a
+    09:30 hearing of the day it claimed to cover whole."""
+    fake.seed("hearings/timed-tomorrow-930",
+              _hearing("timed-tomorrow-930", _mtl(2026, 10, 16, 9, 30)))
+    fake.seed("hearings/timed-day-after-8h",
+              _hearing("timed-day-after-8h", _mtl(2026, 10, 17, 8)))
+    _agenda_stubs(monkeypatch, TODAY)
+    _freeze_now(monkeypatch, handlers, _mtl(2026, 10, 15, 7))
+    payload = handlers.get_agenda({"days_ahead": 1})
+    assert payload["window"]["to"] == "2026-10-16"
+    ids = {h["id"] for h in payload["hearings"]}
+    assert "timed-tomorrow-930" in ids          # on `to`, after 07:00
+    assert "allday-tomorrow" in ids
+    assert "timed-day-after-8h" not in ids      # the 17th: after `to`
+
+
+@pytest.mark.parametrize("hour", [7, 21])
+def test_get_agenda_bounds_tasks_and_steps_by_the_window_s_last_day(
+        monkeypatch, hour):
+    """A task or step deadline is DATE-ONLY (midnight UTC). Bounded by the
+    instant now + days_ahead, the evening band (21:00 on the 15th is 01:00
+    UTC on the 16th) let in a deadline of the 17th under `to` = the 16th."""
+    seen = {}
+    _agenda_stubs(monkeypatch, TODAY)
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
+                        lambda a, b, limit=100: [])
+    monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
+                        lambda cutoff, limit=50: seen.setdefault("tasks", cutoff) and [])
+    monkeypatch.setattr(handlers.protocol_model, "list_urgent_steps",
+                        lambda cutoff, limit=50: seen.setdefault("steps", cutoff) and [])
+    _freeze_now(monkeypatch, handlers, _mtl(2026, 10, 15, hour))
+    payload = handlers.get_agenda({"days_ahead": 1})
+    assert payload["window"]["to"] == "2026-10-16"
+    bound = datetime(2026, 10, 16, tzinfo=UTC)
+    assert seen == {"tasks": bound, "steps": bound}
+    # A deadline of `to` is inside; one of the day after is not.
+    assert datetime(2026, 10, 16, tzinfo=UTC) <= bound
+    assert datetime(2026, 10, 17, tzinfo=UTC) > bound
 
 
 def test_get_agenda_across_the_fall_back(monkeypatch):

@@ -699,21 +699,37 @@ def get_agenda(args: dict) -> dict:
     # day (occurrence_day: the UTC date for an all-day hearing, the Montréal
     # date for a timed one) — which also drops the previous evening's timed
     # hearings the widened read brings back, and an all-day hearing of the
-    # day after `to` that falls before the instant `cutoff`.
+    # day after `to`.
+    #
+    # The LAST day is whole too (finitions, sync-5). The read used to stop
+    # at the instant `cutoff`, so the payload reported `to` = that day while
+    # dropping every timed hearing of it later than the current time of day
+    # (the 07:00 briefing lost a 09:30 hearing on `to`). It stops at
+    # civil_day_ceiling(window_to) — midnight Montréal after it, the month
+    # view's bound — and the occurrence_day filter keeps the rest honest.
+    # Tasks and steps carry DATE-ONLY deadlines (midnight UTC): bounded by
+    # the instant `cutoff`, the evening band (20:00-24:00 Montréal, already
+    # the next UTC day) let in a deadline of window_to + 1. They are bounded
+    # by window_to's own midnight UTC, so the three lists agree with the
+    # window the payload reports.
     window_to = cutoff.astimezone(MTL).date()
     raw_hearings = [
         h
         for h in hearing_model.on_or_after_day(
             hearing_model.list_hearings_in_range(
-                hearing_model.civil_day_floor(today), cutoff, limit=100
+                hearing_model.civil_day_floor(today),
+                hearing_model.civil_day_ceiling(window_to),
+                limit=100,
             ),
             today,
         )
         if h.get("status") != "annulée"
         and (hearing_model.occurrence_day(h) or today) <= window_to
     ]
-    raw_tasks = task_model.list_urgent_tasks(cutoff, limit=50)
-    raw_steps = protocol_model.list_urgent_steps(cutoff, limit=50)
+    deadline_bound = datetime.combine(window_to, datetime.min.time(),
+                                      tzinfo=timezone.utc)
+    raw_tasks = task_model.list_urgent_tasks(deadline_bound, limit=50)
+    raw_steps = protocol_model.list_urgent_steps(deadline_bound, limit=50)
 
     # PA-D04: one batched join over every distinct dossier on the page so
     # the briefing never cites a renumbered file or an inverted intitulé.
