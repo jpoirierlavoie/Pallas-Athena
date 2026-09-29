@@ -22,6 +22,11 @@ an invoice number, an entry's purpose). It writes nothing itself, logs
 nothing the models do not, and never touches ``dav/`` (neither register is
 DAV-exposed).
 
+Since lot 5b the connector's accounting tools (scope ``athena:comptabilite``)
+are its third caller — through the SAME functions, never a copy — and the
+strict reads they decide on (an entry, a lock floor, the administration
+register) live at the end of this module.
+
 Provenance is the writer's context (``models/provenance``), never an
 argument.
 """
@@ -488,3 +493,101 @@ def enregistrer_paiement_carte(
 
 #: The name the lot's plan gives the card payment (step text « record_card_payment »).
 record_card_payment = enregistrer_paiement_carte
+
+
+# ── Reads the connector's accounting tools stand on (lot 5b) ───────────────
+#
+# The connector's accounting tools (``mcp/handlers`` — scope
+# ``athena:comptabilite``) read the two registers through THIS module, as they
+# write them through it: one door for the web and the connector. Every read
+# here is STRICT — it raises on a store error — because each one feeds a
+# decision (which account, which lock, which entry): an unreadable register
+# must refuse, never read as « empty » or « unlocked ».
+
+#: The registers a tool names — ``trust`` (the fidéicommis, RLRQ c. B-1, r. 5)
+#: and ``admin`` (the operations account and the corporate card).
+REGISTERS: tuple[str, ...] = ("trust", "admin")
+
+#: A report's ``reason`` when the write's outcome is UNKNOWN — its
+#: transaction raised after a commit was attempted, or a re-run found its own
+#: landed entry. The three money models share the code; a caller that holds
+#: an idempotency claim must KEEP it (the write may stand), never release it.
+OUTCOME_UNCERTAIN_REASON: str = trust.OUTCOME_UNCERTAIN_REASON
+
+#: French labels the connector shows beside the stored codes.
+ADMIN_KIND_LABELS: dict = dict(al.KIND_LABELS)
+ADMIN_CATEGORY_LABELS: dict = dict(al.ADMIN_CATEGORY_LABELS)
+TRUST_PURPOSE_LABELS: dict = dict(trust.PURPOSE_LABELS)
+
+
+def ventiler_montant(gross: int) -> tuple[int, int, int]:
+    """A taxes-included amount split into ``(net, tps, tvq)`` — the ONE
+    implementation the web form's « Ventiler » button uses too."""
+    return al.extract_taxes_from_gross(gross)
+
+
+def soldes_courants(rows: list[dict], opening: int) -> list[int]:
+    """The running ledger balance after each row (``(date, sequence)``
+    order) — the administration journal's own computation."""
+    return al.running_balances(rows, opening)
+
+
+def lire_facture(invoice_id: str) -> Optional[dict]:
+    """One invoice, read STRICTLY — ``None`` when it does not exist, a raise
+    when the store could not answer."""
+    return invoice_model.get_invoice_strict(invoice_id)
+
+
+def lire_ecriture(register: str, tx_id: str) -> Optional[dict]:
+    """One entry of *register*, read STRICTLY — ``None`` when the store
+    answered « no such entry », a raise when it could not answer."""
+    if register == "trust":
+        return trust.get_transaction_strict(tx_id)
+    if register == "admin":
+        return al.get_transaction_strict(tx_id)
+    raise ValueError(f"unknown register: {register!r}")
+
+
+def plancher_conciliation(register: str, account_id: str):
+    """``period_end`` of the account's latest COMPLETED reconciliation — the
+    lock floor both registers' writes refuse to reach under — or ``None``.
+    Strict: a read error raises (a floor nobody could read is not « no
+    floor »)."""
+    if register == "trust":
+        return trust._read_lock_floor(account_id)
+    if register == "admin":
+        return al.get_lock_floor(account_id)
+    raise ValueError(f"unknown register: {register!r}")
+
+
+def motif_verrou_administration(entry: dict, lock_floor) -> Optional[str]:
+    """Why an administration entry refuses an EDIT — the model's own
+    predicate (``admin_ledger._entry_lock_reason``) — or ``None``."""
+    return al._entry_lock_reason(entry, lock_floor)
+
+
+def instantane_administration() -> dict:
+    """The firm-wide administration picture — every account with its
+    display balance and reconciliation state (``get_firm_admin_snapshot``),
+    plus its lock floor. Fails CLOSED: an unreadable account list or floor
+    raises (an empty list on an outage would invite a duplicate account)."""
+    snap = al.get_firm_admin_snapshot()
+    for account in snap.get("accounts", []):
+        account["lock_floor"] = al.get_lock_floor(account.get("id", ""))
+    return snap
+
+
+def registre_administration(
+    account_id: str, date_from, date_to, *, limit: int,
+) -> tuple[list[dict], bool]:
+    """One administration account's register for a window, in ledger order
+    ``(date, sequence)`` — ``(rows, truncated)``, never a silently shortened
+    list. Fails CLOSED."""
+    return al.list_register(account_id, date_from, date_to, limit=limit)
+
+
+def solde_reporte_administration(account_id: str, date_from) -> tuple[int, bool]:
+    """The ledger balance carried into *date_from* — ``(cents,
+    had_prior_entry)``. Raises when the read truncates: a partial sum is a
+    wrong balance."""
+    return al.opening_ledger_balance(account_id, date_from)
