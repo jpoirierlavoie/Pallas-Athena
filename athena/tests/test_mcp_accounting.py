@@ -1074,3 +1074,61 @@ def test_the_admin_writes_honour_their_output_contract(fake):
     replay = handlers.reverse_register_entry(rev_args)
     _conforms("reverse_register_entry", replay)
     assert replay["original"]["status_before"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 9. Les contrôles d'intégrité lisent ce que le connecteur écrit
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_the_integrity_scripts_agree_with_what_the_connector_wrote(fake, monkeypatch, capsys):
+    """Revue du lot 5b (argent) : le train d'armement exige les deux
+    contrôles d'intégrité PROPRES avant et après les pilotes
+    (DEPLOYMENT.md §15). Une journée complète écrite par le connecteur —
+    dépôt, compensation, paiement d'honoraires puis sa contre-passation, un
+    second paiement, dépense ventilée corrigée puis compensée, autre
+    recette, encaissement contre-passé, paiement de carte — et les deux
+    scripts, lus sur le MÊME magasin, n'y trouvent rien : les soldes
+    dénormalisés (compte, client, grand livre), la liaison D-4 de chaque
+    paiement d'honoraires et le cumul encaissé de chaque facture
+    concordent avec les écritures."""
+    dep = _cleared_deposit(fake, 300000)
+    fee = _call("record_trust_entry", **_fee(40000))
+    _call("record_trust_entry", **_fee(60000, date="2026-09-11",
+                                       admin_date="2026-09-12"))
+    _call("record_trust_entry", **_deposit(
+        50000, day="2026-09-12", direction="déboursé",
+        purpose="déboursé_tiers", counterparty="Huissier X"))
+    # A trust reversal is dated TODAY: it comes last (the backdating guard).
+    _call("reverse_register_entry", register="trust",
+          tx_id=fee["entity"]["id"], reason="Montant erroné")
+    depense = _call("record_admin_entry", **_depense(11498))["entity"]
+    fixed = _call("update_admin_entry", tx_id=depense["id"],
+                  expected_etag=depense["etag"], amount_cents=22996,
+                  ventilation="ventiler")["entity"]
+    _call("clear_register_entries", register="admin", tx_ids=[fixed["id"]],
+          cleared_date="2026-09-13")
+    _call("record_admin_entry", account_id="ops1", kind="recette_autre",
+          amount_cents=1500, date="2026-09-13", method="virement",
+          counterparty="Remboursement")
+    enc = _call("record_admin_entry", account_id="ops1",
+                kind="encaissement_facture", amount_cents=20000,
+                date="2026-09-14", method="virement", invoice_id="inv1",
+                counterparty="Jean Tremblay")
+    _call("reverse_register_entry", register="admin",
+          tx_id=enc["entity"]["id"], reason="Encaissement en double")
+    _call("record_admin_entry", account_id="ops1", kind="paiement_carte",
+          amount_cents=5000, date="2026-09-15", method="virement",
+          card_account_id="card1")
+    assert fake.peek("invoices/inv1")["amount_paid"] == 60000
+    assert al.sum_invoice_receipts("inv1") == 60000
+    assert dep
+
+    from scripts import verify_admin_integrity as vai
+    from scripts import verify_trust_integrity as vti
+
+    install(monkeypatch, *_fake_modules(), vti, vai, fake=fake)
+    for script in (vti, vai):
+        code = script.main()
+        out = capsys.readouterr().out
+        assert code == 0, out
