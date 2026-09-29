@@ -1304,6 +1304,17 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   a deploy with `preview_invoice` and no-op calls, and says how to check
   that `counters/invoices-{year}.seq` advances by exactly one per invoice
   really issued.
+- **A dossier status set through the connector moves your PHONE, and a
+  compliance check it writes is only PRESUMED** (lot 4b, plan D6 and D7):
+  `set_dossier_status` runs the same DavX5 drain as the dossier form's save
+  — closing or archiving takes the dossier's tasks, notes and events off
+  the phone; when that drain does not finish the result says so, and asking
+  the same status again (or « Resynchroniser le téléphone » on the dossier's
+  page) repairs it. `record_kyc_status` stores an identity or conflict check
+  as « inscrit par Claude — à confirmer »: it counts as NOT done — the
+  coverage report keeps it open — until you click « Confirmer » on the
+  contact's fiche, and it is refused over a check you decided yourself.
+  §15 « Lot 4 » verifies both on test data.
 - The consent screen has room for a **second, separate box**, « Autoriser la
   comptabilité » (scope `athena:comptabilite`). It appears only when
   `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**
@@ -2497,6 +2508,216 @@ Notes:
   that re-read; the counter never reissues a number, while an IMPORTED
   invoice's number can be imported again once the voided invoice is deleted
   in the application; and IMP-07 names imported brouillons only.
+- **Lot 4 — dossiers and contacts through the connector (4a: an ordinary
+  release; 4b: ONE consent train — branch `mcp-ecriture-lot4`, with lot 3
+  and any earlier lot of that stack not yet deployed, in ONE push).** 4a is
+  the model, service and web half: the DavX5 drain of a dossier leaves the
+  route for `services/dossier_dav.py` (its members read STRICTLY before the
+  status is written — unreadable, the change is refused and nothing is
+  saved —, re-runnable, with the amber banner and « Resynchroniser le
+  téléphone »), `opened_date` / `closed_date` stamped as the Montréal day,
+  the party-link rules in the model (a client who has EVER had trust funds
+  on the dossier, a party a signification names and the last client never
+  leave; a contact is never client AND adverse — grow-only on a legacy
+  duplicate; every detached link journaled in `audit_events`), one
+  representation at a time for mandataires (their notes sanitized and
+  capped), and the D7 provenance of a compliance check (a presumed
+  inscription AMBER on the fiche, « Confirmer » the only way to the
+  lawyer's attestation, the coverage report keeping it open). Its
+  MCP-visible part is read-only text: `list_deletions` accepts two new
+  `entity_type` values and says what their rows name, and
+  `get_coverage_report` counts a presumed check as open (none exists before
+  4b). 4b adds four writes in two new families — DOSSIERS
+  (`set_dossier_status`, `update_dossier_party`) and CONTACTS
+  (`update_partie_mandataire`, `record_kyc_status`) —, `get_partie`'s
+  provenance fields, `_no_replay` in the write protocol, and the texts. No
+  index to deploy (the strict readers reuse the same single-field
+  equalities, the trust check the existing `(dossier_id, client_id,
+  sequence)` index), no dependency, no Tailwind class, no icon, no
+  `cron.yaml` or `firestore.rules` change, and no DavX5 account re-add (no
+  collection path, name or component set changes). **In this order:**
+  1. **Measure, read-only, BEFORE deploying 4a** — the environment of the
+     T3 designation recipe above (ADC, inline variables, never
+     `ENV=production`). Two answers decide what to repair by hand:
+
+     ```bash
+     cd athena
+     export GOOGLE_CLOUD_PROJECT=$PROJECT
+     python - <<'PY'
+     from google.cloud import firestore
+     db = firestore.Client()
+     # (a) A contact on BOTH sides of a dossier. From 4a the model lets such
+     # a legacy duplicate stand (the rule is grow-only) — removing one side
+     # in the dossier's form is its repair.
+     for s in db.collection("dossiers").stream():
+         d = s.to_dict() or {}
+         both = set(d.get("client_ids") or []) & set(d.get("opposing_party_ids") or [])
+         if both:
+             print("des deux côtés :", d.get("file_number"), len(both))
+     # (b) A representation the forward rule already refuses (an unknown
+     # contact, itself, not an individual, another role). Such a contact
+     # refuses EVERY save today, the web form's included — repair its
+     # mandataires in the form before relying on it.
+     parties = {s.id: (s.to_dict() or {}) for s in db.collection("parties").stream()}
+     for pid, p in parties.items():
+         for e in p.get("mandataires") or []:
+             mid = e.get("id") if isinstance(e, dict) else None
+             m = parties.get(mid)
+             why = ("introuvable" if m is None else "soi-même" if mid == pid
+                    else "pas une personne physique" if m.get("type") != "individual"
+                    else "autre rôle" if m.get("contact_role") != p.get("contact_role")
+                    else "")
+             if why:
+                 print("mandataire :", pid, "→", mid, why)
+     PY
+     ```
+
+     No output is the expected answer. The identifiers it prints are for
+     the lawyer's console only — paste them nowhere else. (A legacy
+     single-mandataire contact — `mandataire_id`, migrated on read — is
+     not scanned; it is repaired by its next save.)
+  2. **4a may go alone as an ordinary release** once every earlier lot of
+     the stack is deployed; otherwise its commits ride in step 4's push.
+     Web checks after it: open a contact's fiche — its Conformité reads as
+     before for the lawyer's own checks (« le … par Me … »), and the
+     section now also shows for a CLIENT of a dossier whatever the contact's
+     role. On a TEST dossier with one task, one note and one confirmed
+     event, close it in the form: no amber banner (the drain completed);
+     then reopen it. A trust entry recorded while that dossier's edit form
+     is open in another tab now refuses the tab's save with the conflict
+     banner — a trust write changes the dossier record: reload, then redo.
+  3. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
+     claude.ai** — BEFORE pushing 4b. `MCP_WRITE_ENABLED` stays `"true"`.
+  4. **Push the lot as ONE deploy** (Cloud Build runs the suite as the
+     gate).
+  5. **Re-add the connector and READ the new screen before ticking**
+     « Autoriser les écritures »: a « Dossiers » paragraph (a status changed
+     as the application does — closing or archiving takes the dossier's
+     tasks, notes and events off your phone and out of the prescription
+     alerts, reopening puts them back and erases the closing date; a drain
+     that could not finish is REPORTED and repaired by asking the same
+     status again or by « Resynchroniser le téléphone »; a party's roles
+     or lawyer corrected, a party DETACHED — a link, never the contact,
+     refused for the last client, a served party and a client with trust
+     history —, names refreshed) and a « Contacts » paragraph (mandataires
+     added, corrected or detached; an identity or conflict check INSCRIBED
+     as presumed, « inscrit par Claude le … — à confirmer », counting as NOT
+     done until you confirm it, never written over a check you decided). In
+     the « jamais » list: « confirmer une vérification d'identité ou de
+     conflits d'intérêts, ni modifier une vérification que vous avez décidée
+     ou confirmée », and « supprimer » now says that detaching a party or a
+     mandataire removes a link — while « changer le statut d'un dossier » and
+     « … à la vérification d'identité ou à la vérification des conflits
+     d'intérêts » (beside « toucher au fidéicommis ») are GONE. Then check
+     `tools/list`: **80** tools (31 read, 49 write), and
+     `MCP_WRITE_ENABLED=false` hiding the 49 writes — the four new ones
+     among them. The byte budget is the deploy gate's
+     `tests/test_mcp_descriptor_budget.py` (about 232 KB of its 280 KB cap;
+     `update_partie` still the largest, 7.9 KB of 8).
+  6. **Check the phone on the wire, THEN on the device** (Change Impact
+     item 2 — DavX5 fails silently). On the TEST dossier of step 2 (one
+     task, one note, one confirmed event), with curl prompting for the DAV
+     password:
+
+     ```bash
+     D=the-test-dossier-id
+     DAV_USER=you@yourdomain.example   # the AUTHORIZED_USER_EMAIL of app.yaml
+     BODY='<?xml version="1.0" encoding="utf-8"?><d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>'
+     report() {
+       curl -s -u "${DAV_USER:?}" -X REPORT \
+         -H "Content-Type: application/xml; charset=utf-8" --data "$BODY" \
+         "https://yourdomain.example/dav/dossier-$D/" > /tmp/report.xml
+       echo "live: $(grep -o '<D:getetag>' /tmp/report.xml | wc -l)  removed: $(grep -o '404 Not Found' /tmp/report.xml | wc -l)"
+     }
+     report   # before: live 3
+     ```
+
+     Then, through Claude: `set_dossier_status` « fermé » on it — the
+     result reads `dav.complete: true`, `dav.direction: "drain"`,
+     `dav.resources: 3`, with warnings naming what closing does —; `report`
+     again: live 0, removed 3; a PROPFIND Depth:1 on `/dav/` no longer lists
+     `dossier-$D`. The same call again (same status): `outcome:
+     "unchanged"`, nothing written, the phone's view re-applied.
+     `set_dossier_status` « actif »: `dav.direction: "restore"`; `report`:
+     live 3, removed 0. On the device: refresh DavX5's collection list —
+     the dossier's items left after the close and came back after the
+     reopening (re-tick the collection if DavX5 dropped it).
+  7. **The compliance check, on a TEST client** (never a real one — the
+     inscription is a real record on a regulatory field): a test contact of
+     role « client », made a client of the test dossier.
+     `record_kyc_status` `check: "identity"`, `status: "vérifié"`: its fiche
+     shows the AMBER « Vérifié (présumé) » and « inscrit par Claude le … — à
+     confirmer », with NO « par Me … »; `get_coverage_report` (the test
+     dossier is actif) still lists `IDENTITE_NON_VERIFIEE`, « Dont 1
+     inscrite(s) par Claude ». Click « Confirmer » on the fiche: it reads
+     « confirmé le … par Me … (inscrit par Claude le …) », and the finding
+     is gone. A second `record_kyc_status` on that check is REFUSED
+     (`kyc_lawyer_attestation`).
+  8. **The links, on the same test data:** a second test contact added as a
+     client (`update_dossier` `add_clients`), its roles set
+     (`update_dossier_party` `update`), then detached (`remove`):
+     `list_deletions` shows a `dossier_party` row. `update_partie_mandataire`
+     `add` then `remove` of a third test contact (an individual of the same
+     role) on the first one: a `mandataire` row, whose `title` names the
+     contact it REPRESENTED. Then delete the test data in the application —
+     the dossier's task, note and event first (a dossier with children
+     cannot be deleted), then the dossier, then the contacts (a contact
+     still on a dossier cannot be deleted); the journal rows stay, by
+     design.
+
+  Then update BOTH copies of the claude.ai skill `pallas-athena` the same
+  day. What lot 4 makes false there (on top of the lot 1, 2A, 2B and 3
+  lists above): every tool count (now 80: 31 + 49 — the synced copies still
+  say 49: 27 + 22); SKILL.md « Le `status` choisi à la création d'un dossier
+  ne peut plus jamais être changé ici » (`set_dossier_status`); « Les
+  écritures qu'aucun outil ne fait : Fermer un dossier; … vérifier une
+  identité; vérifier les conflits; gérer les mandataires; … La vérification
+  d'identité et la vérification de conflits ne sont inscriptibles par aucun
+  outil et ne le seront jamais » — closing a dossier is
+  `set_dossier_status`, the mandataires `update_partie_mandataire`, and
+  `record_kyc_status` INSCRIBES a check as presumed; what stays true is that
+  only the lawyer CONFIRMS one (« une machine ne doit pas attester »
+  survives in that form); README « Il ne ferme pas un dossier » and
+  « n'atteste aucune vérification d'identité ou de conflits » (true only as
+  « it inscribes a presumed one, which only the lawyer confirms »);
+  `references/outils.md` — the `create_dossier` row « `status` jamais
+  modifiable ensuite », the `create_partie` row « vérif. identité/conflits
+  **jamais** inscriptibles », the `update_dossier` warning « `status` est
+  délibérément absent — fermer un dossier doit vider sa collection DavX5,
+  ce que seule l'application fait », « Vérification d'identité, vérification
+  de conflits et mandataires ne sont inscriptibles par aucun outil, et ne
+  le seront jamais », the `get_coverage_report` warning « le connecteur ne
+  peut créer un protocole, vérifier une identité ni déposer une
+  signification » (all three false now), the `list_deletions` row « 15
+  `entity_type` » (17 — `dossier_party`, `mandataire`), and the table rows
+  « Fermer un dossier — Impossible ici » and « Créer un protocole, vérifier
+  une identité, vérifier les conflits, gérer les mandataires — Impossible
+  ici, par conception »; `references/vocabulaires.md`
+  « `list_deletions.entity_type` (15) ». Incomplete rather than false, to
+  extend the same day: « Ajoute » names `update_dossier.add_clients` alone —
+  say that one party link is corrected or DETACHED through
+  `update_dossier_party` (refused for the last client, a served party, a
+  client with trust history) and names refreshed with its `refresh_names`;
+  family D and the families table lack DOSSIERS and CONTACTS; the
+  `get_partie` row should name `*_source` / `*_presumed` /
+  `*_confirmed_at`; « Les suppressions » and the row « Supprimer quoi que
+  ce soit — Aucun outil ne supprime » should say that a detached party or
+  mandataire is a LINK, the contact staying, and that `list_deletions`
+  lists those detaches (a `mandataire` row's `title` names the REPRESENTED
+  contact); `references/vocabulaires.md` should list the five kinds of
+  representation (`mandataire`, `tuteur`, `curateur`, `représentant_légal`,
+  `autre`) and the two compliance vocabularies (identity: `non_vérifié`,
+  `vérifié`, `exempté`; conflict: `non_vérifié`, `vérifié`,
+  `conflit_détecté`). Add: `set_dossier_status`'s discipline (the lawyer's
+  confirmation first — closing takes the dossier off his phone and out of
+  the prescription alerts; read every warning; `dav.complete: false` → the
+  SAME status again, same key, unless the warnings say the status moved
+  during the call — then re-read first); `record_kyc_status`'s (only on the
+  lawyer's instruction, only for a client, never over his own decision —
+  `*_presumed` false on a decided status means « tell him »; a detected
+  conflict reported to him AT ONCE; notes are appended, never replaced);
+  and `update_partie_mandataire`'s (an individual of the same role;
+  `update` for a representation already listed).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
