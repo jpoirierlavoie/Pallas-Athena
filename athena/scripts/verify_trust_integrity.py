@@ -87,7 +87,9 @@ Checks 5-10 (lot 5a, 2026-09-28):
      Since the same day's decisions, two fee-payment rules as well: an
      invoice addressed to ANOTHER client of the dossier than the one whose
      funds left (D21), and a payee who is neither the lawyer nor his firm as
-     the firm profile names them (D23, art. 58). Each is refused for every
+     the firm profile names them (D23, art. 58 — the profile read STRICTLY:
+     unreadable, it is an ÉCART, the payee check not run, never a clean
+     pass judged on the deploy-time seed). Each is refused for every
      new entry; what the register already holds stays there, and is listed.
      Annulée entries (a cheque that never left the account) and corrections
      (which copy their original's method and withdraw nothing of their own)
@@ -132,6 +134,7 @@ from typing import Optional
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import admin_ledger, db, fee_payment, trust
+from models import settings as settings_model
 from models.dossier import get_dossier
 from tz import to_mtl
 from utils.deadlines import today_mtl
@@ -430,13 +433,13 @@ def _invoice(iid: str, invoices: dict, where: str, problems: list):
 
 def _check_history_rules(
     aid: str, txs: list[dict], by_period: list[dict], invoices: dict,
-    problems: list, notes: list, payees: Optional[list[str]] = None,
+    problems: list, notes: list, payees: list[str],
 ) -> None:
     """Check 8. ``payees`` — the names a fee payment may carry (D23: the
-    firm profile's, ``fee_payment.fee_payees``), read once per run; ``None``
-    reads them here."""
-    if payees is None:
-        payees = fee_payment.fee_payees()
+    firm profile's), read ONCE per run by :func:`collect` through
+    ``fee_payment.guard_fee_payees`` — strictly, never the fail-open display
+    list. Empty skips the payee check: an empty profile names no rule, and
+    an unreadable one is an écart :func:`collect` has already reported."""
     by_id = {t.get("id"): t for t in txs}
     refunds_by_receipt: dict = defaultdict(int)
     for t in txs:
@@ -855,9 +858,20 @@ def collect() -> tuple[list[str], list[str]]:
     dossier_book: dict[str, int] = defaultdict(int)
     invoices: dict = {}
     fee_payments: list[tuple[str, dict]] = []
-    # D23 — the accepted payees, read ONCE (the firm profile, fail-open to
-    # its deploy-time seed like every reader of it).
-    payees = fee_payment.fee_payees()
+    # D23 — the accepted payees, read ONCE and STRICTLY: a check that cannot
+    # read must say so. Degraded to the deploy-time seed (the fail-open
+    # reader every RENDER of the profile uses), it judged the register
+    # against names the lawyer may have cleared or replaced — a note built
+    # out of a failed read, or a clean run where the check never ran.
+    try:
+        payees = fee_payment.guard_fee_payees()
+    except settings_model.CabinetIllisible:
+        payees = []
+        problems.append(
+            "profil du cabinet (Paramètres) illisible — le contrôle du "
+            "bénéficiaire des paiements d'honoraires (D23, art. 58) n'a pas "
+            "été fait"
+        )
 
     for account in accounts:
         aid = account["id"]

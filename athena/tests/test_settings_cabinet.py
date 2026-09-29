@@ -190,6 +190,36 @@ def test_get_cabinet_refuses_a_non_dict_snapshot(monkeypatch):
     assert not any("MagicMock" in str(v) for v in cab.values())
 
 
+# ── La lecture STRICTE, pour une garde (revue D23, concurrence) ──────────
+
+def test_the_strict_read_refuses_what_the_render_read_degrades(monkeypatch):
+    """Une GARDE (le bénéficiaire d'un paiement d'honoraires, D23) ne décide
+    jamais sur la semence d'une lecture manquée : get_cabinet_strict lève là
+    où get_cabinet retombe sur les valeurs de déploiement — une erreur de
+    Firestore comme un instantané qui n'est pas un dict (le MagicMock)."""
+    class _Boom:
+        def collection(self, _name):
+            raise RuntimeError("Firestore indisponible")
+
+    monkeypatch.setattr(S, "db", _Boom(), raising=True)
+    with pytest.raises(S.CabinetIllisible):
+        S.get_cabinet_strict()
+    monkeypatch.setattr(S, "db", mock.MagicMock(), raising=True)
+    with pytest.raises(S.CabinetIllisible):
+        S.get_cabinet_strict()
+
+
+def test_the_strict_read_is_the_same_projection_otherwise(fake_db):
+    """Hors panne, les deux lectures disent la même chose : la semence quand
+    aucun profil n'a jamais été enregistré (un premier déploiement — elle est
+    alors la vérité), le document ENTIER sinon, un champ effacé restant
+    effacé."""
+    assert S.get_cabinet_strict() == S.get_cabinet() == S._seed_from_env()
+    _seed_doc(fake_db, nom="Me X", organisation="")
+    assert S.get_cabinet_strict() == S.get_cabinet()
+    assert S.get_cabinet_strict()["organisation"] == ""
+
+
 # ── La règle « le document est TOUTE la vérité » ─────────────────────────
 
 def test_a_blanked_field_is_not_resurrected_by_the_env_seed(fake_db):

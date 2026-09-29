@@ -533,6 +533,38 @@ def test_d23_a_profile_that_names_no_one_refuses_every_fee_payment(fake):
     assert "ne nomme ni l'avocat ni le cabinet" in str(refusal)
 
 
+def test_d23_an_unreadable_profile_refuses_rather_than_trust_the_seed(
+    fake, monkeypatch
+):
+    """Régression — review of D23 (concurrency and atomicity): with
+    ``settings/cabinet`` unreadable, the guard judged on the deploy-time
+    SEED (``cabinet_dict`` fails open) — so a profile that no longer names
+    the firm let « Poirier Lavoie, avocat », the seed's literal, go to the
+    register as the payee. The handler's own list is still the fail-open
+    display one (a courtesy); the MODEL reads strictly and refuses, nothing
+    written, and the connector says so in the model's words. (Old code:
+    the payment passed.)"""
+    _cleared_deposit(fake)
+    fake.seed("settings/cabinet", {"nom": "Me Jason Poirier Lavoie",
+                                   "organisation": ""})
+    server = fake._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kw):
+        if any(d.endswith("/settings/cabinet") for d in request["documents"]):
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    before = {c: _entries(fake, c) for c in (
+        "trust_transactions", "admin_transactions", "invoices")}
+    refusal = _refused("record_trust_entry", **_fee(
+        20000, counterparty="Poirier Lavoie, avocat"))
+    assert refusal.reason == "accounting_refused"
+    assert fee_payment._PROFILE_UNREADABLE in str(refusal)
+    assert {c: _entries(fake, c) for c in before} == before
+
+
 def test_d24_the_objet_sens_rule_is_the_model_s_too(fake):
     """D24 (2026-09-29): the handler's refusal of an objet that contradicts
     its sens is a REPETITION — the model refuses the same pair for every

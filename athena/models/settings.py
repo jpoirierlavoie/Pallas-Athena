@@ -201,6 +201,10 @@ def get_cabinet() -> dict:
     stored = _read_raw()
     if stored is None:
         return _seed_from_env()
+    return _project(stored)
+
+
+def _project(stored: dict) -> dict:
     # _BLANK is the base, NEVER the env seed — see rule 1 in the module
     # docstring. A field the lawyer cleared stays cleared, and a field added
     # by a later version reads "" on an older document (additive, no
@@ -209,6 +213,41 @@ def get_cabinet() -> dict:
         **_BLANK,
         **{k: _as_str(v) for k, v in stored.items() if k in _FIELDS},
     }
+
+
+class CabinetIllisible(Exception):
+    """The firm profile could not be read — raised by
+    :func:`get_cabinet_strict` alone. Carries no value (nothing was read)."""
+
+
+def get_cabinet_strict() -> dict:
+    """The firm profile for a caller that DECIDES on it — FAILS CLOSED.
+
+    :func:`get_cabinet` is right for what it serves (a letterhead, an email,
+    a PDF: better the deploy-time values than a blank header), and wrong for
+    a GUARD. The fee payment's payee rule (D23, art. 58 —
+    ``models/fee_payment``) accepts the names this profile holds; fed by
+    ``get_cabinet``, a read failure made it judge against the SEED — the
+    ``ORGANISATION_SEED`` literal and ``FIRM_NAME`` — and a name the lawyer
+    had cleared or replaced became an accepted payee again for that one
+    call: rule 1's un-deletion, in a guard (review of D23, concurrency and
+    atomicity, 2026-09-29).
+
+    Same projection as :func:`get_cabinet` otherwise: the stored document
+    is the whole truth, and the seed answers only when NO document exists
+    (a fresh deploy — the seed is then the truth, not a guess). Raises
+    :class:`CabinetIllisible` when the read fails or the payload is not a
+    mapping (the ``MagicMock`` snapshot :func:`_read_raw` also refuses)."""
+    try:
+        snap = db.collection(COLLECTION).document(DOC_ID).get()
+    except Exception as exc:
+        raise CabinetIllisible() from exc
+    if not getattr(snap, "exists", False):
+        return _seed_from_env()
+    data = snap.to_dict()
+    if not isinstance(data, dict):
+        raise CabinetIllisible()
+    return _project(data)
 
 
 def _normalize(data: dict) -> dict:

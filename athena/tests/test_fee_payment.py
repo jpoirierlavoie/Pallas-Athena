@@ -876,7 +876,14 @@ def test_une_lecture_ratee_avant_tout_commit_dit_toujours_rien_n_a_ete_inscrit(
 ):
     """La certitude reste dite quand elle existe : aucune tentative n'a
     préparé ses écritures (la PREMIÈRE lecture a échoué), aucun commit n'a
-    été tenté — « rien n'a été inscrit » est vrai, et le reste."""
+    été tenté — « rien n'a été inscrit » est vrai, et le reste.
+
+    Réécrit délibérément (revue D23, concurrence et atomicité) : la panne
+    TOTALE du magasin tombe désormais d'abord sur la lecture STRICTE du
+    profil du cabinet, faite avant la transaction — qui le dit, dans ses
+    propres mots, et dit aussi que rien n'a été inscrit. La panne qui ne
+    frappe qu'à partir de la transaction garde le message générique
+    qu'épinglait ce test."""
     from google.api_core import exceptions as gexc
 
     server = fake._fake_server
@@ -885,8 +892,17 @@ def test_une_lecture_ratee_avant_tout_commit_dit_toujours_rien_n_a_ete_inscrit(
     def _boom(request, metadata=None, **kwargs):
         raise gexc.ServiceUnavailable("store down")
 
+    def _boom_after_profile(request, metadata=None, **kwargs):
+        if all(d.endswith("/settings/cabinet") for d in request["documents"]):
+            return real_get(request, metadata=metadata, **kwargs)
+        raise gexc.ServiceUnavailable("store down")
+
     before = _snapshot(fake)
     monkeypatch.setattr(server, "batch_get_documents", _boom)
+    _, errs = _pay()
+    assert errs == [fee_payment._PROFILE_UNREADABLE]
+    assert "rien n'a été inscrit" in errs[0]
+    monkeypatch.setattr(server, "batch_get_documents", _boom_after_profile)
     _, errs = _pay()
     monkeypatch.setattr(server, "batch_get_documents", real_get)
     assert errs == ["Erreur lors de l'enregistrement du paiement d'honoraires. "
@@ -1126,6 +1142,65 @@ def test_d23_un_profil_sans_nom_refuse_tout_paiement(fake):
     assert errs == [fee_payment._MESSAGES["bénéficiaires_honoraires_inconnus"]]
     assert report == {"reason": "bénéficiaires_honoraires_inconnus", "side": "paiement"}
     assert _snapshot(fake) == before
+
+
+def _profile_unreadable(fake, monkeypatch) -> None:
+    """``settings/cabinet`` unreadable — a server-side read failure of that
+    one document, every other read untouched (the fake's own RPC)."""
+    server = fake._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kw):
+        if any(d.endswith("/settings/cabinet") for d in request["documents"]):
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+
+
+def test_d23_un_profil_illisible_refuse_au_lieu_de_retomber_sur_la_semence(
+    fake, monkeypatch
+):
+    """Régression — revue D23 (concurrence et atomicité) : la garde lisait
+    le profil par ``cabinet_dict()``, qui RETOMBE SUR LA SEMENCE de
+    déploiement quand Firestore ne répond pas — le littéral
+    ``ORGANISATION_SEED`` et ``FIRM_NAME``. Or le profil enregistré est
+    toute la vérité : l'avocat qui a vidé « organisation » (son cabinet
+    n'est pas une société distincte) voyait, sur une lecture manquée, le nom
+    semé redevenir un bénéficiaire accepté et s'inscrire au registre. La
+    garde refuse désormais — rien d'écrit, nulle part —, et ne décide pas
+    davantage sur le nom de l'avocat : elle n'a rien lu. (Sur l'ancien
+    code : le paiement passait, à l'ordre de « Poirier Lavoie, avocat ».)"""
+    _seed_profile(fake, organisation="")
+    assert fee_payment.guard_fee_payees() == ["Me Jason Poirier Lavoie"]
+    assert fee_payment.match_fee_payee(FEE_PAYEE) is None  # the stored truth
+    _profile_unreadable(fake, monkeypatch)
+    before = _snapshot(fake)
+    for payee in (FEE_PAYEE, "Me Jason Poirier Lavoie", ""):
+        report: dict = {}
+        result, errs = fee_payment.create_fee_payment(
+            _entry(amount=10000, counterparty=payee), admin_account_id="ops1",
+            _report_out=report)
+        assert result is None, payee
+        assert errs == [fee_payment._PROFILE_UNREADABLE], payee
+        assert report == {"reason": "erreur", "side": "paiement"}, payee
+    assert "rien n'a été inscrit" in fee_payment._PROFILE_UNREADABLE
+    assert _snapshot(fake) == before
+    # The DISPLAY list stays fail-open, as every render of the profile: the
+    # form still shows a select, and the model is what decides.
+    assert FEE_PAYEE in fee_payment.fee_payees()
+
+
+def test_d23_la_garde_lit_le_profil_une_seule_fois(fake):
+    """Le bénéficiaire se juge sur UNE lecture du profil : le refus d'un
+    bénéficiaire vide et la garde partagent la liste lue une fois, pour
+    qu'aucune décision ne repose sur deux lectures qui auraient pu différer."""
+    _seed_profile(fake)
+    fake.reset_logs()
+    _, errs = _pay(amount=10000)
+    assert errs == [], errs
+    profile_reads = [r for r in fake.reads if "settings/cabinet" in r.paths]
+    assert len(profile_reads) == 1, profile_reads
 
 
 def test_d23_un_nom_donne_deux_fois_ne_compte_qu_une_fois(fake):

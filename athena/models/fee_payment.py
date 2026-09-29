@@ -53,17 +53,22 @@ composite:
 * the PAYEE (D23, 2026-09-29, art. 58 — « chèque tiré à l'ordre de
   l'avocat »): the trust entry's « Bénéficiaire » is the lawyer or his firm
   and nobody else — the two names the firm profile holds
-  (``settings/cabinet`` through ``utils/cabinet.cabinet_dict``: ``nom`` and
-  ``organisation``, :func:`fee_payees`). Any other value is refused
-  (``bénéficiaire_honoraires_invalide`` — a blank one too, ahead of the
-  register's generic « contrepartie requise »), and the one accepted is stored as
-  the profile spells it (:func:`match_fee_payee` folds case, Unicode
-  composition and spacing only). When the caller names none, the payee is
-  :func:`default_fee_payee` — the LAWYER on a cheque, since art. 58 draws a
-  fee cheque « à l'ordre de l'avocat » and names the société only as the
-  holder of a transfer's account; the firm on a transfer. The firm named
-  explicitly stays accepted on a cheque: D23 lets the lawyer choose either
-  name, and only he knows whether his firm is a distinct société.
+  (``settings/cabinet``: ``nom`` and ``organisation``). Any other value is
+  refused (``bénéficiaire_honoraires_invalide`` — a blank one too, ahead of
+  the register's generic « contrepartie requise »), and the one accepted is
+  stored as the profile spells it (:func:`match_fee_payee` folds case,
+  Unicode composition and spacing only). The GUARD reads the profile
+  STRICTLY (``models/settings.get_cabinet_strict``): a read failure refuses
+  (« erreur », nothing written) instead of judging against the deploy-time
+  seed, as :func:`fee_payees` — the display list, fail-open like every
+  reader of the profile that only renders it — would. This model never
+  picks a payee: the connector, when its caller names none, and the web
+  form's preselection take :func:`default_fee_payee` — the LAWYER on a
+  cheque, since art. 58 draws a fee cheque « à l'ordre de l'avocat » and
+  names the société only as the holder of a transfer's account; the firm
+  on a transfer. The firm named explicitly stays accepted on a cheque: D23
+  lets the lawyer choose either name, and only he knows whether his firm is
+  a distinct société.
 
 The trust side's rules stay the trust model's: art. 58 (cheque or transfer
 only), art. 59 (cleared funds), the backdating guard, the lock floor, an
@@ -87,6 +92,7 @@ from google.cloud import firestore
 
 from models import admin_ledger as al
 from models import db, provenance
+from models import settings as settings_model
 from models import trust
 from security import sanitize
 from utils import cabinet as cabinet_util
@@ -226,6 +232,16 @@ _MESSAGES = {
     ),
 }
 
+# The firm profile could not be read (``settings.CabinetIllisible``): the
+# payee rule cannot be judged, and is never judged against the deploy-time
+# seed instead. An operational failure, not a refusal — the same « erreur »
+# as a register read that fails before any commit.
+_PROFILE_UNREADABLE = (
+    "Impossible de lire le profil du cabinet (Paramètres), qui nomme le "
+    "bénéficiaire d'un paiement d'honoraires (art. 58) : rien n'a été "
+    "inscrit. Veuillez réessayer."
+)
+
 # An administration-side refusal inside the composite, reworded so the
 # lawyer knows it concerns the RECETTE — and that nothing was written.
 _ADMIN_REASON_TO_FEE = {
@@ -262,8 +278,23 @@ def fee_payees() -> list[str]:
     seed), a blank one dropped, a name given twice kept once. The firm comes
     first: it is the default payee of a TRANSFER (to the firm's own
     non-trust account), and the order every surface shows. A CHEQUE's
-    default is the lawyer (:func:`default_fee_payee`)."""
+    default is the lawyer (:func:`default_fee_payee`).
+
+    The DISPLAY list — the web form's select, the connector's pre-check and
+    default. Never the guard's: :func:`create_fee_payment` judges on
+    :func:`guard_fee_payees`, which fails CLOSED."""
     return _payees_from(cabinet_util.cabinet_dict())
+
+
+def guard_fee_payees() -> list[str]:
+    """The same list, read for a DECISION: through
+    ``models/settings.get_cabinet_strict``, so an unreadable profile raises
+    ``settings.CabinetIllisible`` instead of yielding the deploy-time seed —
+    the ``ORGANISATION_SEED`` literal and ``FIRM_NAME``, names the lawyer may
+    have cleared or replaced since (review of D23, concurrency and
+    atomicity). The seed answers only when no profile was ever saved. Read
+    by the payment's guard and by ``scripts/verify_trust_integrity``."""
+    return _payees_from(settings_model.get_cabinet_strict())
 
 
 def _payees_from(cab: dict) -> list[str]:
@@ -392,12 +423,29 @@ def create_fee_payment(
                      _message("facture_athena_requise"),
                      side="paiement", operation="create")
 
+    # D23 (art. 58) — the accepted payees, read ONCE and STRICTLY (review of
+    # D23, concurrency and atomicity): an unreadable profile refuses here,
+    # nothing written, rather than degrading to the deploy-time seed, which
+    # would make this guard accept a name the lawyer cleared or replaced.
+    # Outside the transaction: the profile is no money figure, and read here
+    # it is read once rather than on every retry of the commit.
+    try:
+        payees = guard_fee_payees()
+    except settings_model.CabinetIllisible:
+        ids = {"account_id": data.get("account_id"),
+               "dossier_id": data.get("dossier_id")}
+        log_unexpected("fee payment: firm profile unreadable", exc_info=False,
+                       **{k: v for k, v in ids.items() if v})
+        if _report_out is not None:
+            _report_out["reason"] = "erreur"
+            _report_out["side"] = "paiement"
+        return None, [_PROFILE_UNREADABLE]
+
     # A fee payment that names NO payee is refused on the D23 rule, not the
     # register's generic « contrepartie requise »: the web form's payee is a
     # select of the firm profile's names, so an empty profile posts none —
     # and the lawyer must read that the PROFILE is what is missing.
     if not str(data.get("counterparty") or "").strip():
-        payees = fee_payees()
         reason = ("bénéficiaire_honoraires_invalide" if payees
                   else "bénéficiaires_honoraires_inconnus")
         return _fail(_report_out, reason, _message(reason, payees_label(payees)),
@@ -415,10 +463,8 @@ def create_fee_payment(
                      dossier_id=t_clean.get("dossier_id"))
 
     # D23 (art. 58) — the payee is the lawyer or his firm, as the firm
-    # profile names them, and it is stored as the profile spells it.
-    # Outside the transaction: the profile is no money figure, and read
-    # here it is read once rather than on every retry of the commit.
-    payees = fee_payees()
+    # profile names them (the list read above, never re-read), and it is
+    # stored as the profile spells it.
     if not payees:
         return _fail(_report_out, "bénéficiaires_honoraires_inconnus",
                      _message("bénéficiaires_honoraires_inconnus"),

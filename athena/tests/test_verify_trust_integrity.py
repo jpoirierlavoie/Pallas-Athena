@@ -575,6 +575,37 @@ def test_un_paiement_d_honoraires_a_un_autre_beneficiaire_est_une_note(
     assert f"(écriture {same['id']}): paiement d'honoraires dont le" not in out
 
 
+def test_un_profil_du_cabinet_illisible_est_un_ecart_jamais_un_passage(
+    fake, monkeypatch, capsys
+):
+    """Régression — revue D23 (concurrence et atomicité) : le contrôle du
+    bénéficiaire lisait le profil par le lecteur d'AFFICHAGE, qui retombe sur
+    la semence de déploiement quand Firestore ne répond pas. Le registre se
+    jugeait alors sur des noms que l'avocat a pu effacer : ici un paiement à
+    l'ordre de « Poirier Lavoie, avocat », que le profil enregistré ne nomme
+    plus, passait sans une ligne — un passage « propre » où le contrôle
+    n'avait pas eu lieu. Un contrôle qui ne peut pas lire doit le dire.
+    (Sur l'ancien code : code 0, « Aucun écart ».)"""
+    _september(fake, monkeypatch)
+    _fee_payment(fake, amount=10000)       # FEE_PAYEE, written before the rule
+    fake.seed("settings/cabinet", {"nom": "Me Jason Poirier Lavoie",
+                                   "organisation": ""})
+    server = fake._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kw):
+        if any(d.endswith("/settings/cabinet") for d in request["documents"]):
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert ("profil du cabinet (Paramètres) illisible — le contrôle du "
+            "bénéficiaire des paiements d'honoraires (D23, art. 58) n'a pas "
+            "été fait") in out
+
+
 def test_une_facture_liee_illisible_est_un_ecart(fake, monkeypatch, capsys):
     _september(fake, monkeypatch)
     fee = _fee_payment(fake)

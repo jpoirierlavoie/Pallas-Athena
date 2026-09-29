@@ -1603,7 +1603,8 @@ Notes:
   included, so these notes describe history —, plus, since the same day, a
   fee payment drawn for ANOTHER client's invoice (D21, ids only) and one
   made to a payee other than the lawyer or his firm as « Paramètres »
-  names them (D23, without the name)
+  names them (D23, without the name — an unreadable profile is an écart,
+  the check not run)
   (8), reads every dossier's stored per-client
   balances, so a balance no entry backs and a client in shortfall both show
   (9), and checks that every fee payment (« paiement d'honoraires ») is backed

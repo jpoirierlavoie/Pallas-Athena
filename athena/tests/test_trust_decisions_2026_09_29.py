@@ -43,7 +43,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
     from models import fee_payment, trust
-    from models import settings as settings_model  # noqa: F401 — faked below
+    from models import settings as settings_model  # faked below
     import routes.admin_ledger as admin_ledger_routes
     import routes.dossiers as dossiers_routes
     import routes.invoices as invoices_routes
@@ -388,6 +388,33 @@ def test_d23_un_paiement_sans_beneficiaire_nomme_les_noms_acceptes(fake):
     assert report == {"reason": "bénéficiaire_honoraires_invalide", "side": "paiement"}
     read = [path for record in fake.reads for path in record.paths]
     assert read == ["settings/cabinet"], read
+
+
+def test_d23_un_profil_illisible_refuse_au_formulaire(fake, client, monkeypatch):
+    """Régression — revue D23 (concurrence et atomicité) : le profil
+    ILLISIBLE au moment de l'envoi. La garde retombait sur la semence de
+    déploiement — ici, le profil ne nomme plus le cabinet, et le formulaire
+    forgé qui le nomme passait, sur la foi d'un nom effacé. Le modèle lit
+    désormais le profil strictement : refus en ligne, dans ses mots, rien
+    d'écrit ; le réaffichage, lui, reste permis (le sélecteur est une
+    lecture d'AFFICHAGE, qui échoue ouverte)."""
+    fake.seed("settings/cabinet", {"nom": LAWYER, "organisation": ""})
+    server = fake._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kw):
+        if any(d.endswith("/settings/cabinet") for d in request["documents"]):
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    before = _registers(fake)
+    assert FIRM == settings_model.ORGANISATION_SEED   # the seed's literal
+    resp = client.post("/fideicommis/", data=_fee_form(
+        counterparty=FIRM, amount="100,00"))
+    assert resp.status_code == 400
+    assert fee_payment._PROFILE_UNREADABLE in _html(resp)
+    assert _registers(fake) == before
 
 
 # ══════════════════════════════════════════════════════════════════════
