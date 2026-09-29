@@ -657,3 +657,52 @@ def test_get_invoices_by_number_propage_une_panne_de_lecture(real_store, monkeyp
         imod.get_invoices_by_number("2026-F031")
     # The contrast that motivated it: the fail-open lister hides the outage.
     assert imod.list_invoices(dossier_id="dos1") == []
+
+
+# ── La lecture de la facture est TRANSACTIONNELLE (revue du lot 5a) ─────
+#
+# payment_updates calcule le refus, le plafond et la bascule à partir de la
+# facture qu'on lui remet ; il ne vaut que si cette facture a été lue DANS la
+# transaction qui écrit. C'est la propriété que l'étape 5 réutilise pour
+# porter le paiement dans la transaction du registre : une extraction qui
+# lirait la facture hors transaction (get_invoice, puis le calcul, puis
+# l'écriture) garderait la même matrice et perdrait la sérialisation. Ces
+# deux épingles la fixent sur le vrai client (boucle de reprise comprise).
+
+
+def test_record_payment_ne_lit_la_facture_que_dans_sa_transaction(real_store):
+    real_store.seed("invoices/inv1", _seeded("envoyée"))
+    imod.record_payment("inv1", 40000, PAID_ON)
+    assert real_store.reads_outside_transactions() == []
+    assert any(r.transactional and "invoices/inv1" in r.paths for r in real_store.reads)
+
+
+def test_une_annulation_validee_pendant_l_encaissement_le_fait_refuser(real_store):
+    """Une annulation (le formulaire web, ou Claude) est validée entre la
+    lecture de la facture et le commit de l'encaissement. Le commit avorte,
+    la transaction relit : la facture est annulée, le paiement est refusé —
+    jamais porté sur une facture dont les sources viennent d'être libérées."""
+    seed = _seeded("envoyée")
+    real_store.seed("invoices/inv1", seed)
+    fired = []
+
+    def concurrent_void(info):
+        if not fired and ("update", "invoices/inv1") in info.ops:
+            fired.append(info.index)
+            real_store.external_write(
+                "invoices/inv1", {**seed, "status": "annulée", "etag": "void"})
+
+    remove = real_store.add_commit_hook(concurrent_void)
+    try:
+        updated, errors = imod.record_payment("inv1", 100000, PAID_ON)
+    finally:
+        remove()
+    assert fired, "the concurrent void must have raced the commit"
+    assert (updated, errors) == (None, [_VOIDED])
+    stored = real_store.peek("invoices/inv1")
+    assert stored["status"] == "annulée"
+    assert stored["amount_paid"] == 0 and stored["etag"] == "void"
+    # Two reads of the invoice, both inside a transaction: the first
+    # attempt's, and the retry's that saw the void.
+    reads = [r for r in real_store.reads if "invoices/inv1" in r.paths]
+    assert len(reads) == 2 and all(r.transactional for r in reads)
