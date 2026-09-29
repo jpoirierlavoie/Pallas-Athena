@@ -241,17 +241,16 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # skill's own update) — none may ever enter a connector text.
     "ne peut plus jamais être changé ici",           # a dossier's status
     "status` jamais modifiable ensuite",
-    "ne ferme pas un dossier",
-    "cannot close a dossier",
-    "closing a dossier is done in the application",
-    "ne sont inscriptibles par aucun outil",         # identity / conflict
-    "not writable by any tool",
+    "il ne ferme pas un dossier",
+    "connecteur ne ferme pas un dossier",
     # « Rien ne peut être supprimé » stays true only WITH its precision:
     # a detached party or mandataire is a link. The two English forms of
     # the never that ended without it — before lot 1b, and before lot 4b —
-    # are the claims lot 4b narrowed.
+    # are the claims lot 4b narrowed. Quoted WHOLE (review of lot 4b step
+    # 4): « a cancelled … event is kept, with its status. » alone is TRUE,
+    # and a false-claim entry must never refuse a true sentence.
     "nothing can ever be deleted here.",
-    "event is kept, with its status.",
+    "deleted here: a cancelled task or event is kept, with its status.",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -271,6 +270,18 @@ KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # phrasing is false now, as « cannot … file a signification » was.
     r"\bcannot\b[^.]{0,80}\bverify an identity",
     r"\bne peut\b[^.]{0,80}\bvérifier une identité",
+    # The skill's other phrasings of the two promises lot 4b falsified,
+    # bound to their SUBJECT (review of lot 4b step 4): as bare substrings
+    # they refused true sentences — « les paiements ne sont inscriptibles
+    # par aucun outil », « terminer une tâche ne ferme pas un dossier »,
+    # « closing a dossier is done in the application or by
+    # set_dossier_status ».
+    r"\b(?:conflits|mandataires)\s+ne sont inscriptibles par aucun outil",
+    r"\b(?:identity|conflict|mandataires?)\b[^.]{0,80}\bnot writable by any "
+    r"tool",
+    r"\bconnector\s+cannot close a dossier",
+    r"closing a dossier is done (?:only )?in the application(?: only)?\s*"
+    r"(?:[.;)]|$)",
 )
 
 
@@ -1061,3 +1072,46 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     assert _false_claims_in("le connecteur ne peut pas vérifier une identité")
     assert not _false_claims_in(
         "It never CONFIRMS an identity or conflict-of-interest check")
+
+
+def test_review_of_the_lot_4b_text_step():
+    """Review of lot 4b, step 4 — each assertion fails on 7f78871.
+
+    * set_dossier_status's OWN description told a caller, without
+      exception, to repair an incomplete drain by resending the SAME status
+      — while its handler says the opposite when another writer moved the
+      status during the call (resending would overwrite that newer status).
+      The exception is now where the caller reads the tool, as it already
+      was in INSTRUCTIONS.
+    * Four false-claim entries refused TRUE sentences — a detector that
+      cries wolf is disabled by the next person it blocks. Each is bound to
+      its subject now, and still catches the claim it was written for.
+    """
+    desc = tools.TOOLS["set_dossier_status"]["description"]
+    assert "unless `warnings` say the status moved during the call" in desc
+    assert "never resend yours" in desc
+
+    for true in (
+        "A cancelled task or event is kept, with its status.",
+        "Les paiements ne sont inscriptibles par aucun outil.",
+        "Terminer la dernière tâche ne ferme pas un dossier.",
+        "complete_task never closes anything else: it cannot close a "
+        "dossier.",
+        "Closing a dossier is done in the application or by "
+        "set_dossier_status.",
+        "Trust account numbers are not writable by any tool.",
+    ):
+        assert not _false_claims_in(true), true
+    for false in (
+        "NOTHING in Athéna can EVER be DELETED here: a cancelled task or "
+        "event is kept, with its status.",
+        "La vérification d'identité et la vérification de conflits ne sont "
+        "inscriptibles par aucun outil",
+        "Vérification d'identité, vérification de conflits et mandataires "
+        "ne sont inscriptibles par aucun outil",
+        "Il ne ferme pas un dossier",
+        "This connector cannot close a dossier.",
+        "Closing a dossier is done in the application only.",
+        "Identity and conflict checks are not writable by any tool.",
+    ):
+        assert _false_claims_in(false), false
