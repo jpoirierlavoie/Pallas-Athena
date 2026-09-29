@@ -2995,7 +2995,13 @@ Notes:
      `idempotency_key` per movement, kept on a retry; an uncertain outcome
      (`accounting_outcome_uncertain`) is re-read (`list_trust_transactions`,
      `get_admin_ledger`) before anything else and retried only with the
-     SAME key; clear only at the statement date; a trust mistake is
+     SAME key — and so is a reversal, a clearing or a correction answered
+     « Erreur lors de … » (or refused as already reversed, already
+     cleared, or changed since the read, right after such an answer): its
+     commit may have landed with the answer lost, so it is never reported
+     to the lawyer as failed before the register says so (a retry cannot
+     apply it twice — OBSERVABILITY.md, `accounting_refused`); clear only
+     at the statement date; a trust mistake is
      REVERSED, never re-entered on top, and an administration mistake is
      corrected with `update_admin_entry` while the entry stays editable;
      never a paper, unsent or provision-imputing invoice for a fee payment.
