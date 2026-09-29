@@ -2583,9 +2583,11 @@ Notes:
      section now also shows for a CLIENT of a dossier whatever the contact's
      role. On a TEST dossier with one task, one note and one confirmed
      event, close it in the form: no amber banner (the drain completed);
-     then reopen it. A trust entry recorded while that dossier's edit form
-     is open in another tab now refuses the tab's save with the conflict
-     banner — a trust write changes the dossier record: reload, then redo.
+     then reopen it. Worth telling the lawyer, though it dates from lot 0a
+     (the form's version check): a trust entry recorded while a dossier's
+     edit form is open in another tab refuses that tab's save with the
+     conflict banner — a trust write changes the dossier record: reload,
+     then redo.
   3. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
      claude.ai** — BEFORE pushing 4b. `MCP_WRITE_ENABLED` stays `"true"`.
   4. **Push the lot as ONE deploy** (Cloud Build runs the suite as the
