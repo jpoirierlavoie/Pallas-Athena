@@ -152,3 +152,50 @@ def test_the_write_handlers_never_read_their_record_fail_open():
     src = inspect.getsource(handlers.update_time_entry)
     assert "get_time_entry_strict" in src
     assert "get_expense_strict" in inspect.getsource(handlers.update_expense)
+
+
+_ID_KEYS = {"update_partie": "partie_id", "append_to_note": "note_id",
+            "complete_task": "task_id", "update_invoice": "invoice_id",
+            "record_document_analysis": "document_id",
+            "update_time_entry": "time_entry_id",
+            "update_expense": "expense_id"}
+
+
+@pytest.mark.parametrize("bad_id", ["a/b/c", "a/b", "..", "__x__"])
+@pytest.mark.parametrize("tool, args, getter", _CASES,
+                         ids=[c[0] for c in _CASES])
+def test_an_id_that_can_name_no_record_is_introuvable_never_read(
+        monkeypatch, tool, args, getter, bad_id):
+    """Review of the finitions. The store REFUSES a read of such an id, so
+    through the strict reader it came back « n'a pas pu être lu —
+    réessayez » under read_unavailable — the stop-the-batch signal, for a
+    call that can never succeed — and a slashed id with an even number of
+    segments was re-split by the client into a path reading a record
+    DEEPER in the tree (``notes/{id}/revisions/{r}`` as a note). It is an
+    absence (the _read_dossier_strict rule), and nothing is read."""
+    module, name = getter
+
+    def _never(*_a, **_k):
+        raise AssertionError("an unaddressable id must never be read")
+
+    monkeypatch.setattr(module, name, _never)
+    call = {**args, _ID_KEYS[tool]: bad_id}
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        getattr(handlers, tool)(call)
+    assert excinfo.value.reason != "read_unavailable"
+    assert "n'a pas pu être lu" not in str(excinfo.value)
+    assert "introuvable" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("bad_id", ["a/b/c", ".."])
+def test_the_contact_readers_of_lot_4b_never_read_an_unaddressable_id(
+        monkeypatch, bad_id):
+    def _never(*_a, **_k):
+        raise AssertionError("an unaddressable id must never be read")
+
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict", _never)
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers._read_partie_for_write(bad_id)
+    assert "introuvable" in str(excinfo.value)
+    assert excinfo.value.reason != "read_unavailable"
+    assert handlers._other_partie_exists(bad_id) is False

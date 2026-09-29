@@ -5347,12 +5347,17 @@ _PARTIE_UNREADABLE = (
 def _read_partie_for_write(partie_id: str) -> dict:
     """The contact, read STRICTLY — an outage is never « introuvable » (the
     fail-open get_partie would send the caller hunting for, or re-creating,
-    a contact that exists; review of lot 4b step 3)."""
-    try:
-        existing = partie_model.get_partie_strict(partie_id)
-    except Exception:
-        log_unexpected("mcp contact write: contact unreadable")
-        raise ToolArgumentError(_PARTIE_UNREADABLE, reason="read_unavailable")
+    a contact that exists; review of lot 4b step 3). An id that cannot name
+    one record is « introuvable », never read (see :func:`_read_for_write`)."""
+    if not document_model.is_addressable_id(partie_id):
+        existing = None
+    else:
+        try:
+            existing = partie_model.get_partie_strict(partie_id)
+        except Exception:
+            log_unexpected("mcp contact write: contact unreadable")
+            raise ToolArgumentError(_PARTIE_UNREADABLE,
+                                    reason="read_unavailable")
     if existing is None:
         raise ToolArgumentError(_PARTIE_NOT_FOUND.format(id=partie_id))
     return existing
@@ -5361,7 +5366,10 @@ def _read_partie_for_write(partie_id: str) -> dict:
 def _other_partie_exists(partie_id: str) -> bool:
     """Whether the contact a link NAMES (a mandataire, a party's lawyer)
     exists — read strictly, so an outage refuses as unreadable instead of
-    « introuvable »."""
+    « introuvable ». An id that cannot name one record exists nowhere
+    (see :func:`_read_for_write`)."""
+    if not document_model.is_addressable_id(partie_id):
+        return False
     try:
         return partie_model.get_partie_strict(partie_id) is not None
     except Exception:
@@ -7745,7 +7753,18 @@ def _read_for_write(reader: Callable[[str], Optional[dict]], record_id: str,
     about a record that EXISTS: the path to a duplicate note, task or
     contact (which a contact write bumps into the phone's address book).
     Logged under ``argument_refused``, the outage was also invisible to the
-    stop-the-batch signal. *reader* is a model's ``*_strict`` getter."""
+    stop-the-batch signal. *reader* is a model's ``*_strict`` getter.
+
+    An id that cannot name ONE record (``document.is_addressable_id``: empty,
+    a « / », « . », « .. », a reserved ``__x__``) is an ABSENCE and is never
+    read (review of the finitions — the rule of ``_read_dossier_strict``):
+    the store refuses such a read, and « réessayez » under
+    ``read_unavailable`` — the stop-the-batch signal — would send the caller
+    retrying a call that can never succeed; and a slashed id is re-split by
+    the client into a path that reads a record DEEPER in the tree (a note's
+    revision, read as the note)."""
+    if not document_model.is_addressable_id(record_id):
+        return None
     try:
         return reader(record_id)
     except Exception:
