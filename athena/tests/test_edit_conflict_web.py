@@ -967,6 +967,16 @@ def test_pending_only_shrinks_and_names_a_lot():
         assert entity in reached, f"{entity}: no write reaches it any more"
 
 
+def test_pending_is_empty_now_that_lot_5_has_shipped():
+    """Plan rule 11: the map « must shrink to empty by Lot 5 » — the last
+    lot of the plan (step 5, the text step). From here on an entity the
+    connector starts editing has no lot to wait for: it arrives with its
+    protected web form, its INLINE entry, or its NO_WEB_FORM reason, in the
+    same commit as the tool."""
+    assert PENDING == {}
+    assert _LOTS[-1] == "Lot 5"
+
+
 def test_complete_task_edits_a_task_whose_form_is_protected():
     """complete_task joined EDIT_TOOLS in the disclosure step (lot 0a); its
     record was already covered, so that move needed no new form — and the
