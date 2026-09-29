@@ -71,6 +71,20 @@
     {% endif %}
   </dl>
 
+  {# ── D25 (2026-09-29) : l'analyse a GARDÉ la catégorie du juriste et sa
+       sous-nature en dérive une autre. Hors du bloc « non confirmé » à
+       dessein : une réanalyse garde aussi sa confirmation, et l'écart doit
+       rester visible sous elle. `categorie_suggeree` vient de la route
+       (models.document.analysis_category_divergence — la règle que lit
+       aussi le connecteur), sur l'état COURANT du document. #}
+  {% if categorie_suggeree %}
+  <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+    L'analyse suggère la catégorie
+    « {{ (category_labels or {}).get(categorie_suggeree, categorie_suggeree) }} » ;
+    la vôtre est conservée.
+  </div>
+  {% endif %}
+
   {# ── Ce qui doit être VU — et seulement tant que ce n'est pas confirmé.
        Confirmer, c'est dire « j'ai vu ». Le journal, lui, garde tout. #}
   {% if not a.confirme %}
@@ -136,7 +150,8 @@
           {% endif %}
           {{ e.nature_detectee }} ({{ e.sous_nature }}), niveau
           {{ e.niveau_protection if e.niveau_protection is not none else '—' }}
-          {%- if e.categorie_remplacee %}, remplaçait « {{ e.categorie_precedente }} »{% endif %}
+          {%- if e.categorie_remplacee %}, remplaçait « {{ e.categorie_precedente }} »
+          {%- elif e.divergence_categorie %}, suggérait « {{ e.categorie_derivee }} » (votre catégorie conservée){% endif %}
         </li>
         {% endfor %}
       </ul>

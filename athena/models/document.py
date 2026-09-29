@@ -430,11 +430,14 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
       ``routes.reception.VERSEMENT_DEFAULT_CATEGORY``);
     * False by every other writer of a category — a connector category
       (presumed, D15), an upload left on the default, a generation (the
-      template's own category), an analysis.
+      template's own category). An analysis never writes it: one that
+      REPLACES a category leaves the « analyse » source, never his, and one
+      that meets a category of his KEEPS it (D25, :func:`record_analyse`).
 
     A copy inherits its source's answer (:func:`copy_document`). And a
     category whose provenance is not « juriste » (a presumed « mcp » one,
-    or one an analysis derived) is never the lawyer's, whatever the marker.
+    or one an analysis derived) is never the lawyer's, whatever the marker
+    — save under a CONFIRMED analysis (below).
 
     LEGACY documents (no marker — every document stored before
     2026-09-28; nothing is migrated): the lawyer's when
@@ -456,8 +459,19 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
     *doc* must be read through :func:`_migrate_category` (every reader of
     this module does): a retired value (« entente », « note ») is judged as
     the « autre » it reads as.
+
+    D25 (2026-09-29): a CONFIRMED analysis (``analyse.confirme``) makes the
+    category his, and it is judged FIRST. :func:`confirmer_analyse` writes
+    the « juriste » source and the marker too, so this clause decides only
+    a record the marker never reached (a legacy « autre » whose analysis he
+    confirmed) or one stored in a contradictory shape — erring, like the
+    legacy rule, toward his choice. It is the rule :func:`record_analyse`
+    keeps a category under: an analysis never replaces a category this
+    function calls his.
     """
     doc = doc or {}
+    if (doc.get("analyse") or {}).get("confirme") is True:
+        return True
     if str(doc.get("category_source") or "juriste") != "juriste":
         return False
     marker = doc.get("category_set_by_lawyer")
@@ -500,11 +514,43 @@ def is_canonical_uuid4(value: object) -> bool:
 
 
 def has_analysis(doc: Optional[dict]) -> bool:
-    """True when *doc* carries an analysis (its category then DERIVES)."""
+    """True when *doc* carries an analysis (its category then DERIVES —
+    unless the category is the lawyer's, which an analysis keeps: D25)."""
     doc = doc or {}
     return bool((doc.get("analyse") or {}).get("sous_nature")) or (
         doc.get("category_source") == "analyse"
     )
+
+
+def analysis_category_divergence(doc: Optional[dict]) -> str:
+    """The category *doc*'s analysis derives, when the STORED category
+    differs from it — ``""`` otherwise (no analysis, or no gap). PURE.
+
+    D25 (2026-09-29): an analysis keeps a category the lawyer chose or
+    confirmed (:func:`category_set_by_lawyer`) and records what its
+    sub-nature would have derived (``analyse.categorie_derivee``, beside
+    the ``divergence_categorie`` flag of the write). This reads the gap
+    from the document's CURRENT state rather than from that flag, so it
+    stays true once the lawyer changes the category afterwards — aligned
+    with the analysis (no gap left) or set to a third value (still one) —
+    and it also surfaces a category he re-set by hand on an analysed
+    document before D25. The document page and the connector's
+    ``list_documents`` read this one rule. An analysis stored before D25
+    has no ``categorie_derivee``: its ``nature_detectee`` is the same
+    derivation.
+    """
+    doc = doc or {}
+    analyse = doc.get("analyse") or {}
+    # Only a category of HIS diverges: one an analysis derived is its
+    # derivation, and « la vôtre est conservée » would be said of a
+    # category nobody chose.
+    if not analyse.get("sous_nature") or not category_set_by_lawyer(doc):
+        return ""
+    derived = str(
+        analyse.get("categorie_derivee") or analyse.get("nature_detectee") or ""
+    )
+    current = str(doc.get("category") or "")
+    return derived if derived and derived != current else ""
 
 
 def _parse_document_date(raw) -> tuple[Optional[datetime], Optional[str]]:
@@ -1654,11 +1700,13 @@ def update_metadata(
     or « mcp » (D15: Claude's category is PRESUMED, shown « présumée » with
     a « Confirmer » button). ``None`` derives it from the writer, and the
     connector is always « mcp » (:func:`_resolve_category_source`). A
-    category change posed by « mcp » is REFUSED on an analysed document,
-    whose category derives from its analysis — and (D18) on a category the
-    lawyer chose or confirmed (:func:`category_set_by_lawyer`). A category
-    change stamps the marker: True under « juriste » (the web edit form),
-    False under « mcp ».
+    category change posed by « mcp » is REFUSED (D18) on a category the
+    lawyer chose or confirmed (:func:`category_set_by_lawyer`,
+    ``MCP_CATEGORY_ON_LAWYERS``) — judged FIRST, since an analysis would
+    keep such a category too (D25) — and on any other analysed document,
+    whose category derives from its analysis (``MCP_CATEGORY_ON_ANALYSED``).
+    A category change stamps the marker: True under « juriste » (the web
+    edit form), False under « mcp ».
 
     Values are validated only where they CHANGE: a legacy value the form
     posts back untouched is not a new write, and must not block the save of
@@ -1709,13 +1757,18 @@ def update_metadata(
                 transaction, existing.get("dossier_id") or "", target)
             changes["folder_id"] = target
         if "category" in changes:
-            if source == "mcp" and has_analysis(existing):
-                raise _Refused([MCP_CATEGORY_ON_ANALYSED])
             if source == "mcp" and category_set_by_lawyer(existing):
                 # D18 — judged on THIS transactional read: a lawyer's
                 # choice landing between the connector's read and its
                 # commit aborts the commit, and the re-run refuses.
+                # Judged BEFORE the analysis rule (D25): on an analysed
+                # document whose category is his, a new analysis would
+                # keep it too — the only remedy is to tell him, and
+                # MCP_CATEGORY_ON_ANALYSED would send the caller to an
+                # analysis that cannot change it.
                 raise _Refused([MCP_CATEGORY_ON_LAWYERS])
+            if source == "mcp" and has_analysis(existing):
+                raise _Refused([MCP_CATEGORY_ON_ANALYSED])
             changes["category_source"] = source
             changes["category_set_by_lawyer"] = source == "juriste"
         if not changes:
@@ -2458,6 +2511,12 @@ def get_document_summary(dossier_id: str) -> dict:
 #   3. Le journal garde `categorie_precedente` ET sa source. Écraser détruit
 #      la comparaison à deux valeurs dont vivait `divergence_categorie`; la
 #      garder au journal est ce qui laisse la divergence connaissable.
+#   4. (D25, 2026-09-29) L'écrasement s'ARRÊTE devant la catégorie du
+#      juriste — choisie, confirmée, ou confirmée avec une analyse
+#      (`category_set_by_lawyer`). Elle est gardée avec sa confirmation, et
+#      la catégorie dérivée va dans `categorie_derivee` à côté du drapeau
+#      `divergence_categorie` : les deux valeurs à comparer existent de
+#      nouveau, et c'est la fiche du document qui dit l'écart.
 #
 # Le journal `documents/{id}/analyses/{analyseId}` est WRITE-ONCE. Aucun verbe
 # ne le modifie ni ne l'efface — c'est la doctrine « aucune suppression », et
@@ -2579,6 +2638,20 @@ def _analyse_derivee(
         niveau = max(niveau_avant, niveau or 0)
         motifs = tuple(motifs) + (MOTIF_NON_DECLASSEMENT,)
 
+    # ── D25 (2026-09-29) : la catégorie du JURISTE l'emporte ────────────
+    #
+    # D18 refuse déjà qu'une catégorie PRÉSUMÉE remplace celle qu'il a
+    # choisie ou confirmée ; l'analyse, qui écrasait, en était la seule
+    # exception. Elle ne l'est plus : sur une catégorie qu'il tient pour la
+    # sienne (`category_set_by_lawyer`, une analyse confirmée comprise), le
+    # passage GARDE la catégorie stockée et dit ce que sa sous-nature en
+    # aurait dérivé, sur le patron de `divergence_protection` — la valeur
+    # tenue, la valeur que l'analyse concluait, le drapeau de l'écart.
+    # Le modèle ne choisit toujours rien : ce qu'il ne peut plus faire,
+    # c'est défaire le choix de l'avocat.
+    categorie_conservee = category_set_by_lawyer(document)
+    categorie_stockee = str(document.get("category") or "")
+
     champ: dict = {
         "statut": "prete",
         "nature_detectee": nature,
@@ -2592,6 +2665,16 @@ def _analyse_derivee(
         "niveau_protection_analyse": niveau_analyse,
         "niveau_protection_precedent": niveau_avant,
         "divergence_protection": divergence,
+        # D25 — la catégorie que la sous-nature dérive, TOUJOURS écrite
+        # (égale à la catégorie stockée quand l'analyse la remplace) ;
+        # `categorie_conservee` : cette analyse a laissé en place celle du
+        # juriste ; `divergence_categorie` : et celle-ci diffère de la
+        # dérivée — l'écart que la fiche et le connecteur signalent.
+        "categorie_derivee": nature,
+        "categorie_conservee": categorie_conservee,
+        "divergence_categorie": bool(
+            categorie_conservee and categorie_stockee != nature
+        ),
         "motifs_protection": list(motifs),
         "champs_attendus_absents": list(absents),
         "alerte_dispositif_detecte": prot.alerte_dispositif_detecte(
@@ -2621,8 +2704,22 @@ def record_analyse(
 ) -> tuple[Optional[dict], list[str]]:
     """Enregistre une analyse : le cache, la catégorie dérivée, le journal.
 
-    Rend le document mis à jour. N'ÉCRIT JAMAIS `confirme: true` — voir §7.
+    Rend le document mis à jour. Ne CONFIRME jamais rien — voir §7 : une
+    analyse sur une catégorie qui n'est pas celle du juriste repart
+    présumée (`confirme: false`).
     Aucun `bump_ctag` : `documents` n'est pas exposée en DAV.
+
+    D25 (2026-09-29) — la catégorie du juriste l'emporte. Quand la
+    catégorie stockée est la sienne (:func:`category_set_by_lawyer` — qu'il
+    l'ait choisie, confirmée, ou qu'il ait confirmé une analyse), le
+    passage NE TOUCHE PAS à `category`, `category_source` ni au marqueur, et
+    le cache GARDE sa confirmation telle qu'elle était (`confirme`,
+    `confirme_par`, `confirme_le`) ; ce que la sous-nature aurait dérivé
+    part dans `categorie_derivee`, et `divergence_categorie` dit l'écart.
+    L'entrée au JOURNAL, elle, porte l'état propre du passage
+    (`confirme: false`) : le journal distingue ce que le modèle a proposé
+    de ce que l'avocat a arrêté, et l'avocat n'a pas confirmé CE passage.
+    Ailleurs, la règle d'avant : la catégorie dérivée remplace, présumée.
 
     Lot 2A (T1, 2026-09-27) : la lecture, la dérivation et l'écriture sont
     UNE transaction. Avant, le modèle lisait le document hors transaction
@@ -2676,6 +2773,10 @@ def record_analyse(
         ancienne = str(existing.get("category") or "")
         ancienne_source = str(existing.get("category_source") or "juriste")
         nouvelle = champ["nature_detectee"]
+        # D25 — décidé par `_analyse_derivee` sur CETTE lecture : un choix
+        # du juriste qui atterrit entre la lecture du connecteur et son
+        # commit fait avorter le commit, et la reprise le garde.
+        conservee = bool(champ.get("categorie_conservee"))
 
         now = datetime.now(timezone.utc)
         analyse_id = str(uuid.uuid4())
@@ -2688,18 +2789,34 @@ def record_analyse(
             # Ce que l'écrasement remplace. Sans cela la divergence de
             # classement — « l'un des deux signalements qui valent le plus »
             # — deviendrait inobservable, puisqu'il n'y a plus deux valeurs
-            # à comparer.
+            # à comparer. Sur une catégorie conservée (D25), rien n'est
+            # remplacé : `categorie_precedente` dit ce qui était là, et
+            # reste là.
             "date_document_precedente": existing.get("document_date"),
             "categorie_precedente": ancienne,
             "categorie_precedente_source": ancienne_source,
-            "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
-            # L'avertissement n'est levé que si l'on écrase un choix HUMAIN.
-            # Un « autre » posé par défaut au versement n'en mérite pas.
-            "remplace_un_choix_du_juriste": bool(
-                ancienne and ancienne != nouvelle
-                and ancienne_source == "juriste"
+            "categorie_remplacee": bool(
+                not conservee and ancienne and ancienne != nouvelle
             ),
+            # Ne se lève plus sur une analyse neuve (D25) : un choix HUMAIN
+            # — celui que `category_set_by_lawyer` reconnaît — est conservé,
+            # jamais remplacé ; ce qu'une analyse remplace encore n'était le
+            # choix de personne (un « autre » posé par défaut, la catégorie
+            # d'une génération, une catégorie présumée). La clé reste pour
+            # la forme du cache et les entrées anciennes du journal.
+            "remplace_un_choix_du_juriste": False,
         })
+
+        # Le cache garde la confirmation du juriste sur une catégorie
+        # conservée — « confirme / confirme_par / confirme_le restent ce
+        # qu'ils sont » (D25). Le journal, lui, reçoit `champ` tel quel :
+        # l'état propre de ce passage, jamais confirmé.
+        cache = dict(champ)
+        if conservee:
+            precedent = existing.get("analyse") or {}
+            for cle in ("confirme", "confirme_par", "confirme_le"):
+                if cle in precedent:
+                    cache[cle] = precedent[cle]
 
         # L'analyse alimente encore UN champ natif : la date lue devient la
         # date du document. Elle l'ÉCRASE (décision du praticien,
@@ -2712,11 +2829,9 @@ def record_analyse(
             if lue is not None:
                 natifs["document_date"] = lue
 
-        fields = {
-            "analyse": champ, "category": nouvelle,
-            "category_source": "analyse", **natifs,
-            **provenance.update_fields(now),
-        }
+        fields = {"analyse": cache, **natifs, **provenance.update_fields(now)}
+        if not conservee:
+            fields.update({"category": nouvelle, "category_source": "analyse"})
         transaction.set(
             ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id), champ
         )
@@ -2786,6 +2901,14 @@ def update_analyse(
     l'historique distingue ce que le modèle a proposé de ce que l'avocat a
     arrêté. Rien ne s'efface, ici comme ailleurs.
 
+    La catégorie (D25, 2026-09-29) : elle se REDÉRIVE quand le juriste
+    change la sous-nature — c'est ce que le formulaire lui dit. Corriger un
+    AUTRE champ la laisse telle qu'elle est stockée : avant, toute
+    correction la remplaçait par la catégorie dérivée, ce qui défaisait en
+    silence la catégorie qu'une analyse venait de lui garder (ou qu'il
+    avait choisie au même enregistrement). ``categorie_derivee`` /
+    ``divergence_categorie`` disent alors l'écart qui reste.
+
     ``expected_etag`` (keyword-only): the journal entry AND the cache
     commit together, and only if the stored etag is still that one
     (``models.concurrency``); a stale one writes neither and returns
@@ -2818,7 +2941,16 @@ def update_analyse(
         now = datetime.now(timezone.utc)
         champ.update({"genere_le": now, "confirme_le": now})
         fields = {
-            "analyse": champ, "category": champ["nature_detectee"],
+            "analyse": champ,
+            # D25: the category is re-derived only when he re-qualified
+            # (changed the sub-nature) — `_analyse_editee` decides. An edit
+            # of another field (an author, a level) leaves the category he
+            # holds where it is: it no longer silently undoes the category
+            # an analysis kept for him.
+            "category": (
+                existing.get("category", "") if champ["categorie_conservee"]
+                else champ["nature_detectee"]
+            ),
             "category_source": "juriste",
             # D18: the lawyer's edit IS his determination (« éditer vaut
             # confirmer ») — a copy of this document keeps it his.
@@ -2944,6 +3076,17 @@ def _analyse_editee(
     champ["famille"] = tax.famille_of(sous_nature)
 
     ancienne = str(existing.get("category") or "")
+    # D25 — la catégorie ne se redérive que si le juriste REQUALIFIE (une
+    # sous-nature neuve ou changée). Corriger un autre champ garde la
+    # catégorie stockée : celle qu'une analyse lui a gardée, ou qu'il a
+    # posée au même enregistrement. Une catégorie vide se dérive toujours.
+    precedente_sn = str((existing.get("analyse") or {}).get("sous_nature") or "")
+    conservee = bool(ancienne) and precedente_sn == sous_nature
+    champ.update({
+        "categorie_derivee": nature,
+        "categorie_conservee": conservee,
+        "divergence_categorie": bool(conservee and ancienne != nature),
+    })
     champ.update({
         "declenche_par": "juriste",
         "modifie_par": sanitize(str(par or ""), max_length=200),
@@ -2961,7 +3104,9 @@ def _analyse_editee(
         "categorie_precedente_source": str(
             existing.get("category_source") or "juriste"
         ),
-        "categorie_remplacee": bool(ancienne and ancienne != nature),
+        "categorie_remplacee": bool(
+            not conservee and ancienne and ancienne != nature
+        ),
         # Jamais un avertissement contre le juriste lui-même.
         "remplace_un_choix_du_juriste": False,
         # Éditer, c'est confirmer.

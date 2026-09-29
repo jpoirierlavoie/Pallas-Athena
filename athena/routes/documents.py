@@ -239,6 +239,9 @@ def document_detail(document_id: str) -> str:
         "documents/detail.html",
         analyses=analyses,
         document=doc,
+        # D25 : la catégorie que l'analyse dérive, quand la catégorie du
+        # juriste — gardée — en diffère ; "" sinon (la note ambre).
+        categorie_suggeree=document_model.analysis_category_divergence(doc),
         # Le refus de « Confirmer » voyage sur une redirection 2xx
         # (?erreur=) ; la page ne le lisait pas, si bien qu'un refus — y
         # compris « Aucune analyse à confirmer. » — ne paraissait jamais.

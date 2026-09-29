@@ -298,10 +298,15 @@ def test_tout_ce_que_l_analyse_produit_est_editable():
     }))
     # Ce qui SE DÉRIVE ne se saisit pas : la nature vient du code, l'état
     # de confirmation vient d'un geste, les niveaux témoins sont calculés.
+    # D25 (2026-09-29) ajoute trois clés DÉRIVÉES (la catégorie que la
+    # sous-nature dérive, et si celle du juriste a été gardée et diverge) :
+    # elles ne se saisissent pas plus que la nature — le juriste change la
+    # catégorie au formulaire, ou la sous-nature.
     derives = {
         "statut", "nature_detectee", "famille", "niveau_protection_analyse",
         "niveau_protection_precedent", "divergence_protection",
         "confirme", "confirme_par", "confirme_le",
+        "categorie_derivee", "categorie_conservee", "divergence_categorie",
     }
     manquants = sorted(produits - set(doc.ANALYSE_EDITABLE) - derives)
     assert not manquants, f"produits mais non éditables : {manquants}"

@@ -3123,7 +3123,19 @@ Notes:
   names the lawyer as the one who attests the sending (D20), and the
   accounting INSTRUCTIONS carry a seventh « never » (`fee_payee`) — all
   under the accounting grant, which no token holds before §15 « Lot 5 »
-  step 4. **Device-visible — tell the lawyer, then check after the
+  step 4. And D25 (the same day, under the ordinary write grant):
+  `record_document_analysis` KEEPS a category the lawyer chose or
+  confirmed — a confirmed analysis included — with his confirmation, and
+  records the category the sub-nature derives beside a
+  `divergence_categorie` flag and a warning; `list_documents` rows gain
+  `divergence_categorie`; `update_document` judges the lawyer's rule
+  before the analysis rule (« dites-le au juriste »). When BOTH copies of
+  the claude.ai skill `pallas-athena` are updated with §15 « Lot 5 »
+  step 9, add: an analysis no longer replaces the lawyer's category — a
+  phrasing « l'analyse remplace la catégorie » (or « an analysis
+  replacing it », the lot 2A wording above) is true of a PRESUMED
+  category only; a gap is reported to him, never settled by a new
+  analysis. **Device-visible — tell the lawyer, then check after the
   deploy:**
   1. A DAV read that FAILS answers **503 + `Retry-After`** — a collection
      listing, a sync report, a contact, an event, a task, a note, a
@@ -3166,6 +3178,16 @@ Notes:
      objet/sens, a fee payment for another client's invoice, a payee
      outside the profile) describe what the register already holds — read
      them with the lawyer; nothing is repaired.
+  6. A document whose category the lawyer chose or confirmed, analysed
+     again through the connector (D25): its category and his confirmation
+     stay. When the analysis derives another category, the fiche's
+     « Analyse » card shows, in amber, « L'analyse suggère la catégorie X ;
+     la vôtre est conservée » — ALSO under a kept « Confirmée », whose
+     alerts stay folded: tell him that a kept confirmation covers an
+     analysis he has not read, and that he re-reads it before relying on
+     it. And in the edit form, correcting an analysis field other than the
+     sous-nature no longer replaces the category (changing the sous-nature
+     still re-derives it).
   Watch, the first week: the finitions' `unexpected` messages
   (OBSERVABILITY.md, « Messages of the finitions ») — a burst is an outage,
   a steady line on one id a stored document to repair.

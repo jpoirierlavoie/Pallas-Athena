@@ -5359,14 +5359,20 @@ TOOLS: dict[str, dict] = {
     "record_document_analysis": {
         "title": "Enregistrer l'analyse d'un document",
         "description": (
-            "WRITE — RECORDS a document analysis you have already performed, "
-            "and REPLACES the document's stored category. Read the text with "
+            "WRITE — RECORDS a document analysis you have already performed. "
+            "Read the text with "
             "get_document_text FIRST; never analyse from a filename. You "
             "supply a `sous_nature` from the CLOSED table and the CODE "
-            "derives the category — you cannot choose or invent one here, "
-            "and it replaces a PRESUMED category a FILES tool set. The "
+            "derives the category — you cannot choose or invent one here. "
+            "The derived category REPLACES a PRESUMED one (a FILES tool's, "
+            "an earlier analysis's) or a default nobody chose — NEVER a "
+            "category the lawyer chose or confirmed (list_documents: "
+            "category_set_by_lawyer): that one is KEPT, with his "
+            "confirmation, and a gap is flagged (analyse.divergence_categorie"
+            " + a warning) — tell him; he alone decides. The "
             "result becomes visible in the application: category badge, "
-            "protection level, summary. It is marked PRESUMED until the "
+            "protection level, summary. Unless his confirmation was kept, it "
+            "is marked PRESUMED until the "
             "lawyer confirms it on screen; nothing you send here can confirm "
             "it. Every run is journalled for ever and the previous category "
             "is kept, so a replacement stays observable. Privileges are "
@@ -5387,10 +5393,11 @@ TOOLS: dict[str, dict] = {
                     "type": "string",
                     "enum": _SOUS_NATURE_CODES,
                     "description": (
-                        "Closed sub-nature code (Annexe A). The stored "
-                        "category is DERIVED from it — there is no category "
-                        "parameter, by design. Never invent a code: if none "
-                        "fits, say so instead of calling."
+                        "Closed sub-nature code (Annexe A). The category is "
+                        "DERIVED from it (stored unless the lawyer's is "
+                        "kept) — there is no category parameter, by design. "
+                        "Never invent a code: if none fits, say so instead "
+                        "of calling."
                     ),
                 },
                 "privileges": {
@@ -5590,10 +5597,10 @@ TOOLS: dict[str, dict] = {
             "application; it is refused on a category the lawyer chose or "
             "confirmed (category_set_by_lawyer: true — tell him instead; a "
             "document filed before that marker counts as his unless its "
-            "category is « autre »), "
-            "and on a document that carries an analysis, whose category "
-            "derives from it (use record_document_analysis). Values already "
-            "stored write nothing."
+            "category is « autre »; an analysis keeps it too), "
+            "and on any OTHER document that carries an analysis, whose "
+            "category derives from it (use record_document_analysis). Values "
+            "already stored write nothing."
         ),
         "input_schema": {
             "type": "object",

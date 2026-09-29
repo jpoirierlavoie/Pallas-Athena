@@ -38,9 +38,18 @@ from utils import analyse_taxonomies as tax  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 
+# Changé délibérément (D25, 2026-09-29). doc-1 portait « correspondance »
+# sans marqueur — ce que `category_set_by_lawyer` tient pour le choix du
+# juriste (règle des documents anciens, correctifs du lot 3) — et chaque
+# test du fichier comptait sur l'analyse pour l'ÉCRASER. D25 garde désormais
+# une catégorie du juriste : doc-1 part donc de la valeur par défaut d'un
+# téléversement, que personne n'a choisie (marqueur FAUX), pour que ces
+# tests continuent de parcourir le chemin du REMPLACEMENT. Le chemin
+# CONSERVÉ a son propre fichier : tests/test_document_analyse_d25.py.
 _DOC1 = {
-    "id": "doc-1", "dossier_id": "d1", "category": "correspondance",
-    "category_source": "juriste", "filename": "x.pdf",
+    "id": "doc-1", "dossier_id": "d1", "category": "autre",
+    "category_source": "juriste", "category_set_by_lawyer": False,
+    "filename": "x.pdf",
     "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
 }
 
@@ -156,7 +165,13 @@ def test_record_writes_category_source_and_journals_what_it_replaced(monde):
 
     En écrasant, on détruit la comparaison à deux valeurs dont vivait
     `divergence_categorie`. Le journal garde donc la catégorie précédente ET
-    sa source, et l'avertissement ne se lève que sur un choix HUMAIN.
+    sa source.
+
+    Réécrit délibérément (D25, 2026-09-29) : il épinglait
+    `remplace_un_choix_du_juriste: True` sur une catégorie « juriste »
+    remplacée. D25 GARDE désormais le choix du juriste ; ce qu'une analyse
+    remplace encore n'était le choix de personne, et l'avertissement ne se
+    lève donc plus sur une analyse neuve.
     """
     maj, err = doc.record_analyse("doc-1", _SORTIE, modele="claude-opus-5")
     assert err == []
@@ -164,10 +179,13 @@ def test_record_writes_category_source_and_journals_what_it_replaced(monde):
     assert maj["category_source"] == "analyse"
 
     a = maj["analyse"]
-    assert a["categorie_precedente"] == "correspondance"
+    assert a["categorie_precedente"] == "autre"
     assert a["categorie_precedente_source"] == "juriste"
     assert a["categorie_remplacee"] is True
-    assert a["remplace_un_choix_du_juriste"] is True
+    assert a["remplace_un_choix_du_juriste"] is False
+    assert a["categorie_conservee"] is False
+    assert a["divergence_categorie"] is False
+    assert a["categorie_derivee"] == "procédure"
 
     journal = monde["journaux"]["doc-1"][doc.ANALYSES_SUBCOLLECTION]
     assert len(journal) == 1

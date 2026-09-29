@@ -1269,10 +1269,11 @@ def _document_write_entity() -> dict:
             "« mcp »), not the lawyer's determination."),
         "category_set_by_lawyer": _bool(
             "true = the lawyer CHOSE or CONFIRMED this category in the "
-            "application (D18) — or it predates the marker and is not "
-            "« autre », so it is held to be his: update_document never "
-            "replaces it. false = presumed, or never chosen (a new upload's "
-            "default, a generation's, a pre-marker document's « autre »)."),
+            "application (D18) — a confirmed analysis included (D25) — or it "
+            "predates the marker and is not « autre », so it is held to be "
+            "his: update_document never replaces it, nor does an analysis. "
+            "false = presumed, or never chosen (a new upload's default, a "
+            "generation's, a pre-marker document's « autre »)."),
         "tags": _arr(_str()),
         "document_date": _nstr("YYYY-MM-DD; null = not dated."),
         "folder_id": _nstr("null = the dossier root."),
@@ -2100,11 +2101,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "lawyer confirms it in the application)."),
             },
             "category_set_by_lawyer": _bool(
-                "true = the lawyer CHOSE or CONFIRMED this category (D18): "
-                "update_document refuses to replace it. false = presumed, "
-                "or nobody chose it (a new upload's default, a "
-                "generation's, a pre-marker document's « autre »); any "
-                "other pre-marker category reads true."),
+                "true = the lawyer CHOSE or CONFIRMED this category (D18) — "
+                "a confirmed analysis included (D25): update_document "
+                "refuses to replace it, and record_document_analysis keeps "
+                "it. false = presumed, or nobody chose it (a new upload's "
+                "default, a generation's, a pre-marker document's "
+                "« autre »); any other pre-marker category reads true."),
             "file_type": _str("MIME type."),
             "file_size": _int("Bytes."),
             "file_size_display": _str(),
@@ -2157,12 +2159,19 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "l'application."),
         "privileges": _arr(_str("Codes cumulés qui fondent le niveau.")),
         "analyse_confirmee": _bool(
-            "true = l'avocat a confirmé ou corrigé l'analyse. false = elle "
-            "reste PRÉSUMÉE."),
+            "true = l'avocat a confirmé ou corrigé l'analyse — ou une "
+            "analyse enregistrée depuis a gardé sa catégorie ET sa "
+            "confirmation (D25), sans qu'il l'ait lue. false = elle reste "
+            "PRÉSUMÉE."),
         "divergence_protection": _bool(
             "true = la dernière analyse concluait à un niveau PLUS BAS que "
             "celui déjà retenu; le plus élevé a été tenu et l'avocat doit "
             "trancher."),
+        "divergence_categorie": _bool(
+            "true = `category` — celle du juriste, qu'une analyse garde "
+            "(D25) — diffère de celle que la sous-nature dérive "
+            "(`nature_detectee`). L'écart est signalé sur sa fiche ; lui "
+            "seul tranche. false sans analyse ou sans écart."),
         "category_presumee": _bool(
             "true = `category` est PRÉSUMÉE — posée par une analyse ou par "
             "ce connecteur (`category_source` « analyse » ou « mcp ») — et "
@@ -3802,9 +3811,24 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "recorded": {"type": "boolean"},
             "document_id": {"type": "string"},
             "display_name": {"type": "string"},
-            "category": {"type": "string"},
+            "category": {
+                "type": "string",
+                "description": (
+                    "The category AS STORED after this call: the one the "
+                    "sub-nature derives — or the lawyer's, KEPT (D25; "
+                    "analyse.categorie_conservee)."),
+            },
             "category_source": {"type": "string"},
-            "analyse": {"type": "object"},
+            "analyse": {
+                "type": "object",
+                "description": (
+                    "The stored analysis, echoed in part. "
+                    "categorie_derivee = the category the sub-nature "
+                    "derives; categorie_conservee = true when the lawyer's "
+                    "category (and his confirmation, confirme) was KEPT "
+                    "(D25); divergence_categorie = and it differs from "
+                    "categorie_derivee."),
+            },
             # Finitions (contracts-6): the document's NEW etag, for a next
             # expected_etag. Optional — a key added to a shipped output.
             "entity": {

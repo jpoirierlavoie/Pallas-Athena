@@ -1716,6 +1716,12 @@ def _analyse_apercu(doc: dict) -> dict:
         "privileges": list(a.get("privileges") or []),
         "analyse_confirmee": bool(a.get("confirme")),
         "divergence_protection": bool(a.get("divergence_protection")),
+        # D25 : la catégorie stockée — celle du juriste, qu'une analyse
+        # garde — diffère de celle que la sous-nature dérive
+        # (`nature_detectee`). Lue sur l'état COURANT, par la même règle que
+        # la fiche du document.
+        "divergence_categorie": bool(
+            document_model.analysis_category_divergence(doc)),
         # « analyse » ou « mcp » = présumée (D15 : une catégorie que Claude
         # a posée reste présumée jusqu'au « Confirmer » du juriste, comme
         # celle d'une analyse) ; absente ou « juriste » = déterminée.
@@ -12344,6 +12350,8 @@ _ANALYSE_ECHO = (
     "nature_detectee", "sous_nature", "famille", "privileges",
     "niveau_protection", "confiance", "confirme", "categorie_precedente",
     "categorie_remplacee", "remplace_un_choix_du_juriste",
+    # D25 — la catégorie du juriste gardée, et l'écart s'il y en a un.
+    "categorie_derivee", "categorie_conservee", "divergence_categorie",
     "champs_attendus_absents", "alerte_dispositif_detecte",
     "alerte_renonciation_possible", "analyse_id",
 )
@@ -12466,6 +12474,8 @@ def _record_document_analysis_impl(args: dict) -> dict:
             sous_nature=stocke.get("sous_nature", ""),
             niveau_protection=stocke.get("niveau_protection"),
             categorie_remplacee=bool(stocke.get("categorie_remplacee")),
+            categorie_conservee=bool(stocke.get("categorie_conservee")),
+            divergence_categorie=bool(stocke.get("divergence_categorie")),
         )
     except Exception:  # jamais au prix de l'écriture
         # Mais jamais en silence non plus : une ligne d'audit qui
@@ -12479,27 +12489,50 @@ def _record_document_analysis_impl(args: dict) -> dict:
         "document_id": document_id,
         "display_name": updated.get("display_name") or updated.get("filename") or "",
         "category": updated.get("category", ""),
-        "category_source": updated.get("category_source", ""),
+        # Normalized like every document row: a category the analysis KEPT
+        # (D25) may be a legacy one with no stored source — it reads
+        # « juriste », never "".
+        "category_source": _category_source(updated),
         "analyse": {k: stocke.get(k) for k in _ANALYSE_ECHO if k in stocke},
         "entity": {"id": document_id, "etag": concurrency.etag_of(updated)},
-        "warnings": _analyse_warnings(stocke, existing),
+        "warnings": _analyse_warnings(stocke),
     }
 
 
-def _analyse_warnings(champ: dict, existing: dict) -> list[str]:
-    """Ce que l'appelant doit lire, en français, hors du champ."""
+def _analyse_warnings(champ: dict) -> list[str]:
+    """Ce que l'appelant doit lire, en français, hors du champ.
+
+    *champ* est le cache STOCKÉ (la décision du modèle, prise sur sa
+    lecture transactionnelle), jamais la prédiction du gestionnaire : un
+    choix du juriste atterri entre les deux est ce qu'il faut dire. Les
+    catégories nommées sont du vocabulaire, jamais un extrait du document.
+    """
     out: list[str] = []
-    ancienne = str(existing.get("category") or "")
-    nouvelle = str(champ.get("nature_detectee") or "")
-    if (
-        ancienne
-        and ancienne != nouvelle
-        and str(existing.get("category_source") or "juriste") == "juriste"
-    ):
+    ancienne = str(champ.get("categorie_precedente") or "")
+    derivee = str(
+        champ.get("categorie_derivee") or champ.get("nature_detectee") or "")
+    conservee = bool(champ.get("categorie_conservee"))
+    if conservee and champ.get("divergence_categorie"):
+        # D25 — l'écart dit, jamais tranché ici.
         out.append(
-            f"La catégorie « {ancienne} », posée dans l'application, est "
-            f"remplacée par « {nouvelle} ». La précédente reste au journal "
-            "des analyses."
+            f"Catégorie du juriste CONSERVÉE : « {ancienne} » — choisie ou "
+            "confirmée par lui, ou posée avant ce suivi et tenue pour la "
+            f"sienne — n'est pas remplacée ; la sous-nature dériverait "
+            f"« {derivee} ». L'écart est signalé sur la fiche du document : "
+            "dites-le au juriste ; lui seul tranche."
+        )
+    elif (
+        champ.get("categorie_remplacee")
+        and str(champ.get("categorie_precedente_source") or "juriste")
+        == "juriste"
+    ):
+        # Ce qu'une analyse remplace encore sous la source « juriste »
+        # n'était le choix de personne (D25 garde le sien) : dit ainsi,
+        # jamais « un choix du juriste ».
+        out.append(
+            f"La catégorie « {ancienne} », qui n'était enregistrée ni comme "
+            "choisie ni comme confirmée par le juriste, est remplacée par "
+            f"« {derivee} ». La précédente reste au journal des analyses."
         )
     absents = champ.get("champs_attendus_absents") or []
     if absents:
@@ -12518,11 +12551,28 @@ def _analyse_warnings(champ: dict, existing: dict) -> list[str]:
             "Renonciation possible : le document porte des marques d'un "
             "régime protégé alors que sa nature le présume communiqué."
         )
-    out.append(
-        "Classification PRÉSUMÉE. Elle est visible dans l'application avec "
-        "cette mention jusqu'à confirmation par l'avocat, qui est le seul "
-        "geste pouvant la lever."
-    )
+    if conservee and champ.get("confirme"):
+        # D25 — sa confirmation est gardée telle qu'elle était : elle couvre
+        # désormais un passage qu'il n'a pas lu, et l'écran tait les
+        # alertes d'une analyse confirmée. Le dire, c'est tout ce qui reste.
+        out.append(
+            "Catégorie et confirmation du juriste CONSERVÉES : cette analyse "
+            "paraît sous la confirmation qu'il avait donnée, sans qu'il l'ait "
+            "lue. Signalez-lui ce qu'elle change (sous-nature, régime, "
+            "alertes) ; il la corrige dans l'application."
+        )
+    elif conservee:
+        out.append(
+            "Analyse PRÉSUMÉE (sous-nature, régime) jusqu'à ce que l'avocat "
+            "la confirme dans l'application ; la catégorie, elle, reste la "
+            "sienne."
+        )
+    else:
+        out.append(
+            "Classification PRÉSUMÉE. Elle est visible dans l'application "
+            "avec cette mention jusqu'à confirmation par l'avocat, qui est le "
+            "seul geste pouvant la lever."
+        )
     return out
 
 
@@ -12557,13 +12607,17 @@ _DOCUMENT_ANALYSED_CATEGORY = (
 # category (no marker, anything but « autre ») is refused as HELD to be the
 # lawyer's — nothing recorded whether he chose it — so the text says « or
 # posed before this tracking », never « he chose it » as a fact.
+# D25 (2026-09-29): judged BEFORE the analysis rule, and it says that an
+# analysis would keep his category too — so a caller does not go and record
+# one to get past this refusal.
 _DOCUMENT_LAWYERS_CATEGORY = (
     "`category` refusé : la catégorie de ce document a été choisie ou "
     "confirmée par le juriste dans l'application — ou posée avant ce suivi, "
     "et tenue pour la sienne —, et une catégorie présumée "
     "ne remplace jamais la sienne (list_documents : category_set_by_lawyer). "
-    "Si elle vous semble erronée, signalez-le-lui ; lui seul la corrige. "
-    "Rien n'a été modifié."
+    "Une analyse la garderait aussi (record_document_analysis ne remplace "
+    "pas la sienne). Si elle vous semble erronée, dites-le au juriste ; lui "
+    "seul la corrige. Rien n'a été modifié."
 )
 _DOCUMENT_FOLDER_UNKNOWN = (
     "`folder_id` refusé : ce dossier de classement n'existe pas dans le "
@@ -12729,10 +12783,14 @@ def _update_document_impl(args: dict) -> dict:
     changed = [k for k in _DOCUMENT_EDIT_KEYS if k in diff]
     if not changed:
         return _document_edit_payload(existing, changed=[], warnings=[])
-    if "category" in changed and document_model.has_analysis(existing):
-        raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
+    # The lawyer's rule FIRST (D25): on an analysed document whose category
+    # is his, a new analysis keeps it too — pointing the caller to
+    # record_document_analysis would send it to a path that cannot change
+    # it. The remedy is to tell him.
     if "category" in changed and document_model.category_set_by_lawyer(existing):
         raise ToolArgumentError(_DOCUMENT_LAWYERS_CATEGORY)
+    if "category" in changed and document_model.has_analysis(existing):
+        raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
 
     expected = _expected_etag(
         args, existing, tool="update_document", subject=_DOCUMENT_SUBJECT)
@@ -12748,12 +12806,12 @@ def _update_document_impl(args: dict) -> dict:
     if errors:
         # The model's words, rephrased where the connector has a better
         # remedy to name (an analysis landed meanwhile; the folder vanished).
-        if document_model.MCP_CATEGORY_ON_ANALYSED in errors:
-            raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
         if document_model.MCP_CATEGORY_ON_LAWYERS in errors:
             # The lawyer chose or confirmed it between the read and the
             # commit (the model judged it on its transactional read).
             raise ToolArgumentError(_DOCUMENT_LAWYERS_CATEGORY)
+        if document_model.MCP_CATEGORY_ON_ANALYSED in errors:
+            raise ToolArgumentError(_DOCUMENT_ANALYSED_CATEGORY)
         if document_model.TARGET_FOLDER_NOT_FOUND in errors:
             raise ToolArgumentError(_DOCUMENT_FOLDER_UNKNOWN)
         raise ToolArgumentError("; ".join(errors))

@@ -281,6 +281,14 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # truth-6: a fee payment is recorded by the accounting tools too.
     "par un « paiement d'honoraires » inscrit dans l'application.",
     "there is no de-duplication and a retry creates a second note",
+    # D25 (2026-09-29): an analysis KEEPS a category the lawyer chose or
+    # confirmed — the texts that said it replaced the stored category
+    # unconditionally, and the warning that called the replaced one his.
+    "and replaces the document's stored category",
+    "an analysis replaces it)",
+    "la catégorie est remplacée, le niveau",
+    "posée dans l'application, est remplacée",
+    "the stored category is derived from it",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -929,11 +937,21 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     assert {"document", "confirm", "active_template"} <= set(keys)
     # The ANALYSE paragraph and the tool keep the D15 nuance: the category
     # is never chosen THERE, and a presumed one set in FILES is replaced.
+    # REWRITTEN deliberately (D25, 2026-09-29): they pinned « an analysis
+    # replaces it » (ANALYSE) and « it replaces a PRESUMED category a FILES
+    # tool set » (the tool). Both still hold for a PRESUMED category — and
+    # both now say the lawyer's is KEPT, never replaced. The « only for a
+    # document WITHOUT an analysis » half lives in the FILES paragraph.
     analyse = next(f for f in disclosure.FAMILIES if f.key == "analyse")
-    assert "WITHOUT an analysis" in analyse.instructions_en
+    assert "replaces a PRESUMED one (yours in FILES" in analyse.instructions_en
+    assert "never one the LAWYER chose or confirmed" in analyse.instructions_en
+    assert "KEPT with his confirmation" in analyse.instructions_en
+    files_family = next(f for f in disclosure.FAMILIES if f.key == "files")
+    assert "a document that carries NO analysis" in files_family.instructions_en
     desc = tools.TOOLS["record_document_analysis"]["description"]
     assert "cannot choose or invent one here" in desc
-    assert "PRESUMED category a FILES tool set" in desc
+    assert "REPLACES a PRESUMED one (a FILES tool's" in desc
+    assert "NEVER a category the lawyer chose or confirmed" in desc
     assert "a template is not one" in tools.TOOLS["get_document_text"]["description"]
     assert "a template is not a document" in text   # READ-CONTENT
     assert "It never hands out a link that reads or downloads a stored file" in text

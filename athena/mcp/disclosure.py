@@ -379,7 +379,8 @@ FAMILIES: tuple[Family, ...] = (
         consent_template="mcp/families/_analyse.html",
         checkbox_summary_fr=(
             "analyser un document (nature, privilèges, niveau de protection "
-            "— la catégorie est remplacée, le niveau ne descend jamais)"
+            "— la catégorie est remplacée, sauf celle que vous avez choisie "
+            "ou confirmée ; le niveau ne descend jamais)"
         ),
         instructions_en=(
             "`record_document_analysis` records a document's qualification. "
@@ -387,8 +388,11 @@ FAMILIES: tuple[Family, ...] = (
             "(`get_reference_vocabulary`) and the `privileges` you identify; "
             "the CODE derives from them the nature, the family, the "
             "protection level and the document's category — you never pick "
-            "those here (a category you set in FILES is PRESUMED and only for "
-            "a document WITHOUT an analysis; an analysis replaces it). A "
+            "those here. The derived category replaces a PRESUMED one (yours "
+            "in FILES, or an earlier analysis's), never one the LAWYER chose "
+            "or confirmed (`category_set_by_lawyer`): that one is KEPT with "
+            "his confirmation, and a gap is flagged "
+            "(`divergence_categorie`) for him to settle. A "
             "level can only ever "
             "RISE: a re-analysis retaining fewer privileges keeps the stored "
             "level and flags the divergence, because under-protecting "

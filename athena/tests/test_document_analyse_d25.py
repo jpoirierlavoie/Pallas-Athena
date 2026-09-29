@@ -1,0 +1,548 @@
+"""D25 — l'analyse cède à la catégorie du juriste (décision du 2026-09-29).
+
+D18 refusait déjà qu'une catégorie PRÉSUMÉE (celle que Claude pose par
+``update_document``) remplace une catégorie que le juriste a choisie ou
+confirmée. L'analyse (``record_document_analysis`` → ``record_analyse``) en
+était la seule exception : elle ÉCRASAIT la catégorie par celle que sa
+sous-nature dérive, et remettait l'analyse à « présumée ». D25 : sur une
+catégorie du juriste (``category_set_by_lawyer`` — une analyse CONFIRMÉE
+comprise), l'analyse GARDE la catégorie, sa provenance et la confirmation
+du juriste ; ce que la sous-nature aurait dérivé est inscrit dans l'analyse
+(``categorie_derivee``) avec le drapeau ``divergence_categorie``, le
+connecteur le dit dans un avertissement, et la fiche du document le montre.
+
+Et deux conséquences, épinglées ici avec la règle :
+
+* ``update_document`` juge la règle du juriste AVANT celle de l'analyse —
+  sur un document analysé dont la catégorie est la sienne, son refus dit
+  « dites-le au juriste » au lieu d'envoyer vers une analyse qui ne la
+  changerait pas ;
+* ``update_analyse`` (le juriste qui corrige l'analyse au formulaire) ne
+  redérive la catégorie que s'il change la sous-nature : corriger un auteur
+  ne défait plus, en silence, la catégorie qu'une analyse lui a gardée.
+
+Tout passe par les VRAIS modèles, le vrai gestionnaire et la vraie route
+au-dessus du faux Firestore partagé ; on relit ce qui est STOCKÉ. Chaque
+test d'un comportement changé ÉCHOUE sur le code d'avant.
+"""
+
+import os
+import pathlib
+import sys
+from datetime import datetime, timezone
+from unittest import mock
+
+import pytest
+
+_ATHENA = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ATHENA))
+
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
+
+with mock.patch("google.cloud.firestore.Client"):
+    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
+    import mcp.handlers as handlers
+    import mcp.output_schemas as output_schemas
+    import mcp.tools as tools
+    import mcp.write_support as write_support  # noqa: F401
+    from models import document as document_model
+    from models import provenance
+    import routes.documents as documents_routes
+
+from tests._fake_firestore import install  # noqa: E402
+
+UTC = timezone.utc
+DT = datetime(2026, 3, 4, tzinfo=UTC)
+CONFIRMED_AT = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
+PRIVATE_TEXT = "Texte-privé-7QX"
+PRIVATE_NAME = "Tremblay-Q9"
+
+
+def _fake_modules() -> list:
+    return [m for n, m in sorted(sys.modules.items())
+            if (n.startswith("models.") or n in ("dav.sync", "mcp.write_support"))
+            and getattr(m, "db", None) is not None]
+
+
+def _doc(fake, did, **over):
+    record = {**document_model._default_doc(), "id": did,
+              "dossier_id": "d1", "display_name": f"Pièce {did}",
+              # Not previewable: the detail page never asks Storage for a URL.
+              "filename": "lot.zip", "file_type": "application/zip",
+              "category": "autre", "category_source": "juriste",
+              "created_at": DT, "updated_at": DT, "etag": f"e-{did}"}
+    record.update(over)
+    fake.seed(f"documents/{did}", record)
+
+
+def _confirmed_analysis(sous_nature: str) -> dict:
+    champ, errors = document_model._analyse_derivee(
+        {"sous_nature": sous_nature}, document={"category": "autre"})
+    assert not errors, errors
+    champ.update({"confirme": True, "confirme_par": "me@cabinet.ca",
+                  "confirme_le": CONFIRMED_AT})
+    return champ
+
+
+@pytest.fixture
+def fake(monkeypatch):
+    fake = install(monkeypatch, *_fake_modules())
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001",
+                              "title": "Dossier", "status": "actif"})
+    # The lawyer's, with the marker: moved off the form's default.
+    _doc(fake, "choisi", category="correspondance", category_set_by_lawyer=True)
+    # The lawyer's, and it agrees with what the analysis will derive.
+    _doc(fake, "concorde", category="procédure", category_set_by_lawyer=True)
+    # Legacy (no marker), not the upload default: held to be his (D18).
+    _doc(fake, "ancien", category="jugement")
+    # Legacy « autre » whose analysis the lawyer CONFIRMED — the marker
+    # never reached it; only the D25 clause makes it his.
+    _doc(fake, "confirme_ancien", category="autre",
+         analyse=_confirmed_analysis("CAB_MEMO"))
+    # Nobody's: a new upload left on the default, and Claude's presumed one.
+    _doc(fake, "defaut", category="autre", category_set_by_lawyer=False)
+    _doc(fake, "presume", category="preuve", category_source="mcp",
+         category_set_by_lawyer=False)
+    return fake
+
+
+_SORTIE = {"sous_nature": "PROC_DEM_INTRO", "privileges": ["PUBLIC"],
+           "resume": PRIVATE_TEXT, "parties_mentionnees": [PRIVATE_NAME]}
+
+
+def _record(did, **over):
+    return document_model.record_analyse(did, {**_SORTIE, **over})
+
+
+def _journal(fake, did) -> list[dict]:
+    return list(fake.peek_collection(
+        f"documents/{did}/{document_model.ANALYSES_SUBCOLLECTION}").values())
+
+
+def _analyse_tool(did, **over):
+    return handlers.record_document_analysis(
+        {"document_id": did, **_SORTIE, **over})
+
+
+# ── The rule, in the model ────────────────────────────────────────────────
+
+
+def test_the_lawyers_category_is_kept_and_the_gap_recorded(fake):
+    """FAILS on the old code, which stored « procédure » (source analyse)."""
+    doc, errors = _record("choisi")
+    assert errors == [], errors
+    stored = fake.peek("documents/choisi")
+    assert stored["category"] == "correspondance"
+    assert stored["category_source"] == "juriste"
+    assert stored["category_set_by_lawyer"] is True
+    a = stored["analyse"]
+    assert a["nature_detectee"] == "procédure"
+    assert a["categorie_derivee"] == "procédure"
+    assert a["categorie_conservee"] is True
+    assert a["divergence_categorie"] is True
+    # Nothing was replaced — what was there is recorded, and stays there.
+    assert a["categorie_precedente"] == "correspondance"
+    assert a["categorie_remplacee"] is False
+    assert a["remplace_un_choix_du_juriste"] is False
+    [entry] = _journal(fake, "choisi")
+    assert entry["divergence_categorie"] is True
+    assert entry["categorie_derivee"] == "procédure"
+    assert doc["category"] == "correspondance"
+
+
+def test_his_confirmation_is_kept_as_it_was(fake):
+    """FAILS on the old code, which reset `confirme` to false: a re-analysis
+    of a document he had confirmed demoted it to « présumée »."""
+    _doc(fake, "qualifie", category="correspondance",
+         category_set_by_lawyer=True, analyse=_confirmed_analysis("CORR_TIERS"))
+    _, errors = _record("qualifie")
+    assert errors == [], errors
+    stored = fake.peek("documents/qualifie")
+    a = stored["analyse"]
+    assert (a["confirme"], a["confirme_par"], a["confirme_le"]) == (
+        True, "me@cabinet.ca", CONFIRMED_AT)
+    assert stored["category"] == "correspondance"
+    assert a["sous_nature"] == "PROC_DEM_INTRO"           # the new run
+    # The JOURNAL records the run itself: the lawyer never confirmed IT.
+    [entry] = _journal(fake, "qualifie")
+    assert entry["confirme"] is False and entry["confirme_par"] is None
+
+
+def test_a_legacy_autre_whose_analysis_he_confirmed_is_his(fake):
+    """The D25 clause of `category_set_by_lawyer`: FAILS on the old rule,
+    which read a legacy « autre » as the untouched upload default."""
+    stored = fake.peek("documents/confirme_ancien")
+    assert document_model.category_set_by_lawyer(stored) is True
+    _, errors = _record("confirme_ancien")
+    assert errors == [], errors
+    after = fake.peek("documents/confirme_ancien")
+    assert after["category"] == "autre"
+    assert after["analyse"]["confirme"] is True
+    assert after["analyse"]["divergence_categorie"] is True
+
+
+def test_a_legacy_category_held_to_be_his_is_kept(fake):
+    _, errors = _record("ancien")
+    assert errors == [], errors
+    stored = fake.peek("documents/ancien")
+    assert stored["category"] == "jugement"
+    assert stored["category_source"] == "juriste"
+    assert stored["analyse"]["divergence_categorie"] is True
+
+
+@pytest.mark.parametrize("did", ["defaut", "presume"])
+def test_a_category_nobody_chose_is_still_replaced(fake, did):
+    """Today's behaviour, unchanged: the derived category replaces it,
+    PRESUMED."""
+    _, errors = _record(did)
+    assert errors == [], errors
+    stored = fake.peek(f"documents/{did}")
+    assert stored["category"] == "procédure"
+    assert stored["category_source"] == "analyse"
+    a = stored["analyse"]
+    assert a["categorie_conservee"] is False
+    assert a["divergence_categorie"] is False
+    assert a["categorie_remplacee"] is True
+    assert a["confirme"] is False
+    assert document_model.analysis_category_divergence(stored) == ""
+
+
+def test_no_gap_when_his_category_agrees_with_the_analysis(fake):
+    _, errors = _record("concorde")
+    assert errors == [], errors
+    stored = fake.peek("documents/concorde")
+    assert stored["category"] == "procédure"
+    assert stored["category_source"] == "juriste"
+    assert stored["analyse"]["categorie_conservee"] is True
+    assert stored["analyse"]["divergence_categorie"] is False
+    assert document_model.analysis_category_divergence(stored) == ""
+
+
+@pytest.mark.parametrize("doc, gap", [
+    ({}, ""),                                                 # no analysis
+    ({"category": "correspondance", "category_set_by_lawyer": True,
+      "analyse": {"sous_nature": "PROC_DEM_INTRO",
+                  "categorie_derivee": "procédure"}}, "procédure"),
+    # He aligned the category afterwards: no gap left.
+    ({"category": "procédure", "category_set_by_lawyer": True,
+      "analyse": {"sous_nature": "PROC_DEM_INTRO",
+                  "categorie_derivee": "procédure",
+                  "divergence_categorie": True}}, ""),
+    # A third value: still a gap, whatever the write-time flag said.
+    ({"category": "jugement", "category_set_by_lawyer": True,
+      "analyse": {"sous_nature": "PROC_DEM_INTRO",
+                  "categorie_derivee": "procédure",
+                  "divergence_categorie": False}}, "procédure"),
+    # An analysis stored before D25: its nature_detectee is the derivation.
+    ({"category": "jugement",
+      "analyse": {"sous_nature": "PROC_DEM_INTRO",
+                  "nature_detectee": "procédure"}}, "procédure"),
+    # Not his (an analysis' own, inconsistent record): never « la vôtre ».
+    ({"category": "autre", "category_source": "analyse",
+      "analyse": {"sous_nature": "PROC_DEM_INTRO",
+                  "nature_detectee": "procédure"}}, ""),
+])
+def test_the_gap_is_read_from_the_current_state(doc, gap):
+    assert document_model.analysis_category_divergence(doc) == gap
+
+
+def test_the_lawyers_choice_landing_before_the_commit_is_kept(fake, monkeypatch):
+    """The handler read a category nobody chose; the lawyer's form save lands
+    before the model's transaction (here WITHOUT a new etag, so the version
+    check cannot catch it). The model decides on ITS transactional read and
+    keeps it — FAILS on the old code, which replaced it."""
+    real = document_model.get_document_strict
+
+    def racing(document_id):
+        result = real(document_id)
+        fake.external_write("documents/defaut", {
+            **fake.peek("documents/defaut"), "category": "pièce",
+            "category_set_by_lawyer": True})
+        return result
+
+    monkeypatch.setattr(document_model, "get_document_strict", racing)
+    result = _analyse_tool("defaut")
+    stored = fake.peek("documents/defaut")
+    assert stored["category"] == "pièce"
+    assert stored["category_source"] == "juriste"
+    assert result["category"] == "pièce"
+    assert any("CONSERVÉE" in w for w in result["warnings"])
+
+
+# ── The connector says it ─────────────────────────────────────────────────
+
+
+def test_the_tool_names_the_gap_without_quoting_the_document(fake):
+    """FAILS on the old handler, which replaced the category and warned
+    « … est remplacée »."""
+    result = _analyse_tool("choisi")
+    assert result["category"] == "correspondance"
+    assert result["category_source"] == "juriste"
+    echo = result["analyse"]
+    assert echo["categorie_derivee"] == "procédure"
+    assert echo["categorie_conservee"] is True
+    assert echo["divergence_categorie"] is True
+    text = " ".join(result["warnings"])
+    assert "Catégorie du juriste CONSERVÉE" in text
+    assert "« correspondance »" in text and "« procédure »" in text
+    assert "dites-le au juriste" in text
+    assert "reste la sienne" in text                       # not confirmed
+    assert "Classification PRÉSUMÉE" not in text
+    assert "est remplacée" not in text
+    # Codes and vocabulary only — never a line of the document.
+    assert PRIVATE_TEXT not in text and PRIVATE_NAME not in text
+    schema = output_schemas.OUTPUT_SCHEMAS["record_document_analysis"]
+    assert tools.validate_args(schema, result) == []
+
+
+def test_a_kept_legacy_category_reads_juriste_never_blank(fake):
+    """A legacy document may store no `category_source` at all: kept by the
+    analysis (D25), its source reads « juriste » like every document row —
+    the handler used to echo the raw field, which the analysis always
+    overwrote, so "" was never reachable before."""
+    _doc(fake, "sans_source", category="jugement")
+    record = fake.peek("documents/sans_source")
+    del record["category_source"]
+    fake.seed("documents/sans_source", record)
+    result = _analyse_tool("sans_source")
+    assert result["category"] == "jugement"
+    assert result["category_source"] == "juriste"
+    assert "category_source" not in fake.peek("documents/sans_source")
+
+
+def test_the_tool_says_a_kept_confirmation_covers_a_run_he_did_not_read(fake):
+    """FAILS on the old handler, which demoted the analysis and said
+    « Classification PRÉSUMÉE »."""
+    _doc(fake, "qualifie", category="correspondance",
+         category_set_by_lawyer=True, analyse=_confirmed_analysis("CORR_TIERS"))
+    result = _analyse_tool("qualifie")
+    assert result["analyse"]["confirme"] is True
+    text = " ".join(result["warnings"])
+    assert "Catégorie et confirmation du juriste CONSERVÉES" in text
+    assert "sans qu'il l'ait lue" in text
+    assert "Classification PRÉSUMÉE" not in text
+
+
+def test_a_replacement_is_never_called_his_choice(fake):
+    """What an analysis still replaces under the « juriste » source was
+    nobody's choice. FAILS on the old text, « posée dans l'application »."""
+    result = _analyse_tool("defaut")
+    assert result["category"] == "procédure"
+    text = " ".join(result["warnings"])
+    assert "ni comme choisie ni comme confirmée par le juriste" in text
+    assert "posée dans l'application" not in text
+    assert "Classification PRÉSUMÉE" in text
+
+
+def test_the_audit_line_carries_the_kept_category_and_the_gap(fake, monkeypatch):
+    """OBSERVABILITY.md registers the two fields; codes only."""
+    import utils.logging_setup as ls
+
+    seen = []
+    real = ls.log_mcp_event
+
+    def spy(*a, **k):
+        seen.append((a, k))
+        return real(*a, **k)
+
+    monkeypatch.setattr(ls, "log_mcp_event", spy)
+    _analyse_tool("choisi")
+    [(args, kwargs)] = [s for s in seen if s[0][0] == "mcp_document_analysed"]
+    assert kwargs["categorie_conservee"] is True
+    assert kwargs["divergence_categorie"] is True
+    assert kwargs["categorie_remplacee"] is False
+
+
+def test_list_documents_flags_the_gap(fake):
+    """FAILS on the old handler: the row had no `divergence_categorie`."""
+    _record("choisi")
+    _record("defaut")
+    rows = {r["id"]: r for r in handlers.list_documents(
+        {"dossier_id": "d1"})["items"]}
+    assert rows["choisi"]["divergence_categorie"] is True
+    assert rows["choisi"]["nature_detectee"] == "procédure"
+    assert rows["choisi"]["category"] == "correspondance"
+    assert rows["defaut"]["divergence_categorie"] is False
+    assert rows["presume"]["divergence_categorie"] is False   # never analysed
+
+
+# ── update_document: the lawyer's rule is judged FIRST ───────────────────
+
+
+def _qualified_and_confirmed(fake, did):
+    """An analysed document the lawyer CONFIRMED — his category (D18 marker
+    and D25 alike) AND an analysis."""
+    _doc(fake, did, category="correspondance", category_source="analyse",
+         analyse=document_model._analyse_derivee(
+             {"sous_nature": "CORR_TIERS"}, document={"category": "autre"})[0])
+    doc, errors = document_model.confirmer_analyse(did, "me@cabinet.ca")
+    assert not errors, errors
+
+
+def test_on_his_analysed_document_the_refusal_says_tell_him(fake):
+    """FAILS on the old handler, which checked the analysis first and sent
+    the caller to record_document_analysis — a path that now keeps his
+    category too."""
+    _qualified_and_confirmed(fake, "qualifie")
+    before = fake.peek("documents/qualifie")
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.update_document({"document_id": "qualifie",
+                                  "category": "preuve"})
+    text = str(excinfo.value)
+    assert "dites-le au juriste" in text
+    assert "Une analyse la garderait aussi" in text
+    assert "enregistrez une nouvelle analyse" not in text
+    assert fake.peek("documents/qualifie") == before
+
+
+def test_the_model_judges_his_rule_before_the_analysis_rule(fake):
+    """The same order in the model (plan rule 2): FAILS on the old code,
+    which answered MCP_CATEGORY_ON_ANALYSED."""
+    _qualified_and_confirmed(fake, "qualifie")
+    with provenance.writing_via("mcp", tool="update_document"):
+        doc, errors, changed = document_model.update_metadata(
+            "qualifie", {"category": "preuve"}, source="mcp")
+    assert doc is None and changed is False
+    assert errors == [document_model.MCP_CATEGORY_ON_LAWYERS]
+
+
+def test_an_analysed_document_that_is_not_his_still_points_to_the_analysis(fake):
+    _record("defaut")                         # replaced: source « analyse »
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.update_document({"document_id": "defaut",
+                                  "category": "preuve"})
+    assert "enregistrez une nouvelle analyse" in str(excinfo.value)
+
+
+# ── update_analyse: an edit of another field keeps his category ─────────
+
+
+def test_editing_another_field_keeps_the_category_an_analysis_kept(fake):
+    """FAILS on the old code: every lawyer edit of the analysis wrote
+    `category = nature_detectee`, so correcting the author silently undid
+    the category D25 had just kept for him."""
+    _record("choisi")
+    doc, errors = document_model.update_analyse(
+        "choisi", {"auteur": "Un Toit en Réserve"}, par="me@cabinet.ca")
+    assert errors == [], errors
+    stored = fake.peek("documents/choisi")
+    assert stored["category"] == "correspondance"
+    a = stored["analyse"]
+    assert a["confirme"] is True                           # éditer = confirmer
+    assert a["categorie_conservee"] is True
+    assert a["divergence_categorie"] is True
+    assert document_model.analysis_category_divergence(stored) == "procédure"
+
+
+def test_requalifying_rederives_the_category(fake):
+    """What the form tells him: changing the sub-nature re-derives it."""
+    _record("choisi")
+    _, errors = document_model.update_analyse(
+        "choisi", {"sous_nature": "JUG_JUGEMENT"}, par="me@cabinet.ca")
+    assert errors == [], errors
+    stored = fake.peek("documents/choisi")
+    assert stored["category"] == "jugement"
+    assert stored["analyse"]["categorie_conservee"] is False
+    assert stored["analyse"]["divergence_categorie"] is False
+    assert stored["analyse"]["categorie_remplacee"] is True
+
+
+# ── The document page shows it ────────────────────────────────────────────
+
+
+@pytest.fixture
+def client(fake):
+    from flask import Flask
+
+    from tz import to_mtl
+    from utils.icons import ms
+
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.dossiers as dossiers_routes
+        import routes.parties as parties_routes
+        import routes.notes as notes_routes
+        import routes.tasks as tasks_routes
+        import routes.hearings as hearings_routes
+        import routes.invoices as invoices_routes
+        import routes.protocols as protocols_routes
+        import routes.time_expenses as time_expenses_routes
+        import routes.doc_templates as doc_templates_routes
+
+    app = Flask(__name__, template_folder=str(_ATHENA / "templates"),
+                static_folder=str(_ATHENA / "static"))
+    app.secret_key = "t"
+    app.jinja_env.globals.update(csrf_token=lambda: "tok", ms=ms,
+                                 csp_nonce="n")
+    app.jinja_env.filters.update(to_mtl=to_mtl, jsattr=lambda v: v,
+                                 phone=lambda v: v,
+                                 cents_fr=lambda c: str(c),
+                                 markdown=lambda v: v)
+    for bp in (parties_routes.parties_bp, dossiers_routes.dossiers_bp,
+               time_expenses_routes.time_expenses_bp,
+               documents_routes.documents_bp, notes_routes.notes_bp,
+               tasks_routes.tasks_bp, protocols_routes.protocols_bp,
+               hearings_routes.hearings_bp,
+               doc_templates_routes.doc_templates_bp,
+               invoices_routes.invoices_bp):
+        app.register_blueprint(bp)
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s["user_id"] = "u1"
+        s["email"] = "test@example.com"
+        s["expires_at"] = datetime(2099, 1, 1, tzinfo=UTC)
+    return c
+
+
+_NOTE = "L'analyse suggère la catégorie « Procédure » ; la vôtre est conservée."
+
+
+def _flat(html: str) -> str:
+    return " ".join(html.split())
+
+
+def test_the_detail_page_shows_the_gap(client, fake):
+    """FAILS on the old page, which had no such note (and on the old model,
+    which left no gap to show)."""
+    _record("choisi")
+    _record("choisi")                          # two runs: the journal shows
+    html = _flat(client.get("/documents/choisi").get_data(as_text=True))
+    assert _NOTE in html
+    assert "suggérait « procédure » (votre catégorie conservée)" in html
+
+
+def test_the_gap_stays_visible_under_a_kept_confirmation(client, fake):
+    """The note sits OUTSIDE the « not confirmed » block: a re-analysis keeps
+    his confirmation, and the alerts of a confirmed analysis are folded."""
+    _doc(fake, "qualifie", category="correspondance",
+         category_set_by_lawyer=True, analyse=_confirmed_analysis("CORR_TIERS"))
+    _record("qualifie")
+    html = _flat(client.get("/documents/qualifie").get_data(as_text=True))
+    assert "Confirmée" in html
+    assert _NOTE in html
+
+
+@pytest.mark.parametrize("did", ["defaut", "concorde"])
+def test_no_note_without_a_gap(client, fake, did):
+    _record(did)
+    html = _flat(client.get(f"/documents/{did}").get_data(as_text=True))
+    assert "la vôtre est conservée" not in html
+
+
+def test_the_note_uses_only_compiled_classes():
+    """The note's classes exist in the compiled artifact (a class absent
+    from it silently does not apply) — no recompile, no rehash."""
+    import re
+
+    css_files = sorted((_ATHENA / "static" / "vendor").glob("app.*.css"))
+    assert css_files, "compiled Tailwind artifact not found"
+    css = css_files[-1].read_text(encoding="utf-8")
+    block = (_ATHENA / "templates" / "documents" / "_analyse.html").read_text(
+        encoding="utf-8")
+    start = block.index("{% if categorie_suggeree %}")
+    note = block[start:block.index("{% endif %}", start)]
+    [classes] = re.findall(r'class="([^"]+)"', note)
+    for cls in classes.split():
+        assert "." + cls.replace(":", "\\:") in css, cls
