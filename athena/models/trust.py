@@ -88,6 +88,10 @@ REVERSAL_PURPOSE = "correction"
 # The purpose of BOTH legs of an inter-dossier transfer; a pair is linked by
 # ``related_transaction_id`` and reverses as one (see reverse_transaction).
 TRANSFER_PURPOSE = "virement_inter_dossiers"
+# The fee payment (« Paiement d'honoraires ») — the one purpose whose trust
+# leg is written together with its administration recette and the payment
+# on its invoice, in ONE transaction (``models/fee_payment``, lot 5a).
+FEE_PAYMENT_PURPOSE = "virement_honoraires"
 
 # ── Withdrawal rules of RLRQ c. B-1, r. 5 (verified 2026-09-25, D14) ───────
 # Art. 58: fees and disbursements leave the general trust account « seulement
@@ -793,12 +797,15 @@ def _cash_receipt_id(clean: dict) -> str:
     return str(value).strip() if value else ""
 
 
-def _precheck_reason(clean: dict) -> Optional[str]:
+def _precheck_reason(clean: dict, *, reserved_ok: tuple = ()) -> Optional[str]:
     """Guards that need no Firestore read (spec §5 step 2, the cheap subset).
 
     Returns the machine-stable abort reason, or ``None`` — a REASON, not a
     message, so the caller can log what was refused (reason codes only,
-    never text)."""
+    never text).
+
+    ``reserved_ok`` lifts a purpose reserved to a composite write — only
+    ``models/fee_payment`` passes it, for :data:`FEE_PAYMENT_PURPOSE`."""
     amount = clean.get("amount")
     direction = clean.get("direction", "")
     purpose = clean.get("purpose", "")
@@ -853,37 +860,47 @@ def _precheck_reason(clean: dict) -> Optional[str]:
 
 
 # ── create_transaction — the core transaction (spec §5) ────────────────────
+#
+# Three phases, so a COMPOSITE write can run them inside ONE Firestore
+# transaction beside another module's (lot 5a — the fee payment,
+# ``models/fee_payment``, writes the trust entry, its administration recette
+# and the invoice's payment in one commit):
+#
+# * :func:`_prepare_create` — sanitize + the read-free prechecks; builds the
+#   context (references, normalized fields). No I/O.
+# * :func:`_read_create` — EVERY read, inside the caller's transaction.
+# * :func:`_stage_create` — the guards, the arithmetic and the staged writes.
+#   It never reads, so a composite can run the other module's reads between
+#   this module's reads and its writes (Firestore refuses a read after a
+#   staged write).
+#
+# :func:`create_transaction` composes them in its own transaction — the web
+# path, byte for byte the behaviour it had as one function.
 
 
-def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Append one entry to a trust register inside a Firestore transaction (§5).
+def _prepare_create(
+    data: dict, *, reserved_ok: tuple = (),
+) -> tuple[Optional[dict], Optional[str], dict]:
+    """``(ctx, None, clean)`` or ``(None, reason, clean)`` — no read.
 
-    Append-only. The overdraft control (§4.3) and backdating guard run INSIDE
-    the transaction on the same read-set as the write. Any read failure aborts
-    (fails CLOSED). Returns ``(entry, [])`` or ``(None, [french_errors])``.
-    """
+    ``clean`` is returned in both cases so the caller can log the ids the
+    refusal concerns."""
     clean = _sanitize_data(data)
-    reason = _precheck_reason(clean)
+    reason = _precheck_reason(clean, reserved_ok=reserved_ok)
     if reason:
-        log_trust_event(
-            "trust_transaction_refused", "refused",
-            account_id=clean.get("account_id") or None,
-            dossier_id=clean.get("dossier_id") or None, reason=reason,
-        )
-        return None, [_abort_message(reason)]
+        return None, reason, clean
 
     account_id = clean["account_id"]
     direction = clean["direction"]
     purpose = clean["purpose"]
     method = clean["method"]
-    counterparty = clean["counterparty"].strip()
     dossier_id = clean.get("dossier_id") or None
     client_id = clean.get("client_id") or None
     invoice_id = clean.get("invoice_id") or None
     invoice_external_ref = (clean.get("invoice_external_ref") or "").strip()
     # Invoice backing only applies to a fee transfer; drop stray values the
     # form's hidden (x-show) fields may still submit on any other purpose.
-    if purpose != "virement_honoraires":
+    if purpose != FEE_PAYMENT_PURPOSE:
         invoice_id = None
         invoice_external_ref = ""
     # The art. 72 receipt reference only means something on a cash
@@ -893,219 +910,313 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     cash_receipt_id = _cash_receipt_id(clean)
     if not (direction == "déboursé" and method == CASH_METHOD):
         cash_receipt_id = ""
-    amount = int(clean["amount"])
-    tx_date = clean.get("date")
-
-    account_ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
-    counter_ref = db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id))
-    dossier_ref = db.collection(DOSSIERS_COLLECTION).document(dossier_id) if dossier_id else None
-    invoice_ref = db.collection(INVOICES_COLLECTION).document(invoice_id) if invoice_id else None
-    receipt_ref = (
-        db.collection(TRANSACTIONS_COLLECTION).document(cash_receipt_id)
-        if cash_receipt_id else None
-    )
     tx_id = str(uuid.uuid4())
-    tx_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
+    ctx = {
+        "clean": clean,
+        "account_id": account_id,
+        "direction": direction,
+        "purpose": purpose,
+        "method": method,
+        "counterparty": clean["counterparty"].strip(),
+        "dossier_id": dossier_id,
+        "client_id": client_id,
+        "invoice_id": invoice_id,
+        "invoice_external_ref": invoice_external_ref,
+        "cash_receipt_id": cash_receipt_id,
+        "amount": int(clean["amount"]),
+        "tx_date": clean.get("date"),
+        "account_ref": db.collection(ACCOUNTS_COLLECTION).document(account_id),
+        "counter_ref": db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id)),
+        "dossier_ref": (
+            db.collection(DOSSIERS_COLLECTION).document(dossier_id) if dossier_id else None
+        ),
+        "invoice_ref": (
+            db.collection(INVOICES_COLLECTION).document(invoice_id) if invoice_id else None
+        ),
+        "receipt_ref": (
+            db.collection(TRANSACTIONS_COLLECTION).document(cash_receipt_id)
+            if cash_receipt_id else None
+        ),
+        "tx_id": tx_id,
+        "tx_ref": db.collection(TRANSACTIONS_COLLECTION).document(tx_id),
+    }
+    return ctx, None, clean
+
+
+def _read_create(txn, ctx: dict) -> dict:
+    """Every read a create needs, inside *txn* (all before any write).
+    Raises ``_TxnAbort`` for a document that must exist and does not."""
+    acc_snap = ctx["account_ref"].get(transaction=txn)
+    if not acc_snap.exists:
+        raise _TxnAbort("compte_introuvable")
+    counter_snap = ctx["counter_ref"].get(transaction=txn)
+    reads: dict = {
+        "account": acc_snap.to_dict(),
+        "seq_current": (
+            int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
+        ),
+        "last_tx": _read_last_transaction(ctx["account_id"], txn),
+        "lock_floor": _read_lock_floor(ctx["account_id"], txn),
+        "dossier": None,
+        "invoice": None,
+        "receipt": None,
+        "prior_refunds": 0,
+    }
+
+    if ctx["dossier_ref"] is not None:
+        d_snap = ctx["dossier_ref"].get(transaction=txn)
+        if not d_snap.exists:
+            raise _TxnAbort("dossier_introuvable")
+        reads["dossier"] = d_snap.to_dict()
+
+    if ctx["invoice_ref"] is not None:
+        i_snap = ctx["invoice_ref"].get(transaction=txn)
+        if not i_snap.exists:
+            raise _TxnAbort("facture_introuvable")
+        reads["invoice"] = i_snap.to_dict()
+
+    # The art. 72 cash receipt and every cash refund already citing it —
+    # both inside the transaction, so two refunds racing for the same
+    # receipt cannot together exceed it (the query joins the read-set).
+    if ctx["receipt_ref"] is not None:
+        r_snap = ctx["receipt_ref"].get(transaction=txn)
+        if not r_snap.exists:
+            raise _TxnAbort("recette_espèces_introuvable")
+        reads["receipt"] = r_snap.to_dict()
+        refunds_q = db.collection(TRANSACTIONS_COLLECTION).where(
+            filter=FieldFilter("cash_receipt_id", "==", ctx["cash_receipt_id"])
+        )
+        for snap in refunds_q.stream(transaction=txn):
+            prior = snap.to_dict() or {}
+            # A reversed refund put the money back (annulée pair, or a
+            # correction recette): it no longer counts.
+            if not prior.get("reversed_by_id"):
+                reads["prior_refunds"] += int(prior.get("amount", 0))
+    return reads
+
+
+def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
+    """The guards, the arithmetic and the staged writes of a create — no
+    read. Returns ``{"entry", "client_balance"}`` (``client_balance`` is
+    ``{"book", "cleared"}`` after the write, ``None`` without a client).
+    Raises ``_TxnAbort``: the caller's transaction then commits nothing."""
+    account_id = ctx["account_id"]
+    direction = ctx["direction"]
+    purpose = ctx["purpose"]
+    amount = ctx["amount"]
+    tx_date = ctx["tx_date"]
+    dossier_id = ctx["dossier_id"]
+    client_id = ctx["client_id"]
+    invoice_external_ref = ctx["invoice_external_ref"]
+    account = reads["account"]
+    lock_floor = reads["lock_floor"]
+    last_tx = reads["last_tx"]
+    dossier = reads["dossier"]
+    invoice = reads["invoice"]
+    receipt = reads["receipt"]
+
+    # 2. GUARDS
+    if account.get("status") != "actif":
+        raise _TxnAbort("compte_fermé")
+    if lock_floor is not None and _as_utc(tx_date).date() <= lock_floor.date():
+        # A floor ON today leaves no date to advise: « after the floor »
+        # is tomorrow, which the future-date guard refuses.
+        raise _TxnAbort(
+            "période_verrouillée_jour"
+            if lock_floor.date() >= today_mtl() else "période_verrouillée",
+            detail=_floor_label(lock_floor),
+        )
+    if dossier_id is not None and client_id not in (dossier.get("client_ids") or []):
+        raise _TxnAbort("client_hors_dossier")
+    if last_tx is not None:
+        last_date = _as_utc(last_tx.get("date"))
+        if last_date is not None and _as_utc(tx_date).date() < last_date.date():
+            raise _TxnAbort("antidatage_refusé")
+    # Art. 72 — the cash refund must cite a genuine cash RECEIPT of 7 500 $
+    # or more, for this client, in this dossier and account, still
+    # standing (a reversed receipt was never received), and the refunds
+    # in cash may not exceed what it brought in.
+    if receipt is not None:
+        if (
+            receipt.get("account_id") != account_id
+            or receipt.get("direction") != "recette"
+            or receipt.get("method") != CASH_METHOD
+            or receipt.get("purpose") == REVERSAL_PURPOSE
+            or receipt.get("reversed_by_id")
+            or receipt.get("dossier_id") != dossier_id
+            or receipt.get("client_id") != client_id
+            or int(receipt.get("amount", 0)) < CASH_REFUND_THRESHOLD
+        ):
+            raise _TxnAbort("recette_espèces_invalide")
+        if reads["prior_refunds"] + amount > int(receipt.get("amount", 0)):
+            raise _TxnAbort("remboursement_espèces_excède")
+    # A fee transfer must be BACKED BY AN INVOICE. Two ways to satisfy that:
+    #   1. a linked Pallas Athéna invoice — fully verifiable (issued, same
+    #      dossier, amount <= solde dû); or
+    #   2. an external invoice number, for an invoice that predates Pallas
+    #      Athéna and has no row to link (user decision 2026-07-17). The
+    #      amount CANNOT be verified in that case — the register records what
+    #      the lawyer attests. Never both, never neither.
+    if purpose == FEE_PAYMENT_PURPOSE:
+        if direction != "déboursé":
+            raise _TxnAbort("virement_direction")
+        if invoice is not None:
+            if invoice_external_ref:
+                raise _TxnAbort("facture_ambiguë")
+            if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
+                raise _TxnAbort("facture_non_émise")
+            if invoice.get("dossier_id") != dossier_id:
+                raise _TxnAbort("facture_autre_dossier")
+            # A provision imputed BY THE INVOICE (retainer_applied) is
+            # the client's trust money, already deducted from
+            # amount_due: withdrawing it again as a fee payment counts
+            # it twice — silently whenever the residual due still
+            # covers the transfer (the CLAUDE.md « provision » gotcha;
+            # the reprise refused these invoices at both stages).
+            # D14, 2026-09-25: refused outright, web and connector alike.
+            if int(invoice.get("retainer_applied") or 0) > 0:
+                raise _TxnAbort("facture_avec_provision")
+            # The LIVE balance (amount_due − amount_paid), not the frozen
+            # amount_due: since Lot P recorded payments exist, a transfer
+            # capped on the frozen figure could take MORE of the client's
+            # trust money than the invoice still owes (2026-08-13 review
+            # — amount_paid is absent/0 on pre-Lot-P invoices, so this is
+            # the historical check unchanged there).
+            if amount > int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0)):
+                raise _TxnAbort("virement_excède_facture")
+        elif not invoice_external_ref:
+            raise _TxnAbort("facture_requise")
+
+    book_map = dict((dossier or {}).get("trust_balance_by_client") or {})
+    cleared_map = dict((dossier or {}).get("trust_cleared_by_client") or {})
+    current_cleared = int(cleared_map.get(client_id, 0)) if client_id else 0
+
+    # 3. Overdraft control (§4.3) — reversals bypass this, creates do not.
+    if direction == "déboursé":
+        ok, _reason = check_disbursement_allowed(current_cleared, amount)
+        if not ok:
+            raise _TxnAbort("solde_compensé_insuffisant")
+
+    # 4. COMPUTE (a create is always en_circulation)
+    seq = reads["seq_current"] + 1
+    deltas = compute_deltas(direction, amount, "en_circulation")
+    book_after_account = int(account.get("book_balance", 0)) + deltas["book"]
+    book_after_client = int(book_map.get(client_id, 0)) + deltas["book"] if client_id else 0
+    cleared_after_client = current_cleared + deltas["cleared"] if client_id else 0
+
+    entry = _build_transaction_doc(
+        tx_id=ctx["tx_id"], account_id=account_id, sequence=seq, date=tx_date,
+        direction=direction, amount=amount, purpose=purpose, method=ctx["method"],
+        counterparty=ctx["counterparty"], dossier=dossier, dossier_id=dossier_id,
+        client_id=client_id, reference=ctx["clean"].get("reference", ""),
+        description=ctx["clean"].get("description", ""), invoice_id=ctx["invoice_id"],
+        invoice_external_ref=invoice_external_ref,
+        cash_receipt_id=ctx["cash_receipt_id"],
+        balance_after_account=book_after_account,
+        balance_after_client=book_after_client, now=now,
+    )
+
+    # 5. WRITES (single commit)
+    txn.set(ctx["tx_ref"], entry)
+    txn.set(ctx["counter_ref"], {"seq": seq, "updated_at": now})
+    txn.update(ctx["account_ref"], {
+        "book_balance": book_after_account,
+        **provenance.update_fields(now),
+    })
+    if ctx["dossier_ref"] is not None and client_id:
+        book_map[client_id] = book_after_client
+        cleared_map[client_id] = cleared_after_client
+        txn.update(ctx["dossier_ref"], {
+            "trust_balance_by_client": book_map,
+            "trust_cleared_by_client": cleared_map,
+            "trust_balance": sum(int(v) for v in book_map.values()),
+            **provenance.update_fields(now),
+        })
+    return {
+        "entry": entry,
+        "client_balance": (
+            {"book": book_after_client, "cleared": cleared_after_client}
+            if client_id else None
+        ),
+    }
+
+
+def _log_create_refusal(abort_reason: str, account_id, dossier_id) -> None:
+    """The create path's refusal log — one shape for the prechecks and the
+    in-transaction guards (the overdraft control keeps its own event)."""
+    if abort_reason == "solde_compensé_insuffisant":
+        log_trust_event(
+            "trust_overdraft_refused", "refused",
+            dossier_id=dossier_id, account_id=account_id,
+            reason="insufficient_cleared_balance",
+        )
+    else:
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            account_id=account_id, dossier_id=dossier_id, reason=abort_reason,
+        )
+
+
+def create_transaction(
+    data: dict, *, _report_out: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Append one entry to a trust register inside a Firestore transaction (§5).
+
+    Append-only. The overdraft control (§4.3) and backdating guard run INSIDE
+    the transaction on the same read-set as the write. Any read failure aborts
+    (fails CLOSED). Returns ``(entry, [])`` or ``(None, [french_errors])``.
+
+    ``_report_out``, when given, receives ``reason`` (the machine-stable
+    abort string of a refusal) or ``client_balance`` (``{"book",
+    "cleared"}`` after the write) — for a service that must report more
+    than a French sentence (``services/comptabilite``).
+    """
+    ctx, reason, clean = _prepare_create(data)
+    if reason:
+        _log_create_refusal(
+            reason, clean.get("account_id") or None, clean.get("dossier_id") or None
+        )
+        if _report_out is not None:
+            _report_out["reason"] = reason
+        return None, [_abort_message(reason)]
+
+    account_id = ctx["account_id"]
+    dossier_id = ctx["dossier_id"]
     now = datetime.now(timezone.utc)
     transaction = db.transaction()
     result: dict = {}
 
     @firestore.transactional
     def _create(txn) -> None:
-        # 1. READS (all before any write)
-        acc_snap = account_ref.get(transaction=txn)
-        if not acc_snap.exists:
-            raise _TxnAbort("compte_introuvable")
-        account = acc_snap.to_dict()
-
-        counter_snap = counter_ref.get(transaction=txn)
-        seq_current = (
-            int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
-        )
-        last_tx = _read_last_transaction(account_id, txn)
-        lock_floor = _read_lock_floor(account_id, txn)
-
-        dossier = None
-        if dossier_ref is not None:
-            d_snap = dossier_ref.get(transaction=txn)
-            if not d_snap.exists:
-                raise _TxnAbort("dossier_introuvable")
-            dossier = d_snap.to_dict()
-
-        invoice = None
-        if invoice_ref is not None:
-            i_snap = invoice_ref.get(transaction=txn)
-            if not i_snap.exists:
-                raise _TxnAbort("facture_introuvable")
-            invoice = i_snap.to_dict()
-
-        # The art. 72 cash receipt and every cash refund already citing it —
-        # both inside the transaction, so two refunds racing for the same
-        # receipt cannot together exceed it (the query joins the read-set).
-        receipt = None
-        prior_refunds = 0
-        if receipt_ref is not None:
-            r_snap = receipt_ref.get(transaction=txn)
-            if not r_snap.exists:
-                raise _TxnAbort("recette_espèces_introuvable")
-            receipt = r_snap.to_dict()
-            refunds_q = db.collection(TRANSACTIONS_COLLECTION).where(
-                filter=FieldFilter("cash_receipt_id", "==", cash_receipt_id)
-            )
-            for snap in refunds_q.stream(transaction=txn):
-                prior = snap.to_dict() or {}
-                # A reversed refund put the money back (annulée pair, or a
-                # correction recette): it no longer counts.
-                if not prior.get("reversed_by_id"):
-                    prior_refunds += int(prior.get("amount", 0))
-
-        # 2. GUARDS
-        if account.get("status") != "actif":
-            raise _TxnAbort("compte_fermé")
-        if lock_floor is not None and _as_utc(tx_date).date() <= lock_floor.date():
-            # A floor ON today leaves no date to advise: « after the floor »
-            # is tomorrow, which the future-date guard refuses.
-            raise _TxnAbort(
-                "période_verrouillée_jour"
-                if lock_floor.date() >= today_mtl() else "période_verrouillée",
-                detail=_floor_label(lock_floor),
-            )
-        if dossier_id is not None and client_id not in (dossier.get("client_ids") or []):
-            raise _TxnAbort("client_hors_dossier")
-        if last_tx is not None:
-            last_date = _as_utc(last_tx.get("date"))
-            if last_date is not None and _as_utc(tx_date).date() < last_date.date():
-                raise _TxnAbort("antidatage_refusé")
-        # Art. 72 — the cash refund must cite a genuine cash RECEIPT of 7 500 $
-        # or more, for this client, in this dossier and account, still
-        # standing (a reversed receipt was never received), and the refunds
-        # in cash may not exceed what it brought in.
-        if receipt is not None:
-            if (
-                receipt.get("account_id") != account_id
-                or receipt.get("direction") != "recette"
-                or receipt.get("method") != CASH_METHOD
-                or receipt.get("purpose") == REVERSAL_PURPOSE
-                or receipt.get("reversed_by_id")
-                or receipt.get("dossier_id") != dossier_id
-                or receipt.get("client_id") != client_id
-                or int(receipt.get("amount", 0)) < CASH_REFUND_THRESHOLD
-            ):
-                raise _TxnAbort("recette_espèces_invalide")
-            if prior_refunds + amount > int(receipt.get("amount", 0)):
-                raise _TxnAbort("remboursement_espèces_excède")
-        # A fee transfer must be BACKED BY AN INVOICE. Two ways to satisfy that:
-        #   1. a linked Pallas Athéna invoice — fully verifiable (issued, same
-        #      dossier, amount <= solde dû); or
-        #   2. an external invoice number, for an invoice that predates Pallas
-        #      Athéna and has no row to link (user decision 2026-07-17). The
-        #      amount CANNOT be verified in that case — the register records what
-        #      the lawyer attests. Never both, never neither.
-        if purpose == "virement_honoraires":
-            if direction != "déboursé":
-                raise _TxnAbort("virement_direction")
-            if invoice is not None:
-                if invoice_external_ref:
-                    raise _TxnAbort("facture_ambiguë")
-                if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
-                    raise _TxnAbort("facture_non_émise")
-                if invoice.get("dossier_id") != dossier_id:
-                    raise _TxnAbort("facture_autre_dossier")
-                # A provision imputed BY THE INVOICE (retainer_applied) is
-                # the client's trust money, already deducted from
-                # amount_due: withdrawing it again as a fee payment counts
-                # it twice — silently whenever the residual due still
-                # covers the transfer (the CLAUDE.md « provision » gotcha;
-                # the reprise refused these invoices at both stages).
-                # D14, 2026-09-25: refused outright, web and connector alike.
-                if int(invoice.get("retainer_applied") or 0) > 0:
-                    raise _TxnAbort("facture_avec_provision")
-                # The LIVE balance (amount_due − amount_paid), not the frozen
-                # amount_due: since Lot P recorded payments exist, a transfer
-                # capped on the frozen figure could take MORE of the client's
-                # trust money than the invoice still owes (2026-08-13 review
-                # — amount_paid is absent/0 on pre-Lot-P invoices, so this is
-                # the historical check unchanged there).
-                if amount > int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0)):
-                    raise _TxnAbort("virement_excède_facture")
-            elif not invoice_external_ref:
-                raise _TxnAbort("facture_requise")
-
-        book_map = dict((dossier or {}).get("trust_balance_by_client") or {})
-        cleared_map = dict((dossier or {}).get("trust_cleared_by_client") or {})
-        current_cleared = int(cleared_map.get(client_id, 0)) if client_id else 0
-
-        # 3. Overdraft control (§4.3) — reversals bypass this, creates do not.
-        if direction == "déboursé":
-            ok, _reason = check_disbursement_allowed(current_cleared, amount)
-            if not ok:
-                raise _TxnAbort("solde_compensé_insuffisant")
-
-        # 4. COMPUTE (a create is always en_circulation)
-        seq = seq_current + 1
-        deltas = compute_deltas(direction, amount, "en_circulation")
-        book_after_account = int(account.get("book_balance", 0)) + deltas["book"]
-        book_after_client = int(book_map.get(client_id, 0)) + deltas["book"] if client_id else 0
-        cleared_after_client = current_cleared + deltas["cleared"] if client_id else 0
-
-        entry = _build_transaction_doc(
-            tx_id=tx_id, account_id=account_id, sequence=seq, date=tx_date,
-            direction=direction, amount=amount, purpose=purpose, method=method,
-            counterparty=counterparty, dossier=dossier, dossier_id=dossier_id,
-            client_id=client_id, reference=clean.get("reference", ""),
-            description=clean.get("description", ""), invoice_id=invoice_id,
-            invoice_external_ref=invoice_external_ref,
-            cash_receipt_id=cash_receipt_id,
-            balance_after_account=book_after_account,
-            balance_after_client=book_after_client, now=now,
-        )
-
-        # 5. WRITES (single commit)
-        txn.set(tx_ref, entry)
-        txn.set(counter_ref, {"seq": seq, "updated_at": now})
-        txn.update(account_ref, {
-            "book_balance": book_after_account,
-            **provenance.update_fields(now),
-        })
-        if dossier_ref is not None and client_id:
-            book_map[client_id] = book_after_client
-            cleared_map[client_id] = cleared_after_client
-            txn.update(dossier_ref, {
-                "trust_balance_by_client": book_map,
-                "trust_cleared_by_client": cleared_map,
-                "trust_balance": sum(int(v) for v in book_map.values()),
-                **provenance.update_fields(now),
-            })
-        result["entry"] = entry
+        reads = _read_create(txn, ctx)
+        result.update(_stage_create(txn, ctx, reads, now))
 
     try:
-        with span("trust.transaction", direction=direction, purpose=purpose, dossier_id=dossier_id):
+        with span("trust.transaction", direction=ctx["direction"],
+                  purpose=ctx["purpose"], dossier_id=dossier_id):
             _create(transaction)
     except _TxnAbort as abort:
-        if abort.reason == "solde_compensé_insuffisant":
-            log_trust_event(
-                "trust_overdraft_refused", "refused",
-                dossier_id=dossier_id, account_id=account_id,
-                reason="insufficient_cleared_balance",
-            )
-        else:
-            log_trust_event(
-                "trust_transaction_refused", "refused",
-                account_id=account_id, dossier_id=dossier_id, reason=abort.reason,
-            )
+        _log_create_refusal(abort.reason, account_id, dossier_id)
+        if _report_out is not None:
+            _report_out["reason"] = abort.reason
         return None, [_abort_message(abort.reason, abort.detail)]
     except Exception as exc:
         logger.error(
             "create_transaction failed for account %s: %s",
             sanitize_log_value(account_id), type(exc).__name__,
         )
+        if _report_out is not None:
+            _report_out["reason"] = "erreur"
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     entry = result["entry"]
+    provenance.note_commit(TRANSACTIONS_COLLECTION, entry["id"])
+    if _report_out is not None:
+        _report_out["client_balance"] = result.get("client_balance")
     log_trust_event(
-        "trust_transaction_created", transaction_id=tx_id,
+        "trust_transaction_created", transaction_id=entry["id"],
         dossier_id=dossier_id, account_id=account_id,
-        direction=direction, purpose=purpose, sequence=entry["sequence"],
+        direction=ctx["direction"], purpose=ctx["purpose"], sequence=entry["sequence"],
     )
     return entry, []
 
@@ -1271,6 +1382,7 @@ def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[st
         )
         return None, [_clear_refusal_message(reason_out)]
     entry = cleared[0]
+    provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
     log_trust_event(
         "trust_transaction_cleared", transaction_id=tx_id,
         account_id=entry.get("account_id"), dossier_id=entry.get("dossier_id"),
@@ -1284,7 +1396,9 @@ def clear_transactions_bulk(
     """Clear many entries at once, all-or-nothing (§5.1). Returns
     ``(cleared_count, failed_ids)`` — on any failure ``(0, failed_ids)``.
     ``_reason_out`` receives the refusal's ``message`` (French) as well as
-    its reason, for a route that must say why."""
+    its reason, for a route that must say why — and, on success, the
+    cleared entries under ``cleared`` (a service reports the funds each
+    cleared recette releases)."""
     ids = list(tx_ids)
     reason_out: dict = {}
     cleared, failed = _clear_entries(ids, cleared_date, None, _reason_out=reason_out)
@@ -1299,10 +1413,13 @@ def clear_transactions_bulk(
             _reason_out["message"] = _clear_refusal_message(reason_out)
         return 0, failed
     for entry in cleared:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, entry.get("id") or "")
         log_trust_event(
             "trust_transaction_cleared", transaction_id=entry.get("id"),
             account_id=entry.get("account_id"), dossier_id=entry.get("dossier_id"),
         )
+    if _reason_out is not None:
+        _reason_out["cleared"] = list(cleared)
     return len(cleared), []
 
 
@@ -1330,29 +1447,198 @@ def is_transfer_pair_leg(entry: dict) -> bool:
     return entry.get("purpose") == TRANSFER_PURPOSE and bool(entry.get("related_transaction_id"))
 
 
-def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[str]]:
+def _read_reverse(txn, tx_id: str, today: datetime) -> dict:
+    """Every read a reversal needs, inside *txn* — the read phase of
+    :func:`reverse_transaction`, split out so a composite can run it beside
+    the administration register's reads (lot 5a).
+
+    Raises ``_TxnAbort`` for every refusal the reads alone decide (absent,
+    already reversed, a correction, a transfer pair out of shape, the lock
+    floor covering *today* — the reversal's date)."""
+    orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
+    o_snap = orig_ref.get(transaction=txn)
+    if not o_snap.exists:
+        raise _TxnAbort("écriture_introuvable")
+    original = o_snap.to_dict()
+    if original.get("reversed_by_id"):
+        raise _TxnAbort("déjà_contrepassée")
+    if original.get("purpose") == REVERSAL_PURPOSE or original.get("reverses_id"):
+        raise _TxnAbort("correction_non_contre_passable")
+
+    pair = None
+    if is_transfer_pair_leg(original):
+        other_snap = db.collection(TRANSACTIONS_COLLECTION).document(
+            original["related_transaction_id"]
+        ).get(transaction=txn)
+        if not other_snap.exists:
+            raise _TxnAbort("volet_virement_introuvable")
+        other = other_snap.to_dict()
+        if not other.get("reversed_by_id"):
+            if (
+                other.get("related_transaction_id") != original.get("id")
+                or other.get("purpose") != TRANSFER_PURPOSE
+                or other.get("account_id") != original.get("account_id")
+                or int(other.get("amount", 0)) != int(original.get("amount", 0))
+                or original.get("status") != "compensée"
+                or other.get("status") != "compensée"
+            ):
+                raise _TxnAbort("virement_état_incohérent")
+            pair = other
+
+    account_id = original.get("account_id")
+    account_ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    counter_ref = db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id))
+    acc_snap = account_ref.get(transaction=txn)
+    if not acc_snap.exists:
+        raise _TxnAbort("compte_introuvable")
+    counter_snap = counter_ref.get(transaction=txn)
+    seq_current = (
+        int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
+    )
+    # The reversal is dated TODAY: refused while a completed
+    # reconciliation already covers today (its period_end is today).
+    lock_floor = _read_lock_floor(account_id, txn)
+    if lock_floor is not None and today.date() <= lock_floor.date():
+        raise _TxnAbort(
+            "contre_passation_période_verrouillée", detail=_floor_label(lock_floor)
+        )
+
+    ctx = {
+        "orig_ref": orig_ref, "original": original, "pair": pair,
+        "account_ref": account_ref, "account": acc_snap.to_dict(),
+        "counter_ref": counter_ref, "seq_current": seq_current,
+        "dossier_ref": None, "dossier": None, "pair_dossiers": None,
+    }
+    if pair is not None:
+        ctx["pair_dossiers"] = _read_pair_dossiers(txn, [original, pair])
+        return ctx
+
+    dossier_id = original.get("dossier_id")
+    client_id = original.get("client_id")
+    if dossier_id and client_id:
+        dossier_ref = db.collection(DOSSIERS_COLLECTION).document(dossier_id)
+        d_snap = dossier_ref.get(transaction=txn)
+        ctx["dossier_ref"] = dossier_ref
+        ctx["dossier"] = d_snap.to_dict() if d_snap.exists else None
+    return ctx
+
+
+def _stage_reverse(txn, ctx: dict, reason: str, today: datetime, now: datetime) -> dict:
+    """The arithmetic and the staged writes of a reversal — no read.
+    Returns ``{"reversal", "reversals", "annulled", "client_cleared_after"}``
+    (``client_cleared_after`` is ``None`` without a client). Raises
+    ``_TxnAbort`` (the pair's recipient no longer holding the funds)."""
+    original = ctx["original"]
+    if ctx["pair"] is not None:
+        return _stage_pair_reversal(
+            txn, original, ctx["pair"], ctx["pair_dossiers"], ctx["account_ref"],
+            ctx["account"], ctx["counter_ref"], ctx["seq_current"], reason, today, now,
+        )
+
+    account = ctx["account"]
+    dossier = ctx["dossier"]
+    dossier_ref = ctx["dossier_ref"]
+    client_id = original.get("client_id")
+
+    orig_dir = original.get("direction")
+    amount = int(original.get("amount", 0))
+    rev_dir = "déboursé" if orig_dir == "recette" else "recette"
+    orig_status = original.get("status")
+
+    if orig_status == "en_circulation":
+        orig_new_status = "annulée"
+        rev_status = "annulée"
+    else:  # compensée — original stays compensée
+        orig_new_status = orig_status
+        rev_status = "en_circulation"
+
+    # Operation delta = reversal contribution + original's transition (if any)
+    rev_contrib = compute_deltas(rev_dir, amount, rev_status)
+    if orig_new_status != orig_status:
+        orig_delta = _sub(
+            compute_deltas(orig_dir, amount, orig_new_status),
+            compute_deltas(orig_dir, amount, orig_status),
+        )
+    else:
+        orig_delta = {"book": 0, "cleared": 0, "bank": 0}
+    total = {k: rev_contrib[k] + orig_delta[k] for k in rev_contrib}
+
+    seq = ctx["seq_current"] + 1
+    book_after_account = int(account.get("book_balance", 0)) + total["book"]
+    book_map = dict((dossier or {}).get("trust_balance_by_client") or {})
+    cleared_map = dict((dossier or {}).get("trust_cleared_by_client") or {})
+    book_after_client = (
+        int(book_map.get(client_id, 0)) + total["book"] if client_id else 0
+    )
+
+    rev_id = str(uuid.uuid4())
+    reversal = _reversal_doc(
+        original, rev_id=rev_id, sequence=seq, direction=rev_dir,
+        reason=reason, today=today, now=now, status=rev_status,
+        cleared_date=None, balance_after_account=book_after_account,
+        balance_after_client=book_after_client,
+    )
+
+    txn.set(db.collection(TRANSACTIONS_COLLECTION).document(rev_id), reversal)
+    txn.set(ctx["counter_ref"], {"seq": seq, "updated_at": now})
+    txn.update(ctx["orig_ref"], {
+        "status": orig_new_status,
+        "reversed_by_id": rev_id,
+        **provenance.update_fields(now),
+    })
+    txn.update(ctx["account_ref"], {
+        "book_balance": book_after_account,
+        "bank_balance": int(account.get("bank_balance", 0)) + total["bank"],
+        **provenance.update_fields(now),
+    })
+    cleared_after = None
+    if dossier_ref is not None and dossier is not None and client_id:
+        book_map[client_id] = book_after_client
+        cleared_after = int(cleared_map.get(client_id, 0)) + total["cleared"]
+        cleared_map[client_id] = cleared_after
+        txn.update(dossier_ref, {
+            "trust_balance_by_client": book_map,
+            "trust_cleared_by_client": cleared_map,
+            "trust_balance": sum(int(v) for v in book_map.values()),
+            **provenance.update_fields(now),
+        })
+    return {
+        "reversal": reversal,
+        "reversals": [reversal],
+        "annulled": rev_status == "annulée",
+        "original_status_after": orig_new_status,
+        "client_cleared_after": cleared_after,
+    }
+
+
+def reverse_transaction(
+    tx_id: str, reason: str, *, _report_out: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
     """Contre-passation: create an opposite « correction » entry; never edit the
     original's amount or direction (§5.2). Reversing an ``en_circulation`` entry
     stamps BOTH annulée; reversing a ``compensée`` entry creates an
     ``en_circulation`` reversal. The overdraft control does NOT apply here —
     with ONE exception, below.
 
-    Two shapes are special (lot 0b, D14):
+    Two shapes are special:
 
-    * A **correction** is never reversed again. Re-reversing one re-applied
-      the original movement with none of its guards — for a reversed fee
-      payment, fees left trust again with no invoice and no admin recette.
-      The undo of a mistaken reversal is a fresh entry (admin_ledger refuses
-      the same since 2026-08).
+    * A **correction** is never reversed again (lot 0b, D14). Re-reversing
+      one re-applied the original movement with none of its guards — for a
+      reversed fee payment, fees left trust again with no invoice and no
+      admin recette. The undo of a mistaken reversal is a fresh entry
+      (admin_ledger refuses the same since 2026-08).
     * A leg of a **two-leg inter-dossier transfer** reverses BOTH legs, in
-      one transaction. Reversing one leg alone moved one client's balance
-      with no bank movement and no counter-leg. Both reversals are born
-      ``compensée`` — the funds never left the account, exactly like the
-      transfer's own legs — and the recipient's cleared balance must cover
-      the amount (the overdraft control of the reverse transfer this is):
-      a reversal must not open a shortfall in a dossier that already spent
-      the money. If the other leg was already reversed alone (before this
-      rule), this leg reverses alone too, completing the pair.
+      one transaction (lot 0b). Reversing one leg alone moved one client's
+      balance with no bank movement and no counter-leg. Both reversals are
+      born ``compensée`` — the funds never left the account, exactly like
+      the transfer's own legs — and the recipient's cleared balance must
+      cover the amount (the overdraft control of the reverse transfer this
+      is): a reversal must not open a shortfall in a dossier that already
+      spent the money. If the other leg was already reversed alone (before
+      this rule), this leg reverses alone too, completing the pair.
+
+    ``_report_out``, when given, receives ``reason`` on a refusal, or
+    ``client_cleared_after`` and ``original_status_after`` on success.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -1362,9 +1648,10 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
             "trust_transaction_refused", "refused",
             transaction_id=tx_id, reason="motif_requis", operation="reverse",
         )
+        if _report_out is not None:
+            _report_out["reason"] = "motif_requis"
         return None, [_ABORT_MESSAGES["motif_requis"]]
 
-    orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
     now = datetime.now(timezone.utc)
     today = _today_midnight_utc()
     transaction = db.transaction()
@@ -1372,134 +1659,8 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
 
     @firestore.transactional
     def _reverse(txn) -> None:
-        # 1. READS (all before any write)
-        o_snap = orig_ref.get(transaction=txn)
-        if not o_snap.exists:
-            raise _TxnAbort("écriture_introuvable")
-        original = o_snap.to_dict()
-        if original.get("reversed_by_id"):
-            raise _TxnAbort("déjà_contrepassée")
-        if original.get("purpose") == REVERSAL_PURPOSE or original.get("reverses_id"):
-            raise _TxnAbort("correction_non_contre_passable")
-
-        pair = None
-        if is_transfer_pair_leg(original):
-            other_snap = db.collection(TRANSACTIONS_COLLECTION).document(
-                original["related_transaction_id"]
-            ).get(transaction=txn)
-            if not other_snap.exists:
-                raise _TxnAbort("volet_virement_introuvable")
-            other = other_snap.to_dict()
-            if not other.get("reversed_by_id"):
-                if (
-                    other.get("related_transaction_id") != original.get("id")
-                    or other.get("purpose") != TRANSFER_PURPOSE
-                    or other.get("account_id") != original.get("account_id")
-                    or int(other.get("amount", 0)) != int(original.get("amount", 0))
-                    or original.get("status") != "compensée"
-                    or other.get("status") != "compensée"
-                ):
-                    raise _TxnAbort("virement_état_incohérent")
-                pair = other
-
-        account_id = original.get("account_id")
-        account_ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
-        counter_ref = db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id))
-        acc_snap = account_ref.get(transaction=txn)
-        if not acc_snap.exists:
-            raise _TxnAbort("compte_introuvable")
-        account = acc_snap.to_dict()
-        counter_snap = counter_ref.get(transaction=txn)
-        seq_current = (
-            int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
-        )
-        # The reversal is dated TODAY: refused while a completed
-        # reconciliation already covers today (its period_end is today).
-        lock_floor = _read_lock_floor(account_id, txn)
-        if lock_floor is not None and today.date() <= lock_floor.date():
-            raise _TxnAbort(
-                "contre_passation_période_verrouillée", detail=_floor_label(lock_floor)
-            )
-
-        if pair is not None:
-            _stage_pair_reversal(
-                txn, original, pair, account_ref, account, counter_ref,
-                seq_current, reason, today, now, result,
-            )
-            return
-
-        dossier_id = original.get("dossier_id")
-        client_id = original.get("client_id")
-        dossier = None
-        dossier_ref = None
-        if dossier_id and client_id:
-            dossier_ref = db.collection(DOSSIERS_COLLECTION).document(dossier_id)
-            d_snap = dossier_ref.get(transaction=txn)
-            dossier = d_snap.to_dict() if d_snap.exists else None
-
-        orig_dir = original.get("direction")
-        amount = int(original.get("amount", 0))
-        rev_dir = "déboursé" if orig_dir == "recette" else "recette"
-        orig_status = original.get("status")
-
-        if orig_status == "en_circulation":
-            orig_new_status = "annulée"
-            rev_status = "annulée"
-        else:  # compensée — original stays compensée
-            orig_new_status = orig_status
-            rev_status = "en_circulation"
-
-        # Operation delta = reversal contribution + original's transition (if any)
-        rev_contrib = compute_deltas(rev_dir, amount, rev_status)
-        if orig_new_status != orig_status:
-            orig_delta = _sub(
-                compute_deltas(orig_dir, amount, orig_new_status),
-                compute_deltas(orig_dir, amount, orig_status),
-            )
-        else:
-            orig_delta = {"book": 0, "cleared": 0, "bank": 0}
-        total = {k: rev_contrib[k] + orig_delta[k] for k in rev_contrib}
-
-        seq = seq_current + 1
-        book_after_account = int(account.get("book_balance", 0)) + total["book"]
-        book_map = dict((dossier or {}).get("trust_balance_by_client") or {})
-        cleared_map = dict((dossier or {}).get("trust_cleared_by_client") or {})
-        book_after_client = (
-            int(book_map.get(client_id, 0)) + total["book"] if client_id else 0
-        )
-
-        rev_id = str(uuid.uuid4())
-        reversal = _reversal_doc(
-            original, rev_id=rev_id, sequence=seq, direction=rev_dir,
-            reason=reason, today=today, now=now, status=rev_status,
-            cleared_date=None, balance_after_account=book_after_account,
-            balance_after_client=book_after_client,
-        )
-
-        txn.set(db.collection(TRANSACTIONS_COLLECTION).document(rev_id), reversal)
-        txn.set(counter_ref, {"seq": seq, "updated_at": now})
-        txn.update(orig_ref, {
-            "status": orig_new_status,
-            "reversed_by_id": rev_id,
-            **provenance.update_fields(now),
-        })
-        txn.update(account_ref, {
-            "book_balance": book_after_account,
-            "bank_balance": int(account.get("bank_balance", 0)) + total["bank"],
-            **provenance.update_fields(now),
-        })
-        if dossier_ref is not None and dossier is not None and client_id:
-            book_map[client_id] = book_after_client
-            cleared_map[client_id] = int(cleared_map.get(client_id, 0)) + total["cleared"]
-            txn.update(dossier_ref, {
-                "trust_balance_by_client": book_map,
-                "trust_cleared_by_client": cleared_map,
-                "trust_balance": sum(int(v) for v in book_map.values()),
-                **provenance.update_fields(now),
-            })
-        result["reversal"] = reversal
-        result["reversals"] = [reversal]
-        result["annulled"] = rev_status == "annulée"
+        ctx = _read_reverse(txn, tx_id, today)
+        result.update(_stage_reverse(txn, ctx, reason, today, now))
 
     try:
         with span("trust.transaction", direction="reversal", purpose=REVERSAL_PURPOSE, dossier_id=None):
@@ -1509,21 +1670,37 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
             "trust_transaction_refused", "refused",
             transaction_id=tx_id, reason=abort.reason, operation="reverse",
         )
+        if _report_out is not None:
+            _report_out["reason"] = abort.reason
         return None, [_abort_message(abort.reason, abort.detail, "Contre-passation refusée.")]
     except Exception as exc:
         logger.error(
             "reverse_transaction failed for %s: %s",
             sanitize_log_value(tx_id), type(exc).__name__,
         )
+        if _report_out is not None:
+            _report_out["reason"] = "erreur"
         return None, ["Erreur lors de la contre-passation. Veuillez réessayer."]
 
+    _after_reverse_commit(result)
+    if _report_out is not None:
+        _report_out["client_cleared_after"] = result.get("client_cleared_after")
+        _report_out["original_status_after"] = result.get("original_status_after")
+        _report_out["reversals"] = list(result["reversals"])
+    return result["reversal"], []
+
+
+def _after_reverse_commit(result: dict) -> None:
+    """The commit record and the log lines of a committed reversal — shared
+    with the fee-payment composite, which commits the same trust writes."""
     for reversal in result["reversals"]:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, reversal["id"])
+        provenance.note_commit(TRANSACTIONS_COLLECTION, reversal.get("reverses_id") or "")
         log_trust_event(
             "trust_transaction_reversed", transaction_id=reversal["id"],
             account_id=reversal.get("account_id"), dossier_id=reversal.get("dossier_id"),
             reverses_id=reversal.get("reverses_id"), annulled=result["annulled"],
         )
-    return result["reversal"], []
 
 
 def _reversal_doc(
@@ -1552,22 +1729,9 @@ def _reversal_doc(
     return reversal
 
 
-def _stage_pair_reversal(
-    txn, original: dict, pair: dict, account_ref, account: dict, counter_ref,
-    seq_current: int, reason: str, today: datetime, now: datetime, result: dict,
-) -> None:
-    """Reverse BOTH legs of a two-leg inter-dossier transfer inside *txn*.
-
-    Reads first (the one or two dossiers), then the guard, then the writes —
-    the caller has already read the account, counter and lock floor. The
-    two reversals are born ``compensée`` (the funds never left the account),
-    sequenced in the originals' order, with EXACT running balances (the
-    recette reversal first lifts the book, the déboursé reversal brings it
-    back), and linked to each other the way the transfer's legs are."""
-    legs = sorted([original, pair], key=lambda leg: int(leg.get("sequence", 0)))
-    amount = int(original.get("amount", 0))
-
-    # READS — a leg without its dossier is refused: both balances must move.
+def _read_pair_dossiers(txn, legs: list[dict]) -> dict:
+    """The dossiers both legs of a transfer pair move, read inside *txn* —
+    a leg without its dossier is refused: both balances must move."""
     dossiers: dict = {}
     for leg in legs:
         did = leg.get("dossier_id")
@@ -1585,6 +1749,23 @@ def _stage_pair_reversal(
             "book": dict(ddoc.get("trust_balance_by_client") or {}),
             "cleared": dict(ddoc.get("trust_cleared_by_client") or {}),
         }
+    return dossiers
+
+
+def _stage_pair_reversal(
+    txn, original: dict, pair: dict, dossiers: dict, account_ref, account: dict,
+    counter_ref, seq_current: int, reason: str, today: datetime, now: datetime,
+) -> dict:
+    """Reverse BOTH legs of a two-leg inter-dossier transfer inside *txn*.
+
+    The reads (account, counter, lock floor, the one or two dossiers) were
+    made by :func:`_read_reverse`; this is the guard, then the writes. The
+    two reversals are born ``compensée`` (the funds never left the account),
+    sequenced in the originals' order, with EXACT running balances (the
+    recette reversal first lifts the book, the déboursé reversal brings it
+    back), and linked to each other the way the transfer's legs are."""
+    legs = sorted([original, pair], key=lambda leg: int(leg.get("sequence", 0)))
+    amount = int(original.get("amount", 0))
 
     # GUARD — the recipient gives the money back: its cleared balance must
     # cover it, as for the reverse transfer this amounts to.
@@ -1644,9 +1825,15 @@ def _stage_pair_reversal(
             "trust_balance": sum(int(v) for v in d["book"].values()),
             **provenance.update_fields(now),
         })
-    result["reversal"] = next(r for r in reversals if r["reverses_id"] == original["id"])
-    result["reversals"] = reversals
-    result["annulled"] = False
+    reversal_of_original = next(r for r in reversals if r["reverses_id"] == original["id"])
+    return {
+        "reversal": reversal_of_original,
+        "reversals": reversals,
+        "annulled": False,
+        "original_status_after": original.get("status"),
+        "client_cleared_after": dossiers[original["dossier_id"]]["cleared"].get(
+            original["client_id"]),
+    }
 
 
 # ── create_inter_dossier_transfer (spec §6.4) ──────────────────────────────
@@ -2368,6 +2555,21 @@ def get_transaction(tx_id: str) -> Optional[dict]:
     except Exception:
         log_unexpected("trust transaction read failed")
         return None
+
+
+def get_transaction_strict(tx_id: str) -> Optional[dict]:
+    """One entry — a read failure PROPAGATES; ``None`` means the store
+    answered « no such entry » (or the id cannot name one).
+
+    For a caller that DECIDES on the answer (``services/comptabilite``
+    dispatches a reversal on the entry's purpose): :func:`get_transaction`
+    swallows an error into ``None``, and the old route read that as « not a
+    fee payment » — the administration recette's reversal was then skipped
+    without a word."""
+    if not isinstance(tx_id, str) or not tx_id or "/" in tx_id:
+        return None
+    snap = db.collection(TRANSACTIONS_COLLECTION).document(tx_id).get()
+    return snap.to_dict() if snap.exists else None
 
 
 def find_transaction_by_sequence(account_id: str, sequence: int) -> Optional[dict]:

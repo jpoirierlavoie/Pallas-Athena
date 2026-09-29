@@ -857,10 +857,264 @@ def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
 
 
 # ── create_transaction ─────────────────────────────────────────────────────
+#
+# Three phases, the trust register's shape (lot 5a): a composite write — the
+# fee payment of ``models/fee_payment``, which writes the trust entry, this
+# register's recette and the invoice's payment in ONE commit — runs them
+# inside its own transaction, between the trust register's reads and writes.
+#
+# * :func:`_prepare_create` — sanitize + the read-free guards; the context.
+# * :func:`_read_create` — every read, inside the caller's transaction.
+# * :func:`_stage_create` — the guards, the invoice's payment and the
+#   staged writes; it never reads.
+
+
+def _prepare_create(
+    data: dict, *, trust_transaction_id: Optional[str] = None, cleared_date=None,
+) -> tuple[Optional[dict], Optional[str], dict]:
+    """``(ctx, None, clean)`` or ``(None, reason, clean)`` — no read."""
+    clean = _sanitize_data(data)
+    if "trust_transaction_id" in clean:
+        return None, "lien_fideicommis_réservé", clean
+    if not clean.get("account_id"):
+        return None, "compte_introuvable", clean
+    ventilation, reason = _validate_business(clean)
+    if reason:
+        return None, reason, clean
+
+    kind = clean["kind"]
+    tx_date = clean.get("date")
+    dossier_id = clean.get("dossier_id") or None
+    invoice_id = clean.get("invoice_id") or None
+    if kind != "encaissement_facture":
+        invoice_id = None
+    elif not invoice_id:
+        return None, "facture_requise", clean
+    else:
+        # The INVOICE determines the dossier on an encaissement — a caller-
+        # supplied dossier_id (the form's hidden picker field surviving a
+        # kind switch) must never misattribute the receipt in the register.
+        dossier_id = None
+
+    # « Déjà compensée » (lot 5a) — born compensée in the SAME commit, with
+    # the clearing's own guards: a statement date on or after the entry's,
+    # never future on Montréal's calendar (the lock floor is checked with
+    # the reads). It replaces the route's create-then-clear, which could
+    # half-fail and leave the entry « en circulation » under a banner.
+    cd = None
+    if cleared_date is not None:
+        cd = _midnight_utc(cleared_date)
+        if (cd is None or cd.date() > today_mtl()
+                or cd.date() < _midnight_utc(tx_date).date()):
+            return None, "compensation_invalide", clean
+
+    account_id = clean["account_id"]
+    tx_id = str(uuid.uuid4())
+    ctx = {
+        "clean": clean,
+        "ventilation": ventilation,
+        "account_id": account_id,
+        "direction": clean["direction"],
+        "kind": kind,
+        "amount": int(clean["amount"]),
+        "tx_date": tx_date,
+        "dossier_id": dossier_id,
+        "invoice_id": invoice_id,
+        "trust_transaction_id": trust_transaction_id or None,
+        "cleared_date": cd,
+        "account_ref": db.collection(ACCOUNTS_COLLECTION).document(account_id),
+        "counter_ref": db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id)),
+        "dossier_ref": (
+            db.collection(DOSSIERS_COLLECTION).document(dossier_id) if dossier_id else None
+        ),
+        "invoice_ref": (
+            db.collection(INVOICES_COLLECTION).document(invoice_id) if invoice_id else None
+        ),
+        "tx_id": tx_id,
+        "tx_ref": db.collection(TRANSACTIONS_COLLECTION).document(tx_id),
+    }
+    return ctx, None, clean
+
+
+def _read_create(
+    txn, ctx: dict, *, dossier: Optional[dict] = None, invoice: Optional[dict] = None,
+) -> dict:
+    """Every read a create needs, inside *txn* (all before any write).
+
+    ``dossier`` / ``invoice`` — the SAME documents already read in *txn* by
+    a composite's other half (the trust leg of a fee payment reads both):
+    passed in, they are not read a second time."""
+    acc_snap = ctx["account_ref"].get(transaction=txn)
+    if not acc_snap.exists:
+        raise _TxnAbort("compte_introuvable")
+    counter_snap = ctx["counter_ref"].get(transaction=txn)
+    reads: dict = {
+        "account": acc_snap.to_dict(),
+        "seq_current": (
+            int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
+        ),
+        "lock_floor": _read_lock_floor(ctx["account_id"], txn),
+        "dossier": None,
+        "invoice": None,
+    }
+    if ctx["dossier_ref"] is not None:
+        if dossier is not None:
+            reads["dossier"] = dossier
+        else:
+            d_snap = ctx["dossier_ref"].get(transaction=txn)
+            if not d_snap.exists:
+                raise _TxnAbort("dossier_introuvable")
+            reads["dossier"] = d_snap.to_dict()
+    if ctx["invoice_ref"] is not None:
+        if invoice is not None:
+            reads["invoice"] = invoice
+        else:
+            i_snap = ctx["invoice_ref"].get(transaction=txn)
+            if not i_snap.exists:
+                raise _TxnAbort("facture_introuvable")
+            reads["invoice"] = i_snap.to_dict()
+    return reads
+
+
+# The display fields a composite may set once its own reads are known (the
+# fee payment names the client and the dossier it read) — never an amount,
+# a kind, a date or a link.
+_STAGE_OVERRIDABLE = ("counterparty", "description")
+
+
+def _stage_create(
+    txn, ctx: dict, reads: dict, now: datetime, *, overrides: Optional[dict] = None,
+) -> dict:
+    """The guards, the invoice's payment and the staged writes — no read.
+    Returns ``{"entry", "payment", "invoice_before", "dossier_id"}``.
+    Raises ``_TxnAbort``: the caller's transaction commits nothing."""
+    clean = dict(ctx["clean"])
+    for key, value in (overrides or {}).items():
+        if key in _STAGE_OVERRIDABLE:
+            clean[key] = value
+    account = reads["account"]
+    lock_floor = reads["lock_floor"]
+    dossier = reads["dossier"]
+    invoice = reads["invoice"]
+    kind = ctx["kind"]
+    amount = ctx["amount"]
+    direction = ctx["direction"]
+    tx_date = ctx["tx_date"]
+    cd = ctx["cleared_date"]
+
+    # 2. GUARDS
+    if account.get("status") != "actif":
+        raise _TxnAbort("compte_fermé")
+    if lock_floor is not None and _midnight_utc(tx_date).date() <= lock_floor.date():
+        raise _TxnAbort("période_verrouillée")
+    if cd is not None and lock_floor is not None and cd.date() <= lock_floor.date():
+        raise _TxnAbort("compensation_période_verrouillée")
+    if kind == "encaissement_facture":
+        if account.get("account_type") != "opérations":
+            raise _TxnAbort("encaissement_carte_interdit")
+        if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
+            raise _TxnAbort("facture_non_émise")
+        balance = int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+        if amount > balance:
+            raise _TxnAbort("encaissement_excède_solde")
+
+    # 3. COMPUTE — the entry's snapshots. On an encaissement the invoice
+    # ALONE carries the dossier (dossier_id was nulled at prepare): linkage
+    # and labels both come off the invoice, never a caller value.
+    dossier_id = ctx["dossier_id"]
+    invoice_number = ""
+    if invoice is not None:
+        invoice_number = invoice.get("invoice_number", "")
+        dossier = {
+            "file_number": invoice.get("dossier_file_number", ""),
+            "title": invoice.get("dossier_title", ""),
+        }
+        dossier_id = invoice.get("dossier_id") or None
+    seq = reads["seq_current"] + 1
+    entry = _build_transaction_doc(
+        tx_id=ctx["tx_id"], account_id=ctx["account_id"], sequence=seq,
+        date_value=tx_date, direction=direction, kind=kind, amount=amount,
+        method=clean["method"], counterparty=(clean.get("counterparty") or "").strip(),
+        category=clean.get("category"), ventilation=ctx["ventilation"],
+        description=clean.get("description", ""),
+        reference=clean.get("reference", ""),
+        supplier_invoice_ref=clean.get("supplier_invoice_ref", ""),
+        dossier=dossier, dossier_id=dossier_id,
+        invoice_id=ctx["invoice_id"], invoice_number=invoice_number,
+        trust_transaction_id=ctx["trust_transaction_id"], now=now,
+        status="compensée" if cd is not None else "en_circulation",
+        cleared_date=cd,
+    )
+
+    # The invoice's payment, computed on the invoice THIS transaction read:
+    # current + delta (lot 5a). The guards above already hold the model's
+    # own cap, so a refusal here is the invoice speaking — and it aborts the
+    # entry with it, never a ledger row without its payment.
+    invoice_updates = None
+    if invoice is not None:
+        try:
+            invoice_updates = invoice_model.payment_updates(
+                invoice, int(invoice.get("amount_paid", 0)) + amount,
+                entry["date"], now=now,
+            )
+        except invoice_model.PaymentRefused as refusal:
+            raise _TxnAbort(
+                "paiement_facture_refusé",
+                message=f"{refusal} Rien n'a été inscrit au registre.",
+            )
+
+    # 4. WRITES (single commit)
+    txn.set(ctx["tx_ref"], entry)
+    txn.set(ctx["counter_ref"], {"seq": seq, "updated_at": now})
+    txn.update(ctx["account_ref"], {
+        "ledger_balance": int(account.get("ledger_balance", 0))
+        + admin_delta(direction, amount),
+        **provenance.update_fields(now),
+    })
+    if invoice_updates is not None:
+        txn.update(ctx["invoice_ref"], invoice_updates)
+    return {
+        "entry": entry,
+        "payment": invoice_updates,
+        "invoice_before": dict(invoice) if invoice is not None else None,
+        "dossier_id": dossier_id,
+    }
+
+
+def _after_create_commit(ctx: dict, result: dict) -> None:
+    """The commit record and the log lines of a committed create — shared
+    with the fee-payment composite, which commits the same writes."""
+    entry = result["entry"]
+    tx_id = entry["id"]
+    invoice_id = ctx["invoice_id"]
+    provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
+    if result.get("payment") is not None:
+        provenance.note_commit(INVOICES_COLLECTION, invoice_id)
+    log_admin_ledger_event(
+        "admin_transaction_created", transaction_id=tx_id,
+        account_id=ctx["account_id"], invoice_id=invoice_id,
+        direction=ctx["direction"], kind=ctx["kind"], sequence=entry["sequence"],
+    )
+    if ctx["cleared_date"] is not None:
+        # Born compensée: the clearing is a fact of this commit too.
+        log_admin_ledger_event(
+            "admin_transaction_cleared", transaction_id=tx_id,
+            account_id=ctx["account_id"],
+        )
+    if result.get("payment") is not None:
+        # Emitted by the MODEL since lot 5a, after the ONE commit that wrote
+        # both: success only — a payment the invoice refuses refuses the
+        # entry (admin_transaction_refused), there is no « entry stands,
+        # payment failed » state left to report.
+        log_admin_ledger_event(
+            "admin_invoice_payment_projected", transaction_id=tx_id,
+            invoice_id=invoice_id,
+        )
 
 
 def create_transaction(
     data: dict, *, trust_transaction_id: Optional[str] = None,
+    cleared_date=None, _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Append one entry to an administration register, transactionally.
 
@@ -890,6 +1144,11 @@ def create_transaction(
     invoice refuses (``PaymentRefused``) aborts the entry with it — the
     ledger never records an encaissement its invoice does not show.
 
+    ``cleared_date`` (lot 5a) — « déjà compensée »: the entry is born
+    ``compensée`` at that statement date, in the same commit, under the
+    clearing's own guards (on or after the entry's date, not future, above
+    the lock floor). Refused, the whole create is refused.
+
     ``trust_transaction_id`` — the fee payment this recette mirrors — is a
     KEYWORD, and a ``trust_transaction_id`` key inside ``data`` is REFUSED
     (``lien_fideicommis_réservé``). The link makes the entry uneditable,
@@ -899,193 +1158,59 @@ def create_transaction(
     ``data`` and cannot reach a keyword. Its callers are the trust fee
     payment (``routes/trust._creer_recette_administration``) and the
     reprise script (``scripts/reprise_encaissements``).
+
+    ``_report_out``, when given, receives ``reason`` on a refusal, or the
+    invoice's ``invoice_before`` / ``invoice_after`` on an encaissement.
     """
-    clean = _sanitize_data(data)
-    if "trust_transaction_id" in clean:
-        log_admin_ledger_event(
-            "admin_transaction_refused", "refused",
-            account_id=clean.get("account_id") or None,
-            reason="lien_fideicommis_réservé",
-        )
-        return None, [_ABORT_MESSAGES["lien_fideicommis_réservé"]]
-    if not clean.get("account_id"):
-        # Logged like every other abort: the registry promises « any
-        # create/update abort », the no-read guards included (lot 0b).
-        log_admin_ledger_event(
-            "admin_transaction_refused", "refused", reason="compte_introuvable",
-        )
-        return None, [_ABORT_MESSAGES["compte_introuvable"]]
-    ventilation, reason = _validate_business(clean)
+    ctx, reason, clean = _prepare_create(
+        data, trust_transaction_id=trust_transaction_id, cleared_date=cleared_date,
+    )
     if reason:
         # A no-read refusal is a refusal too (the registry's « any
         # create/update abort ») — a forged direction must leave a trace.
         log_admin_ledger_event(
             "admin_transaction_refused", "refused",
-            account_id=clean["account_id"], reason=reason,
+            account_id=clean.get("account_id") or None, reason=reason,
         )
+        if _report_out is not None:
+            _report_out["reason"] = reason
         return None, [_ABORT_MESSAGES[reason]]
 
-    account_id = clean["account_id"]
-    direction = clean["direction"]
-    kind = clean["kind"]
-    amount = int(clean["amount"])
-    tx_date = clean.get("date")
-    dossier_id = clean.get("dossier_id") or None
-    invoice_id = clean.get("invoice_id") or None
-    trust_transaction_id = trust_transaction_id or None
-    if kind != "encaissement_facture":
-        invoice_id = None
-    elif not invoice_id:
-        return None, [_ABORT_MESSAGES["facture_requise"]]
-    else:
-        # The INVOICE determines the dossier on an encaissement — a caller-
-        # supplied dossier_id (the form's hidden picker field surviving a
-        # kind switch) must never misattribute the receipt in the register.
-        dossier_id = None
-
-    account_ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
-    counter_ref = db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id))
-    dossier_ref = db.collection(DOSSIERS_COLLECTION).document(dossier_id) if dossier_id else None
-    invoice_ref = db.collection(INVOICES_COLLECTION).document(invoice_id) if invoice_id else None
-    tx_id = str(uuid.uuid4())
-    tx_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
+    account_id = ctx["account_id"]
     now = datetime.now(timezone.utc)
     transaction = db.transaction()
     result: dict = {}
 
     @firestore.transactional
     def _create(txn) -> None:
-        # 1. READS (all before any write)
-        acc_snap = account_ref.get(transaction=txn)
-        if not acc_snap.exists:
-            raise _TxnAbort("compte_introuvable")
-        account = acc_snap.to_dict()
-        counter_snap = counter_ref.get(transaction=txn)
-        seq_current = (
-            int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
-        )
-        lock_floor = _read_lock_floor(account_id, txn)
-
-        dossier = None
-        if dossier_ref is not None:
-            d_snap = dossier_ref.get(transaction=txn)
-            if not d_snap.exists:
-                raise _TxnAbort("dossier_introuvable")
-            dossier = d_snap.to_dict()
-
-        invoice = None
-        if invoice_ref is not None:
-            i_snap = invoice_ref.get(transaction=txn)
-            if not i_snap.exists:
-                raise _TxnAbort("facture_introuvable")
-            invoice = i_snap.to_dict()
-
-        # 2. GUARDS
-        if account.get("status") != "actif":
-            raise _TxnAbort("compte_fermé")
-        if lock_floor is not None and _midnight_utc(tx_date).date() <= lock_floor.date():
-            raise _TxnAbort("période_verrouillée")
-        if kind == "encaissement_facture":
-            if account.get("account_type") != "opérations":
-                raise _TxnAbort("encaissement_carte_interdit")
-            if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
-                raise _TxnAbort("facture_non_émise")
-            balance = int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
-            if amount > balance:
-                raise _TxnAbort("encaissement_excède_solde")
-
-        # 3. COMPUTE — the entry's snapshots. On an encaissement the invoice
-        # ALONE carries the dossier (dossier_id was nulled above): linkage
-        # and labels both come off the invoice, never a caller value.
-        invoice_number = ""
-        if invoice is not None:
-            invoice_number = invoice.get("invoice_number", "")
-            dossier = {
-                "file_number": invoice.get("dossier_file_number", ""),
-                "title": invoice.get("dossier_title", ""),
-            }
-            result["dossier_id"] = invoice.get("dossier_id") or None
-        seq = seq_current + 1
-        entry = _build_transaction_doc(
-            tx_id=tx_id, account_id=account_id, sequence=seq, date_value=tx_date,
-            direction=direction, kind=kind, amount=amount,
-            method=clean["method"], counterparty=clean["counterparty"].strip(),
-            category=clean.get("category"), ventilation=ventilation,
-            description=clean.get("description", ""),
-            reference=clean.get("reference", ""),
-            supplier_invoice_ref=clean.get("supplier_invoice_ref", ""),
-            dossier=dossier,
-            dossier_id=result.get("dossier_id", dossier_id),
-            invoice_id=invoice_id, invoice_number=invoice_number,
-            trust_transaction_id=trust_transaction_id, now=now,
-        )
-
-        # The invoice's payment, computed on the invoice THIS transaction
-        # read: current + delta (lot 5a). The guards above already hold the
-        # model's own cap, so a refusal here is the invoice speaking — and
-        # it aborts the entry with it, never a ledger row without its
-        # payment.
-        invoice_updates = None
-        if invoice is not None:
-            try:
-                invoice_updates = invoice_model.payment_updates(
-                    invoice, int(invoice.get("amount_paid", 0)) + amount,
-                    entry["date"], now=now,
-                )
-            except invoice_model.PaymentRefused as refusal:
-                raise _TxnAbort(
-                    "paiement_facture_refusé",
-                    message=f"{refusal} Rien n'a été inscrit au registre.",
-                )
-
-        # 4. WRITES (single commit)
-        txn.set(tx_ref, entry)
-        txn.set(counter_ref, {"seq": seq, "updated_at": now})
-        txn.update(account_ref, {
-            "ledger_balance": int(account.get("ledger_balance", 0))
-            + admin_delta(direction, amount),
-            **provenance.update_fields(now),
-        })
-        if invoice_updates is not None:
-            txn.update(invoice_ref, invoice_updates)
-        result["entry"] = entry
-        result["payment"] = invoice_updates
+        reads = _read_create(txn, ctx)
+        result.update(_stage_create(txn, ctx, reads, now))
 
     try:
-        with span("admin.transaction", direction=direction, kind=kind):
+        with span("admin.transaction", direction=ctx["direction"], kind=ctx["kind"]):
             _create(transaction)
     except _TxnAbort as abort:
         log_admin_ledger_event(
             "admin_transaction_refused", "refused",
             account_id=account_id, reason=abort.reason,
         )
+        if _report_out is not None:
+            _report_out["reason"] = abort.reason
         return None, [_abort_message(abort, "Opération refusée.")]
     except Exception as exc:
         logger.error(
             "admin create_transaction failed for account %s: %s",
             sanitize_log_value(account_id), type(exc).__name__,
         )
+        if _report_out is not None:
+            _report_out["reason"] = "erreur"
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
-    entry = result["entry"]
-    provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
-    if result.get("payment") is not None:
-        provenance.note_commit(INVOICES_COLLECTION, invoice_id)
-    log_admin_ledger_event(
-        "admin_transaction_created", transaction_id=tx_id,
-        account_id=account_id, invoice_id=invoice_id,
-        direction=direction, kind=kind, sequence=entry["sequence"],
-    )
-    if result.get("payment") is not None:
-        # Emitted by the MODEL since lot 5a, after the ONE commit that wrote
-        # both: success only — a payment the invoice refuses refuses the
-        # entry (admin_transaction_refused), there is no « entry stands,
-        # payment failed » state left to report.
-        log_admin_ledger_event(
-            "admin_invoice_payment_projected", transaction_id=tx_id,
-            invoice_id=invoice_id,
-        )
-    return entry, []
+    _after_create_commit(ctx, result)
+    if _report_out is not None and result.get("payment") is not None:
+        _report_out["invoice_before"] = result["invoice_before"]
+        _report_out["invoice_after"] = {**result["invoice_before"], **result["payment"]}
+    return result["entry"], []
 
 
 # ── update_transaction / delete_transaction (editable until the lock) ──────
@@ -1123,6 +1248,7 @@ def _amount_changes_without_ventilation(
 
 def update_transaction(
     tx_id: str, data: dict, *, expected_etag: Optional[str] = None,
+    _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Edit an UNLOCKED entry in place, transactionally.
 
@@ -1147,7 +1273,11 @@ def update_transaction(
     A déboursé whose amount changes must carry its ventilation
     (``ventilation_requise``): the stored split belongs to the old amount,
     and the register never guesses which of net / TPS / TVQ absorbs the
-    correction."""
+    correction.
+
+    ``_report_out``, when given, receives ``reason`` on a refusal
+    (``écriture_modifiée`` for a stale etag), or ``fields`` (the changed
+    field names, ``[]`` on a no-op) and ``noop`` on success."""
     clean = _sanitize_data(data)
     now = datetime.now(timezone.utc)
     tx_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
@@ -1269,14 +1399,21 @@ def update_transaction(
             "admin_transaction_refused", "refused",
             transaction_id=tx_id, reason=abort.reason,
         )
+        if _report_out is not None:
+            _report_out["reason"] = abort.reason
         return None, [_ABORT_MESSAGES.get(abort.reason, "Modification refusée.")]
     except Exception as exc:
         logger.error(
             "admin update_transaction failed for %s: %s",
             sanitize_log_value(tx_id), type(exc).__name__,
         )
+        if _report_out is not None:
+            _report_out["reason"] = "erreur"
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
+    if _report_out is not None:
+        _report_out["fields"] = list(result.get("fields", []))
+        _report_out["noop"] = bool(result.get("noop"))
     if not result.get("noop"):
         provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
         log_admin_ledger_event(
@@ -1523,6 +1660,7 @@ def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[st
         reason = outcome_holder.get("reason", "compensation_invalide")
         return None, [_ABORT_MESSAGES.get(reason, _ABORT_MESSAGES["compensation_invalide"])]
     entry = cleared[0]
+    provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
     log_admin_ledger_event(
         "admin_transaction_cleared", transaction_id=tx_id,
         account_id=entry.get("account_id"),
@@ -1530,20 +1668,222 @@ def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[st
     return entry, []
 
 
-def clear_transactions_bulk(tx_ids: list, cleared_date) -> tuple[int, list[str]]:
-    """Clear many entries at once, all-or-nothing."""
-    cleared, failed = _clear_entries(list(tx_ids), cleared_date, None)
+def clear_transactions_bulk(
+    tx_ids: list, cleared_date, *, _report_out: Optional[dict] = None,
+) -> tuple[int, list[str]]:
+    """Clear many entries at once, all-or-nothing. ``_report_out``, when
+    given, receives ``reason`` and its French ``message`` on a refusal, or
+    the cleared entries under ``cleared``."""
+    reason_out: dict = {}
+    cleared, failed = _clear_entries(list(tx_ids), cleared_date, None,
+                                     _reason_out=reason_out)
     if failed:
+        if _report_out is not None:
+            reason = reason_out.get("reason", "compensation_invalide")
+            _report_out["reason"] = reason
+            _report_out["message"] = _ABORT_MESSAGES.get(
+                reason, _ABORT_MESSAGES["compensation_invalide"])
         return 0, failed
     for entry in cleared:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, entry.get("id") or "")
         log_admin_ledger_event(
             "admin_transaction_cleared", transaction_id=entry.get("id"),
             account_id=entry.get("account_id"),
         )
+    if _report_out is not None:
+        _report_out["cleared"] = list(cleared)
     return len(cleared), []
 
 
 # ── reverse_transaction ────────────────────────────────────────────────────
+#
+# Split like the create (lot 5a): :func:`_read_reverse_legs` reads what the
+# legs' reversals touch (accounts, counters, lock floors, the invoices an
+# encaissement paid), :func:`_stage_reverse_legs` decides and stages without
+# reading — so the fee-payment composite reverses the trust leg AND every
+# administration recette it carries in ONE transaction.
+
+
+def _read_reverse_legs(txn, legs: list[dict]) -> dict:
+    """Every read the reversal of *legs* needs, inside *txn* — the legs
+    themselves already read by the caller (in the same transaction)."""
+    accounts: dict = {}
+    for leg in legs:
+        aid = leg.get("account_id")
+        if aid in accounts:
+            continue
+        aref = db.collection(ACCOUNTS_COLLECTION).document(aid)
+        asnap = aref.get(transaction=txn)
+        if not asnap.exists:
+            raise _TxnAbort("compte_introuvable")
+        cref = db.collection(COUNTERS_COLLECTION).document(_counter_id(aid))
+        csnap = cref.get(transaction=txn)
+        seq = int((csnap.to_dict() or {}).get("seq", 0)) if csnap.exists else 0
+        accounts[aid] = {
+            "ref": aref, "doc": asnap.to_dict(), "counter_ref": cref,
+            "seq": seq, "floor": _read_lock_floor(aid, txn), "delta": 0,
+        }
+
+    # The invoice each encaissement leg paid (lot 5a): read HERE, with
+    # every other read, so its reduction commits with the reversal — and
+    # a payment written on it meanwhile aborts and re-runs this commit.
+    invoices: dict = {}
+    for leg in legs:
+        iid = leg.get("invoice_id")
+        if leg.get("kind") != "encaissement_facture" or not iid:
+            continue
+        if iid not in invoices:
+            iref = db.collection(INVOICES_COLLECTION).document(iid)
+            isnap = iref.get(transaction=txn)
+            if not isnap.exists:
+                raise _TxnAbort("facture_paiement_introuvable")
+            invoices[iid] = {"ref": iref, "doc": isnap.to_dict(), "reduce": 0}
+        invoices[iid]["reduce"] += int(leg.get("amount", 0))
+    return {"legs": list(legs), "accounts": accounts, "invoices": invoices}
+
+
+def _stage_reverse_legs(
+    txn, ctx: dict, reason: str, reversal_date, now: datetime,
+) -> dict:
+    """The guards, the invoice reductions and the staged writes reversing
+    every leg of *ctx* — no read. Returns ``{"reversals", "legs",
+    "invoices"}`` (``invoices``: ``[(invoice_id, before, updates)]``).
+    Raises ``_TxnAbort``: the caller's transaction commits nothing."""
+    legs = ctx["legs"]
+    accounts = ctx["accounts"]
+    invoices = ctx["invoices"]
+
+    # Reversal date: [original date, today], above every touched floor.
+    # The DEFAULT reads the Montréal clock, like the guard below it — a
+    # datetime.now(utc) default is already TOMORROW every evening after
+    # 20:00, so an undated contre-passation refused itself outright for
+    # four hours a day (the 2026-08-02 evening-band class, caught by the
+    # frozen-clock fixture the day after this module shipped).
+    rd = _midnight_utc(reversal_date) if reversal_date else _midnight_utc(today_mtl())
+    if rd is None or rd.date() > today_mtl():
+        raise _TxnAbort("date_contre_passation_invalide")
+    for leg in legs:
+        od = _as_utc(leg.get("date"))
+        if od is not None and rd.date() < od.date():
+            raise _TxnAbort("date_contre_passation_invalide")
+    for info in accounts.values():
+        if info["floor"] is not None and rd.date() <= info["floor"].date():
+            raise _TxnAbort("date_contre_passation_invalide")
+
+    # The reductions, on the invoices read above. A recorded payment
+    # below what this reversal takes back is a register/invoice
+    # disagreement: refuse, never clamp (a max(0, …) would erase other
+    # recorded payments in silence). The existing paid_date is passed
+    # through — a partial reduction must not stamp a new one, and
+    # payment_updates nulls it itself at zero.
+    invoice_updates = []
+    for iid, info in invoices.items():
+        inv = info["doc"]
+        paid = int(inv.get("amount_paid", 0))
+        if paid < info["reduce"]:
+            raise _TxnAbort("paiement_facture_incohérent")
+        try:
+            updates = invoice_model.payment_updates(
+                inv, paid - info["reduce"], inv.get("paid_date"),
+                now=now, reducing=True,
+            )
+        except invoice_model.PaymentRefused as refusal:
+            raise _TxnAbort(
+                "paiement_facture_refusé",
+                message=f"{refusal} Rien n'a été contre-passé.",
+            )
+        invoice_updates.append((iid, info["ref"], inv, updates))
+
+    reversals = []
+    orig_updates = []
+    for leg in legs:
+        aid = leg["account_id"]
+        info = accounts[aid]
+        orig_dir = leg.get("direction")
+        amount = int(leg.get("amount", 0))
+        rev_dir = "déboursé" if orig_dir == "recette" else "recette"
+        orig_status = leg.get("status")
+        if orig_status == "en_circulation":
+            orig_new_status = "annulée"
+            rev_status = "annulée"
+        else:  # compensée — original stays compensée
+            orig_new_status = orig_status
+            rev_status = "en_circulation"
+
+        info["seq"] += 1
+        # Ledger arithmetic is status-blind: only the reversal's own
+        # signed amount moves the balance (an annulée flip changes
+        # nothing — annulée rows still count in the ledger).
+        info["delta"] += admin_delta(rev_dir, amount)
+
+        rev_id = str(uuid.uuid4())
+        reversal = _build_transaction_doc(
+            tx_id=rev_id, account_id=aid, sequence=info["seq"], date_value=rd,
+            direction=rev_dir, kind=REVERSAL_KIND, amount=amount,
+            method=leg.get("method", ""), counterparty=leg.get("counterparty", ""),
+            category=leg.get("category"),
+            ventilation={
+                "net_amount": int(leg.get("net_amount", 0)),
+                "gst_amount": int(leg.get("gst_amount", 0)),
+                "qst_amount": int(leg.get("qst_amount", 0)),
+            },
+            description=reason,
+            reference=leg.get("reference", ""),
+            supplier_invoice_ref=leg.get("supplier_invoice_ref", ""),
+            dossier=None, dossier_id=leg.get("dossier_id"),
+            invoice_id=None, invoice_number=leg.get("invoice_number", ""),
+            trust_transaction_id=None, now=now,
+            status=rev_status, reverses_id=leg["id"],
+        )
+        reversal["dossier_file_number"] = leg.get("dossier_file_number", "")
+        reversal["dossier_title"] = leg.get("dossier_title", "")
+        reversals.append(reversal)
+        orig_updates.append((leg, orig_new_status, rev_id))
+
+    for reversal in reversals:
+        txn.set(
+            db.collection(TRANSACTIONS_COLLECTION).document(reversal["id"]), reversal
+        )
+    for leg, new_status, rev_id in orig_updates:
+        txn.update(db.collection(TRANSACTIONS_COLLECTION).document(leg["id"]), {
+            "status": new_status,
+            "reversed_by_id": rev_id,
+            **provenance.update_fields(now),
+        })
+    for info in accounts.values():
+        txn.set(info["counter_ref"], {"seq": info["seq"], "updated_at": now})
+        txn.update(info["ref"], {
+            "ledger_balance": int(info["doc"].get("ledger_balance", 0)) + info["delta"],
+            **provenance.update_fields(now),
+        })
+    for _iid, iref, _before, updates in invoice_updates:
+        txn.update(iref, updates)
+    return {
+        "reversals": reversals,
+        "legs": [leg["id"] for leg in legs],
+        "invoices": [(iid, dict(before), updates)
+                     for iid, _ref, before, updates in invoice_updates],
+    }
+
+
+def _after_reverse_commit(result: dict, *, original_id: str) -> None:
+    """The commit record and the log lines of committed leg reversals —
+    shared with the fee-payment composite."""
+    for reversal in result["reversals"]:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, reversal["id"])
+    for leg_id in result["legs"]:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, leg_id)
+    for iid, _before, _updates in result["invoices"]:
+        provenance.note_commit(INVOICES_COLLECTION, iid)
+        log_admin_ledger_event(
+            "admin_invoice_payment_projected", transaction_id=original_id,
+            invoice_id=iid, reduced=True,
+        )
+    for reversal in result["reversals"]:
+        log_admin_ledger_event(
+            "admin_transaction_reversed", transaction_id=reversal["id"],
+            account_id=reversal.get("account_id"), reverses_id=reversal.get("reverses_id"),
+        )
 
 
 def reverse_transaction(
@@ -1552,6 +1892,7 @@ def reverse_transaction(
     reversal_date=None,
     *,
     allow_linked: bool = False,
+    _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Contre-passation: mint an opposite ``correction`` entry (trust's
     status algebra verbatim — reversing ``en_circulation`` stamps BOTH
@@ -1563,7 +1904,9 @@ def reverse_transaction(
     A ``paiement_carte`` leg reverses BOTH legs atomically. A trust-sourced
     recette refuses unless ``allow_linked`` — the fidéicommis side is the
     source of truth for that movement, and ITS reversal calls back here
-    with the flag.
+    with the flag. (:func:`_read_reverse_legs` / :func:`_stage_reverse_legs`
+    are the two phases, split so a composite can reverse the legs inside
+    its own transaction.)
 
     **An encaissement's payment is reduced in the SAME commit (lot 5a).**
     The invoice is read in this transaction and
@@ -1576,9 +1919,15 @@ def reverse_transaction(
     and the invoice no longer agree: the reversal is refused
     (``paiement_facture_incohérent``) and nothing is written — never a
     ``max(0, …)`` clamp, which would erase other recorded payments in
-    silence. An invoice that no longer exists refuses the same way."""
+    silence. An invoice that no longer exists refuses the same way.
+
+    ``_report_out``, when given, receives ``reason`` on a refusal, or on
+    success ``reversals`` (every leg's) and ``invoices`` —
+    ``[(invoice_id, before, after)]``."""
     reason = (reason or "").strip()
     if not reason:
+        if _report_out is not None:
+            _report_out["reason"] = "motif_requis"
         return None, [_ABORT_MESSAGES["motif_requis"]]
 
     orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
@@ -1617,149 +1966,8 @@ def reverse_transaction(
                 raise _TxnAbort("déjà_contrepassée")
             legs.append(other)
 
-        # Per-account reads: account doc + counter + lock floor.
-        accounts: dict = {}
-        for leg in legs:
-            aid = leg.get("account_id")
-            if aid in accounts:
-                continue
-            aref = db.collection(ACCOUNTS_COLLECTION).document(aid)
-            asnap = aref.get(transaction=txn)
-            if not asnap.exists:
-                raise _TxnAbort("compte_introuvable")
-            cref = db.collection(COUNTERS_COLLECTION).document(_counter_id(aid))
-            csnap = cref.get(transaction=txn)
-            seq = int((csnap.to_dict() or {}).get("seq", 0)) if csnap.exists else 0
-            accounts[aid] = {
-                "ref": aref, "doc": asnap.to_dict(), "counter_ref": cref,
-                "seq": seq, "floor": _read_lock_floor(aid, txn), "delta": 0,
-            }
-
-        # The invoice each encaissement leg paid (lot 5a): read HERE, with
-        # every other read, so its reduction commits with the reversal — and
-        # a payment written on it meanwhile aborts and re-runs this commit.
-        invoices: dict = {}
-        for leg in legs:
-            iid = leg.get("invoice_id")
-            if leg.get("kind") != "encaissement_facture" or not iid:
-                continue
-            if iid not in invoices:
-                iref = db.collection(INVOICES_COLLECTION).document(iid)
-                isnap = iref.get(transaction=txn)
-                if not isnap.exists:
-                    raise _TxnAbort("facture_paiement_introuvable")
-                invoices[iid] = {"ref": iref, "doc": isnap.to_dict(), "reduce": 0}
-            invoices[iid]["reduce"] += int(leg.get("amount", 0))
-
-        # Reversal date: [original date, today], above every touched floor.
-        # The DEFAULT reads the Montréal clock, like the guard below it — a
-        # datetime.now(utc) default is already TOMORROW every evening after
-        # 20:00, so an undated contre-passation refused itself outright for
-        # four hours a day (the 2026-08-02 evening-band class, caught by the
-        # frozen-clock fixture the day after this module shipped).
-        rd = _midnight_utc(reversal_date) if reversal_date else _midnight_utc(today_mtl())
-        if rd is None or rd.date() > today_mtl():
-            raise _TxnAbort("date_contre_passation_invalide")
-        for leg in legs:
-            od = _as_utc(leg.get("date"))
-            if od is not None and rd.date() < od.date():
-                raise _TxnAbort("date_contre_passation_invalide")
-        for info in accounts.values():
-            if info["floor"] is not None and rd.date() <= info["floor"].date():
-                raise _TxnAbort("date_contre_passation_invalide")
-
-        # The reductions, on the invoices read above. A recorded payment
-        # below what this reversal takes back is a register/invoice
-        # disagreement: refuse, never clamp (a max(0, …) would erase other
-        # recorded payments in silence). The existing paid_date is passed
-        # through — a partial reduction must not stamp a new one, and
-        # payment_updates nulls it itself at zero.
-        invoice_updates = []
-        for iid, info in invoices.items():
-            inv = info["doc"]
-            paid = int(inv.get("amount_paid", 0))
-            if paid < info["reduce"]:
-                raise _TxnAbort("paiement_facture_incohérent")
-            try:
-                updates = invoice_model.payment_updates(
-                    inv, paid - info["reduce"], inv.get("paid_date"),
-                    now=now, reducing=True,
-                )
-            except invoice_model.PaymentRefused as refusal:
-                raise _TxnAbort(
-                    "paiement_facture_refusé",
-                    message=f"{refusal} Rien n'a été contre-passé.",
-                )
-            invoice_updates.append((iid, info["ref"], updates))
-
-        reversals = []
-        orig_updates = []
-        for leg in legs:
-            aid = leg["account_id"]
-            info = accounts[aid]
-            orig_dir = leg.get("direction")
-            amount = int(leg.get("amount", 0))
-            rev_dir = "déboursé" if orig_dir == "recette" else "recette"
-            orig_status = leg.get("status")
-            if orig_status == "en_circulation":
-                orig_new_status = "annulée"
-                rev_status = "annulée"
-            else:  # compensée — original stays compensée
-                orig_new_status = orig_status
-                rev_status = "en_circulation"
-
-            info["seq"] += 1
-            # Ledger arithmetic is status-blind: only the reversal's own
-            # signed amount moves the balance (an annulée flip changes
-            # nothing — annulée rows still count in the ledger).
-            info["delta"] += admin_delta(rev_dir, amount)
-
-            rev_id = str(uuid.uuid4())
-            reversal = _build_transaction_doc(
-                tx_id=rev_id, account_id=aid, sequence=info["seq"], date_value=rd,
-                direction=rev_dir, kind=REVERSAL_KIND, amount=amount,
-                method=leg.get("method", ""), counterparty=leg.get("counterparty", ""),
-                category=leg.get("category"),
-                ventilation={
-                    "net_amount": int(leg.get("net_amount", 0)),
-                    "gst_amount": int(leg.get("gst_amount", 0)),
-                    "qst_amount": int(leg.get("qst_amount", 0)),
-                },
-                description=reason,
-                reference=leg.get("reference", ""),
-                supplier_invoice_ref=leg.get("supplier_invoice_ref", ""),
-                dossier=None, dossier_id=leg.get("dossier_id"),
-                invoice_id=None, invoice_number=leg.get("invoice_number", ""),
-                trust_transaction_id=None, now=now,
-                status=rev_status, reverses_id=leg["id"],
-            )
-            reversal["dossier_file_number"] = leg.get("dossier_file_number", "")
-            reversal["dossier_title"] = leg.get("dossier_title", "")
-            reversals.append(reversal)
-            orig_updates.append((leg, orig_new_status, rev_id))
-
-        for reversal in reversals:
-            txn.set(
-                db.collection(TRANSACTIONS_COLLECTION).document(reversal["id"]), reversal
-            )
-        for leg, new_status, rev_id in orig_updates:
-            txn.update(db.collection(TRANSACTIONS_COLLECTION).document(leg["id"]), {
-                "status": new_status,
-                "reversed_by_id": rev_id,
-                **provenance.update_fields(now),
-            })
-        for info in accounts.values():
-            txn.set(info["counter_ref"], {"seq": info["seq"], "updated_at": now})
-            txn.update(info["ref"], {
-                "ledger_balance": int(info["doc"].get("ledger_balance", 0)) + info["delta"],
-                **provenance.update_fields(now),
-            })
-        for _iid, iref, updates in invoice_updates:
-            txn.update(iref, updates)
-        result["reversals"] = reversals
-        result["original"] = original
-        result["legs"] = [leg["id"] for leg in legs]
-        result["invoices"] = [iid for iid, _ref, _u in invoice_updates]
+        ctx = _read_reverse_legs(txn, legs)
+        result.update(_stage_reverse_legs(txn, ctx, reason, reversal_date, now))
 
     try:
         with span("admin.transaction", direction="reversal", kind=REVERSAL_KIND):
@@ -1772,29 +1980,25 @@ def reverse_transaction(
             "admin_transaction_refused", "refused",
             transaction_id=tx_id, reason=abort.reason,
         )
+        if _report_out is not None:
+            _report_out["reason"] = abort.reason
         return None, [_abort_message(abort, "Contre-passation refusée.")]
     except Exception as exc:
         logger.error(
             "admin reverse_transaction failed for %s: %s",
             sanitize_log_value(tx_id), type(exc).__name__,
         )
+        if _report_out is not None:
+            _report_out["reason"] = "erreur"
         return None, ["Erreur lors de la contre-passation. Veuillez réessayer."]
 
-    for reversal in result["reversals"]:
-        provenance.note_commit(TRANSACTIONS_COLLECTION, reversal["id"])
-    for leg_id in result["legs"]:
-        provenance.note_commit(TRANSACTIONS_COLLECTION, leg_id)
-    for iid in result["invoices"]:
-        provenance.note_commit(INVOICES_COLLECTION, iid)
-        log_admin_ledger_event(
-            "admin_invoice_payment_projected", transaction_id=tx_id,
-            invoice_id=iid, reduced=True,
-        )
-    for reversal in result["reversals"]:
-        log_admin_ledger_event(
-            "admin_transaction_reversed", transaction_id=reversal["id"],
-            account_id=reversal.get("account_id"), reverses_id=reversal.get("reverses_id"),
-        )
+    _after_reverse_commit(result, original_id=tx_id)
+    if _report_out is not None:
+        _report_out["reversals"] = list(result["reversals"])
+        _report_out["invoices"] = [
+            (iid, before, {**before, **updates})
+            for iid, before, updates in result["invoices"]
+        ]
     return result["reversals"][0], []
 
 
@@ -1809,20 +2013,30 @@ def create_card_payment(
     method: str,
     reference: str = "",
     description: str = "",
+    *,
+    _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Pay the corporate card FROM the operations account: ONE Firestore
     transaction writing leg A (bank, ``déboursé``) and leg B (card,
     ``recette``), kind ``paiement_carte``, cross-linked via
     ``related_transaction_id``, both ``en_circulation`` (each leg clears on
-    its OWN statement). Reversing or deleting one leg carries the other."""
+    its OWN statement). Reversing or deleting one leg carries the other.
+
+    ``_report_out``, when given, receives ``reason`` on a refusal, or both
+    legs under ``legs`` (bank first, card second)."""
+    report = _report_out if _report_out is not None else {}
     if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+        report["reason"] = "montant_invalide"
         return None, [_ABORT_MESSAGES["montant_invalide"]]
     if method not in VALID_METHODS:
+        report["reason"] = "mode_invalide"
         return None, [_ABORT_MESSAGES["mode_invalide"]]
     d = _midnight_utc(date_value)
     if d is None:
+        report["reason"] = "date_requise"
         return None, [_ABORT_MESSAGES["date_requise"]]
     if d.date() > today_mtl():
+        report["reason"] = "date_future"
         return None, [_ABORT_MESSAGES["date_future"]]
 
     description = sanitize(description or "", max_length=2000)
@@ -1900,15 +2114,20 @@ def create_card_payment(
         with span("admin.transaction", direction="transfer", kind="paiement_carte"):
             _pay(transaction)
     except _TxnAbort as abort:
+        report["reason"] = abort.reason
         return None, [_ABORT_MESSAGES.get(abort.reason, "Paiement refusé.")]
     except Exception as exc:
         logger.error("admin card payment failed: %s", type(exc).__name__)
+        report["reason"] = "erreur"
         return None, ["Erreur lors du paiement. Veuillez réessayer."]
 
+    for leg in result["legs"]:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, leg["id"])
     log_admin_ledger_event(
         "admin_card_payment_created", transaction_id=leg_a_id,
         account_id=bank_account_id, card_account_id=card_account_id,
     )
+    report["legs"] = list(result["legs"])
     return result["legs"][0], []
 
 
@@ -1959,6 +2178,17 @@ def get_transaction(tx_id: str) -> Optional[dict]:
     except Exception:
         log_unexpected("admin transaction read failed")
         return None
+
+
+def get_transaction_strict(tx_id: str) -> Optional[dict]:
+    """One entry — a read failure PROPAGATES; ``None`` means the store
+    answered « no such entry » (or the id cannot name one). For a caller
+    that decides on the answer (``services/comptabilite``); the display
+    reader above keeps failing open."""
+    if not isinstance(tx_id, str) or not tx_id or "/" in tx_id:
+        return None
+    snap = db.collection(TRANSACTIONS_COLLECTION).document(tx_id).get()
+    return snap.to_dict() if snap.exists else None
 
 
 def list_register(
@@ -2023,7 +2253,7 @@ def book_balance_as_of(account_id: str, as_of) -> int:
     )
 
 
-def list_by_trust_transaction(trust_tx_id: str) -> list[dict]:
+def list_by_trust_transaction(trust_tx_id: str, txn=None) -> list[dict]:
     """Toutes les écritures portant ce virement du fidéicommis, ordre stable.
 
     La SEULE lecture du lien au fidéicommis depuis le lot 5a. Son aîné,
@@ -2047,13 +2277,19 @@ def list_by_trust_transaction(trust_tx_id: str) -> list[dict]:
     Tri en Python sur ``(date, sequence)`` — l'égalité simple champ est
     servie par l'index automatique, y ajouter un ordre exigerait un index
     composite pour une lecture d'appoint.
+
+    ``txn`` (lot 5a, étape 3) : la lecture se fait DANS la transaction de
+    l'appelant — la contre-passation d'un paiement d'honoraires
+    (``models/fee_payment``) y prend chaque recette à contre-passer, et le
+    résultat de la requête entre dans l'ensemble lu : une recette inscrite
+    ou modifiée entre-temps interrompt le commit, qui se rejoue.
     """
     if not trust_tx_id:
         return []
     q = db.collection(TRANSACTIONS_COLLECTION).where(
         filter=FieldFilter("trust_transaction_id", "==", trust_tx_id)
     )
-    rows = [snap.to_dict() or {} for snap in q.stream()]
+    rows = [snap.to_dict() or {} for snap in q.stream(transaction=txn)]
     epoch = datetime.min.replace(tzinfo=timezone.utc)
     rows.sort(key=lambda r: (r.get("date") or epoch, int(r.get("sequence") or 0)))
     return rows

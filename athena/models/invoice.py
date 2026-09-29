@@ -1490,6 +1490,23 @@ def get_invoice(invoice_id: str) -> Optional[dict]:
     return None
 
 
+def get_invoice_strict(invoice_id: str) -> Optional[dict]:
+    """One invoice (without line items) — a read failure PROPAGATES.
+
+    ``None`` means the store answered « no such invoice » (or the id cannot
+    name one), never « the read failed ». For a caller that WRITES money on
+    the answer (``services/comptabilite.resolve_fee_invoice``, lot 5a):
+    :func:`get_invoice` swallows an error into ``None``, and « facture
+    inconnue » on a read blip is a refusal the lawyer cannot act on. The
+    document id is authoritative for ``id``."""
+    if not isinstance(invoice_id, str) or not invoice_id or "/" in invoice_id:
+        return None
+    snap = db.collection(COLLECTION).document(invoice_id).get()
+    if not snap.exists:
+        return None
+    return {**(snap.to_dict() or {}), "id": snap.id}
+
+
 def get_invoice_with_items(invoice_id: str) -> tuple[Optional[dict], list[dict]]:
     """Fetch an invoice and all its line items. Returns (invoice, items)."""
     invoice = get_invoice(invoice_id)
