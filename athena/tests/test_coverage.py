@@ -293,6 +293,28 @@ def test_a_presumed_conflict_check_keeps_the_check_open():
     assert "Dont 1 inscrite(s) par Claude" in finding["detail"]
 
 
+def test_a_presumed_detected_conflict_is_named_never_only_non_faite():
+    """Critique de complétude du lot 4 : depuis que record_kyc_status existe,
+    Claude peut inscrire un « conflit_détecté » présumé. Rapporté SEULEMENT
+    comme « vérification non faite », il se lisait comme un contrôle encore
+    à mener, alors qu'un CONFLIT a été signalé — la sous-alerte sur un
+    empêchement d'agir est l'erreur coûteuse (la fiche garde ce badge ROUGE).
+    Une inscription présumée « vérifié » n'ajoute rien de tel."""
+    ctx = _ctx(active=["d1"], clients=[
+        _client(conflict_check="conflit_détecté", **_PRESUMED_CC),
+        _client(conflict_check="vérifié", **_PRESUMED_CC),
+    ])
+    finding = _finding(_d(client_ids=["p1", "p2"]), ctx, "CONFLIT_NON_VERIFIE")
+    assert "Dont 2 inscrite(s) par Claude" in finding["detail"]
+    assert "1 signale(nt) un CONFLIT D'INTÉRÊTS DÉTECTÉ" in finding["detail"]
+
+    only_verified = _ctx(active=["d1"], clients=[
+        _client(conflict_check="vérifié", **_PRESUMED_CC)])
+    finding = _finding(_d(client_ids=["p1"]), only_verified,
+                       "CONFLIT_NON_VERIFIE")
+    assert "DÉTECTÉ" not in finding["detail"]
+
+
 def test_a_confirmed_inscription_closes_the_check():
     confirmed = _client(identity_verified="exempté",
                         identity_verified_source="mcp",

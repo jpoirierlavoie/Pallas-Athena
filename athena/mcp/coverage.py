@@ -202,6 +202,26 @@ def _presumed_clause(unresolved: list, field: str) -> str:
     )
 
 
+def _presumed_conflict_clause(unresolved: list) -> str:
+    """A PRESUMED « conflit_détecté » is an open check too — but reported
+    only as « non faite » it would read as a verification still to run,
+    when Claude has in fact signalled a CONFLICT. Under-warning on a bar to
+    acting is the costly failure (the asymmetric doctrine that keeps such a
+    badge RED on the fiche): the alarm is named here."""
+    detected = sum(
+        1 for c in unresolved
+        if kyc.is_presumed(c, kyc.FIELD_CONFLICT)
+        and c.get(kyc.FIELD_CONFLICT) == "conflit_détecté"
+    )
+    if not detected:
+        return ""
+    return (
+        f" Parmi elles, {detected} signale(nt) un CONFLIT D'INTÉRÊTS "
+        "DÉTECTÉ, présumé — à examiner avant tout autre geste dans ce "
+        "dossier."
+    )
+
+
 def _conflit_non_verifie(d: dict, ctx: dict) -> Optional[str]:
     unresolved = [
         c for c in ctx["clients_of"](d)
@@ -213,6 +233,7 @@ def _conflit_non_verifie(d: dict, ctx: dict) -> Optional[str]:
         f"Vérification des conflits non faite pour {len(unresolved)} "
         "client(s). Obligation déontologique — à consigner dans la fiche du "
         "contact." + _presumed_clause(unresolved, kyc.FIELD_CONFLICT)
+        + _presumed_conflict_clause(unresolved)
     )
 
 
