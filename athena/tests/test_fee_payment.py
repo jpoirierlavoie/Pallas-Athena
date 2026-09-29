@@ -931,3 +931,36 @@ def test_un_paiement_qui_commet_pendant_la_contre_passation_la_fait_rejouer(fake
     assert errs == [], errs
     assert fake.peek("invoices/inv1")["amount_paid"] == 40000   # B stands, A is gone
     assert al.sum_invoice_receipts("inv1") == 40000
+
+
+def test_un_encaissement_d_administration_et_un_paiement_d_honoraires_se_serialisent(fake):
+    """Les DEUX écrivains d'un paiement sur la même facture — un
+    encaissement saisi au registre d'administration (le formulaire web) et
+    un paiement d'honoraires (demain, le connecteur) — se sérialisent sur
+    la facture lue dans chacune des deux transactions. L'encaissement de
+    600 $ commet pendant la tentative du paiement de 600 $ : le paiement,
+    rejoué sur le solde réel (400 $), est refusé en entier — rien au
+    fidéicommis, rien au compte d'opérations de sa part, la facture à 600 $."""
+    rival: dict = {}
+
+    def _race(info):
+        if rival or not any(p.startswith("trust_transactions/") for _o, p in info.ops):
+            return
+        rival["done"] = True
+        rival["entry"], rival["errs"] = al.create_transaction({
+            "account_id": "ops1", "kind": "encaissement_facture",
+            "invoice_id": "inv1", "amount": 60000, "method": "virement",
+            "counterparty": "Jean Tremblay", "date": _d(2026, 9, 12),
+        })
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        result, errs = _pay()
+    finally:
+        remove()
+    assert rival["errs"] == [], rival["errs"]
+    assert result is None
+    assert errs == [trust._ABORT_MESSAGES["virement_excède_facture"]]
+    assert _fees(fake) == []
+    assert fake.peek("invoices/inv1")["amount_paid"] == 60000
+    assert len(fake.peek_collection("admin_transactions")) == 1
