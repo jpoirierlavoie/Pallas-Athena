@@ -2582,7 +2582,8 @@ Notes:
      before for the lawyer's own checks (« le … par Me … »), and the
      section now also shows for a CLIENT of a dossier whatever the contact's
      role. On a TEST dossier with one task, one note and one confirmed
-     event, close it in the form: no amber banner (the drain completed);
+     event — its ONLY client a TEST contact of role « client », whose
+     identity step 7 inscribes —, close it in the form: no amber banner (the drain completed);
      then reopen it. Worth telling the lawyer, though it dates from lot 0a
      (the form's version check): a trust entry recorded while a dossier's
      edit form is open in another tab refuses that tab's save with the
@@ -2645,8 +2646,10 @@ Notes:
      the dossier's items left after the close and came back after the
      reopening (re-tick the collection if DavX5 dropped it).
   7. **The compliance check, on a TEST client** (never a real one — the
-     inscription is a real record on a regulatory field): a test contact of
-     role « client », made a client of the test dossier.
+     inscription is a real record on a regulatory field): the test
+     dossier's ONLY client, the test contact of step 2 — another client
+     with an unverified identity would keep `IDENTITE_NON_VERIFIEE` listed
+     after the confirmation, and the check below would read as a failure.
      `record_kyc_status` `check: "identity"`, `status: "vérifié"`: its fiche
      shows the AMBER « Vérifié (présumé) » and « inscrit par Claude le … — à
      confirmer », with NO « par Me … »; `get_coverage_report` (the test
@@ -2695,7 +2698,10 @@ Notes:
   « Fermer un dossier — Impossible ici » and « Créer un protocole, vérifier
   une identité, vérifier les conflits, gérer les mandataires — Impossible
   ici, par conception »; `references/vocabulaires.md`
-  « `list_deletions.entity_type` (15) ». Incomplete rather than false, to
+  « `list_deletions.entity_type` (15) »; and, in SKILL.md's « Ajoute »
+  row, « Les tableaux de parties sont en ajout seul » (a party link now
+  leaves its array through `update_dossier_party` remove — what stays true
+  is that `update_dossier` only ADDS). Incomplete rather than false, to
   extend the same day: « Ajoute » names `update_dossier.add_clients` alone —
   say that one party link is corrected or DETACHED through
   `update_dossier_party` (refused for the last client, a served party, a
