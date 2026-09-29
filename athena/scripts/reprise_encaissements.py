@@ -19,13 +19,20 @@ tranche, puis il exécute exactement ce qui a été signé.
     python -m scripts.reprise_encaissements --compte <id> --appliquer fichier.csv \
         --seulement <trust_tx_id>
 
-UN VIREMENT = UNE ÉCRITURE, toujours pour son montant entier. Ce n'est pas
-une simplification, c'est une contrainte : deux écritures partageant un
-`trust_transaction_id` défont la clé d'idempotence, et
-`routes/trust._contrepasser_recette_administration` n'en contre-passerait
-qu'une en rendant `True`, sans bannière. Un virement qui ne peut pas s'imputer
-entier sur une facture se porte donc en « autre recette » (aucun plafond,
-aucun lien de facture) ou s'écarte — jamais en deux morceaux.
+UN VIREMENT PEUT PORTER PLUSIEURS ÉCRITURES (depuis le 2026-08-17 : un
+virement qui acquitte deux factures), mais la somme de ses lignes égale son
+montant au cent près, et la clé d'idempotence est le COUPLE
+(virement, facture, montant). Depuis le lot 5a, la contre-passation du
+virement au fidéicommis les contre-passe TOUTES
+(`routes/trust._contrepasser_recette_administration` lit
+`list_by_trust_transaction`, qui rend chaque ligne et propage une panne) —
+elle ne contre-passait que la première.
+
+LE PAIEMENT DE LA FACTURE S'ÉCRIT DANS LA TRANSACTION DE L'ÉCRITURE (lot 5a) :
+`models/admin_ledger.create_transaction` porte `amount_paid` sur la facture
+dans le même commit que l'encaissement, ou refuse les deux. Ce script ne
+PROJETTE donc plus rien : une seconde projection compterait chaque paiement
+deux fois. Il crée, puis compense — c'est tout.
 
 TOUTE ÉCRITURE ÉCRITE EST DÉFINITIVE. Portant à la fois `invoice_id` et
 `trust_transaction_id`, elle refuse la modification, la suppression ET la
@@ -514,9 +521,13 @@ def _depayer(actions: list[dict]) -> list[str]:
 
 
 def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
-    """Exécute, virement par virement, dans l'ordre chronologique."""
-    from services.encaissements import projeter_paiement
+    """Exécute, virement par virement, dans l'ordre chronologique.
 
+    Deux temps par ligne, et plus trois : l'écriture (dont la transaction
+    porte AUSSI le paiement sur la facture — lot 5a), puis sa compensation.
+    Rejouer une ligne « à compenser » ne fait donc que compenser : le
+    paiement a été écrit avec l'écriture, et le re-projeter ici — ce que
+    faisait l'ancienne troisième étape — le compterait deux fois."""
     echecs = _depayer(actions)
     if echecs:
         return echecs
@@ -558,18 +569,6 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
             _, erreurs = al.clear_transaction(ecriture["id"], ecriture.get("date"))
             if erreurs:
                 return [f"{v.get('id')} : compensation refusée — {erreurs[0]}"]
-
-        if ecriture.get("invoice_id") and not projeter_paiement(ecriture):
-            # ARRÊT DUR. L'écriture est COMMISE et la facture n'est pas
-            # créditée ; elle porte invoice_id et trust_transaction_id, donc
-            # elle est incorrigible depuis l'application. Continuer la boucle
-            # multiplierait ce cas.
-            return [
-                f"{v.get('id')} : l'écriture {ecriture['id']} est inscrite mais "
-                f"la facture n'a PAS été créditée. Arrêt. Cette écriture ne se "
-                f"corrige pas depuis l'application — faites-la examiner avant "
-                f"de relancer."
-            ]
     return []
 
 

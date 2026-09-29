@@ -432,13 +432,15 @@ def _comptes_administration() -> tuple[list[dict], bool]:
 def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
     """AFTER the committed fee transfer: mint the matching recette in the
     administration register, linked via ``trust_transaction_id``. An
-    invoice-backed transfer becomes an « encaissement de facture » (which
-    ALSO records the payment on the invoice — the Lot P projection); an
-    external-ref transfer becomes an « autre recette » citing the paper
-    number. Fail-open: the trust write is already committed and NEVER
-    blocked; a failure surfaces as a banner."""
+    invoice-backed transfer becomes an « encaissement de facture », whose
+    payment on the invoice the MODEL writes in the recette's own commit
+    (lot 5a — ``models/admin_ledger.create_transaction``); an external-ref
+    transfer becomes an « autre recette » citing the paper number. So the
+    recette and the invoice's payment land together or not at all, and
+    this helper projects nothing itself (a second projection would count
+    the payment twice). Fail-open: the trust write is already committed and
+    NEVER blocked; a refused recette surfaces as a banner."""
     from models import admin_ledger
-    from services.encaissements import projeter_paiement
 
     comptes, _lisible = _comptes_administration()
     if not any(a["id"] == admin_account_id for a in comptes):
@@ -471,8 +473,6 @@ def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
             "trust_transaction_created", "refused",
             transaction_id=entry.get("id"), reason="recette_administration_echec",
         )
-        return False
-    if recette.get("invoice_id") and not projeter_paiement(recette):
         return False
     return True
 
@@ -651,25 +651,36 @@ def entry_reverse(tx_id: str):
 
 
 def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
-    """Reverse the admin recette an auto-created fee transfer minted, and
-    reduce the invoice's recorded payment. True when there was nothing to do
-    or everything followed; False → banner."""
+    """Reverse EVERY admin recette the reversed fee transfer carries — each
+    reversal reducing its invoice's recorded payment in its own commit (lot
+    5a, ``models/admin_ledger.reverse_transaction``). True when there was
+    nothing to do or everything followed; False → banner.
+
+    The lookup is ``list_by_trust_transaction``: it returns EVERY linked
+    row and PROPAGATES a read failure. Its fail-open predecessor
+    (``find_by_trust_transaction``, deleted) turned a read blip into
+    « nothing was auto-created » — True, no banner, the recette and the
+    invoice's payment left standing — and returned only the FIRST row, so a
+    transfer split across two invoices (the reprise's shape) left the
+    second recette and its payment standing for ever. A read failure is
+    now a banner. The rows are still reversed one commit each; making the
+    trust reversal and its recettes ONE transaction is the fee-payment
+    model's job (lot 5a, step 8)."""
     try:
         from models import admin_ledger
-        from services.encaissements import reduire_paiement
 
-        recette = admin_ledger.find_by_trust_transaction(trust_tx_id)
-        if recette is None or recette.get("reversed_by_id"):
-            return True  # nothing was auto-created, or already reversed
-        _, errors = admin_ledger.reverse_transaction(
-            recette["id"],
-            f"Contre-passation du virement au fidéicommis — {reason}",
-            allow_linked=True,
-        )
-        if errors:
-            return False
-        if recette.get("invoice_id") and not reduire_paiement(recette):
-            return False
+        for recette in admin_ledger.list_by_trust_transaction(trust_tx_id):
+            if (recette.get("reversed_by_id")
+                    or recette.get("status") == "annulée"
+                    or recette.get("kind") == admin_ledger.REVERSAL_KIND):
+                continue  # already reversed (or a reversal row itself)
+            _, errors = admin_ledger.reverse_transaction(
+                recette["id"],
+                f"Contre-passation du virement au fidéicommis — {reason}",
+                allow_linked=True,
+            )
+            if errors:
+                return False
         return True
     except Exception:
         log_unexpected("trust: admin recette reversal failed")

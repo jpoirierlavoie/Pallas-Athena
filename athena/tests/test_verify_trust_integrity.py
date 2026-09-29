@@ -752,6 +752,12 @@ def test_une_recette_inscrite_a_la_main_apres_le_bandeau_est_une_note(
     _september(fake, monkeypatch)
     fee = _fee_payment(fake, recette=False)
     _set(fake, _tx(fee["id"]), created_at=_at(9, 10))
+    # Réécrit au lot 5a (étape 2) : un encaissement porte désormais son
+    # paiement sur la facture DANS sa propre transaction, si bien que le
+    # second encaissement ci-dessous voit le premier et se heurte au solde
+    # vivant d'une facture de 500 $ (299,99 + 300 > 500). Le test ne porte
+    # pas sur ce plafond : la facture reçoit la place des deux.
+    _set(fake, "invoices/inv1", total=100000, amount_due=100000)
     recette, errs = admin_ledger.create_transaction({
         "account_id": "ops1", "kind": "encaissement_facture", "amount": 29999,
         "method": "virement", "counterparty": "Fidéicommis",
@@ -806,10 +812,13 @@ def test_un_virement_partage_entre_deux_recettes_passe_mais_une_seule_contre_pas
     fake, monkeypatch, capsys
 ):
     """La forme de la reprise : un virement qui acquitte deux factures porte
-    deux recettes dont la somme égale le virement au cent près — propre. La
-    cascade de contre-passation de la route ne contre-passe que la PREMIÈRE
-    (``find_by_trust_transaction``) : la seconde reste debout et le compte
-    d'opérations compte l'argent revenu au fidéicommis."""
+    deux recettes dont la somme égale le virement au cent près — propre.
+    L'ancienne cascade de contre-passation de la route ne contre-passait que
+    la PREMIÈRE (``find_by_trust_transaction``, supprimé au lot 5a — la
+    cascade lit désormais ``list_by_trust_transaction`` et les contre-passe
+    toutes) : une seconde restée debout — la forme que ce test construit à
+    la main — laisse le compte d'opérations compter l'argent revenu au
+    fidéicommis, et le contrôle doit le dire."""
     _september(fake, monkeypatch)
     fee = _fee_payment(fake, recette=False)
     first = _admin_recette(fee, amount=10000)

@@ -633,7 +633,12 @@ def test_update_refuses_a_stale_ventilation_against_a_changed_amount(store):
     absorbs a correction)."""
     entry, _ = al.create_transaction(_new(amount=100000))
     updated, errs = al.update_transaction(entry["id"], _new(amount=80000))
-    assert updated is None and "ventilation" in errs[0].lower()
+    # Resserré au lot 5a (étape 2) : le refus NOMME les trois champs à
+    # fournir (ventilation_requise) au lieu de juger une somme que
+    # l'appelant n'a jamais envoyée (« ventilation invalide »).
+    assert updated is None
+    assert errs == [al._ABORT_MESSAGES["ventilation_requise"]]
+    assert "net_amount" in errs[0] and "qst_amount" in errs[0]
 
 
 def test_update_direction_flip_swings_the_ledger_both_ways(store):
@@ -1066,7 +1071,7 @@ def test_abandon_refuses_a_completed_reconciliation(store):
 
 def test_sum_invoice_receipts_excludes_annulled(store):
     a, _ = al.create_transaction(_encaissement(amount=30000))
-    store["invoices"]["fac1"]["amount_paid"] = 30000
+    assert store["invoices"]["fac1"]["amount_paid"] == 30000  # the entry's own commit (lot 5a)
     b, _ = al.create_transaction(_encaissement(amount=20000))
     assert al.sum_invoice_receipts("fac1") == 50000
     al.reverse_transaction(b["id"], "erreur", allow_linked=True)
@@ -1075,7 +1080,7 @@ def test_sum_invoice_receipts_excludes_annulled(store):
 
 def test_list_invoice_receipts_rend_les_lignes_pas_le_total(store):
     a, _ = al.create_transaction(_encaissement(amount=30000))
-    store["invoices"]["fac1"]["amount_paid"] = 30000
+    assert store["invoices"]["fac1"]["amount_paid"] == 30000  # the entry's own commit (lot 5a)
     b, _ = al.create_transaction(_encaissement(amount=20000))
     rows = al.list_invoice_receipts("fac1")
     assert [r["id"] for r in rows] == [a["id"], b["id"]]
@@ -1088,7 +1093,7 @@ def test_list_invoice_receipts_garde_les_contrepassees(store):
     qui s'est passé — une contre-passation fait partie de l'histoire, et la
     cacher laisserait le lecteur sans explication du mouvement du solde."""
     a, _ = al.create_transaction(_encaissement(amount=30000))
-    store["invoices"]["fac1"]["amount_paid"] = 30000
+    assert store["invoices"]["fac1"]["amount_paid"] == 30000  # the entry's own commit (lot 5a)
     al.reverse_transaction(a["id"], "chèque sans provision", allow_linked=True)
 
     assert al.sum_invoice_receipts("fac1") == 0          # le cumul les écarte
@@ -1100,7 +1105,7 @@ def test_list_invoice_receipts_garde_les_contrepassees(store):
 
 def test_list_invoice_receipts_est_ordonnee_du_plus_ancien(store):
     tardif, _ = al.create_transaction(_encaissement(amount=10000, date=_d(2026, 3, 9)))
-    store["invoices"]["fac1"]["amount_paid"] = 10000
+    assert store["invoices"]["fac1"]["amount_paid"] == 10000  # the entry's own commit (lot 5a)
     ancien, _ = al.create_transaction(_encaissement(amount=5000, date=_d(2026, 1, 4)))
     rows = al.list_invoice_receipts("fac1")
     assert [r["id"] for r in rows] == [ancien["id"], tardif["id"]]
@@ -1122,14 +1127,21 @@ def test_list_invoice_receipts_sans_identifiant_ne_requete_pas(store):
     assert al.list_invoice_receipts("") == []
 
 
-def test_find_by_trust_transaction(store):
+def test_find_by_trust_transaction_est_supprime(store):
+    """Réécrit délibérément au lot 5a (étape 2). find_by_trust_transaction
+    échouait OUVERT à None et ne rendait que le PREMIER rang : son seul
+    appelant, la cascade de contre-passation du fidéicommis, en tirait « rien
+    à faire » sur une panne, et ne contre-passait que la première recette
+    d'un virement partagé. Il a été supprimé avec cette cascade ; la seule
+    lecture du lien est list_by_trust_transaction, qui rend tout et propage."""
+    assert not hasattr(al, "find_by_trust_transaction")
     al.create_transaction(
         _new(direction="recette", kind="recette_autre", category=""),
         trust_transaction_id="ttx9",
     )
-    found = al.find_by_trust_transaction("ttx9")
-    assert found and found["trust_transaction_id"] == "ttx9"
-    assert al.find_by_trust_transaction("absent") is None
+    found = al.list_by_trust_transaction("ttx9")
+    assert [r["trust_transaction_id"] for r in found] == ["ttx9"]
+    assert al.list_by_trust_transaction("absent") == []
 
 
 def test_firm_snapshot_display_balances_and_overdue(store):
@@ -1151,31 +1163,31 @@ def test_firm_snapshot_display_balances_and_overdue(store):
 
 
 def test_list_by_trust_transaction_rend_tout_pas_le_premier(store):
-    """find_by_trust_transaction lit deux lignes puis n'en rend qu'une : son
-    .limit(2) détecte le doublon et jette le signal. Une reprise qui décide
-    d'écrire ou non a besoin du signal."""
+    """Un virement partagé entre deux factures porte deux recettes : la
+    lecture doit rendre LES DEUX (son aîné supprimé lisait deux rangs puis
+    n'en rendait qu'un — la reprise y perdait le signal du doublon, la
+    cascade de contre-passation la seconde recette)."""
     a, _ = al.create_transaction(_encaissement(amount=30000),
                                  trust_transaction_id="ttx1")
-    store["invoices"]["fac1"]["amount_paid"] = 30000
+    assert store["invoices"]["fac1"]["amount_paid"] == 30000  # the entry's own commit (lot 5a)
     b, _ = al.create_transaction(_encaissement(amount=20000),
                                  trust_transaction_id="ttx1")
-    assert al.find_by_trust_transaction("ttx1")["id"] in (a["id"], b["id"])
     assert [r["id"] for r in al.list_by_trust_transaction("ttx1")] == [
         a["id"], b["id"]]
 
 
 def test_list_by_trust_transaction_echoue_FERME(store, monkeypatch):
-    """LA différence avec son voisin, et la raison d'être de la fonction.
-    find_by_trust_transaction échoue OUVERT à None : un hoquet de lecture
-    ferait conclure « rien n'est encore inscrit » et doublerait l'écriture —
-    au rejeu qui suit un incident, précisément. Une écriture d'encaissement
-    étant ensuite verrouillée à jamais, le doublon ne se corrigerait pas."""
+    """La raison d'être de la fonction — réécrit au lot 5a (étape 2) : la
+    moitié qui épinglait l'échec OUVERT de find_by_trust_transaction est
+    partie avec lui. Un hoquet de lecture ferait conclure « rien n'est encore
+    inscrit » : la reprise doublerait une écriture que le verrou rend ensuite
+    incorrigible, la cascade de contre-passation laisserait la recette et le
+    paiement de la facture debout sans bannière. La lecture PROPAGE."""
     class _Boom:
         def collection(self, _name):
             raise RuntimeError("firestore indisponible")
 
     monkeypatch.setattr(al, "db", _Boom())
-    assert al.find_by_trust_transaction("ttx1") is None      # avale
     with pytest.raises(RuntimeError):                        # propage
         al.list_by_trust_transaction("ttx1")
 
@@ -1183,7 +1195,7 @@ def test_list_by_trust_transaction_echoue_FERME(store, monkeypatch):
 def test_list_by_trust_transaction_est_ordonnee_du_plus_ancien(store):
     tardif, _ = al.create_transaction(_encaissement(
         amount=10000, date=_d(2026, 3, 9)), trust_transaction_id="ttx1")
-    store["invoices"]["fac1"]["amount_paid"] = 10000
+    assert store["invoices"]["fac1"]["amount_paid"] == 10000  # the entry's own commit (lot 5a)
     ancien, _ = al.create_transaction(_encaissement(
         amount=5000, date=_d(2026, 1, 4)), trust_transaction_id="ttx1")
     assert [r["id"] for r in al.list_by_trust_transaction("ttx1")] == [

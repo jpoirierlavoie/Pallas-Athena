@@ -1,10 +1,28 @@
 """Who may write a payment — pinned by an AST sweep, keyed by RELATIVE path.
 
-`models.invoice.record_payment` is the single writer of `amount_paid`, and
-since 2026-08-17 the accounting module is its only request-served caller,
-through `services/encaissements.projeter_paiement` / `reduire_paiement`.
+`models.invoice.payment_updates` is the ONE computation of `amount_paid`,
+`paid_date` and the status flip. Since lot 5a (step 2) it is staged in
+exactly two places, both MODELS, each inside its own Firestore transaction:
+
+* `models/invoice.record_payment` — the historical writer, now reached only
+  by two hand-run maintenance scripts (the purge and the reprise's
+  « dépaiement » both write `record_payment(id, 0)`);
+* `models/admin_ledger` — an encaissement stages its payment in the entry's
+  own commit, and a reversal reduces it the same way.
+
+`services/encaissements.py` (`projeter_paiement` / `reduire_paiement`) is
+DELETED: it projected the payment AFTER the ledger commit, with a separate
+read-then-absolute write, from three callers (`routes/admin_ledger.py`,
+`routes/trust.py`, `scripts/reprise_encaissements.py`). Two parallel
+encaissements both passed the live-balance check, a failure left the entry
+standing under a banner — and now that the model writes the payment itself,
+a surviving projection would count every payment TWICE. The pins below were
+rewritten deliberately in that commit: the projection set is gone, the
+retired names must not come back, and no route, service or connector module
+may reach a payment writer at all.
+
 `tests/test_invoice_detail.py::test_the_accounting_module_is_the_only_writer_of_a_payment`
-already pins `record_payment`'s callers, but by BASENAME and by raw TEXT:
+also pins `record_payment`'s callers, but by BASENAME and by raw TEXT:
 
 * basenames collide in this repo (`routes/admin_ledger.py` and
   `models/admin_ledger.py`, `routes/trust.py` and `models/trust.py`), so a
@@ -20,8 +38,9 @@ String literals and comments are invisible to it by construction, so no
 exemption list is needed for text that merely talks about payments.
 
 The connector (`mcp/`) must reach none of it. The plan opens exactly one
-door, in Lot 5, and names it (services/comptabilite.py); until then an MCP
-path to a payment is a defect, whatever the tool description says.
+door, in Lot 5b, and names it (the accounting tools, through the models
+above); until then an MCP path to a payment is a defect, whatever the tool
+description says.
 """
 
 import ast
@@ -40,9 +59,12 @@ _REQUIRED_ROOTS = {"routes", "models", "mcp", "services", "scripts"}
 
 _PAYMENT_WRITER = "record_payment"
 # Lot 5a: the pure computation record_payment runs on — what a ledger
-# transaction will stage in its own commit. It writes nothing itself, but a
+# transaction stages in its own commit. It writes nothing itself, but a
 # caller that stages its result IS a payment writer, so it is swept too.
 _PAYMENT_COMPUTATION = "payment_updates"
+# The after-commit projection, DELETED in lot 5a (step 2). Still swept: a
+# helper reborn under the same name would be the same trap — a second,
+# non-transactional writer beside the one the ledger commit already makes.
 _ORCHESTRATION = ("projeter_paiement", "reduire_paiement")
 _WATCHED = (_PAYMENT_WRITER, _PAYMENT_COMPUTATION) + _ORCHESTRATION
 _ORCHESTRATION_MODULE = "services.encaissements"
@@ -153,44 +175,63 @@ def test_the_sweep_ignores_strings_and_sees_every_reference_form():
 def test_each_payment_function_is_defined_exactly_where_expected(sweep):
     """A second definition elsewhere — a local wrapper that writes
     `amount_paid` under the same name — would make every caller pin below
-    meaningless."""
+    meaningless. The two retired projection helpers are defined NOWHERE:
+    rewritten deliberately in lot 5a (step 2), when services/encaissements.py
+    was deleted."""
     where = {n: {rel for rel, (_r, defs, _m) in sweep.items() if defs[n]} for n in _WATCHED}
     assert where == {
         "record_payment": {"models/invoice.py"},
         "payment_updates": {"models/invoice.py"},
-        "projeter_paiement": {"services/encaissements.py"},
-        "reduire_paiement": {"services/encaissements.py"},
+        "projeter_paiement": set(),
+        "reduire_paiement": set(),
     }, where
 
 
+def test_the_retired_projection_is_gone_for_good(sweep):
+    """Lot 5a (step 2): the after-commit projection module is deleted, and
+    nothing may import it or reach its two helpers under any form. Its
+    return would count every payment twice — the ledger commit writes it
+    already."""
+    assert not (_ROOT / "services" / "encaissements.py").exists()
+    assert _referencing(sweep, _ORCHESTRATION) == set()
+    importers = {rel for rel, (_r, _d, imports_module) in sweep.items() if imports_module}
+    assert importers == set(), importers
+
+
 def test_record_payment_callers_are_exactly_the_decided_set(sweep):
-    """The orchestration, and two hand-run reprise tools (their coexistence
-    is argued in test_invoice_detail). Anything else is a second writer of
-    `amount_paid` — the very thing the 2026-08-17 lot removed."""
+    """Rewritten deliberately in lot 5a (step 2): `services/encaissements.py`
+    is gone, and with it the last REQUEST-served path to `record_payment`.
+    What remains are the two hand-run maintenance scripts, each writing
+    `record_payment(id, 0)` to clear a payment the ledger does not back
+    (their coexistence is argued in test_invoice_detail). No route, no
+    service, no model other than its own, and no connector module."""
     assert _referencing(sweep, [_PAYMENT_WRITER]) == {
-        "services/encaissements.py",
         "scripts/purge_encaissements_factures.py",
         "scripts/reprise_encaissements.py",
     }
 
 
-def test_payment_updates_is_reached_only_by_record_payment_so_far(sweep):
-    """Lot 5a extracted the computation; nothing but record_payment (its own
-    module) stages it yet. Lot 5 opens exactly one more door — the ledger
-    transaction in models/admin_ledger.py — and must widen this set on
-    purpose, in the commit that makes the projection atomic."""
-    assert _referencing(sweep, [_PAYMENT_COMPUTATION]) == {"models/invoice.py"}
-
-
-def test_projection_callers_are_exactly_the_decided_set(sweep):
-    """The accounting routes (administration and the trust fee payment's
-    automatic recette) and the reprise assistant. Keyed by relative path:
-    `models/admin_ledger.py` and `models/trust.py` are NOT on this list."""
-    assert _referencing(sweep, _ORCHESTRATION) == {
-        "routes/admin_ledger.py",
-        "routes/trust.py",
-        "scripts/reprise_encaissements.py",
+def test_payment_updates_is_staged_only_by_the_two_models(sweep):
+    """Lot 5a opened exactly the door it named: the ledger transaction in
+    models/admin_ledger.py stages the payment of an encaissement (and the
+    reduction of a reversed one) in its own commit. Keyed by relative path:
+    `routes/admin_ledger.py` is NOT on this list, nor any service."""
+    assert _referencing(sweep, [_PAYMENT_COMPUTATION]) == {
+        "models/invoice.py",
+        "models/admin_ledger.py",
     }
+
+
+def test_no_request_served_module_outside_the_models_reaches_a_payment(sweep):
+    """The web routes and the services write a payment ONLY through a model
+    mutator (``admin_ledger.create_transaction`` / ``reverse_transaction``),
+    never through the payment functions themselves — which is what makes
+    the payment and its ledger entry one commit."""
+    offenders = {
+        rel for rel in _referencing(sweep, _WATCHED)
+        if rel.startswith(("routes/", "services/", "mcp/", "dav/", "client/"))
+    }
+    assert offenders == set(), offenders
 
 
 def test_no_connector_module_can_reach_a_payment(sweep):

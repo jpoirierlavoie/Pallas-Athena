@@ -7,6 +7,13 @@
     <h1 class="text-xl font-semibold text-gray-900">{% if mode == 'edit' %}Modifier l'écriture n<sup>o</sup> {{ entry.sequence }}{% else %}Nouvelle écriture d'administration{% endif %}</h1>
   </div>
 
+  {# D9 (lot 5a) : le formulaire de modification porte l'etag de la version
+     qu'il affiche ; une sauvegarde sur une version dépassée revient avec le
+     bandeau ambre (routes/edit_conflict). Import DANS le bloc, la règle du
+     composant. #}
+  {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
     <ul class="text-sm text-red-700 space-y-1">
@@ -36,6 +43,7 @@
         x-init="var sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; }"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if mode == 'edit' %}{{ etag_field(entry) }}{% endif %}
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Compte</label>

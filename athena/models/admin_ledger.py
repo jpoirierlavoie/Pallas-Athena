@@ -55,7 +55,12 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import db, provenance
+from models import concurrency, db, provenance
+# The invoice payment is STAGED in this module's own transactions (lot 5a):
+# ``payment_updates`` is the one computation of amount_paid / paid_date /
+# the status flip, and PaymentRefused must abort the ledger transaction it
+# is raised in. models.invoice imports nothing from here — no cycle.
+from models import invoice as invoice_model
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
 from security import sanitize
 from tz import to_mtl
@@ -351,12 +356,21 @@ def running_balances(txs: list[dict], opening: int = 0) -> list[int]:
 
 class _TxnAbort(Exception):
     """Raised inside a transaction to abort with a machine-stable reason
-    (the trust._TxnAbort shape)."""
+    (the trust._TxnAbort shape). ``message`` overrides the reason's French
+    text when the refusal is worded by another module — the invoice's
+    ``PaymentRefused`` names its own cap."""
 
-    def __init__(self, reason: str, value: Optional[int] = None):
+    def __init__(self, reason: str, value: Optional[int] = None,
+                 message: str = ""):
         super().__init__(reason)
         self.reason = reason
         self.value = value
+        self.message = message
+
+
+def _abort_message(abort: "_TxnAbort", fallback: str) -> str:
+    """The French text of an abort: its own message, else its reason's."""
+    return abort.message or _ABORT_MESSAGES.get(abort.reason, fallback)
 
 
 # Machine-stable abort reason → French user message.
@@ -385,6 +399,17 @@ _ABORT_MESSAGES = {
     "ventilation_invalide": (
         "La ventilation (net + TPS + TVQ) doit égaler le montant du déboursé, "
         "chaque part étant un montant non négatif."
+    ),
+    # Lot 5a: a partial correction that changes a déboursé's amount without
+    # naming its ventilation used to inherit the stored split and be refused
+    # as « ventilation invalide » — a sum the caller never supplied. The
+    # register never guesses which of net / TPS / TVQ absorbs a correction,
+    # so the refusal names the three fields the caller must send.
+    "ventilation_requise": (
+        "Le montant de ce déboursé change : fournissez aussi sa ventilation "
+        "— les champs Net, TPS et TVQ (net_amount, gst_amount, qst_amount). "
+        "La ventilation enregistrée correspond à l'ancien montant ; pour un "
+        "déboursé sans taxe réclamée, envoyez les trois à 0."
     ),
     "période_verrouillée": (
         "Cette période est couverte par une conciliation complétée. "
@@ -416,6 +441,23 @@ _ABORT_MESSAGES = {
         "Une facture s'encaisse au compte d'opérations, jamais à la carte de crédit."
     ),
     "facture_introuvable": "Facture introuvable.",
+    # Lot 5a — the payment is written in the ledger's own transaction, so a
+    # payment the invoice refuses refuses the ENTRY: nothing is written.
+    "paiement_facture_refusé": (
+        "La facture refuse ce paiement — rien n'a été inscrit au registre."
+    ),
+    "paiement_facture_incohérent": (
+        "Le montant encaissé enregistré sur la facture est inférieur à celui "
+        "de cet encaissement : le registre et la facture ne concordent plus. "
+        "Rien n'a été écrit — faites vérifier le compte d'administration "
+        "(contrôle d'intégrité) avant de contre-passer."
+    ),
+    "facture_paiement_introuvable": (
+        "La facture liée à cet encaissement est introuvable : la "
+        "contre-passation réduirait un paiement qui n'existe plus. Rien n'a "
+        "été écrit — faites vérifier le compte d'administration (contrôle "
+        "d'intégrité) avant de contre-passer."
+    ),
     "facture_non_émise": "La facture doit être émise (envoyée ou en retard).",
     "facture_requise": "Un encaissement de facture doit nommer la facture encaissée.",
     "encaissement_excède_solde": (
@@ -435,6 +477,12 @@ _ABORT_MESSAGES = {
         "(nécessairement postérieure)."
     ),
     "écriture_introuvable": "Écriture introuvable.",
+    # Lot 5a (D9): the edit carried the etag of the version its form was
+    # rendered from, and the stored one moved since — Claude, a second tab,
+    # a clearing. The shared sentence (models/concurrency), so the web
+    # route recognises it (routes/edit_conflict.split_stale) and shows the
+    # banner instead of an error line.
+    "écriture_modifiée": concurrency.STALE_ETAG_ERROR,
     "date_contre_passation_invalide": (
         "La date de contre-passation doit se situer entre la date de "
         "l'écriture originale et aujourd'hui, hors période conciliée."
@@ -826,6 +874,22 @@ def create_transaction(
     an ``opérations`` account only. Returns ``(entry, [])`` or
     ``(None, [french_errors])``.
 
+    **The payment is written in the SAME commit as the entry (lot 5a, D2).**
+    An encaissement stages ``invoice.payment_updates(invoice, amount_paid +
+    amount, paid_date=<entry date>)`` on the invoice it read in this very
+    transaction — *current + delta*, so a payment recorded earlier (or a
+    correction on the invoice side) is added to, never overwritten. Until
+    then the projection ran AFTER the commit, from the route
+    (``services/encaissements.projeter_paiement``, deleted): two parallel
+    encaissements both passed the live-balance check — ``amount_paid`` only
+    moved afterwards — and the ledger could count money the invoice did not,
+    while a projection failure left the entry standing under a banner. Now
+    the invoice is part of the transaction's read set: a concurrent payment
+    aborts this commit, the ``transactional`` retry re-reads the balance and
+    the second deposit is refused if it no longer fits; and a payment the
+    invoice refuses (``PaymentRefused``) aborts the entry with it — the
+    ledger never records an encaissement its invoice does not show.
+
     ``trust_transaction_id`` — the fee payment this recette mirrors — is a
     KEYWORD, and a ``trust_transaction_id`` key inside ``data`` is REFUSED
     (``lien_fideicommis_réservé``). The link makes the entry uneditable,
@@ -956,6 +1020,24 @@ def create_transaction(
             trust_transaction_id=trust_transaction_id, now=now,
         )
 
+        # The invoice's payment, computed on the invoice THIS transaction
+        # read: current + delta (lot 5a). The guards above already hold the
+        # model's own cap, so a refusal here is the invoice speaking — and
+        # it aborts the entry with it, never a ledger row without its
+        # payment.
+        invoice_updates = None
+        if invoice is not None:
+            try:
+                invoice_updates = invoice_model.payment_updates(
+                    invoice, int(invoice.get("amount_paid", 0)) + amount,
+                    entry["date"], now=now,
+                )
+            except invoice_model.PaymentRefused as refusal:
+                raise _TxnAbort(
+                    "paiement_facture_refusé",
+                    message=f"{refusal} Rien n'a été inscrit au registre.",
+                )
+
         # 4. WRITES (single commit)
         txn.set(tx_ref, entry)
         txn.set(counter_ref, {"seq": seq, "updated_at": now})
@@ -964,7 +1046,10 @@ def create_transaction(
             + admin_delta(direction, amount),
             **provenance.update_fields(now),
         })
+        if invoice_updates is not None:
+            txn.update(invoice_ref, invoice_updates)
         result["entry"] = entry
+        result["payment"] = invoice_updates
 
     try:
         with span("admin.transaction", direction=direction, kind=kind):
@@ -974,7 +1059,7 @@ def create_transaction(
             "admin_transaction_refused", "refused",
             account_id=account_id, reason=abort.reason,
         )
-        return None, [_ABORT_MESSAGES.get(abort.reason, "Opération refusée.")]
+        return None, [_abort_message(abort, "Opération refusée.")]
     except Exception as exc:
         logger.error(
             "admin create_transaction failed for account %s: %s",
@@ -983,11 +1068,23 @@ def create_transaction(
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     entry = result["entry"]
+    provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
+    if result.get("payment") is not None:
+        provenance.note_commit(INVOICES_COLLECTION, invoice_id)
     log_admin_ledger_event(
         "admin_transaction_created", transaction_id=tx_id,
         account_id=account_id, invoice_id=invoice_id,
         direction=direction, kind=kind, sequence=entry["sequence"],
     )
+    if result.get("payment") is not None:
+        # Emitted by the MODEL since lot 5a, after the ONE commit that wrote
+        # both: success only — a payment the invoice refuses refuses the
+        # entry (admin_transaction_refused), there is no « entry stands,
+        # payment failed » state left to report.
+        log_admin_ledger_event(
+            "admin_invoice_payment_projected", transaction_id=tx_id,
+            invoice_id=invoice_id,
+        )
     return entry, []
 
 
@@ -1003,7 +1100,30 @@ _EDITABLE_FIELDS = (
 )
 
 
-def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str]]:
+def _amount_changes_without_ventilation(
+    clean: dict, existing: dict, merged: dict
+) -> bool:
+    """A déboursé's amount changes and the caller named none of the three
+    ventilation fields — the split on file belongs to the OLD amount.
+
+    Only a VALID new amount counts (an invalid one is ``_validate_business``'s
+    « montant invalide », the more useful answer). Presence, not value,
+    decides: the web form always posts the three fields — blank ones mean
+    « re-default » (net = amount, no tax claimed) — so it never trips this;
+    a partial correction that leaves them out does."""
+    new_amount = clean.get("amount")
+    if "amount" not in clean or new_amount == existing.get("amount"):
+        return False
+    if not isinstance(new_amount, int) or isinstance(new_amount, bool) or new_amount <= 0:
+        return False
+    if merged.get("direction") != "déboursé":
+        return False
+    return not any(k in clean for k in ("net_amount", "gst_amount", "qst_amount"))
+
+
+def update_transaction(
+    tx_id: str, data: dict, *, expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
     """Edit an UNLOCKED entry in place, transactionally.
 
     The lock predicate (``_entry_lock_reason``) is re-read inside the
@@ -1011,7 +1131,23 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
     ``delta_new - delta_old``; the change lands in the entry's bounded
     ``revisions`` trail. ``kind`` may only move between the two simple
     kinds — an invoice-linked, card-payment or correction entry never
-    reaches here (locked)."""
+    reaches here (locked).
+
+    ``expected_etag`` (lot 5a, D9) — the etag of the version the caller
+    read (the web edit form's hidden field). It is the FIRST check inside
+    the transaction, before the lock and before any business validation:
+    the useful answer to an outdated view is « re-read », never the first
+    field error or lock reason the outdated view happens to trip — and a
+    lock reached through a write the caller never saw (Claude cleared the
+    entry) must read as « changed since », which is what it is. A mismatch
+    refuses with :data:`models.concurrency.STALE_ETAG_ERROR` and writes
+    nothing. ``None`` asserts nothing (a page rendered before the field
+    existed): the historical, unchecked path.
+
+    A déboursé whose amount changes must carry its ventilation
+    (``ventilation_requise``): the stored split belongs to the old amount,
+    and the register never guesses which of net / TPS / TVQ absorbs the
+    correction."""
     clean = _sanitize_data(data)
     now = datetime.now(timezone.utc)
     tx_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
@@ -1024,6 +1160,10 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
         if not snap.exists:
             raise _TxnAbort("écriture_introuvable")
         existing = snap.to_dict()
+        # FIRST check — see the docstring. Reads may still follow (they all
+        # precede the writes); no other verdict may precede this one.
+        if not concurrency.matches(existing, expected_etag):
+            raise _TxnAbort("écriture_modifiée")
         account_id = existing.get("account_id")
         account_ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
         acc_snap = account_ref.get(transaction=txn)
@@ -1056,6 +1196,9 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
             implied = _KIND_DIRECTION.get(merged.get("kind"))
             if implied:
                 merged["direction"] = implied
+
+        if _amount_changes_without_ventilation(clean, existing, merged):
+            raise _TxnAbort("ventilation_requise")
 
         ventilation, reason = _validate_business(merged)
         if reason:
@@ -1094,7 +1237,10 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
             result["noop"] = True
             return
         revisions = list(existing.get("revisions") or [])
-        revisions.append({"at": now, "changes": changes})
+        # WHO made each change travels with it (plan rule 5): the doc's own
+        # updated_via moves with the next write, the trail keeps every one.
+        revisions.append({"at": now, "via": provenance.current_via(),
+                          "changes": changes})
         merged["revisions"] = revisions[-_REVISIONS_CAP:]
         provenance.stamp_update(merged, now)
 
@@ -1125,6 +1271,7 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     if not result.get("noop"):
+        provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
         log_admin_ledger_event(
             "admin_transaction_updated", transaction_id=tx_id,
             account_id=result["entry"].get("account_id"),
@@ -1409,7 +1556,20 @@ def reverse_transaction(
     A ``paiement_carte`` leg reverses BOTH legs atomically. A trust-sourced
     recette refuses unless ``allow_linked`` — the fidéicommis side is the
     source of truth for that movement, and ITS reversal calls back here
-    with the flag."""
+    with the flag.
+
+    **An encaissement's payment is reduced in the SAME commit (lot 5a).**
+    The invoice is read in this transaction and
+    ``payment_updates(invoice, amount_paid − amount, <its paid_date>,
+    reducing=True)`` is staged beside the reversal — the narrow
+    payée → envoyée undo included. It used to run after the commit, from
+    the route (``services/encaissements.reduire_paiement``, deleted), and a
+    failure left the payment standing on the invoice under a banner. A
+    recorded payment SMALLER than the reversed amount means the register
+    and the invoice no longer agree: the reversal is refused
+    (``paiement_facture_incohérent``) and nothing is written — never a
+    ``max(0, …)`` clamp, which would erase other recorded payments in
+    silence. An invoice that no longer exists refuses the same way."""
     reason = (reason or "").strip()
     if not reason:
         return None, [_ABORT_MESSAGES["motif_requis"]]
@@ -1468,6 +1628,22 @@ def reverse_transaction(
                 "seq": seq, "floor": _read_lock_floor(aid, txn), "delta": 0,
             }
 
+        # The invoice each encaissement leg paid (lot 5a): read HERE, with
+        # every other read, so its reduction commits with the reversal — and
+        # a payment written on it meanwhile aborts and re-runs this commit.
+        invoices: dict = {}
+        for leg in legs:
+            iid = leg.get("invoice_id")
+            if leg.get("kind") != "encaissement_facture" or not iid:
+                continue
+            if iid not in invoices:
+                iref = db.collection(INVOICES_COLLECTION).document(iid)
+                isnap = iref.get(transaction=txn)
+                if not isnap.exists:
+                    raise _TxnAbort("facture_paiement_introuvable")
+                invoices[iid] = {"ref": iref, "doc": isnap.to_dict(), "reduce": 0}
+            invoices[iid]["reduce"] += int(leg.get("amount", 0))
+
         # Reversal date: [original date, today], above every touched floor.
         # The DEFAULT reads the Montréal clock, like the guard below it — a
         # datetime.now(utc) default is already TOMORROW every evening after
@@ -1484,6 +1660,30 @@ def reverse_transaction(
         for info in accounts.values():
             if info["floor"] is not None and rd.date() <= info["floor"].date():
                 raise _TxnAbort("date_contre_passation_invalide")
+
+        # The reductions, on the invoices read above. A recorded payment
+        # below what this reversal takes back is a register/invoice
+        # disagreement: refuse, never clamp (a max(0, …) would erase other
+        # recorded payments in silence). The existing paid_date is passed
+        # through — a partial reduction must not stamp a new one, and
+        # payment_updates nulls it itself at zero.
+        invoice_updates = []
+        for iid, info in invoices.items():
+            inv = info["doc"]
+            paid = int(inv.get("amount_paid", 0))
+            if paid < info["reduce"]:
+                raise _TxnAbort("paiement_facture_incohérent")
+            try:
+                updates = invoice_model.payment_updates(
+                    inv, paid - info["reduce"], inv.get("paid_date"),
+                    now=now, reducing=True,
+                )
+            except invoice_model.PaymentRefused as refusal:
+                raise _TxnAbort(
+                    "paiement_facture_refusé",
+                    message=f"{refusal} Rien n'a été contre-passé.",
+                )
+            invoice_updates.append((iid, info["ref"], updates))
 
         reversals = []
         orig_updates = []
@@ -1547,14 +1747,25 @@ def reverse_transaction(
                 "ledger_balance": int(info["doc"].get("ledger_balance", 0)) + info["delta"],
                 **provenance.update_fields(now),
             })
+        for _iid, iref, updates in invoice_updates:
+            txn.update(iref, updates)
         result["reversals"] = reversals
         result["original"] = original
+        result["legs"] = [leg["id"] for leg in legs]
+        result["invoices"] = [iid for iid, _ref, _u in invoice_updates]
 
     try:
         with span("admin.transaction", direction="reversal", kind=REVERSAL_KIND):
             _reverse(transaction)
     except _TxnAbort as abort:
-        return None, [_ABORT_MESSAGES.get(abort.reason, "Contre-passation refusée.")]
+        # Refusals are journaled like create/update's (lot 5a): a reversal
+        # refused because the invoice no longer agrees with the register is
+        # an integrity signal, never a silent 400.
+        log_admin_ledger_event(
+            "admin_transaction_refused", "refused",
+            transaction_id=tx_id, reason=abort.reason,
+        )
+        return None, [_abort_message(abort, "Contre-passation refusée.")]
     except Exception as exc:
         logger.error(
             "admin reverse_transaction failed for %s: %s",
@@ -1562,6 +1773,16 @@ def reverse_transaction(
         )
         return None, ["Erreur lors de la contre-passation. Veuillez réessayer."]
 
+    for reversal in result["reversals"]:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, reversal["id"])
+    for leg_id in result["legs"]:
+        provenance.note_commit(TRANSACTIONS_COLLECTION, leg_id)
+    for iid in result["invoices"]:
+        provenance.note_commit(INVOICES_COLLECTION, iid)
+        log_admin_ledger_event(
+            "admin_invoice_payment_projected", transaction_id=tx_id,
+            invoice_id=iid, reduced=True,
+        )
     for reversal in result["reversals"]:
         log_admin_ledger_event(
             "admin_transaction_reversed", transaction_id=reversal["id"],
@@ -1795,46 +2016,30 @@ def book_balance_as_of(account_id: str, as_of) -> int:
     )
 
 
-def find_by_trust_transaction(trust_tx_id: str) -> Optional[dict]:
-    """The admin recette a trust fee payment auto-created (single-field
-    equality — auto-indexed). Fails OPEN to None (a display/orchestration
-    aid, never the register)."""
-    try:
-        q = (
-            db.collection(TRANSACTIONS_COLLECTION)
-            .where(filter=FieldFilter("trust_transaction_id", "==", trust_tx_id))
-            .limit(2)
-        )
-        rows = [d.to_dict() for d in q.stream()]
-    except Exception:
-        logger.warning("admin find_by_trust_transaction failed")
-        return None
-    return rows[0] if rows else None
-
-
 def list_by_trust_transaction(trust_tx_id: str) -> list[dict]:
     """Toutes les écritures portant ce virement du fidéicommis, ordre stable.
 
-    Le frère fail-CLOSED de :func:`find_by_trust_transaction`, écrit pour la
-    reprise historique du compte d'administration, qui s'en sert de clé
-    d'idempotence — un usage que son voisin ne peut pas servir, pour deux
-    raisons :
+    La SEULE lecture du lien au fidéicommis depuis le lot 5a. Son aîné,
+    ``find_by_trust_transaction``, a été SUPPRIMÉ avec la cascade qui
+    l'appelait (``routes/trust._contrepasser_recette_administration``), pour
+    les deux défauts qui le rendaient dangereux :
 
-    * il échoue **OUVERT** à ``None``. Un hoquet de lecture Firestore ferait
-      donc conclure « rien n'est encore inscrit » et **doublerait** l'écriture
-      — précisément au rejeu qui suit un incident, le moment où une reprise a
-      le plus besoin d'être sûre. Une écriture d'encaissement étant ensuite
-      verrouillée à jamais (``_entry_lock_reason``), le doublon ne se corrige
-      pas depuis l'application ;
-    * sa ``.limit(2)`` lit exactement de quoi détecter un doublon, puis n'en
-      dit rien (``rows[0]``). Une reprise qui décide d'écrire ou non a besoin
-      du signal, pas du premier venu.
+    * il échouait **OUVERT** à ``None``. Un hoquet de lecture Firestore
+      faisait conclure « rien n'est inscrit » — la reprise en aurait
+      **doublé** une écriture que ``_entry_lock_reason`` verrouille ensuite à
+      jamais, et la cascade de contre-passation rendait « rien à faire »
+      sans bannière, laissant la recette et le paiement de la facture debout ;
+    * sa ``.limit(2)`` lisait de quoi voir un second rang, puis n'en disait
+      rien (``rows[0]``) : un virement partagé entre deux factures ne
+      contre-passait que sa PREMIÈRE recette.
 
-    Propage donc l'erreur, la posture de :func:`sum_invoice_receipts` : on
-    impute de l'argent à partir de cette réponse. Tri en Python sur
-    ``(date, sequence)`` — l'égalité simple champ est servie par l'index
-    automatique, y ajouter un ordre exigerait un index composite pour une
-    lecture d'appoint.
+    Celle-ci rend TOUT et PROPAGE l'erreur, la posture de
+    :func:`sum_invoice_receipts` : la reprise s'en sert de clé
+    d'idempotence, la cascade de contre-passation du fidéicommis y prend
+    chaque recette à contre-passer — de l'argent se décide sur sa réponse.
+    Tri en Python sur ``(date, sequence)`` — l'égalité simple champ est
+    servie par l'index automatique, y ajouter un ordre exigerait un index
+    composite pour une lecture d'appoint.
     """
     if not trust_tx_id:
         return []
@@ -1850,12 +2055,13 @@ def list_by_trust_transaction(trust_tx_id: str) -> list[dict]:
 def sum_invoice_receipts(invoice_id: str) -> int:
     """Σ of ``encaissement_facture`` amounts linked to an invoice whose
     economic effect still stands — the recomputable cumulative behind the
-    record_payment projection (single-field equality, auto-indexed).
+    payment each encaissement stages on its invoice (single-field equality,
+    auto-indexed).
 
     Excludes annulée rows AND reversed ones (``reversed_by_id`` set): a
     compensée encaissement corrected by contre-passation (the bounced-
     cheque case) stays « compensée » in the register, but its payment was
-    reduced by ``_reduire_paiement`` — counting it would report a false
+    reduced in the reversal's own commit — counting it would report a false
     mismatch against ``amount_paid`` after the one correction flow the
     two-step lifecycle exists for. Raises on read failure (fail CLOSED —
     callers project money from this)."""
@@ -1887,10 +2093,9 @@ def list_invoice_receipts(invoice_id: str) -> list[dict]:
     the history, and hiding it would leave the reader wondering why the
     balance moved. The caller renders the status in full.
 
-    It fails OPEN (``[]`` + a warning), the posture of
-    :func:`find_by_trust_transaction`: a display aid must never take a page
-    down. ``sum_invoice_receipts`` keeps its fail-closed posture — money is
-    projected from it.
+    It fails OPEN (``[]`` + a warning): a display aid must never take a
+    page down. ``sum_invoice_receipts`` keeps its fail-closed posture —
+    money is decided from it.
 
     Single-field equality, served by the automatic index. The sort is in
     PYTHON, like ``_list_cleared_after``: ordering server-side would demand

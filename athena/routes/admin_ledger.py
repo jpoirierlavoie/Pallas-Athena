@@ -4,10 +4,13 @@ The firm-side sibling of routes/trust.py: journal with read-time running
 balances, entry create/EDIT/DELETE (editable until the reconciliation lock —
 the deliberate divergence from the trust register), contre-passation, card
 payments (two legs), receipts (pièces justificatives, direct-to-GCS), bank
-and credit-card statement reconciliation, CSV/PDF exports, and the Lot P
-projection (an « encaissement de facture » entry also records the payment on
-the invoice — ``record_payment`` stays the single writer of ``amount_paid``;
-this route always writes *current + delta* so the cumulative is preserved).
+and credit-card statement reconciliation, CSV/PDF exports. An « encaissement
+de facture » also records the payment on its invoice — since lot 5a INSIDE
+the model's own transaction (``models/admin_ledger.create_transaction``
+stages ``invoice.payment_updates``; a reversal reduces it the same way), so
+this module projects nothing any more: there is no « entry saved, payment
+failed » state left to show a banner for. The edit form carries the etag of
+the version it shows (``routes/edit_conflict``, D9).
 
 All @login_required, French UI, standard POST+redirect with inline error
 boxes + HTTP 400. The receipt API endpoints exchange small JSON control
@@ -60,7 +63,7 @@ from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_admin_ledger_event, log_unexpected
 from utils import storage_identity
-from services.encaissements import projeter_paiement, reduire_paiement
+from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input
 
 logger = logging.getLogger(__name__)
@@ -277,13 +280,14 @@ def _entry_form_data() -> dict:
     }
 
 
-def _form_context(entry, errors: list[str], mode: str = "create") -> dict:
+def _form_context(entry, errors: list[str], mode: str = "create",
+                  conflict=None) -> dict:
     dossier = None
     if entry and entry.get("dossier_id"):
         dossier = get_dossier(entry["dossier_id"])
     return dict(
         accounts=al.list_accounts(status="actif"), entry=entry, dossier=dossier,
-        mode=mode, errors=errors,
+        mode=mode, errors=errors, conflict=conflict,
         factures=_factures_impayees() if mode == "create" else [],
         **_labels(),
     )
@@ -319,8 +323,9 @@ def entry_create():
             log_unexpected("admin: auto-clear after create failed", exc_info=False)
             params["avertissement"] = "compensation"
 
-    if entry.get("invoice_id") and not projeter_paiement(entry):
-        params["avertissement"] = "facture"
+    # No projection here any more (lot 5a): an encaissement's payment was
+    # written on its invoice in the entry's own commit, or the entry was
+    # refused with it — the « facture » banner has no state left to report.
     return redirect(url_for("admin_ledger.entry_detail", tx_id=entry["id"], **params))
 
 
@@ -373,16 +378,57 @@ def entry_edit(tx_id: str):
         return render_template(
             "administration/form.html", **_form_context(entry, [], mode="edit"),
         )
+    # D9 (lot 5a): the version the form was rendered from. None for a page
+    # opened before the field existed — the model then checks nothing, as
+    # before; a malformed value is a French 400 and nothing runs.
+    expected = edit_conflict.submitted_etag()
     data = _entry_form_data()
     data.pop("account_id", None)  # immutable on edit
     data.pop("invoice_id", None)  # linkage is create-only
-    updated, errors = al.update_transaction(tx_id, data)
-    if errors:
-        merged = {**entry, **{k: v for k, v in data.items() if v is not None}}
-        return render_template(
-            "administration/form.html", **_form_context(merged, errors, mode="edit"),
-        ), 400
-    return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
+    updated, errors = al.update_transaction(tx_id, data, expected_etag=expected)
+    if not errors:
+        return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
+
+    stale, _others = edit_conflict.split_stale(errors)
+    current = None
+    if stale:
+        current = al.get_transaction(tx_id)
+        if current is not None and _lock_reason_now(current):
+            # Changed since the form opened AND now locked — typically
+            # cleared or reconciled meanwhile (by Claude, a second tab, a
+            # reconciliation). An edit form for an entry that can no longer
+            # be edited would be a dead end: the detail page says why.
+            return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                    avertissement="verrouillee"))
+    errors, conflict, etag = edit_conflict.resolve_refusal(
+        errors, submitted=expected, reread=lambda: current,
+        compare_url=url_for("admin_ledger.entry_detail", tx_id=tx_id),
+    )
+    # A stale save re-renders over the version stored NOW (with its etag —
+    # the next save is a deliberate overwrite, made after reading the
+    # banner); a validation error over the POST-time read, carrying the
+    # SUBMITTED etag, so the original version keeps protecting the retry.
+    base = current if (conflict and current) else entry
+    merged = {**base, **{k: v for k, v in data.items() if v is not None}}
+    merged["etag"] = etag
+    context = _form_context(merged, errors, mode="edit", conflict=conflict)
+    # A stale re-render answers 200 like every edit form's (plan rule 11);
+    # a validation refusal keeps this module's 400.
+    return render_template("administration/form.html", **context), (
+        200 if conflict else 400)
+
+
+def _lock_reason_now(entry: dict):
+    """The entry's lock reason as stored NOW. An unreadable lock floor
+    degrades to the structural clauses alone (compensée, reversal member,
+    linkage) — the model re-checks the floor inside its transaction on the
+    next save anyway."""
+    try:
+        floor = al.get_lock_floor(entry.get("account_id", ""))
+    except Exception:
+        log_unexpected("admin: lock floor unreadable after a stale edit")
+        floor = None
+    return al._entry_lock_reason(entry, floor)
 
 
 @admin_bp.route("/<tx_id>/supprimer", methods=["POST"])
@@ -484,10 +530,9 @@ def entry_reverse(tx_id: str):
             "administration/reverse_confirm.html", entry=original, errors=errors,
             **_labels(),
         ), 400
-    params = {}
-    if original.get("invoice_id") and not reduire_paiement(original):
-        params["avertissement"] = "facture"
-    return redirect(url_for("admin_ledger.entry_detail", tx_id=reversal["id"], **params))
+    # An encaissement's payment was reduced on its invoice in the reversal's
+    # own commit (lot 5a) — or the reversal was refused with it.
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=reversal["id"]))
 
 
 # ── Card payment (two legs) ────────────────────────────────────────────────

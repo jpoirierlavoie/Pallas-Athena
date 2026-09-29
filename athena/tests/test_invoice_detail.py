@@ -259,10 +259,15 @@ def test_the_payment_endpoint_no_longer_exists():
 
 
 def test_the_accounting_module_is_the_only_writer_of_a_payment():
-    """record_payment garde sa place — mais routes/admin_ledger en est
-    desormais le SEUL appelant SERVI PAR UNE REQUETE. Un balayage de source,
-    faute de quoi un futur formulaire pourrait le rebrancher sans que rien ne
-    le dise (le patron de test_comptabilite.test_la_route_est_en_lecture_seule).
+    """record_payment garde sa place — mais depuis le lot 5a (étape 2)
+    AUCUN appelant n'est servi par une requête : le registre d'administration
+    porte le paiement d'un encaissement DANS sa propre transaction
+    (``invoice.payment_updates``, par le modèle), et services/encaissements.py
+    — l'ancienne projection après coup, par qui passaient routes/admin_ledger
+    et routes/trust — est SUPPRIMÉ. Épinglé délibérément dans ce commit : un
+    balayage de source, faute de quoi un futur formulaire pourrait le
+    rebrancher sans que rien ne le dise (le patron de
+    test_comptabilite.test_la_route_est_en_lecture_seule).
 
     L'ensemble est nomme plutot que la portee relachee : un script a lancer a
     la main est un appelant legitime, mais il doit etre DECIDE, pas decouvert.
@@ -270,8 +275,9 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
     Les deux admis sont des outils de reprise, et leur coexistence est sure
     parce qu'ils sont IDEMPOTENTS et convergent : la purge remet a zero tout
     montant que le grand livre n'adosse pas ; la reprise inscrit l'ecriture
-    manquante puis re-projette le paiement. Dans un ordre comme dans l'autre,
-    le second trouve le travail du premier deja fait et ne le defait pas."""
+    manquante, dont la transaction porte le paiement. Dans un ordre comme
+    dans l'autre, le second trouve le travail du premier deja fait et ne le
+    defait pas."""
     import pathlib
 
     racine = pathlib.Path(__file__).resolve().parent.parent
@@ -284,12 +290,10 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
         texte = chemin.read_text(encoding="utf-8")
         if "record_payment(" in texte and chemin.name != "invoice.py":
             appelants.add(chemin.name)
-    # Depuis l'audit 2026-08-26 l'orchestration Lot P vit dans
-    # services/encaissements.py (routes/admin_ledger et routes/trust
-    # l'appellent) — le balayage couvre donc services/ aussi, pour que la
-    # portée du pin ne rétrécisse jamais en silence.
+    # Le balayage couvre services/ depuis l'audit 2026-08-26 (l'orchestration
+    # Lot P y vivait), et le garde : la portée du pin ne rétrécit jamais en
+    # silence, même après la suppression de services/encaissements.py.
     assert appelants == {
-        "encaissements.py",
         "purge_encaissements_factures.py",
         "reprise_encaissements.py",
     }, appelants

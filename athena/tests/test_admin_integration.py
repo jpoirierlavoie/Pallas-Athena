@@ -1,13 +1,15 @@
 """Integration layer of the administration module — routes/admin_ledger.py
 and the trust orchestration in routes/trust.py.
 
-Covers: the global unpaid-invoice picker projection, the Lot P coexistence
-(record_payment stays the SINGLE writer of amount_paid — the admin path
-always writes *current + delta*, and the reversal reduces while passing the
-existing paid_date through), the receipt endpoints' guards (whitelist, size,
-staging-path ownership, sniff agreement), the fidéicommis auto-recette
-orchestration (fail-open, never blocking the trust write), and the template
-pins the house keeps for HTMX/OOB wiring.
+Covers: the global unpaid-invoice picker projection, the routes' share of
+the atomic payment (lot 5a, step 2: the MODEL writes an encaissement's
+payment — and a reversal's reduction — in the entry's own commit, so no
+route projects anything any more; the behaviour itself is proved on the
+shared fake store in tests/test_admin_payment_atomic.py), the receipt
+endpoints' guards (whitelist, size, staging-path ownership, sniff
+agreement), the fidéicommis auto-recette orchestration (fail-open, never
+blocking the trust write), and the template pins the house keeps for
+HTMX/OOB wiring.
 """
 
 import json
@@ -91,79 +93,62 @@ def test_factures_impayees_fails_open_to_empty(monkeypatch):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Lot P coexistence — record_payment stays the single writer
+# Lot P — the routes project NOTHING (rewritten deliberately, lot 5a step 2)
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# The four tests that stood here pinned services/encaissements'
+# projeter_paiement / reduire_paiement: *current + delta*, the failure that
+# left the entry standing under a banner, the paid_date passed through on a
+# reduction, the refusal to clamp a negative result. That module is DELETED:
+# the model writes the payment in the entry's own transaction. Each of those
+# four properties is now proved on the MODEL against the shared fake store —
+# tests/test_admin_payment_atomic.py:
+#   * test_le_paiement_s_ajoute_a_celui_qui_est_deja_inscrit (current + delta);
+#   * test_un_paiement_que_la_facture_refuse_refuse_l_ecriture (a refused
+#     payment now refuses the ENTRY — no « entry stands » state is left);
+#   * test_une_reduction_partielle_garde_la_date_du_paiement;
+#   * test_un_paiement_inferieur_a_la_contre_passation_refuse_sans_rien_ecrire.
+# What stays here is the ROUTE's half: it must not project a second time.
 
 
-def test_projeter_paiement_writes_current_plus_delta(monkeypatch):
-    """record_payment SETS (invoice.py:702) — the admin path re-reads just
-    before the call and passes the CUMULATIVE, so a manual correction on the
-    invoice side is preserved by later admin recettes."""
-    calls = {}
+def _trap_payment_writers(monkeypatch):
+    """Any payment write outside the model's own transaction fails the test."""
+    def _trap(*_a, **_k):
+        pytest.fail("la route a écrit un paiement hors de la transaction du modèle")
+    monkeypatch.setattr(invoice_model, "record_payment", _trap)
+    monkeypatch.setattr(invoice_model, "payment_updates", _trap)
+
+
+def test_la_route_d_administration_n_importe_plus_la_projection():
+    assert not hasattr(ra, "projeter_paiement")
+    assert not hasattr(ra, "reduire_paiement")
+
+
+def test_la_creation_d_un_encaissement_ne_projette_rien(web, monkeypatch):
+    _trap_payment_writers(monkeypatch)
     monkeypatch.setattr(
-        invoice_model, "get_invoice",
-        lambda iid: {"id": iid, "amount_paid": 40000, "paid_date": None},
+        ra.al, "create_transaction",
+        lambda data, **kw: ({"id": "t1", "invoice_id": "fac1", "amount": 60000,
+                             "date": datetime(2026, 7, 10, tzinfo=timezone.utc)}, []),
     )
-
-    def _rp(iid, amount, paid_date=None):
-        calls["args"] = (iid, amount, paid_date)
-        return {"id": iid}, []
-    monkeypatch.setattr(invoice_model, "record_payment", _rp)
-
-    entry = {"id": "t1", "invoice_id": "fac1", "amount": 60000,
-             "date": datetime(2026, 7, 10, tzinfo=timezone.utc)}
-    assert ra.projeter_paiement(entry) is True
-    assert calls["args"][0] == "fac1"
-    assert calls["args"][1] == 100000            # 40000 + 60000, never SET(60000)
-    assert calls["args"][2] == entry["date"]
+    resp = web.post("/administration/", data={
+        "account_id": "ops1", "kind": "encaissement_facture", "amount": "600,00",
+        "method": "virement", "counterparty": "Jean Tremblay",
+        "invoice_id": "fac1", "date": "2026-07-10",
+    })
+    assert resp.status_code == 302
+    assert resp.location.endswith("/administration/t1")    # no « facture » banner
 
 
-def test_projeter_paiement_failure_leaves_the_entry_standing(monkeypatch):
-    monkeypatch.setattr(invoice_model, "get_invoice", lambda iid: None)
-    entry = {"id": "t1", "invoice_id": "fac1", "amount": 60000, "date": None}
-    assert ra.projeter_paiement(entry) is False  # banner, never an exception
-
-
-def test_reduire_paiement_passes_the_existing_paid_date_through(monkeypatch):
-    """A partial reduction must NOT stamp today — record_payment nulls the
-    date itself at zero, and keeps what it is given otherwise."""
-    paid_date = datetime(2026, 7, 2, tzinfo=timezone.utc)
-    calls = {}
-    monkeypatch.setattr(
-        invoice_model, "get_invoice",
-        lambda iid: {"id": iid, "amount_paid": 100000, "paid_date": paid_date},
-    )
-
-    def _rp(iid, amount, paid_date=None):
-        calls["args"] = (iid, amount, paid_date)
-        return {"id": iid}, []
-    monkeypatch.setattr(invoice_model, "record_payment", _rp)
-
-    entry = {"id": "t1", "invoice_id": "fac1", "amount": 60000}
-    assert ra.reduire_paiement(entry) is True
-    assert calls["args"][1] == 40000
-    assert calls["args"][2] == paid_date
-
-
-def test_reduire_paiement_refuses_a_negative_result_instead_of_clamping(monkeypatch):
-    """A max(0, …) clamp here would convert a register/invoice inconsistency
-    (a projection that never committed, a manual correction in between) into
-    SILENT data loss — other recorded payments erased. Refuse → banner."""
-    called = {}
-    monkeypatch.setattr(
-        invoice_model, "get_invoice",
-        lambda iid: {"id": iid, "amount_paid": 30000, "paid_date": None},
-    )
-
-    def _rp(iid, amount, paid_date=None):
-        called["amount"] = amount
-        return {"id": iid}, []
-    monkeypatch.setattr(invoice_model, "record_payment", _rp)
-    assert ra.reduire_paiement({"id": "t1", "invoice_id": "f", "amount": 60000}) is False
-    assert "amount" not in called            # record_payment never touched
-    # Exact zero is the legitimate full reversal of the only payment.
-    assert ra.reduire_paiement({"id": "t1", "invoice_id": "f", "amount": 30000}) is True
-    assert called["amount"] == 0
+def test_la_contre_passation_d_un_encaissement_ne_reduit_rien(web, monkeypatch):
+    _trap_payment_writers(monkeypatch)
+    monkeypatch.setattr(ra.al, "get_transaction",
+                        lambda t: {"id": t, "invoice_id": "fac1", "amount": 60000})
+    monkeypatch.setattr(ra.al, "reverse_transaction",
+                        lambda tx_id, reason, reversal_date=None: ({"id": "rev1"}, []))
+    resp = web.post("/administration/t1/contrepasser", data={"reason": "NSF"})
+    assert resp.status_code == 302
+    assert resp.location.endswith("/administration/rev1")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -276,18 +261,21 @@ def _virement(**over):
 def test_creer_recette_administration_invoice_backed(monkeypatch):
     """Réécrit au lot 0b (B6) : le lien au fidéicommis voyage en MOT-CLÉ —
     le modèle refuse désormais un trust_transaction_id glissé dans les
-    données — et le sens n'est plus envoyé (le modèle le déduit du type)."""
+    données — et le sens n'est plus envoyé (le modèle le déduit du type).
+
+    Réécrit de nouveau au lot 5a (étape 2) : la projection bouchonnée ici a
+    disparu. Le modèle écrit le paiement de la facture dans la transaction
+    de la recette ; une seconde projection par la route le compterait deux
+    fois — le piège ci-dessous l'interdit."""
     created, keywords = {}, {}
     monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
+    _trap_payment_writers(monkeypatch)
 
     def _ct(data, **kw):
         created.update(data)
         keywords.update(kw)
         return {**data, "id": "adm1"}, []
     monkeypatch.setattr(al, "create_transaction", _ct)
-    monkeypatch.setattr(
-        "services.encaissements.projeter_paiement", lambda e: True
-    )
 
     assert rt._creer_recette_administration(_virement(), "ops1") is True
     assert created["kind"] == "encaissement_facture"
@@ -329,27 +317,59 @@ def test_creer_recette_failure_is_a_banner_never_an_exception(monkeypatch):
     assert rt._creer_recette_administration(_virement(), "ops1") is False
 
 
-def test_contrepasser_recette_reverses_and_reduces(monkeypatch):
-    recette = {"id": "adm1", "invoice_id": "fac1", "amount": 60000,
-               "reversed_by_id": None}
-    calls = {}
-    monkeypatch.setattr(al, "find_by_trust_transaction", lambda t: recette)
+def test_contrepasser_recette_reverses_every_linked_row(monkeypatch):
+    """Réécrit délibérément au lot 5a (étape 2). L'ancienne cascade lisait
+    find_by_trust_transaction — UNE recette, la première — puis réduisait la
+    facture elle-même, après coup. Elle lit maintenant TOUTES les lignes
+    (list_by_trust_transaction) et ne réduit rien : chaque contre-passation
+    du modèle réduit sa facture dans son propre commit. Une ligne déjà
+    contre-passée est sautée."""
+    rows = [
+        {"id": "adm1", "invoice_id": "fac1", "amount": 30000, "reversed_by_id": None,
+         "status": "compensée", "kind": "encaissement_facture"},
+        {"id": "adm2", "invoice_id": "fac2", "amount": 20000, "reversed_by_id": None,
+         "status": "en_circulation", "kind": "encaissement_facture"},
+        {"id": "adm0", "invoice_id": "fac3", "amount": 10000, "reversed_by_id": "r0",
+         "status": "annulée", "kind": "encaissement_facture"},
+    ]
+    calls = []
+    _trap_payment_writers(monkeypatch)
+    monkeypatch.setattr(al, "list_by_trust_transaction", lambda t: rows)
 
     def _rev(tx_id, reason, reversal_date=None, allow_linked=False):
-        calls["reversed"] = (tx_id, allow_linked)
-        return {"id": "rev1"}, []
+        calls.append((tx_id, allow_linked))
+        return {"id": f"rev-{tx_id}"}, []
     monkeypatch.setattr(al, "reverse_transaction", _rev)
-    monkeypatch.setattr(
-        "services.encaissements.reduire_paiement", lambda e: True
-    )
 
     assert rt._contrepasser_recette_administration("ttx1", "erreur") is True
-    assert calls["reversed"] == ("adm1", True)   # allow_linked — the trust side calls
+    # allow_linked — the trust side calls; the already-reversed row skipped.
+    assert calls == [("adm1", True), ("adm2", True)]
 
 
 def test_contrepasser_recette_noop_when_nothing_was_created(monkeypatch):
-    monkeypatch.setattr(al, "find_by_trust_transaction", lambda t: None)
+    monkeypatch.setattr(al, "list_by_trust_transaction", lambda t: [])
+    monkeypatch.setattr(al, "reverse_transaction",
+                        lambda *a, **k: pytest.fail("rien à contre-passer"))
     assert rt._contrepasser_recette_administration("ttx1", "x") is True
+
+
+def test_contrepasser_recette_read_failure_is_a_banner(monkeypatch):
+    """Réécrit délibérément au lot 5a (étape 2) : l'ancien lecteur échouait
+    OUVERT à None, et la cascade rendait True — « rien à faire », sans
+    bannière — sur une simple panne de lecture."""
+    def _boom(_t):
+        raise RuntimeError("firestore indisponible")
+    monkeypatch.setattr(al, "list_by_trust_transaction", _boom)
+    assert rt._contrepasser_recette_administration("ttx1", "x") is False
+
+
+def test_contrepasser_recette_refusal_is_a_banner(monkeypatch):
+    monkeypatch.setattr(al, "list_by_trust_transaction", lambda t: [
+        {"id": "adm1", "reversed_by_id": None, "status": "compensée",
+         "kind": "encaissement_facture"}])
+    monkeypatch.setattr(al, "reverse_transaction",
+                        lambda *a, **k: (None, ["Rien n'a été écrit."]))
+    assert rt._contrepasser_recette_administration("ttx1", "x") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -679,7 +699,14 @@ def test_avec_un_compte_le_comportement_reste_celui_du_13_aout(
 def test_un_echec_de_la_recette_reste_une_banniere(web_trust, monkeypatch):
     """Le virement est COMMIS quand la recette échoue : le bloquer serait pire
     (les fonds du client resteraient immobilisés sur une panne du module
-    comptable). L'avertissement reste la seule réponse correcte."""
+    comptable). L'avertissement reste la seule réponse correcte.
+
+    Précisé au lot 5a (étape 2) : la recette et le paiement de sa facture
+    échouent désormais ENSEMBLE — il n'existe plus de recette debout sans
+    son paiement (preuve sur le vrai magasin :
+    test_admin_payment_atomic::test_une_recette_refusee_ne_laisse_ni_recette_ni_paiement).
+    Rendre le virement lui-même atomique avec sa recette est l'étape 8 du
+    lot."""
     _bouchonner_rendu(monkeypatch)
     monkeypatch.setattr(rt.trust, "create_transaction",
                         lambda d: ({"id": "t1", **d}, []))

@@ -639,7 +639,13 @@ NEVERS: tuple[Never, ...] = (
             "«&nbsp;Autoriser la comptabilité&nbsp;»"
         ),
         en="This connector never records a payment.",
-        forbidden=("record_payment", "projeter_paiement", "reduire_paiement"),
+        # Lot 5a (step 2): the ledger now STAGES the payment itself, through
+        # the pure payment_updates — swept too, so a handler cannot build a
+        # payment write of its own around the ledger's back. The two retired
+        # projection helpers and their deleted module stay listed: a helper
+        # reborn under the same name would be the same trap.
+        forbidden=("record_payment", "payment_updates", "projeter_paiement",
+                   "reduire_paiement"),
         forbidden_modules=("services.encaissements",),
         summary_fr="de paiement",
     ),

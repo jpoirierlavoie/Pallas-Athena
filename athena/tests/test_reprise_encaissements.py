@@ -300,18 +300,25 @@ def test_une_lecture_ratee_arrete_la_reprise_au_lieu_de_doubler(monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_une_projection_ratee_arrete_TOUT(monkeypatch, base):
-    """L'écriture est COMMISE quand la projection échoue, et elle porte
-    invoice_id + trust_transaction_id : elle est incorrigible depuis
-    l'application. Continuer la boucle multiplierait ce cas."""
-    faites = []
-    monkeypatch.setattr(rep.al, "create_transaction",
-                        lambda d, **kw: (faites.append(d) or {
-                            "id": f"adm{len(faites)}", "status": "compensée",
-                            "invoice_id": d["invoice_id"], "date": d["date"]}, []))
-    monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
+def test_un_encaissement_refuse_arrete_TOUT(monkeypatch, base):
+    """Réécrit délibérément au lot 5a (étape 2). L'ancien test épinglait
+    l'arrêt sur une PROJECTION ratée — l'écriture commise, la facture non
+    créditée, incorrigible depuis l'application. Cet état n'existe plus : le
+    modèle écrit le paiement dans la transaction de l'écriture, ou refuse
+    les deux (preuve sur le vrai magasin :
+    test_admin_payment_atomic::test_un_paiement_que_la_facture_refuse_refuse_l_ecriture).
+    Ce qui reste à épingler ici : un refus arrête la boucle — continuer
+    écrirait les virements suivants sur un état que le juriste n'a pas
+    signé."""
+    tentatives = []
+
+    def _ct(d, **kw):
+        tentatives.append(d)
+        return None, ["La facture refuse ce paiement — rien n'a été inscrit au registre."]
+    monkeypatch.setattr(rep.al, "create_transaction", _ct)
+    monkeypatch.setattr(rep.al, "clear_transaction",
+                        lambda i, d: pytest.fail("rien à compenser"))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
-    monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: False)
 
     actions = [
         {"virement": _virement("t1"), "facture": _facture(), "mode": "encaissement",
@@ -320,8 +327,8 @@ def test_une_projection_ratee_arrete_TOUT(monkeypatch, base):
          "montant": 50000, "etat": "à_créer", "ecriture": None},
     ]
     echecs = rep.appliquer("cpt1", actions)
-    assert echecs and "n'a PAS été créditée" in echecs[0]
-    assert len(faites) == 1, "la boucle a continué après une projection ratée"
+    assert echecs and "rien n'a été inscrit" in echecs[0]
+    assert len(tentatives) == 1, "la boucle a continué après un refus"
 
 
 def test_l_execution_n_ecrit_JAMAIS_au_fideicommis(monkeypatch, base):
@@ -333,7 +340,6 @@ def test_l_execution_n_ecrit_JAMAIS_au_fideicommis(monkeypatch, base):
                                           "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
-    monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: True)
 
     class _Piege:
         def collection(self, name):
@@ -362,7 +368,6 @@ def test_l_ecriture_porte_le_virement_et_la_facture(monkeypatch, base):
                             "invoice_id": d["invoice_id"], "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
-    monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: True)
 
     rep.appliquer("cpt1", [{
         "virement": _virement(invoice_external_ref="WP1820000001-01"),
@@ -388,8 +393,11 @@ def test_une_recette_autre_ne_porte_aucune_facture(monkeypatch, base):
                             "id": "adm1", "status": "compensée",
                             "invoice_id": None, "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
-    monkeypatch.setattr("services.encaissements.projeter_paiement",
-                        lambda e: pytest.fail("aucune projection attendue"))
+    # Lot 5a : plus aucune projection n'existe — le seul écrivain de
+    # paiement que le script atteint encore est la remise à zéro du
+    # dépaiement, et une autre recette n'a pas de facture à dépayer.
+    monkeypatch.setattr(rep, "record_payment",
+                        lambda *a, **k: pytest.fail("aucun paiement attendu"))
 
     rep.appliquer("cpt1", [{"virement": _virement(), "facture": None,
                             "mode": "recette_autre", "montant": 50000,

@@ -245,7 +245,8 @@ def available_transitions(
     produit. C'est pourtant cette différence qui décide du chemin de
     correction — le premier se rouvre ici, le second se corrige par
     contre-passation, qui réduit le paiement ET rouvre la facture d'elle-même
-    (``services/encaissements.reduire_paiement``).
+    (``models/admin_ledger.reverse_transaction``, dans la transaction de la
+    contre-passation depuis le lot 5a).
 
     Sans ce filtre, la réouverture serait un trou : « Rouvrir » puis
     « Annuler » libérerait les heures et dépenses d'une facture réellement
@@ -1914,10 +1915,13 @@ def record_payment(
     a payment is RECORDED — a ledger-backed ``payée`` corrects by
     contre-passation, never by hand. So for the ONE status this function can
     set, the undo below remains the only way back, and an erroneous amount
-    would still strand the invoice without it. Its caller is
-    ``routes/admin_ledger._reduire_paiement`` (a reversed encaissement), not
-    a form on the invoice: that form was the second, ledger-blind writer of
-    ``amount_paid`` and was removed. The undo is deliberately NARROW: it only
+    would still strand the invoice without it. The ledger no longer calls
+    this function: since lot 5a ``models/admin_ledger`` stages
+    :func:`payment_updates` — the same computation, undo included — in the
+    encaissement's (or the reversal's) own transaction. Its remaining
+    callers are the two hand-run maintenance scripts that clear a payment
+    (``record_payment(id, 0)``). The invoice's own payment form, the second,
+    ledger-blind writer of ``amount_paid``, was removed on 2026-08-17. The undo is deliberately NARROW: it only
     reverses a flip this function could have made (status ``payée`` with a
     recorded payment that no longer covers the invoice). A ``payée`` set by
     hand, with no payment recorded, is never touched — that status is the

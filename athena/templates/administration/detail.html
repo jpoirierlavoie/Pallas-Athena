@@ -10,15 +10,16 @@
     {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
   </div>
 
-  {% if avertissement == 'facture' %}
-  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-    {# Le texte disait « corrigez l'encaissement sur la fiche de la facture » —
-       ce formulaire n'existe plus depuis le 2026-08-17, et c'était le SEUL
-       chemin de réparation annoncé. La comptabilité étant désormais l'unique
-       écrivain d'un paiement, la réparation passe forcément par elle. #}
-    L'écriture est inscrite, mais le montant encaissé de la facture n'a pas pu
-    être mis à jour. Contre-passez cette écriture ci-dessous, puis ressaisissez-la :
-    la facture sera alors imputée correctement.
+  {# Le bandeau « facture » (écriture inscrite, paiement non porté) a
+     disparu au lot 5a : le paiement s'écrit dans la MÊME transaction que
+     l'encaissement, ou l'encaissement est refusé avec lui — cet état
+     n'existe plus. #}
+  {% if avertissement == 'verrouillee' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Cette écriture a été modifiée entre-temps et elle est désormais
+    verrouillée (compensée, conciliée ou contre-passée) : vos changements
+    n'ont pas été enregistrés. Une correction passe maintenant par une
+    contre-passation.
   </div>
   {% elif avertissement == 'compensation' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
