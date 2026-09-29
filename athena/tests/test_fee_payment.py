@@ -29,6 +29,14 @@ Les sept tests de ``tests/test_trust.py`` qui écrivaient un paiement
 d'honoraires par ``trust.create_transaction`` (qui refuse désormais l'objet)
 sont ici, assertions inchangées (section 2).
 
+Les décisions de l'avocat du 2026-09-29 (section 7) : D20 — le refus d'une
+facture non envoyée nomme le juriste comme celui qui atteste l'envoi, sans
+jamais dire comment passer outre ; D21 — les fonds d'un client n'acquittent
+jamais la facture d'un AUTRE client du dossier, refus dans la transaction,
+sans dérogation (c'était un avertissement après le commit) ; D23 — le
+bénéficiaire est l'avocat ou son cabinet, tels que les nomme le profil du
+cabinet (art. 58).
+
 Le banc est le faux Firestore partagé (``tests/_fake_firestore.py``) : le
 client, ses transactions et la boucle de reprise de ``transactional`` sont
 les vrais ; on relit ce qui est STOCKÉ.
@@ -55,9 +63,10 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import fee_payment
     from models import invoice as invoice_model
     from models import provenance
+    from models import settings as settings_model
     from models import trust
 
-from tests._accounting_history import legacy_fee_entry  # noqa: E402
+from tests._accounting_history import FEE_PAYEE, legacy_fee_entry  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 
 UTC = timezone.utc
@@ -140,7 +149,7 @@ def _entry(**over) -> dict:
     d = {
         "account_id": "acc1", "direction": "déboursé", "amount": 60000,
         "purpose": "virement_honoraires", "method": "chèque",
-        "counterparty": "Me Jason Poirier Lavoie", "dossier_id": "dos1",
+        "counterparty": FEE_PAYEE, "dossier_id": "dos1",
         "client_id": "c1", "date": _d(2026, 9, 10), "invoice_id": "inv1",
         "description": "", "reference": "1042",
     }
@@ -266,12 +275,18 @@ def test_virement_honoraires_caps_on_the_live_balance_since_lot_p(fake):
 
 
 def test_virement_honoraires_on_draft_invoice_refused(fake):
-    """(Déplacé de test_trust.py.) Art. 56 2° — « facturation envoyée »."""
+    """(Déplacé de test_trust.py.) Art. 56 2° — « facturation envoyée ».
+    Réécrit sur la décision D20 (2026-09-29) : l'assertion lisait « émise »
+    dans le refus ; le refus nomme désormais le JURISTE comme celui qui
+    atteste l'envoi, et la règle — jamais un moyen de passer outre."""
     doc = fake.peek("invoices/inv1")
     doc.update(status="brouillon")
     fake.external_write("invoices/inv1", doc)
+    before = _snapshot(fake)
     _, errs = _pay()
-    assert errs and "émise" in errs[0].lower()
+    assert errs == [trust._ABORT_MESSAGES["facture_non_émise"]]
+    assert "envoyée par le juriste" in errs[0] and "art. 56 2°" in errs[0]
+    assert _snapshot(fake) == before
 
 
 def test_virement_with_external_ref_allowed_on_the_web_path(fake):
@@ -964,3 +979,176 @@ def test_un_encaissement_d_administration_et_un_paiement_d_honoraires_se_seriali
     assert _fees(fake) == []
     assert fake.peek("invoices/inv1")["amount_paid"] == 60000
     assert len(fake.peek_collection("admin_transactions")) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Les décisions du 2026-09-29 — D20, D21, D23
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _seed_profile(fake, nom: str = "Me Jason Poirier Lavoie",
+                  organisation: str = "Poirier Lavoie, avocat") -> None:
+    """The firm profile as « Paramètres » stores it (``settings/cabinet``):
+    once the document exists it is the WHOLE truth, the seed ignored."""
+    fake.seed("settings/cabinet", {"nom": nom, "organisation": organisation})
+
+
+def test_d20_le_refus_d_une_facture_non_envoyee_ne_dit_pas_comment_passer_outre(fake):
+    """D20 : le contrôle fait toujours confiance au statut « envoyée » — seul
+    le texte change. Il nomme le juriste comme celui qui atteste l'envoi et
+    ne prescrit AUCUN geste qui franchirait le contrôle (« promouvez-la
+    d'abord », update_invoice, « marquez-la envoyée »). Même texte pour un
+    brouillon, une facture payée ou annulée : aucune n'ouvre de retrait."""
+    text = trust._ABORT_MESSAGES["facture_non_émise"]
+    assert "envoyée par le juriste" in text and "art. 56 2°" in text
+    for forbidden in ("promouv", "update_invoice", "marquez", "passez-la"):
+        assert forbidden not in text.lower(), forbidden
+    for status in ("brouillon", "payée", "annulée"):
+        doc = fake.peek("invoices/inv1")
+        doc.update(status=status)
+        fake.external_write("invoices/inv1", doc)
+        report: dict = {}
+        _, errs = fee_payment.create_fee_payment(
+            _entry(), admin_account_id="ops1", _report_out=report)
+        assert errs == [text], status
+        assert report == {"reason": "facture_non_émise", "side": "fidéicommis"}
+
+
+def _fund_c2(amount: int = 200000) -> None:
+    receipt, errs = trust.create_transaction(_entry(
+        direction="recette", purpose="dépôt_client", amount=amount,
+        counterparty="Marie Roy", client_id="c2", invoice_id=None,
+        date=_d(2026, 9, 3)))
+    assert errs == [], errs
+    _, errs = trust.clear_transaction(receipt["id"], _d(2026, 9, 3))
+    assert errs == [], errs
+
+
+def test_d21_les_fonds_d_un_client_n_acquittent_pas_la_facture_d_un_autre(fake):
+    """Régression — D21 : la facture inv1 est adressée à c1 ; tirer les fonds
+    COMPENSÉS de c2 (un autre client du même dossier) passait toutes les
+    gardes et n'était signalé qu'APRÈS le commit, par un avertissement, les
+    honoraires déjà sortis. Refusé désormais dans la transaction, sans
+    dérogation : rien d'écrit, nulle part. (Sur l'ancien code : l'écriture
+    passait, le paiement portait sur inv1.)"""
+    _fund_c2()
+    before = _snapshot(fake)
+    report: dict = {}
+    result, errs = fee_payment.create_fee_payment(
+        _entry(client_id="c2"), admin_account_id="ops1", _report_out=report)
+    assert result is None
+    assert errs == [trust._ABORT_MESSAGES["facture_autre_client"]]
+    assert report == {"reason": "facture_autre_client", "side": "fidéicommis"}
+    # Neither a name nor an amount in the refusal.
+    for word in ("Jean", "Tremblay", "Marie", "Roy", "600", "$"):
+        assert word not in errs[0], word
+    assert _snapshot(fake) == before
+
+
+def test_d21_suit_le_client_de_la_facture_telle_qu_elle_est_stockee(fake):
+    """La règle se juge sur la facture que la transaction du paiement LIT :
+    adressée à c2, elle s'acquitte des fonds de c2 — et plus de ceux de c1,
+    qui la payait l'instant d'avant."""
+    _fund_c2()
+    doc = fake.peek("invoices/inv1")
+    doc.update(client_id="c2")
+    fake.external_write("invoices/inv1", doc)
+    result, errs = fee_payment.create_fee_payment(
+        _entry(client_id="c2"), admin_account_id="ops1")
+    assert errs == [], errs
+    assert result["trust_entry"]["client_id"] == "c2"
+    _, errs = fee_payment.create_fee_payment(
+        _entry(client_id="c1", amount=10000), admin_account_id="ops1")
+    assert errs == [trust._ABORT_MESSAGES["facture_autre_client"]]
+
+
+def test_d21_une_facture_sans_client_ne_nomme_aucun_autre_client(fake):
+    """Une facture qui ne nomme aucun client (une reprise qui n'en portait
+    pas) n'est pas refusée sur ce motif : elle n'est adressée à aucun AUTRE
+    client."""
+    doc = fake.peek("invoices/inv1")
+    doc.update(client_id="")
+    fake.external_write("invoices/inv1", doc)
+    _, errs = _pay()
+    assert errs == [], errs
+
+
+def test_d23_le_beneficiaire_est_l_avocat_ou_son_cabinet(fake):
+    """Régression — D23 (art. 58, « chèque tiré à l'ordre de l'avocat ») :
+    le bénéficiaire d'un paiement d'honoraires était un texte libre ; « Jean
+    Tremblay » passait. Désormais l'avocat ou son cabinet, tels que les nomme
+    le profil du cabinet — et inscrit comme le profil l'écrit, jamais comme
+    il a été tapé."""
+    _seed_profile(fake)
+    assert fee_payment.fee_payees() == ["Poirier Lavoie, avocat",
+                                        "Me Jason Poirier Lavoie"]
+    result, errs = _pay(amount=10000, counterparty="  me JASON   poirier lavoie ")
+    assert errs == [], errs
+    stored = fake.peek(f"trust_transactions/{result['trust_entry']['id']}")
+    assert stored["counterparty"] == "Me Jason Poirier Lavoie"
+    result, errs = _pay(amount=10000, counterparty="Poirier Lavoie, avocat")
+    assert errs == [], errs
+
+    before = _snapshot(fake)
+    report: dict = {}
+    _, errs = fee_payment.create_fee_payment(
+        _entry(amount=10000, counterparty="Jean Tremblay"),
+        admin_account_id="ops1", _report_out=report)
+    assert errs == [fee_payment._message(
+        "bénéficiaire_honoraires_invalide",
+        "« Poirier Lavoie, avocat » ou « Me Jason Poirier Lavoie »")]
+    assert "art. 58" in errs[0]
+    assert report == {"reason": "bénéficiaire_honoraires_invalide", "side": "paiement"}
+    assert _snapshot(fake) == before
+
+
+def test_d23_un_accent_distingue_deux_noms(fake):
+    """Le pliage ne porte que sur la casse, la composition Unicode (NFC) et
+    les espaces — jamais sur un accent : « Cote » n'est pas « Côté »."""
+    import unicodedata
+
+    _seed_profile(fake, nom="Me Hélène Côté", organisation="Côté avocats")
+    decomposed = unicodedata.normalize("NFD", "Me Hélène Côté")
+    assert decomposed != "Me Hélène Côté"
+    assert fee_payment.match_fee_payee(decomposed) == "Me Hélène Côté"
+    assert fee_payment.match_fee_payee("CÔTÉ AVOCATS") == "Côté avocats"
+    assert fee_payment.match_fee_payee("Me Helene Cote") is None
+    _, errs = _pay(amount=10000, counterparty="Cote avocats")
+    assert errs and "art. 58" in errs[0]
+
+
+def test_d23_un_profil_sans_nom_refuse_tout_paiement(fake):
+    _seed_profile(fake, nom="", organisation="")
+    before = _snapshot(fake)
+    report: dict = {}
+    _, errs = fee_payment.create_fee_payment(
+        _entry(), admin_account_id="ops1", _report_out=report)
+    assert errs == [fee_payment._MESSAGES["bénéficiaires_honoraires_inconnus"]]
+    assert report == {"reason": "bénéficiaires_honoraires_inconnus", "side": "paiement"}
+    assert _snapshot(fake) == before
+
+
+def test_d23_un_nom_donne_deux_fois_ne_compte_qu_une_fois(fake):
+    _seed_profile(fake, nom="Me Jason Poirier Lavoie",
+                  organisation="  me jason poirier lavoie")
+    assert fee_payment.fee_payees() == ["me jason poirier lavoie"]
+
+
+def test_d23_sans_cabinet_nomme_l_avocat_reste_le_seul_beneficiaire(fake):
+    """Le cabinet d'abord — mais un profil qui ne nomme que l'avocat
+    l'offre seul, et c'est lui qu'on inscrit."""
+    _seed_profile(fake, organisation="")
+    assert fee_payment.fee_payees() == ["Me Jason Poirier Lavoie"]
+    _, errs = _pay(amount=10000, counterparty=FEE_PAYEE)
+    assert errs and "art. 58" in errs[0]
+    result, errs = _pay(amount=10000, counterparty="Me Jason Poirier Lavoie")
+    assert errs == [], errs
+
+
+def test_le_beneficiaire_des_tests_est_la_semence_du_profil(fake):
+    """``FEE_PAYEE`` (tests/_accounting_history.py) est le nom que la suite
+    donne à un paiement d'honoraires : l'organisation de la semence, seul
+    nom accepté quand aucun profil n'est enregistré et qu'aucun FIRM_NAME
+    n'est posé."""
+    assert FEE_PAYEE == settings_model.ORGANISATION_SEED
+    assert FEE_PAYEE in fee_payment.fee_payees()

@@ -20,6 +20,12 @@
      JSON data block — never executed, so it needs no CSP nonce (same pattern as
      the taxonomy cascade in dossiers/form.html). #}
   <script type="application/json" id="trust-clients-data">{{ (dossier.clients if dossier else []) | tojson }}</script>
+  {# D24 (2026-09-29) — the sens each unambiguous objet implies: the MODEL's
+     map (trust.PURPOSE_DIRECTIONS, refused otherwise as
+     « objet_sens_incohérent »), plus the fee payment, always a déboursé.
+     Choosing the objet sets the sens; the hint below says it if the sens is
+     changed back. Same non-executable data-block pattern. #}
+  <script type="application/json" id="trust-purpose-directions">{{ purpose_directions | tojson }}</script>
 
   <form method="post" action="{{ url_for('trust.entry_create') }}"
         x-data="{
@@ -34,13 +40,15 @@
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
           clientId: {{ ((entry.client_id if entry else '') or '') | jsattr }},
           clients: JSON.parse(document.getElementById('trust-clients-data').textContent || '[]'),
-          purpose: {{ (entry.purpose if entry and entry.purpose else valid_purposes[0]) | jsattr }},
+          implied: JSON.parse(document.getElementById('trust-purpose-directions').textContent || '{}'),
+          purpose: {{ (entry.purpose if entry and entry.purpose else entry_purposes[0]) | jsattr }},
           {# Sens + mode drive the art. 57/72 cash block below. |jsattr: a
              re-render echoes what the form POSTED, never raw into JS. #}
           direction: {{ (entry.direction if entry and entry.direction else valid_directions[0]) | jsattr }},
           method: {{ (entry.method if entry and entry.method else valid_methods[0]) | jsattr }},
           dossierOpen: false, cpOpen: false
         }"
+        x-init="$watch('purpose', function (p) { if (implied[p]) { direction = implied[p]; } })"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% if locked %}<input type="hidden" name="locked" value="1">{% endif %}
@@ -74,8 +82,11 @@
     <div class="grid grid-cols-2 gap-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Objet</label>
+        {# « Correction » and — since D24 — « Virement inter-dossiers » are
+           the model's: a reversal mints the first, the two-leg transfer
+           screen writes the second (routes/trust.ENTRY_FORM_PURPOSES). #}
         <select name="purpose" required x-model="purpose" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-          {% for p in valid_purposes if p != 'correction' %}
+          {% for p in entry_purposes %}
           <option value="{{ p }}">{{ purpose_labels[p] }}</option>
           {% endfor %}
         </select>
@@ -89,6 +100,10 @@
         </select>
       </div>
     </div>
+
+    <p x-show="implied[purpose] === 'recette' && direction !== 'recette'" x-cloak class="text-xs text-amber-600">Cet objet est une recette : choisissez le sens « Recette » — inscrit en déboursé, la ligne du registre dirait le contraire du mouvement.</p>
+    <p x-show="implied[purpose] === 'déboursé' && direction !== 'déboursé'" x-cloak class="text-xs text-amber-600">Cet objet est un déboursé : choisissez le sens « Déboursé » — inscrit en recette, la ligne du registre dirait le contraire du mouvement.</p>
+    <p class="text-xs text-gray-500">Un virement de fonds d'un dossier à un autre s'inscrit par l'écran <a href="{{ url_for('trust.transfer') }}" class="text-indigo-600 hover:underline">« Virement inter-dossiers »</a>, qui écrit ses deux volets ensemble.</p>
 
     {# Art. 57 / 72 (RLRQ c. B-1, r. 5) : aucun retrait en espèces, sauf le
        remboursement en espèces d'une somme de 7 500 $ ou plus REÇUE en
@@ -113,10 +128,14 @@
     {# Contrepartie (texte libre, jamais un FK).
        @click.outside lives on the WRAPPER, not on the results div: the click
        that focuses the input is outside the results div, so it would close the
-       dropdown in the same click it opened it. #}
-    <div class="relative" @click.outside="cpOpen = false">
+       dropdown in the same click it opened it.
+       D23 (2026-09-29, art. 58) : sur un paiement d'honoraires, ce champ
+       libre est DÉSACTIVÉ (ni soumis ni exigé) et le sélecteur ci-dessous le
+       remplace — un seul des deux champs « counterparty » est soumis. #}
+    <div class="relative" @click.outside="cpOpen = false" x-show="purpose !== 'virement_honoraires'">
       <label class="block text-sm font-medium text-gray-700 mb-1">Somme reçue de / Bénéficiaire du débours</label>
       <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
+             :disabled="purpose === 'virement_honoraires'"
              @focus="cpOpen = true" @input="cpOpen = true"
              hx-get="{{ url_for('trust.counterparty_suggest') }}" hx-trigger="focus, input changed delay:300ms"
              hx-target="#cp-results" hx-include="[name='dossier_id']"
@@ -124,6 +143,24 @@
       <div id="cp-results" x-show="cpOpen" x-cloak
            @click="let li = $event.target.closest('li'); if (li) { $root.querySelector('[name=counterparty]').value = li.dataset.counterparty; cpOpen = false; }"
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+    </div>
+
+    {# D23 (art. 58) — the payee of a fee payment is the lawyer or his firm,
+       as the firm profile names them (models/fee_payment.fee_payees): a
+       choice between those names, never free text. The model refuses any
+       other value; this select only reflects the rule. #}
+    <div x-show="purpose === 'virement_honoraires'" x-cloak>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Bénéficiaire du paiement d'honoraires</label>
+      {% if fee_payees %}
+      <select name="counterparty" :disabled="purpose !== 'virement_honoraires'" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        {% for name in fee_payees %}
+        <option value="{{ name }}" {% if entry and entry.counterparty == name %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-500 mt-1">Un paiement d'honoraires ne se fait qu'à l'ordre de l'avocat ou de son cabinet (art. 58), tels que les nomme le profil du cabinet (Paramètres).</p>
+      {% else %}
+      <p class="text-xs text-amber-600">Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le cabinet : un paiement d'honoraires, qui ne se fait qu'à l'ordre de l'un ou de l'autre (art. 58), ne peut pas s'inscrire avant qu'il soit complété.</p>
+      {% endif %}
     </div>
 
     {# Dossier — @click.outside on the WRAPPER (see the contrepartie note). #}
@@ -196,6 +233,7 @@
         </div>
       </div>
       <p class="text-xs text-gray-500">Une facture antérieure (hors Pallas Athéna) n'est pas vérifiée automatiquement — seul son numéro est consigné.</p>
+      <p class="text-xs text-gray-500">La facture de Pallas Athéna doit être adressée au client choisi plus haut : les fonds en fidéicommis d'un client n'acquittent jamais la facture d'un autre client du dossier.</p>
       <p class="text-xs text-gray-500">Mode : chèque à l'ordre de l'avocat ou virement à un compte qui n'est pas en fidéicommis (art. 58).</p>
 
       {# Recette au compte d'administration (décision 2026-08-13), devenue

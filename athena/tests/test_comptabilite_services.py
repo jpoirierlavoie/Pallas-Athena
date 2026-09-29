@@ -39,6 +39,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import trust
     from services import comptabilite as svc
 
+from tests._accounting_history import FEE_PAYEE  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 
 UTC = timezone.utc
@@ -121,7 +122,9 @@ def _fee(**over) -> dict:
     d = {
         "account_id": "acc1", "direction": "déboursé", "amount": 60000,
         "purpose": "virement_honoraires", "method": "chèque",
-        "counterparty": "Me Avocat", "dossier_id": "dos1", "client_id": "c1",
+        # D23 (2026-09-29, art. 58): the firm — the composite refuses any
+        # other payee.
+        "counterparty": FEE_PAYEE, "dossier_id": "dos1", "client_id": "c1",
         "date": _d(2026, 9, 10), "invoice_number": "2026-F040",
         "description": "", "reference": "",
     }
@@ -210,18 +213,28 @@ def test_le_rapport_du_paiement_dit_ce_qui_a_ete_ecrit(fake):
     assert report["client_balance"] == {"book": 140000, "cleared": 140000}
 
 
-def test_une_facture_d_un_autre_client_du_dossier_est_signalee_jamais_refusee(fake):
-    """Deux clients au dossier : les fonds de c2 acquittent une facture de
-    c1. Le client a pu l'autoriser — l'avocat vérifie ; le service le dit."""
+def test_une_facture_d_un_autre_client_du_dossier_est_refusee(fake):
+    """Deux clients au dossier : les fonds de c2 pour une facture de c1.
+    Réécrit sur la décision D21 (2026-09-29) : ce test épinglait un
+    AVERTISSEMENT après le commit (« signalée, jamais refusée » — les
+    honoraires déjà sortis) ; c'est désormais un REFUS du modèle, dans la
+    transaction du paiement, sans dérogation — rien n'est écrit, nulle part."""
     svc.compenser_fideicommis(
         [svc.enregistrer_ecriture_fideicommis(_deposit(client_id="c2", amount=100000,
                                                        date=_d(2026, 9, 3)))["entry"]["id"]],
         _d(2026, 9, 3))
+    before = (fake.peek_collection("trust_transactions"),
+              fake.peek_collection("admin_transactions"), fake.peek("invoices/inv1"))
     report = svc.enregistrer_paiement_honoraires(
         _fee(client_id="c2"), admin_account_id="ops1")
-    assert report["ok"], report
-    assert len(report["warnings"]) == 1
-    assert "autre client du dossier" in report["warnings"][0]
+    assert not report["ok"]
+    assert report["reason"] == "facture_autre_client"
+    assert report["side"] == "fidéicommis"
+    assert report["errors"] == [trust._ABORT_MESSAGES["facture_autre_client"]]
+    assert "autre client du dossier" in report["errors"][0]
+    assert (fake.peek_collection("trust_transactions"),
+            fake.peek_collection("admin_transactions"),
+            fake.peek("invoices/inv1")) == before
 
 
 def test_un_refus_du_paiement_rapporte_le_cote_et_n_ecrit_rien(fake):
@@ -489,11 +502,13 @@ def test_un_paiement_sans_recette_liee_le_dit_et_dit_quoi_faire(fake):
     assert "contre-passez-la au registre d'administration" in report["warnings"][0]
 
 
-def test_la_facture_d_un_autre_client_nomme_les_deux_clients(fake):
-    """La revue demandait de refuser le cas, ou d'avertir EN NOMMANT les
-    deux clients : l'avertissement du rapport les nomme (l'avocat, ou
-    Claude au lot 5b, le lit) ; le code l'accompagne pour que la page web le
-    dise sans qu'un nom voyage dans une URL."""
+def test_le_refus_d_une_facture_d_un_autre_client_ne_nomme_personne(fake):
+    """La revue du lot 5a demandait de refuser le cas, ou d'avertir EN
+    NOMMANT les deux clients ; le lot avait choisi l'avertissement. La
+    décision D21 (2026-09-29) tranche pour le refus — et le refus ne nomme
+    NI l'un ni l'autre client, ni un montant (réécrit délibérément : ce test
+    épinglait l'avertissement nominatif). L'ancien code d'avertissement a
+    quitté le vocabulaire des bandeaux de la fiche : plus rien à y dire."""
     doc = fake.peek("invoices/inv1")
     doc.update(client_name="Jean Tremblay")
     fake.external_write("invoices/inv1", doc)
@@ -502,13 +517,12 @@ def test_la_facture_d_un_autre_client_nomme_les_deux_clients(fake):
     svc.compenser_fideicommis([deposit["entry"]["id"]], _d(2026, 9, 3))
     report = svc.enregistrer_paiement_honoraires(_fee(client_id="c2"),
                                                  admin_account_id="ops1")
-    assert report["ok"], report
-    assert report["warning_codes"] == ["facture_autre_client"]
-    # The page the web lands on can say it (an unknown code shows nothing).
-    assert set(report["warning_codes"]) <= set(svc.WARNING_MESSAGES)
-    (warning,) = report["warnings"]
-    assert "Jean Tremblay" in warning and "C2" in warning
-    # Same client: no warning, no code.
+    assert not report["ok"] and report["reason"] == "facture_autre_client"
+    (error,) = report["errors"]
+    for word in ("Jean", "Tremblay", "C2", "c2", "600", "$"):
+        assert word not in error, word
+    assert "facture_autre_client" not in svc.WARNING_MESSAGES
+    # Same client: paid, no warning, no code.
     same = svc.enregistrer_paiement_honoraires(_fee(amount=10000), admin_account_id="ops1")
     assert same["ok"] and same["warning_codes"] == [] and same["warnings"] == []
 

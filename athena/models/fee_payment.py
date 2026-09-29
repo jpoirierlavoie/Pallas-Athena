@@ -49,13 +49,22 @@ composite:
 * the external-invoice path (``invoice_external_ref``, a paper invoice that
   predates Athéna) is OFF unless the caller turns it on
   (``allow_external_ref=True``): the web form does (the lawyer's 2026-07-17
-  decision), the connector never will (D1: an Athéna invoice only).
+  decision), the connector never will (D1: an Athéna invoice only);
+* the PAYEE (D23, 2026-09-29, art. 58 — « chèque tiré à l'ordre de
+  l'avocat »): the trust entry's « Bénéficiaire » is the lawyer or his firm
+  and nobody else — the two names the firm profile holds
+  (``settings/cabinet`` through ``utils/cabinet.cabinet_dict``: ``nom`` and
+  ``organisation``, :func:`fee_payees`). Any other value is refused
+  (``bénéficiaire_honoraires_invalide``), and the one accepted is stored as
+  the profile spells it (:func:`match_fee_payee` folds case, Unicode
+  composition and spacing only).
 
 The trust side's rules stay the trust model's: art. 58 (cheque or transfer
 only), art. 59 (cleared funds), the backdating guard, the lock floor, an
-issued invoice of the same dossier, no provision imputed on it, the live
-balance. The trust purpose ``virement_honoraires`` is RESERVED to this
-module on the public create and reverse paths.
+issued invoice of the same dossier — addressed to the client whose funds
+are withdrawn (D21: ``facture_autre_client``, no override) —, no provision
+imputed on it, the live balance. The trust purpose ``virement_honoraires``
+is RESERVED to this module on the public create and reverse paths.
 
 Provenance is the writer's context (``models/provenance``), never an
 argument: ``mcp`` under the connector's ``writing_via``, the request's
@@ -64,6 +73,7 @@ blueprint otherwise.
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -73,6 +83,7 @@ from models import admin_ledger as al
 from models import db, provenance
 from models import trust
 from security import sanitize
+from utils import cabinet as cabinet_util
 from utils.deadlines import today_mtl
 from utils.logging_setup import log_trust_event, log_unexpected
 from utils.tracing_setup import span
@@ -187,6 +198,21 @@ _MESSAGES = {
         + _NOTHING_REVERSED
     ),
     "motif_requis": "Un motif de contre-passation est requis.",
+    # D23 (art. 58) — ``{detail}`` is the accepted names, as the firm
+    # profile holds them (never a client's).
+    "bénéficiaire_honoraires_invalide": (
+        "Un paiement d'honoraires ne se fait qu'à l'ordre de l'avocat ou de "
+        "son cabinet (art. 58, RLRQ c. B-1, r. 5) : le bénéficiaire est "
+        "{detail}, tel que le nomme le profil du cabinet (Paramètres). "
+        + _NOTHING_WRITTEN
+    ),
+    "bénéficiaires_honoraires_inconnus": (
+        "Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le "
+        "cabinet : un paiement d'honoraires, qui ne se fait qu'à l'ordre de "
+        "l'un ou de l'autre (art. 58, RLRQ c. B-1, r. 5), ne peut désigner "
+        "son bénéficiaire. Complétez le profil, puis réessayez. "
+        + _NOTHING_WRITTEN
+    ),
 }
 
 # An administration-side refusal inside the composite, reworded so the
@@ -205,6 +231,53 @@ def _message(reason: str, detail: Optional[str] = None) -> str:
 
 def _midnight(value) -> Optional[datetime]:
     return trust._midnight_utc(value)
+
+
+# ── The payee (D23, art. 58) ─────────────────────────────────────────────
+
+
+def _payee_key(value) -> str:
+    """The comparison form of a payee name: Unicode composition (NFC), case
+    and runs of whitespace folded — never an accent dropped (« Lavoie » and
+    « Lavoié » are two names)."""
+    text = unicodedata.normalize("NFC", str(value or ""))
+    return " ".join(text.split()).casefold()
+
+
+def fee_payees() -> list[str]:
+    """The payees art. 58 allows for a fee payment: the FIRM, then the
+    LAWYER — ``organisation`` and ``nom`` of the firm profile
+    (``utils/cabinet.cabinet_dict``, which fails open to the deploy-time
+    seed), a blank one dropped, a name given twice kept once. The firm comes
+    first: it is the default payee (a transfer to the firm's own non-trust
+    account), and the order every surface shows."""
+    cab = cabinet_util.cabinet_dict()
+    names: list[str] = []
+    seen: set[str] = set()
+    for key in ("organisation", "nom"):
+        name = " ".join(str(cab.get(key) or "").split())
+        folded = _payee_key(name)
+        if folded and folded not in seen:
+            seen.add(folded)
+            names.append(name)
+    return names
+
+
+def match_fee_payee(value, payees: Optional[list[str]] = None) -> Optional[str]:
+    """The accepted payee *value* names, spelt as the firm profile spells
+    it — or ``None`` when it names neither the lawyer nor the firm."""
+    wanted = _payee_key(value)
+    if not wanted:
+        return None
+    for name in (fee_payees() if payees is None else payees):
+        if _payee_key(name) == wanted:
+            return name
+    return None
+
+
+def payees_label(payees: list[str]) -> str:
+    """« A » ou « B » — the accepted names, for a refusal."""
+    return " ou ".join(f"« {name} »" for name in payees)
 
 
 def _uncertain(report: Optional[dict], message: str, log_message: str,
@@ -289,6 +362,25 @@ def create_fee_payment(
                      side="fidéicommis", operation="create",
                      account_id=t_clean.get("account_id"),
                      dossier_id=t_clean.get("dossier_id"))
+
+    # D23 (art. 58) — the payee is the lawyer or his firm, as the firm
+    # profile names them, and it is stored as the profile spells it.
+    # Outside the transaction: the profile is no money figure, and read
+    # here it is read once rather than on every retry of the commit.
+    payees = fee_payees()
+    if not payees:
+        return _fail(_report_out, "bénéficiaires_honoraires_inconnus",
+                     _message("bénéficiaires_honoraires_inconnus"),
+                     side="paiement", operation="create",
+                     account_id=t_ctx["account_id"], dossier_id=t_ctx["dossier_id"])
+    payee = match_fee_payee(t_ctx["counterparty"], payees)
+    if payee is None:
+        return _fail(_report_out, "bénéficiaire_honoraires_invalide",
+                     _message("bénéficiaire_honoraires_invalide",
+                              payees_label(payees)),
+                     side="paiement", operation="create",
+                     account_id=t_ctx["account_id"], dossier_id=t_ctx["dossier_id"])
+    t_ctx["counterparty"] = payee
 
     trust_date = _midnight(t_ctx["tx_date"])
     if admin_date is None or admin_date == "":

@@ -1597,9 +1597,13 @@ Notes:
   dates never go backwards in sequence order (7), lists the entries the lot 0b
   rules would refuse today, every single-leg « virement inter-dossiers »
   and every entry whose objet contradicts its sens — « Dépôt du client »
-  paid out, « Remise au client » paid in: the connector refuses that pair
-  since lot 5b while the web form still accepts it, and these notes are what
-  the lawyer needs to decide whether the web should refuse it too
+  paid out, « Remise au client » paid in: the connector refused that pair
+  from lot 5b, and since the lawyer's decision D24 (2026-09-29) the model
+  refuses it — and the single leg — for every caller, the web form
+  included, so these notes describe history —, plus, since the same day, a
+  fee payment drawn for ANOTHER client's invoice (D21, ids only) and one
+  made to a payee other than the lawyer or his firm as « Paramètres »
+  names them (D23, without the name)
   (8), reads every dossier's stored per-client
   balances, so a balance no entry backs and a client in shortfall both show
   (9), and checks that every fee payment (« paiement d'honoraires ») is backed
@@ -2977,9 +2981,11 @@ Notes:
      claude.ai, re-add it, and read the accounting block before ticking
      « Autoriser la comptabilité » (with « Autoriser les écritures »). It
      says what it grants (reading the administration ledger; trust entries
-     — a disbursement drawing only on CLEARED funds, a fee payment by
-     cheque to the lawyer or transfer only, on an Athéna invoice already
-     SENT that imputes no provision, writing the withdrawal, the recette and
+     — their objet agreeing with their sens, a disbursement drawing only on
+     CLEARED funds, a fee payment by cheque or transfer only, to the lawyer
+     or his firm as « Paramètres » names them, on an Athéna invoice the
+     lawyer SENT, addressed to the client whose funds leave, that imputes no
+     provision, writing the withdrawal, the recette and
      the invoice's payment in one operation; administration entries, an
      encaissement that pays its invoice; corrections of an EDITABLE
      administration entry; clearing at the statement date; reversal — the
@@ -2988,14 +2994,18 @@ Notes:
      reconciliation, create or modify an account or attach a receipt,
      transfer between dossiers or reverse a leg of such a transfer,
      withdraw cash, back a fee payment with a paper, unsent or
-     provision-imputing invoice, show a bank number. The write block's list
+     provision-imputing invoice or with another client's invoice, make a fee
+     payment to anyone but the lawyer or his firm, show a bank number (the
+     last two joined on the lawyer's decisions of 2026-09-29 — D21, D23).
+     The write block's list
      now says a payment exists only as a register entry, and « écrire au
      fidéicommis » only with that box. Re-consenting while the switch is
      still `"false"` silently yields a grant WITHOUT accounting — step 3
      comes first.
   5. **Verify `tools/list` per scope.** The new token (all three scopes):
      **86** tools (32 read, 54 write), and its `initialize` text carries an
-     « ACCOUNTING: » paragraph and the six accounting « never » sentences.
+     « ACCOUNTING: » paragraph and the seven accounting « never » sentences
+     (six until D23 added « fee_payee », 2026-09-29).
      The other token shapes are the deploy gate's literal pins
      (`tests/test_mcp_jsonrpc.py::test_tools_list_counts_per_token_are_the_train_s_checklist`):
      **31** read-only, **80** read + write (or any token while the switch is
@@ -3013,7 +3023,10 @@ Notes:
      administration account, type opérations, named « Essai — connecteur »
      (no transit, no digits). First the refusals, which write nothing: a
      trust disbursement « comptant » (art. 57), a fee payment on a
-     brouillon invoice, an entry dated tomorrow. Then, the lawyer watching,
+     brouillon invoice (its refusal names the lawyer as the one who attests
+     the sending, and says no way around it — D20), a fee payment naming
+     another payee than the lawyer or his firm (D23), an entry dated
+     tomorrow. Then, the lawyer watching,
      through the connector and each with its own `idempotency_key` — and
      telling Claude it is a pilot on the test account, since its
      instructions record only movements that happened at the bank:
@@ -3077,7 +3090,12 @@ Notes:
      at the statement date; a trust mistake is
      REVERSED, never re-entered on top, and an administration mistake is
      corrected with `update_admin_entry` while the entry stays editable;
-     never a paper, unsent or provision-imputing invoice for a fee payment.
+     never a paper, unsent or provision-imputing invoice for a fee payment
+     — nor another client's invoice (D21), nor a payee other than the
+     lawyer or his firm as « Paramètres » names them (D23, art. 58; omitted,
+     the firm); an invoice is marked « envoyée » only on the lawyer's word
+     (D20 — the fee payment trusts that status); and an objet always agrees
+     with its sens (D24 — the model refuses otherwise).
 - **Finitions — the adversarial review of lots 0a-5 (branch
   `mcp-ecriture-finitions`, on top of `mcp-ecriture-lot5`, in the SAME push
   as the stack it sits on).** No train of its own: no scope, no switch, no
@@ -3094,8 +3112,15 @@ Notes:
   same-key replay stored by the previous release still conforms); a write
   whose record could not be read answers `read_unavailable`, never
   « introuvable »; a create whose commit raised and whose read-back failed
-  too answers `write_outcome_uncertain`, the key kept. **Device-visible —
-  tell the lawyer, then check after the deploy:**
+  too answers `write_outcome_uncertain`, the key kept; and — the lawyer's
+  decisions of 2026-09-29 — `record_trust_entry` refuses a fee payment's
+  `counterparty` other than the lawyer or his firm (D23; omitted, the firm)
+  and another client's invoice (D21), its refusal of an unsent invoice
+  names the lawyer as the one who attests the sending (D20), and the
+  accounting INSTRUCTIONS carry a seventh « never » (`fee_payee`) — all
+  under the accounting grant, which no token holds before §15 « Lot 5 »
+  step 4. **Device-visible — tell the lawyer, then check after the
+  deploy:**
   1. A DAV read that FAILS answers **503 + `Retry-After`** — a collection
      listing, a sync report, a contact, an event, a task, a note, a
      DELETE —, where it answered an empty 207, a 404, a 412, a 422 or a
@@ -3119,6 +3144,20 @@ Notes:
      the same way; a deletion deletes nothing and never tombstones
      « Général » (a task's or hearing's refused deletion still returns to
      the list without a banner, as before — the item is simply there).
+  5. The trust entry form (« Fidéicommis » → « Nouvelle écriture »),
+     the lawyer's decisions of 2026-09-29: the « Objet » list no longer
+     offers « Virement inter-dossiers » (the « Virement inter-dossiers »
+     screen stays the way); choosing « Dépôt du client » sets the sens to
+     « Recette » (and « Remise au client » to « Déboursé »); on « Paiement
+     d'honoraires » the « Bénéficiaire » becomes a choice between the two
+     names « Paramètres » holds — check them there FIRST: a profile naming
+     neither refuses every fee payment. No real entry is needed to check
+     it: an incoherent pair or another client's invoice is refused and
+     writes nothing. Then `python -m scripts.verify_trust_integrity`
+     (read-only): check 8's new NOTES (a single transfer leg, an incoherent
+     objet/sens, a fee payment for another client's invoice, a payee
+     outside the profile) describe what the register already holds — read
+     them with the lawyer; nothing is repaired.
   Watch, the first week: the finitions' `unexpected` messages
   (OBSERVABILITY.md, « Messages of the finitions ») — a burst is an outage,
   a steady line on one id a stored document to repair.

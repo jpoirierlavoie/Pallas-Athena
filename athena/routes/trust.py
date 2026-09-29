@@ -91,6 +91,33 @@ def _labels() -> dict:
     }
 
 
+#: The purposes the entry form offers — every purpose but the two the model
+#: reserves: « correction » (a reversal mints it) and, since decision D24
+#: (2026-09-29), « virement inter-dossiers », which only the two-leg transfer
+#: screen writes (``trust.create_inter_dossier_transfer``). The list filters
+#: keep every purpose (``valid_purposes``): the entries already written stay
+#: findable.
+ENTRY_FORM_PURPOSES = tuple(
+    p for p in VALID_PURPOSES
+    if p not in (trust.REVERSAL_PURPOSE, trust.TRANSFER_PURPOSE)
+)
+
+
+def _entry_form_extras() -> dict:
+    """What the entry form needs beyond the labels (D23, D24): the purposes
+    it offers, the direction each unambiguous purpose implies (the model's
+    map, plus the fee payment, always a déboursé) so the form sets the sens
+    when the objet is chosen, and the payees a fee payment may name — the
+    lawyer and his firm, as the firm profile names them (art. 58)."""
+    directions = dict(trust.PURPOSE_DIRECTIONS)
+    directions[trust.FEE_PAYMENT_PURPOSE] = "déboursé"
+    return {
+        "entry_purposes": ENTRY_FORM_PURPOSES,
+        "purpose_directions": directions,
+        "fee_payees": comptabilite.beneficiaires_honoraires(),
+    }
+
+
 def _today_default() -> datetime:
     """Default date of a clearing form left blank: today on Montréal's
     calendar, at midnight UTC (the register's date-only convention)."""
@@ -416,6 +443,7 @@ def entry_new():
         factures=_factures_emises(dossier["id"] if dossier else None),
         admin_accounts=admin_accounts, admin_lisible=admin_lisible,
         admin_account_id="",
+        **_entry_form_extras(),
         **_labels(),
     )
 
@@ -425,6 +453,8 @@ def entry_new():
 def entry_create():
     data = _entry_form_data()
     # correction is reserved for reversals — refuse it at the route (spec §7).
+    # (virement_inter_dossiers is reserved too since D24, and refused by the
+    # MODEL with its own message, naming the transfer screen.)
     if data.get("purpose") == "correction":
         data["purpose"] = ""
     errors = _resolve_cash_receipt(data)
@@ -468,6 +498,7 @@ def entry_create():
             factures=_factures_emises(dossier["id"] if dossier else None),
             admin_accounts=admin_accounts, admin_lisible=admin_lisible,
             admin_account_id=admin_account_id,
+            **_entry_form_extras(),
             **_labels(),
         ), 400
     return redirect(url_for("trust.entry_detail", tx_id=entry_id,

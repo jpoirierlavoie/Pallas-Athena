@@ -6446,8 +6446,9 @@ def _import_invoice_impl(args: dict) -> dict:
             "modifiables ; le numéro reste attaché à la facture annulée tant "
             "qu'elle n'est pas supprimée dans l'application — ensuite "
             "seulement, il peut être importé de nouveau.",
-            "La facture est au BROUILLON. Promouvez-la (update_invoice, "
-            "brouillon → envoyée, ou dans l'application), puis inscrivez le "
+            "La facture est au BROUILLON : seul le juriste atteste qu'elle a "
+            "été envoyée (update_invoice, brouillon → envoyée, sur sa parole, "
+            "ou dans l'application) ; ensuite seulement, inscrivez le "
             "paiement à sa date historique aux registres comptables — dans "
             "l'application, ou par les outils comptables sous leur "
             "autorisation distincte ; cet outil n'inscrit aucun paiement —, "
@@ -16855,14 +16856,34 @@ def _refuse_foreign_args(args: dict, allowed: set, what: str) -> None:
         )
 
 
-def _firm_payee() -> str:
-    """The payee art. 58 allows for a fee payment: the lawyer or his firm —
-    the firm's name as the profile holds it."""
-    try:
-        cab = cabinet_dict()
-    except Exception:
-        return ""
-    return str(cab.get("organisation") or cab.get("nom") or "").strip()
+def _fee_payee(given: str) -> tuple[str, Optional[str]]:
+    """The payee of a fee payment (D23, art. 58): the lawyer or his firm, as
+    the firm profile names them — the MODEL's list
+    (``models/fee_payment.fee_payees``, through the service), repeated here
+    so a refusal names the argument. Returns ``(payee, warning)``: omitted,
+    the list's first name (the firm, or the lawyer when the profile names no
+    firm), said in a warning; given, it must name one of them — stored as
+    the profile spells it, never as typed."""
+    payees = comptabilite_service.beneficiaires_honoraires()
+    if not payees:
+        raise ToolArgumentError(
+            "Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le "
+            "cabinet : un paiement d'honoraires, qui ne se fait qu'à l'ordre "
+            "de l'un ou de l'autre (art. 58), ne peut désigner son "
+            "bénéficiaire. Rien n'a été inscrit.", reason="accounting_refused")
+    if not given:
+        return payees[0], (f"Bénéficiaire inscrit par défaut : « {payees[0]} », "
+                           "tel que le nomme le profil du cabinet.")
+    payee = comptabilite_service.beneficiaire_honoraires(given, payees)
+    if payee is None:
+        raise ToolArgumentError(
+            "`counterparty` d'un paiement d'honoraires ne peut être que "
+            + " ou ".join(f"« {name} »" for name in payees)
+            + " — l'avocat ou son cabinet, tels que les nomme le profil du "
+            "cabinet (art. 58 : chèque à l'ordre de l'avocat, ou virement à "
+            "un compte qui n'est pas en fidéicommis). Omettez-le pour le "
+            "cabinet. Rien n'a été inscrit.", reason="accounting_refused")
+    return payee, None
 
 
 # ── get_admin_ledger (READ, athena:comptabilite) ────────────────────────
@@ -17004,12 +17025,12 @@ _TRUST_ISSUED = ("envoyée", "en_retard")
 # The purposes whose NAME decides the direction (the lot's design, guard 7 of
 # record_trust_entry). « Dépôt du client » paid OUT, or « Remise au client »
 # paid IN, would print a false line in the register art. 38 requires — the
-# money moving one way, its Objet column saying the other. The map is the
-# MODEL's vocabulary (models/trust.PURPOSE_DIRECTIONS, read through the
-# service), shared with the integrity script that lists the incoherent pairs
-# already in the register; the REFUSAL is a CONNECTOR rule — the web form
-# still lets the lawyer pair any objet with any sens, and extending it there
-# is his decision, on that measure.
+# money moving one way, its Objet column saying the other. The map and the
+# RULE are the MODEL's since decision D24 (models/trust.PURPOSE_DIRECTIONS,
+# refused as ``objet_sens_incohérent`` for every caller, the web form
+# included); the handler REPEATS the refusal before the model so it names
+# `purpose` and `direction`, and the integrity script lists the incoherent
+# pairs already in the register as notes.
 _TRUST_PURPOSE_DIRECTION = comptabilite_service.TRUST_PURPOSE_DIRECTIONS
 _TRUST_DIRECTION_WORDS = {"recette": "une recette", "déboursé": "un déboursé"}
 # A fee payment's administration-side floor refusals name the WEB form's
@@ -17103,18 +17124,16 @@ def _record_trust_entry_impl(args: dict) -> dict:
 
     counterparty = _register_text(args, "counterparty", COUNTERPARTY_MAX_CHARS)
     warnings: list[str] = []
-    if not counterparty:
-        if not fee:
-            raise ToolArgumentError(
-                "`counterparty` est requis : qui a versé la somme, ou qui la "
-                "reçoit (« Somme reçue de / Bénéficiaire »).")
-        counterparty = _firm_payee()
-        if not counterparty:
-            raise ToolArgumentError(
-                "`counterparty` est requis : le profil du cabinet ne porte "
-                "aucun nom à inscrire comme bénéficiaire.")
-        warnings.append(
-            f"Bénéficiaire inscrit : « {counterparty} » (le nom du cabinet).")
+    if fee:
+        # D23 (art. 58): the lawyer or his firm, nobody else — the model's
+        # rule, repeated to name the argument.
+        counterparty, payee_warning = _fee_payee(counterparty)
+        if payee_warning:
+            warnings.append(payee_warning)
+    elif not counterparty:
+        raise ToolArgumentError(
+            "`counterparty` est requis : qui a versé la somme, ou qui la "
+            "reçoit (« Somme reçue de / Bénéficiaire »).")
     data: dict[str, Any] = {
         "account_id": (args.get("account_id") or "").strip(),
         "direction": direction,
@@ -17145,12 +17164,21 @@ def _record_trust_entry_impl(args: dict) -> dict:
                 dossier_id=dossier_id, invoice_id=invoice_id)
         except comptabilite_service.ComptabiliteRefus as refusal:
             raise ToolArgumentError(refusal.message, reason="accounting_refused")
+        # The model's guards, repeated before it in ITS order, each in the
+        # model's own words where they are the model's (D20, D21).
         if invoice.get("status") not in _TRUST_ISSUED:
+            # D20 (art. 56 2°): the sending is the lawyer's to attest — the
+            # refusal says the rule and who attests, never a way around it.
             raise ToolArgumentError(
-                "La facture doit être envoyée (ou en retard) : un paiement "
-                "d'honoraires ne se tire que sur une facturation envoyée "
-                "(art. 56). Promouvez-la d'abord (update_invoice).",
-                reason="accounting_refused")
+                comptabilite_service.message_refus_fideicommis("facture_non_émise")
+                + " Rien n'a été inscrit.", reason="accounting_refused")
+        invoice_client = str(invoice.get("client_id") or "").strip()
+        if invoice_client and invoice_client != client_id:
+            # D21: one client's trust funds never settle another client's
+            # invoice — no override. Names neither client nor amount.
+            raise ToolArgumentError(
+                comptabilite_service.message_refus_fideicommis("facture_autre_client")
+                + " Rien n'a été inscrit.", reason="accounting_refused")
         if int(invoice.get("retainer_applied") or 0) > 0:
             raise ToolArgumentError(
                 "Cette facture impute une provision : son solde dû en est "

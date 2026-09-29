@@ -357,7 +357,9 @@ FAMILIES: tuple[Family, ...] = (
             "brouillon → "
             "envoyée, envoyée ↔ en_retard (only past its due date) — which "
             "SENDS NOTHING to anyone, a promotion being undone only by a "
-            "void; or void it (status annulée, with a void_reason), which "
+            "void; envoyée is the lawyer's word that HE sent it (a fee "
+            "payment from trust relies on it, art. 56 2°), so set it only "
+            "on his word; or void it (status annulée, with a void_reason), which "
             "releases every source it billed and is REFUSED while a payment "
             "stands. The Word note "
             "d'honoraires is `create_document` with source invoice_note "
@@ -629,11 +631,14 @@ FAMILIES: tuple[Family, ...] = (
             "read) gives the administration accounts, their lock floors and "
             "entries (with etags); `get_trust_snapshot` gives the trust "
             "accounts, `list_trust_transactions` the trust entries. "
-            "`record_trust_entry` records a trust recette or déboursé; a "
+            "`record_trust_entry` records a trust recette or déboursé, "
+            "its objet agreeing with its sens; a "
             "déboursé draws only on the client's CLEARED funds, never in "
             "cash (art. 57), and purpose virement_honoraires is a FEE "
-            "PAYMENT: by cheque or transfer only (art. 58), against a Pallas "
-            "Athéna invoice already sent that imputes no provision, it "
+            "PAYMENT: by cheque or transfer only, to the lawyer or his firm "
+            "as the firm profile names them (art. 58), against a Pallas "
+            "Athéna invoice the lawyer sent, addressed to THAT client and "
+            "imputing no provision, it "
             "records in ONE transaction the trust withdrawal, the recette in "
             "the operations account (`admin_account_id`, `admin_date`) and "
             "the payment on the invoice — which may turn it payée. "
@@ -1132,7 +1137,9 @@ NEVERS: tuple[Never, ...] = (
     # correction each register allows, said —, no reconciliation and no
     # account, no transfer between dossiers, no cash withdrawal, no fee
     # payment on a paper, unsent or provision-imputing invoice, no bank
-    # number shown. Lot 5b had two broader bullets (« register_setup »
+    # number shown. The lawyer's decisions of 2026-09-29 added two: no fee
+    # payment on another client's invoice (D21, in « fee_invoice ») and
+    # none to a payee other than the lawyer or his firm (D23, « fee_payee »). Lot 5b had two broader bullets (« register_setup »
     # carried the deletion and the transfer; « trust_withdrawal » the
     # invoice rules) and no word of the UNSENT invoice the model refuses.
     Never(
@@ -1224,29 +1231,55 @@ NEVERS: tuple[Never, ...] = (
         fr=(
             "appuyer un <strong>paiement d'honoraires</strong> sur une "
             "facture papier, sur une facture <strong>pas encore "
-            "envoyée</strong> ou sur une facture qui impute une "
-            "<strong>provision</strong>"
+            "envoyée</strong>, sur une facture qui impute une "
+            "<strong>provision</strong> ou sur la facture d'un "
+            "<strong>autre client</strong> que celui dont les fonds sortent"
         ),
         en=(
             "It never backs a fee payment with a paper invoice, with an "
-            "invoice not yet sent, or with an invoice that imputes a "
-            "provision."
+            "invoice not yet sent, with an invoice that imputes a "
+            "provision, or with another client's invoice than the one whose "
+            "funds leave trust."
         ),
-        # The model refuses an unsent invoice (facture_non_émise) and a
-        # provision (facture_avec_provision) on every path, and the
-        # external-invoice path unless its caller turns it on — the web
+        # The model refuses an unsent invoice (facture_non_émise), a
+        # provision (facture_avec_provision) and — decision D21, 2026-09-29 —
+        # another client's invoice (facture_autre_client) on every path, and
+        # the external-invoice path unless its caller turns it on — the web
         # form does, the connector never (allow_external_ref=False): no
-        # tool may even DECLARE the paper-invoice input. The same test
-        # pins all three refusals.
+        # tool may even DECLARE the paper-invoice input. The same test pins
+        # all four refusals.
         forbidden_inputs=(("*", "invoice_external_ref"),),
         behavioural_test=(
             "tests/test_mcp_accounting.py::"
             "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
         ),
         summary_fr=(
-            "de paiement d'honoraires sur une facture papier, non envoyée "
-            "ou qui impute une provision"
+            "de paiement d'honoraires sur une facture papier, non envoyée, "
+            "qui impute une provision ou adressée à un autre client"
         ),
+        accounting_only=True,
+    ),
+    # Decision D23 (2026-09-29, art. 58 — « chèque tiré à l'ordre de
+    # l'avocat »): the payee of a fee payment is the lawyer or his firm, as
+    # the firm profile names them — the MODEL refuses any other
+    # (models/fee_payment, web included), and the connector's handler
+    # repeats it naming `counterparty`.
+    Never(
+        key="fee_payee",
+        fr=(
+            "faire un <strong>paiement d'honoraires</strong> à l'ordre de "
+            "quelqu'un d'autre que <strong>vous ou votre cabinet</strong>, "
+            "tels que les nomme le profil du cabinet (art.&nbsp;58)"
+        ),
+        en=(
+            "It never makes a fee payment to anyone but the lawyer or his "
+            "firm, as the firm profile names them (art. 58)."
+        ),
+        behavioural_test=(
+            "tests/test_mcp_accounting.py::"
+            "test_d23_the_payee_is_the_lawyer_or_his_firm"
+        ),
+        summary_fr="de paiement d'honoraires à l'ordre d'un autre que vous ou votre cabinet",
         accounting_only=True,
     ),
     Never(

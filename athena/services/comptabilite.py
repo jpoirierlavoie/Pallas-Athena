@@ -55,19 +55,16 @@ class ComptabiliteRefus(Exception):
 
 
 #: The warnings a successful write can carry — machine code → French text.
-#: The report's ``warnings`` are the sentences (the client-mismatch one names
-#: both clients); ``warning_codes`` are the codes, so a web route can carry
-#: them across its POST → redirect and the page they land on can SAY them
-#: (``routes/trust.entry_detail``). A warning the web dropped was a warning
-#: the lawyer never read — the client-mismatch check was, on the web, no
-#: check at all (lot 5a review). These generic texts are what a page shows:
-#: a URL never carries a client's name.
+#: ``warning_codes`` are the codes, so a web route can carry them across its
+#: POST → redirect and the page they land on can SAY them
+#: (``routes/trust.entry_detail``): a warning the web dropped was a warning
+#: the lawyer never read (lot 5a review). These generic texts are what a
+#: page shows: a URL never carries a client's name. (A fee payment drawing
+#: one client's funds for an invoice addressed to ANOTHER client used to be
+#: a warning here, « facture_autre_client », shown after the commit — the
+#: fees already out. Decision D21, 2026-09-29, made it a REFUSAL of the
+#: model's transaction, web and connector alike, with no override.)
 WARNING_MESSAGES = {
-    "facture_autre_client": (
-        "La facture est adressée à un autre client du dossier que celui dont "
-        "les fonds quittent le fidéicommis : vérifiez que ce client a "
-        "autorisé ce paiement."
-    ),
     "sans_recette_liee": (
         "Aucune recette au compte d'administration n'était liée à ce "
         "paiement d'honoraires (inscription antérieure au registre "
@@ -237,9 +234,11 @@ def enregistrer_paiement_honoraires(
     ``invoice_number`` (the web form's select, a number Claude cites).
     ``allow_external_ref`` — accept a paper invoice's number instead: the
     web form's path (the lawyer's 2026-07-17 decision), never the
-    connector's (D1). A warning — never a refusal — names an invoice
-    addressed to another client of the dossier than the one whose funds
-    leave trust (the client may have authorised it; the lawyer checks)."""
+    connector's (D1). Every other rule is the model's, judged inside the
+    payment's transaction — among them D21 (an invoice addressed to another
+    client of the dossier than the one whose funds leave trust is REFUSED,
+    ``facture_autre_client``) and D23 (the payee is the lawyer or his firm,
+    :func:`beneficiaires_honoraires`)."""
     data = dict(data or {})
     invoice = None
     number = (data.pop("invoice_number", "") or "").strip()
@@ -255,10 +254,6 @@ def enregistrer_paiement_honoraires(
         except ComptabiliteRefus as refusal:
             return _refused([refusal.message], refusal.reason, **_empty_fee())
         data["invoice_id"] = invoice["id"]
-    invoice_client = (invoice or {}).get("client_id")
-    other_client = bool(
-        invoice_client and data.get("client_id") and invoice_client != data["client_id"]
-    )
     report: dict = {}
     result, errors = fee_payment.create_fee_payment(
         data, admin_account_id=admin_account_id, admin_date=admin_date,
@@ -267,21 +262,8 @@ def enregistrer_paiement_honoraires(
     if errors:
         return _refused(errors, report.get("reason"), side=report.get("side"),
                         **_empty_fee())
-    warnings: list[str] = []
-    codes: list[str] = []
-    if other_client:
-        # Named here — the report goes to the lawyer (or Claude); a URL gets
-        # the generic WARNING_MESSAGES text.
-        payer = result["trust_entry"].get("client_name") or "le client débité"
-        billed = invoice.get("client_name") or "un autre client"
-        warnings.append(
-            f"La facture est adressée à {billed}, alors que les fonds quittent "
-            f"le fidéicommis au nom de {payer} (un autre client du dossier) : "
-            f"vérifiez que ce client a autorisé ce paiement."
-        )
-        codes.append("facture_autre_client")
     return _report(
-        True, warnings=warnings, warning_codes=codes,
+        True,
         trust_entry=result["trust_entry"],
         admin_recette=result["admin_recette"],
         invoice=invoice_payment_block(result["invoice_before"], result["invoice_after"]),
@@ -292,6 +274,27 @@ def enregistrer_paiement_honoraires(
 def _empty_fee() -> dict:
     return {"trust_entry": None, "admin_recette": None, "invoice": None,
             "client_balance": None}
+
+
+def beneficiaires_honoraires() -> list[str]:
+    """The payees a fee payment may name (D23, art. 58): the firm, then the
+    lawyer, as the firm profile names them — the model's own list
+    (``models/fee_payment.fee_payees``), for the web form's select and the
+    connector's default and refusal."""
+    return fee_payment.fee_payees()
+
+
+def beneficiaire_honoraires(value, payees: Optional[list[str]] = None) -> Optional[str]:
+    """The accepted payee *value* names, as the profile spells it — or
+    ``None`` (``models/fee_payment.match_fee_payee``)."""
+    return fee_payment.match_fee_payee(value, payees)
+
+
+def message_refus_fideicommis(reason: str) -> str:
+    """The trust model's French message for *reason* — for a caller that
+    repeats one of the model's guards before calling it (the connector),
+    so the two can never word the same refusal differently."""
+    return trust._abort_message(reason)
 
 
 def contrepasser_ecriture_fideicommis(
@@ -549,8 +552,9 @@ ADMIN_KIND_LABELS: dict = dict(al.KIND_LABELS)
 ADMIN_CATEGORY_LABELS: dict = dict(al.ADMIN_CATEGORY_LABELS)
 TRUST_PURPOSE_LABELS: dict = dict(trust.PURPOSE_LABELS)
 #: The direction each unambiguous trust purpose's name implies — the
-#: model's vocabulary (``trust.PURPOSE_DIRECTIONS``), which the connector
-#: enforces and the integrity script measures.
+#: model's RULE since D24 (``trust.PURPOSE_DIRECTIONS``, refused as
+#: ``objet_sens_incohérent`` for every caller), which the connector repeats
+#: naming its arguments and the integrity script measures on the history.
 TRUST_PURPOSE_DIRECTIONS: dict = dict(trust.PURPOSE_DIRECTIONS)
 
 

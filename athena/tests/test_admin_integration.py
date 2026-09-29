@@ -36,6 +36,8 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from flask import Flask  # noqa: E402
 
+from tests._accounting_history import FEE_PAYEE  # noqa: E402
+
 
 @pytest.fixture()
 def web():
@@ -596,7 +598,9 @@ def _form_virement(**over) -> dict:
     payload = {
         "account_id": "acc1", "direction": "déboursé", "amount": "600,00",
         "purpose": "virement_honoraires", "method": "virement",
-        "counterparty": "Cabinet", "dossier_id": "dos1", "client_id": "cli1",
+        # D23 (2026-09-29, art. 58): the firm, as the unseeded profile's seed
+        # names it — the form's select offers nothing else.
+        "counterparty": FEE_PAYEE, "dossier_id": "dos1", "client_id": "cli1",
         "date": "2026-07-10", "admin_account_id": "ops1",
     }
     payload.update(over)
@@ -724,26 +728,28 @@ def test_une_date_de_depot_illisible_est_refusee_avant_toute_ecriture(
     assert "date du dépôt au compte d'administration est invalide" in resp.get_data(as_text=True)
 
 
-def test_un_avertissement_du_paiement_voyage_jusqu_a_la_fiche(web_trust, monkeypatch):
-    """Revue du lot 5a — le service AVERTIT quand la facture est adressée à
-    un autre client du dossier que celui dont les fonds sortent ; la route
-    jetait l'avertissement, si bien qu'au web la vérification n'existait
-    pas. Le CODE voyage sur la redirection (jamais un texte, jamais un nom)."""
+def test_la_facture_d_un_autre_client_est_refusee_au_formulaire(web_trust, monkeypatch):
+    """Réécrit sur la décision D21 (2026-09-29) — ce test s'appelait « un
+    avertissement du paiement voyage jusqu'à la fiche » : la facture d'un
+    autre client du dossier passait, et son CODE voyageait sur la
+    redirection. C'est désormais un REFUS du modèle, rendu au formulaire en
+    ligne (le re-rendu), sans redirection ni bandeau — et sans nom (preuve
+    sur le vrai magasin et le vrai gabarit :
+    tests/test_trust_decisions_2026_09_29.py)."""
     _bouchonner_rendu(monkeypatch)
+    message = rt.trust._ABORT_MESSAGES["facture_autre_client"]
     monkeypatch.setattr(
         rt.comptabilite, "enregistrer_paiement_honoraires",
-        lambda data, **kw: {"ok": True, "errors": [], "reason": None,
-                            "warnings": ["La facture est adressée à Jean Tremblay…"],
-                            "warning_codes": ["facture_autre_client"],
-                            "trust_entry": {"id": "t1"}, "admin_recette": {"id": "a1"},
-                            "invoice": None, "client_balance": None},
+        lambda data, **kw: {"ok": False, "errors": [message],
+                            "reason": "facture_autre_client", "warnings": [],
+                            "warning_codes": [], "trust_entry": None,
+                            "admin_recette": None, "invoice": None,
+                            "client_balance": None},
     )
     resp = web_trust.post("/fideicommis/", data=_form_virement())
-    assert resp.status_code == 302
-    location = resp.headers["Location"]
-    assert "/fideicommis/t1?" in location
-    assert "avertissement=facture_autre_client" in location
-    assert "Tremblay" not in location
+    assert resp.status_code == 400
+    assert message in resp.get_data(as_text=True)
+    assert "Location" not in resp.headers
 
 
 def test_un_avertissement_de_contre_passation_voyage_jusqu_a_la_fiche(web_trust, monkeypatch):
@@ -776,12 +782,16 @@ def test_la_fiche_dit_les_avertissements_connus_et_tait_les_autres(web_trust, mo
                         lambda tpl, **ctx: captured.update(tpl=tpl, **ctx) or "ok")
     monkeypatch.setattr(rt.trust, "get_transaction", lambda tx_id: {"id": tx_id, "account_id": "acc1"})
     monkeypatch.setattr(rt.trust, "get_account", lambda aid: {"id": aid})
-    resp = web_trust.get("/fideicommis/t1?avertissement=facture_autre_client,forge,"
-                         "<script>,facture_autre_client")
+    # « facture_autre_client » was a known code until decision D21
+    # (2026-09-29) made the case a refusal: an old link carrying it now
+    # shows nothing, like any other unknown code (rewritten deliberately —
+    # it was this test's known code).
+    resp = web_trust.get("/fideicommis/t1?avertissement=sans_recette_liee,forge,"
+                         "<script>,facture_autre_client,sans_recette_liee")
     assert resp.status_code == 200
     assert captured["tpl"] == "trust/detail.html"
     assert captured["avertissements"] == [
-        rt.comptabilite.WARNING_MESSAGES["facture_autre_client"]]
+        rt.comptabilite.WARNING_MESSAGES["sans_recette_liee"]]
     captured.clear()
     web_trust.get("/fideicommis/t1")
     assert captured["avertissements"] == []

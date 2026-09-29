@@ -47,7 +47,12 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import admin_ledger, fee_payment, trust
     from scripts import verify_trust_integrity as vti
 
-from tests._accounting_history import legacy_fee_entry, legacy_fee_reversal  # noqa: E402
+from tests._accounting_history import (  # noqa: E402
+    FEE_PAYEE,
+    legacy_fee_entry,
+    legacy_fee_reversal,
+    legacy_trust_entry,
+)
 from tests._fake_firestore import install  # noqa: E402
 
 UTC = timezone.utc
@@ -467,7 +472,10 @@ def _fee_payment(fake, *, recette: bool = True, **over) -> dict:
 
     Rewritten deliberately in lot 5a (step 3): the trust purpose is now
     refused on the public create path, so the old two-call recipe (trust
-    entry, then ``_admin_recette``) can no longer write a NEW fee payment."""
+    entry, then ``_admin_recette``) can no longer write a NEW fee payment.
+    And on decision D23 (2026-09-29): the payee is the firm (``FEE_PAYEE``)
+    — the composite refuses any other, and check 8 lists another one as a
+    note."""
     fake.seed("invoices/inv1", {
         "id": "inv1", "invoice_number": "2026-F001", "dossier_id": "dos1",
         "status": "envoyée", "total": 50000, "amount_due": 50000,
@@ -475,7 +483,7 @@ def _fee_payment(fake, *, recette: bool = True, **over) -> dict:
     })
     data = _entry(**{
         "direction": "déboursé", "amount": 30000, "purpose": "virement_honoraires",
-        "counterparty": "Me Avocat", "invoice_id": "inv1", "date": _d(2026, 9, 10),
+        "counterparty": FEE_PAYEE, "invoice_id": "inv1", "date": _d(2026, 9, 10),
         **over,
     })
     if not recette:
@@ -526,6 +534,45 @@ def test_un_paiement_d_honoraires_sur_une_facture_a_provision_est_une_note(
     assert code == 2, out
     assert (f"(écriture {fee['id']}): paiement d'honoraires tiré sur la facture "
             f"2026-F001, qui impute déjà une provision de 10000 cents") in out
+
+
+def test_un_paiement_d_honoraires_pour_la_facture_d_un_autre_client_est_une_note(
+    fake, monkeypatch, capsys
+):
+    """D21 (2026-09-29) appliquée à l'historique : le modèle refuse désormais
+    de tirer les fonds d'un client pour la facture d'un AUTRE client du
+    dossier ; ce que le registre contient déjà reste, et le contrôle 8 le
+    liste — par identifiants, jamais par nom."""
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake)
+    _set(fake, "invoices/inv1", client_id="c-autre")
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"(écriture {fee['id']}): paiement d'honoraires tiré des fonds du "
+            f"client c1 pour la facture 2026-F001, adressée au client c-autre "
+            f"du dossier — refusé depuis la décision D21 (2026-09-29).") in out
+
+
+def test_un_paiement_d_honoraires_a_un_autre_beneficiaire_est_une_note(
+    fake, monkeypatch, capsys
+):
+    """D23 (2026-09-29, art. 58) appliquée à l'historique : un paiement
+    d'honoraires inscrit à l'ordre de quelqu'un d'autre que l'avocat ou son
+    cabinet — le nom n'est jamais imprimé (ce peut être une personne) ; un
+    bénéficiaire accepté, écrit autrement (casse, espaces), n'est pas
+    signalé."""
+    _september(fake, monkeypatch)
+    # History: what the register holds, written before the rule.
+    other = _fee_payment(fake, amount=10000)
+    _set(fake, _tx(other["id"]), counterparty="Huissier Gagnon")
+    same = _fee_payment(fake, amount=10000)
+    _set(fake, _tx(same["id"]), counterparty=f"  {FEE_PAYEE.upper()} ")
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"(écriture {other['id']}): paiement d'honoraires dont le "
+            f"bénéficiaire n'est ni l'avocat ni son cabinet") in out
+    assert "Gagnon" not in out
+    assert f"(écriture {same['id']}): paiement d'honoraires dont le" not in out
 
 
 def test_une_facture_liee_illisible_est_un_ecart(fake, monkeypatch, capsys):
@@ -615,12 +662,15 @@ def test_un_virement_inter_dossiers_a_un_seul_volet_est_une_note(
 ):
     """Le formulaire de création offrait l'objet « virement inter-dossiers » :
     une écriture sans volet contrepartie lié a déplacé le solde d'un seul
-    dossier. Mesuré avant que le lot 5 réserve l'objet au virement à deux
-    volets ; le virement à deux volets du modèle, lui, n'est pas signalé."""
+    dossier. La décision D24 (2026-09-29) réserve l'objet au virement à deux
+    volets — le volet isolé n'est plus que de l'HISTORIQUE, reconstruit sous
+    sa forme d'avant (réécrit délibérément : ``_create`` passait par la
+    création publique, qui le refuse désormais) ; le virement à deux volets
+    du modèle, lui, n'est pas signalé."""
     _september(fake, monkeypatch)
-    single = _create(direction="déboursé", amount=10000,
-                     purpose="virement_inter_dossiers", counterparty="Marie Roy",
-                     date=_d(2026, 9, 10))
+    single = legacy_trust_entry(_entry(
+        direction="déboursé", amount=10000, purpose="virement_inter_dossiers",
+        counterparty="Marie Roy", date=_d(2026, 9, 10)))
     pair_leg = _transfer(fake)
     code, out = _run(capsys)
     assert code == 2, out
@@ -630,22 +680,26 @@ def test_un_virement_inter_dossiers_a_un_seul_volet_est_une_note(
 
 
 def test_un_objet_qui_contredit_le_sens_est_une_note(fake, monkeypatch, capsys):
-    """Revue de complétude du lot 5 : le connecteur refuse « Dépôt du client »
-    en déboursé ou « Remise au client » en recette (la ligne de l'art. 38
-    dirait le contraire du mouvement), le formulaire web l'accepte encore —
-    étendre le refus au web est la décision de l'avocat, et elle a besoin de
-    savoir ce que le registre contient déjà. Le couple ambigu (« règlement »
-    dans un sens ou l'autre) n'est pas signalé ; la carte est celle du
-    modèle."""
+    """Revue de complétude du lot 5 : « Dépôt du client » en déboursé ou
+    « Remise au client » en recette (la ligne de l'art. 38 dirait le
+    contraire du mouvement). Le modèle refuse ce couple à TOUT appelant
+    depuis la décision D24 (2026-09-29) — le web compris, qui l'acceptait :
+    ce qui reste au registre est de l'historique, reconstruit sous sa forme
+    d'avant (réécrit délibérément : ``_create`` passait par la création
+    publique), et le contrôle le liste toujours en note. Le couple ambigu
+    (« règlement » dans un sens ou l'autre) n'est pas signalé ; la carte est
+    celle du modèle."""
     _september(fake, monkeypatch)
-    bad = _create(direction="déboursé", amount=10000, purpose="dépôt_client",
-                  counterparty="Huissier", date=_d(2026, 9, 10))
+    bad = legacy_trust_entry(_entry(
+        direction="déboursé", amount=10000, purpose="dépôt_client",
+        counterparty="Huissier", date=_d(2026, 9, 10)))
     ok = _create(direction="déboursé", amount=10000, purpose="règlement",
                  counterparty="Me X", date=_d(2026, 9, 10))
     code, out = _run(capsys)
     assert code == 2, out
     assert (f"(écriture {bad['id']}): objet « Dépôt du client » inscrit en "
-            f"déboursé — l'objet dit une recette") in out
+            f"déboursé — l'objet dit une recette ; ce couple est refusé à toute "
+            f"nouvelle écriture depuis la décision D24 (2026-09-29).") in out
     assert f"(écriture {ok['id']}): objet" not in out
     assert vti.trust.PURPOSE_DIRECTIONS is trust.PURPOSE_DIRECTIONS
 

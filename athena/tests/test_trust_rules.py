@@ -63,6 +63,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from flask import Flask  # noqa: E402
 
+from tests._accounting_history import FEE_PAYEE, legacy_trust_entry  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
 from utils.format_fr import format_cents_fr  # noqa: E402
@@ -120,7 +121,10 @@ def _fee(**fields):
     deliberately: these art. 58 and provision pins used to call
     ``trust.create_transaction``; the rules they pin are the trust model's
     own, reached identically through the composite. Returns ``(trust
-    entry | None, errors)``."""
+    entry | None, errors)``. The payee defaults to the firm since decision
+    D23 (2026-09-29, art. 58): the composite refuses any other name, and the
+    shared entry's « Client » would be one."""
+    fields.setdefault("counterparty", FEE_PAYEE)
     result, errs = fee_payment.create_fee_payment(
         _entry(**fields), admin_account_id="ops1", allow_external_ref=True)
     return (result["trust_entry"] if result else None), errs
@@ -782,7 +786,7 @@ def test_le_formulaire_dit_le_refus_de_la_provision(fake, client, monkeypatch):
     })
     resp = client.post("/fideicommis/", data={
         "account_id": "acc1", "direction": "déboursé", "amount": "500,00",
-        "purpose": "virement_honoraires", "method": "chèque", "counterparty": "Me X",
+        "purpose": "virement_honoraires", "method": "chèque", "counterparty": FEE_PAYEE,
         "dossier_id": "dos1", "client_id": "c1", "date": "2026-09-05",
         "invoice_number": "2026-F040", "admin_account_id": "ops1",
     })
@@ -954,9 +958,14 @@ def test_un_virement_entre_clients_du_meme_dossier_se_contre_passe(fake, monkeyp
 def test_un_volet_isole_herite_reste_contre_passable_seul(fake, monkeypatch):
     """Le formulaire d'écriture offrait l'objet « virement inter-dossiers » :
     ces volets ISOLÉS n'ont pas de contre-volet — refuser leur
-    contre-passation les rendrait incorrigibles à jamais."""
+    contre-passation les rendrait incorrigibles à jamais. Réécrit sur la
+    décision D24 (2026-09-29) : la création publique REFUSE désormais
+    l'objet, si bien que le volet isolé est reconstruit sous sa forme
+    historique (``legacy_trust_entry``) — c'est l'historique qui doit rester
+    contre-passable, et il le reste."""
     _evening(monkeypatch)
-    single = _create(purpose="virement_inter_dossiers", amount=5000, date=_d(2026, 9, 5))
+    single = legacy_trust_entry(_entry(
+        purpose="virement_inter_dossiers", amount=5000, date=_d(2026, 9, 5)))
     rev, errs = trust.reverse_transaction(single["id"], "saisie erronée")
     assert errs == []
     assert rev["status"] == "annulée"

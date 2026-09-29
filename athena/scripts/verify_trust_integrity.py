@@ -80,13 +80,18 @@ Checks 5-10 (lot 5a, 2026-09-28):
      invoice carrying a provision (``retainer_applied > 0``); a correction
      is never reversed again; a two-leg transfer reverses whole; and every
      SINGLE-leg ``virement_inter_dossiers`` (no linked counter-leg — the
-     create form offered the purpose) is listed, and so is every entry whose
+     create form offered the purpose until decision D24 reserved it to the
+     two-leg transfer, 2026-09-29) is listed, and so is every entry whose
      objet contradicts its sens (``trust.PURPOSE_DIRECTIONS`` — refused by
-     the connector since lot 5b, still accepted by the web form: the measure
-     the lawyer's decision to refuse it there needs). Annulée
-     entries (a cheque that never left the account) and corrections (which
-     copy their original's method and withdraw nothing of their own) are
-     outside the three withdrawal rules.
+     the connector since lot 5b, by the MODEL for every caller since D24).
+     Since the same day's decisions, two fee-payment rules as well: an
+     invoice addressed to ANOTHER client of the dossier than the one whose
+     funds left (D21), and a payee who is neither the lawyer nor his firm as
+     the firm profile names them (D23, art. 58). Each is refused for every
+     new entry; what the register already holds stays there, and is listed.
+     Annulée entries (a cheque that never left the account) and corrections
+     (which copy their original's method and withdraw nothing of their own)
+     are outside the three withdrawal rules and the two fee-payment ones.
   9. per-client balances vs Σ deltas from the DOSSIER side: every dossier is
      read, so a stored map entry — or a ``trust_balance`` — that no register
      row backs at all is reported; checks 3 and 4 start from the rows and
@@ -126,7 +131,7 @@ from typing import Optional
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import admin_ledger, db, trust
+from models import admin_ledger, db, fee_payment, trust
 from models.dossier import get_dossier
 from tz import to_mtl
 from utils.deadlines import today_mtl
@@ -425,8 +430,13 @@ def _invoice(iid: str, invoices: dict, where: str, problems: list):
 
 def _check_history_rules(
     aid: str, txs: list[dict], by_period: list[dict], invoices: dict,
-    problems: list, notes: list,
+    problems: list, notes: list, payees: Optional[list[str]] = None,
 ) -> None:
+    """Check 8. ``payees`` — the names a fee payment may carry (D23: the
+    firm profile's, ``fee_payment.fee_payees``), read once per run; ``None``
+    reads them here."""
+    if payees is None:
+        payees = fee_payment.fee_payees()
     by_id = {t.get("id"): t for t in txs}
     refunds_by_receipt: dict = defaultdict(int)
     for t in txs:
@@ -478,8 +488,9 @@ def _check_history_rules(
 
         # A SINGLE-leg « virement inter-dossiers » (the create form offered
         # the purpose): one dossier's balance moved with no linked counter-
-        # leg. Still reversible alone; measured before lot 5 reserves the
-        # purpose to the two-leg transfer (design review, S1).
+        # leg. Still reversible alone; the purpose is reserved to the
+        # two-leg transfer since decision D24 (2026-09-29), so every such leg
+        # is history (design review, S1).
         if (purpose == trust.TRANSFER_PURPOSE and not is_correction
                 and not tx.get("related_transaction_id")):
             notes.append(
@@ -491,11 +502,12 @@ def _check_history_rules(
             )
 
         # An objet whose NAME contradicts the sens (« Dépôt du client » paid
-        # out, « Remise au client » paid in): the connector refuses the pair
-        # since lot 5b, the web form still accepts it — whether to refuse it
-        # there too is the lawyer's decision, and this is its measure. From
-        # the MODEL's map, never a copy (the lot 5a review). Listed whatever
-        # the status: the register prints the line either way.
+        # out, « Remise au client » paid in): the connector refused the pair
+        # from lot 5b, the MODEL refuses it for every caller since decision
+        # D24 (2026-09-29) — the web form included —, so every such entry is
+        # history. From the MODEL's map, never a copy (the lot 5a review).
+        # Listed whatever the status: the register prints the line either
+        # way.
         implied = trust.PURPOSE_DIRECTIONS.get(purpose)
         if implied and tx.get("direction") != implied:
             notes.append(
@@ -503,8 +515,8 @@ def _check_history_rules(
                 f"inscrit en "
                 f"{trust.DIRECTION_LABELS.get(tx.get('direction'), tx.get('direction')).lower()}"
                 f" — l'objet dit {'une recette' if implied == 'recette' else 'un déboursé'} ; "
-                f"le connecteur refuse ce couple depuis le lot 5b, le formulaire "
-                f"web l'accepte encore."
+                f"ce couple est refusé à toute nouvelle écriture depuis la "
+                f"décision D24 (2026-09-29)."
             )
 
         # The three withdrawal rules — never on a correction, never on an
@@ -544,6 +556,28 @@ def _check_history_rules(
                     f"cents — la provision est comptée deux fois (refusé depuis "
                     f"le lot 0b)."
                 )
+            # D21 (2026-09-29): the funds of one client never settle the
+            # invoice of another — ids only, never a name.
+            invoice_client = str((invoice or {}).get("client_id") or "").strip()
+            if invoice and invoice_client and invoice_client != tx.get("client_id"):
+                notes.append(
+                    f"{where}: paiement d'honoraires tiré des fonds du client "
+                    f"{tx.get('client_id')} pour la facture "
+                    f"{invoice.get('invoice_number', iid)}, adressée au client "
+                    f"{invoice_client} du dossier — refusé depuis la décision "
+                    f"D21 (2026-09-29)."
+                )
+        # D23 (2026-09-29, art. 58): the payee is the lawyer or his firm, as
+        # the firm profile names them. Listed without the name (a payee may
+        # be a person); an empty profile lists nothing — it names no rule.
+        if (purpose == "virement_honoraires" and payees
+                and fee_payment.match_fee_payee(tx.get("counterparty"), payees) is None):
+            notes.append(
+                f"{where}: paiement d'honoraires dont le bénéficiaire n'est ni "
+                f"l'avocat ni son cabinet, tels que les nomme le profil du "
+                f"cabinet — refusé depuis la décision D23 (2026-09-29, "
+                f"art. 58)."
+            )
 
 
 # ── check 9 ───────────────────────────────────────────────────────────────
@@ -821,6 +855,9 @@ def collect() -> tuple[list[str], list[str]]:
     dossier_book: dict[str, int] = defaultdict(int)
     invoices: dict = {}
     fee_payments: list[tuple[str, dict]] = []
+    # D23 — the accepted payees, read ONCE (the firm profile, fail-open to
+    # its deploy-time seed like every reader of it).
+    payees = fee_payment.fee_payees()
 
     for account in accounts:
         aid = account["id"]
@@ -882,7 +919,8 @@ def collect() -> tuple[list[str], list[str]]:
         _check_reproof(aid, by_period, problems, notes)                             # 5
         _check_clearing(aid, txs, recs_by_id, by_period, today, problems, notes)    # 6
         _check_date_order(aid, txs, today, problems)                                # 7
-        _check_history_rules(aid, txs, by_period, invoices, problems, notes)        # 8
+        _check_history_rules(aid, txs, by_period, invoices, problems, notes,
+                             payees)                                                # 8
 
     # 3. Per (dossier, client): running balance_after_client + the two maps.
     for (did, cid), rows in couple_rows.items():

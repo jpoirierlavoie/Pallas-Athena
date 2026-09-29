@@ -994,7 +994,14 @@ def test_the_lot_3b_texts_say_what_billing_does():
     assert "Never payée" in desc["update_invoice"]
     assert "MARKED sent" in desc["list_invoices"]
     assert "proof of what the client was told" in desc["create_budget_version"]
-    assert "promote it with update_invoice" in desc["import_invoice"]
+    # D20 (2026-09-29): the sending is the lawyer's to attest — the import's
+    # text names update_invoice as HIS instrument, never « promote it »
+    # (rewritten deliberately: this line pinned « promote it with
+    # update_invoice »).
+    assert "update_invoice to envoyée at his word" in desc["import_invoice"]
+    assert "promote it" not in desc["import_invoice"]
+    assert "set it only on his word" in desc["update_invoice"]
+    assert "set it only on his word" in billing.instructions_en
     import_status = OUTPUT_SCHEMAS["import_invoice"]["properties"]["entity"][
         "properties"]["status"]["description"]
     assert "update_invoice does" in import_status
@@ -1288,9 +1295,11 @@ def test_the_lot_5_texts_state_the_final_never_set():
         assert fragment in payment.fr_comptabilite, fragment
     assert "an administration encaissement, or a trust fee payment" in payment.en
 
+    # « fee_payee » joined on the lawyer's decision D23 (2026-09-29) — the
+    # list is rewritten deliberately, the order kept.
     assert [n.key for n in disclosure.accounting_nevers()] == [
         "register_delete", "register_setup", "register_transfer",
-        "trust_withdrawal", "fee_invoice", "account_number"]
+        "trust_withdrawal", "fee_invoice", "fee_payee", "account_number"]
     listed_fr = " ".join(n.fr for n in disclosure.accounting_nevers())
     listed_en = " ".join(n.en for n in disclosure.accounting_nevers())
     for fr, en in (
@@ -1303,6 +1312,11 @@ def test_the_lot_5_texts_state_the_final_never_set():
         ("facture papier", "with a paper invoice"),
         ("facture <strong>pas encore envoyée</strong>", "with an invoice not yet sent"),
         ("une <strong>provision</strong>", "an invoice that imputes a provision"),
+        # D21 and D23 (2026-09-29).
+        ("la facture d'un <strong>autre client</strong>",
+         "another client's invoice than the one whose funds leave trust"),
+        ("à l'ordre de quelqu'un d'autre que <strong>vous ou votre cabinet</strong>",
+         "to anyone but the lawyer or his firm"),
         ("<strong>numéro de compte</strong>", "a bank transit or account number"),
     ):
         assert fr in listed_fr, fr
@@ -1321,21 +1335,27 @@ def test_the_lot_5_texts_state_the_final_never_set():
         "test_a_transfer_between_dossiers_is_never_reversed_here")
     assert keys["trust_withdrawal"].forbidden_inputs == (("*", "cash_receipt_id"),)
     assert keys["fee_invoice"].forbidden_inputs == (("*", "invoice_external_ref"),)
-    # The behavioural test the fee-invoice promise names refuses all three
-    # invoices — the paper one, the provision, and the UNSENT draft.
+    # The behavioural test the fee-invoice promise names refuses all four
+    # invoices — the paper one, the provision, the UNSENT draft and (D21)
+    # another client's.
     source = (_ATHENA / "tests" / "test_mcp_accounting.py").read_text(encoding="utf-8")
     body = source[source.index(
         "def " + keys["fee_invoice"].behavioural_test.partition("::")[2]):]
     body = body[:body.index("\ndef ")]
     assert 'invoice_external_ref' in body and '"provision" in str(provision)' in body
     assert '"envoyée" in str(draft)' in body
+    assert 'facture_autre_client' in body
+    assert keys["fee_payee"].behavioural_test.endswith(
+        "test_d23_the_payee_is_the_lawyer_or_his_firm")
 
     summary = " ".join(str(disclosure.comptabilite_summary_fr()).split())
     assert summary.endswith(
         "Jamais de suppression, jamais de conciliation ni de compte, jamais "
         "de virement entre dossiers, jamais de retrait en espèces, jamais de "
-        "paiement d'honoraires sur une facture papier, non envoyée ou qui "
-        "impute une provision.")
+        "paiement d'honoraires sur une facture papier, non envoyée, qui "
+        "impute une provision ou adressée à un autre client, jamais de "
+        "paiement d'honoraires à l'ordre d'un autre que vous ou votre "
+        "cabinet.")
 
     accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
     assert ("des recettes et des déboursés, et des paiements d'honoraires — "

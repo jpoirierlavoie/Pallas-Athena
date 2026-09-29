@@ -40,9 +40,11 @@
      ?avertissement= porte des CODES, jamais un texte ni un nom — la route
      les traduit par comptabilite.WARNING_MESSAGES et ignore un code
      inconnu (un ancien lien « avertissement=administration » n'affiche
-     plus rien). Une facture d'un autre client que celui dont les fonds
-     sortent, un paiement d'honoraires contre-passé au fidéicommis seul, un
-     solde compensé devenu négatif : autant de faits que la route jetait. #}
+     plus rien). Un paiement d'honoraires contre-passé au fidéicommis seul,
+     un solde compensé devenu négatif : autant de faits que la route jetait.
+     (La facture d'un autre client que celui dont les fonds sortent en était
+     un jusqu'au 2026-09-29 : la décision D21 en a fait un REFUS du modèle,
+     affiché au formulaire — un ancien lien qui le porte n'affiche rien.) #}
   {% for avertissement in avertissements or [] %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     {{ avertissement }}

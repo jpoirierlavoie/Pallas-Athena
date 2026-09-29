@@ -1598,10 +1598,11 @@ def _substitutions_prop(*, expected_required: bool) -> dict:
 # pins each against its source, so none can drift.
 _REGISTERS = ["trust", "admin"]
 _TRUST_DIRECTIONS = ["recette", "déboursé"]
-# models.trust.VALID_PURPOSES minus the two the connector never records:
-# « correction » (a reversal mints it, nothing else may) and
-# « virement_inter_dossiers » (moving one client's funds to another client
-# needs that client's authorization — it stays in the application).
+# models.trust.VALID_PURPOSES minus the two the MODEL reserves: « correction »
+# (a reversal mints it, nothing else may) and « virement_inter_dossiers »
+# (decision D24, 2026-09-29: only the two-leg transfer writes it —
+# trust.create_inter_dossier_transfer, which the connector never reaches;
+# moving one client's funds to another client stays in the application).
 _TRUST_ENTRY_PURPOSES = [
     "avance_honoraires", "dépôt_client", "règlement", "virement_honoraires",
     "remise_client", "déboursé_tiers", "intérêts", "frais_bancaires", "autre",
@@ -4539,8 +4540,9 @@ TOOLS: dict[str, dict] = {
             "Compare the returned subtotal, GST and "
             "QST against the PDF: the totals are computed over the real "
             "sources, never estimated. "
-            "The invoice lands in BROUILLON: promote it with update_invoice; "
-            "a payment is recorded only as an entry of the accounting "
+            "The invoice lands in BROUILLON; only the lawyer attests it was "
+            "sent (update_invoice to envoyée at his word, or the "
+            "application), and a payment is recorded only as an entry of the accounting "
             "registers (in the application, or with the accounting tools "
             "under their separate grant), never by this tool. Billing the "
             "sources freezes them: nothing here can modify "
@@ -4726,7 +4728,8 @@ TOOLS: dict[str, dict] = {
             "refresh_billing_address REPLACE what they name — amounts, lines, "
             "client and number never change. STATUS: brouillon → envoyée, "
             "envoyée ↔ en_retard (only past due_date); envoyée SENDS NOTHING "
-            "and only a void undoes it. VOID: status annulée + void_reason "
+            "and only a void undoes it — it is the lawyer's word that he "
+            "sent the invoice: set it only on his word. VOID: status annulée + void_reason "
             "releases every source it billed, never its number (the counter "
             "never reissues one; an IMPORTED number can be imported again "
             "once the lawyer deletes the voided invoice in the application); "
@@ -6471,9 +6474,11 @@ TOOLS: dict[str, dict] = {
             "ONE transaction it withdraws the fees (chèque or virement only, "
             "art. 58), records their recette in the operations account "
             "`admin_account_id` at `admin_date`, and the payment on the "
-            "Pallas Athéna invoice `invoice_id` — issued, of this dossier, "
-            "no provision imputed, up to its balance —, which may turn it "
-            "payée. Any refusal writes NOTHING anywhere. idempotency_key "
+            "Pallas Athéna invoice `invoice_id` — sent by the lawyer, of "
+            "this dossier, addressed to THIS client (never another client's "
+            "invoice), no provision imputed, up to its balance —, which may "
+            "turn it payée; its payee is only the lawyer or his firm. Any "
+            "refusal writes NOTHING anywhere. idempotency_key "
             "REQUIRED; if the outcome is uncertain, re-read "
             "list_trust_transactions before anything else."
         ),
@@ -6488,7 +6493,8 @@ TOOLS: dict[str, dict] = {
                 "purpose": {
                     "type": "string", "enum": _TRUST_ENTRY_PURPOSES,
                     "description": (
-                        "Objet — it must agree with the direction: "
+                        "Objet — it must agree with the direction (the "
+                        "model refuses otherwise): "
                         "avance_honoraires / dépôt_client are recettes; "
                         "remise_client / déboursé_tiers and "
                         "virement_honoraires (a fee payment) déboursés. "
@@ -6512,8 +6518,10 @@ TOOLS: dict[str, dict] = {
                     "(get_dossier)."
                 ),
                 **_register_text_props(
-                    "Required, except on a fee payment, where it defaults to "
-                    "the firm (the payee art. 58 allows)."
+                    "Required, except on a fee payment, where it may ONLY "
+                    "be the lawyer or his firm as the firm profile names "
+                    "them (art. 58), and defaults to the firm (the lawyer "
+                    "when the profile names no firm)."
                 ),
                 "invoice_id": _id(
                     "Fee payment only, required: the invoice it settles "

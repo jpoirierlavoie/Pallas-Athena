@@ -50,6 +50,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from flask import Flask  # noqa: E402
 
+from tests._accounting_history import FEE_PAYEE  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
 from utils.format_fr import format_cents_fr  # noqa: E402
@@ -432,7 +433,9 @@ def _fee_form(**over) -> dict:
     f = {
         "account_id": "acc1", "direction": "déboursé", "amount": "500,00",
         "purpose": "virement_honoraires", "method": "chèque",
-        "counterparty": "Me Jason Poirier Lavoie", "dossier_id": "dos1",
+        # D23 (2026-09-29, art. 58): the firm — the form offers only the
+        # lawyer and the firm, and the model refuses anyone else.
+        "counterparty": FEE_PAYEE, "dossier_id": "dos1",
         "client_id": "c1", "date": "2026-09-05",
         "invoice_number": "2026-F040", "admin_account_id": "ops1",
     }

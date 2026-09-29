@@ -49,6 +49,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.write_support as write_support
     from models import admin_ledger as al
     from models import fee_payment
+    from models import settings as settings_model  # noqa: F401 — faked below
     from models import trust
     from services import comptabilite as svc
 
@@ -85,9 +86,14 @@ def fake(monkeypatch):
             return frozen if tz is None else frozen.astimezone(tz)
 
     monkeypatch.setattr(dl, "datetime", _Clock)
-    monkeypatch.setattr(handlers, "cabinet_dict", lambda: {
-        "organisation": "Poirier Lavoie, avocat", "nom": "Me Jason Poirier Lavoie"})
     f = install(monkeypatch, *_fake_modules())
+    # The firm profile as « Paramètres » stores it — the payees a fee
+    # payment may name (D23, art. 58), read by the MODEL through
+    # utils/cabinet (rewritten deliberately: a monkeypatch of the
+    # handler's cabinet_dict stood in for it while the payee was the
+    # handler's rule alone).
+    f.seed("settings/cabinet", {"nom": "Me Jason Poirier Lavoie",
+                                "organisation": "Poirier Lavoie, avocat"})
     f.seed("trust_accounts/acc1", {
         "id": "acc1", "name": "Général", "institution": "Desjardins",
         "status": "actif", "account_type": "général", "transit": TRANSIT,
@@ -356,7 +362,8 @@ def test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_i
     step 5): no fee payment on a paper invoice (no tool DECLARES
     invoice_external_ref, and the service call turns the external path
     off), none on an invoice that imputes a provision, none on an invoice
-    not yet sent — each refused, and nothing written anywhere."""
+    not yet sent, and — decision D21, 2026-09-29 — none on another client's
+    invoice — each refused, and nothing written anywhere."""
     _cleared_deposit(fake)
     before = {c: _entries(fake, c) for c in (
         "trust_transactions", "admin_transactions", "invoices")}
@@ -385,6 +392,10 @@ def test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_i
     by_cheque_to_a_third = _refused("record_trust_entry", **_fee(method="traite"))
     assert "art. 58" in str(by_cheque_to_a_third)
 
+    other_client = _refused("record_trust_entry", **_fee(20000, client_id="c2"))
+    assert other_client.reason == "accounting_refused"
+    assert trust._ABORT_MESSAGES["facture_autre_client"] in str(other_client)
+
     assert {c: _entries(fake, c) for c in before} == before
 
 
@@ -403,9 +414,114 @@ def test_a_fee_payment_writes_its_three_effects_in_one_operation(fake):
     invoice = fake.peek("invoices/inv1")
     assert invoice["amount_paid"] == 100000 and invoice["status"] == "payée"
     assert fake.peek("admin_accounts/ops1")["ledger_balance"] == 100000
-    # The payee art. 58 allows, when none is named: the firm.
+    # The payee art. 58 allows, when none is named: the firm — said.
     assert payload["entity"]["counterparty"] == "Poirier Lavoie, avocat"
+    assert any("Bénéficiaire inscrit par défaut : « Poirier Lavoie, avocat »" in w
+               for w in payload["warnings"])
     assert any("Rien n'a été envoyé au client" in w for w in payload["warnings"])
+
+
+def test_d20_an_unsent_invoice_is_refused_without_a_way_around(fake):
+    """D20 (2026-09-29, art. 56 2°): the check still trusts the « envoyée »
+    status — the text alone changed. The refusal named the tool that
+    promotes the invoice (« Promouvez-la d'abord (update_invoice) »): it
+    told Claude how to get past the check. It now names the LAWYER as the
+    one who attests the sending, in the model's own words, and nothing
+    else."""
+    _cleared_deposit(fake)
+    before = {c: _entries(fake, c) for c in (
+        "trust_transactions", "admin_transactions", "invoices")}
+    draft = _refused("record_trust_entry", **_fee(20000, invoice_id="inv3"))
+    assert draft.reason == "accounting_refused"
+    text = str(draft)
+    assert trust._ABORT_MESSAGES["facture_non_émise"] in text
+    assert "envoyée par le juriste" in text and "art. 56 2°" in text
+    for forbidden in ("update_invoice", "romouv", "marquez"):
+        assert forbidden not in text, forbidden
+    assert {c: _entries(fake, c) for c in before} == before
+
+
+def test_d21_one_client_s_funds_never_settle_another_client_s_invoice(fake):
+    """Régression — D21 (2026-09-29): inv1 is addressed to c1; drawing c2's
+    CLEARED funds for it passed, with a warning after the fees had left
+    trust. Refused now, no override — named by the handler, decided again
+    by the model in the payment's transaction —, nothing written anywhere,
+    and neither a name nor an amount in the refusal."""
+    _cleared_deposit(fake)
+    rec = _call("record_trust_entry", **_deposit(client_id="c2", day="2026-09-04"))
+    _call("clear_register_entries", register="trust",
+          tx_ids=[rec["entity"]["id"]], cleared_date="2026-09-04")
+    before = {c: _entries(fake, c) for c in (
+        "trust_transactions", "admin_transactions", "invoices")}
+    refusal = _refused("record_trust_entry", **_fee(client_id="c2"))
+    assert refusal.reason == "accounting_refused"
+    assert trust._ABORT_MESSAGES["facture_autre_client"] in str(refusal)
+    for word in ("Jean", "Marie", "Tremblay", "1 000"):
+        assert word not in str(refusal), word
+    assert {c: _entries(fake, c) for c in before} == before
+
+
+def test_d21_the_model_decides_even_past_the_handler(fake, monkeypatch):
+    """The handler's repetition is a courtesy: with its read made to see the
+    invoice addressed to c2, the MODEL — which reads the invoice inside the
+    payment's transaction — still refuses."""
+    _cleared_deposit(fake)
+    rec = _call("record_trust_entry", **_deposit(client_id="c2", day="2026-09-04"))
+    _call("clear_register_entries", register="trust",
+          tx_ids=[rec["entity"]["id"]], cleared_date="2026-09-04")
+    real = svc.resolve_fee_invoice
+
+    def _seen_as_c2(**kw):
+        return {**real(**kw), "client_id": "c2"}
+
+    monkeypatch.setattr(svc, "resolve_fee_invoice", _seen_as_c2)
+    before = _entries(fake, "trust_transactions")
+    refusal = _refused("record_trust_entry", **_fee(client_id="c2"))
+    assert trust._ABORT_MESSAGES["facture_autre_client"] in str(refusal)
+    assert _entries(fake, "trust_transactions") == before
+
+
+def test_d23_the_payee_is_the_lawyer_or_his_firm(fake):
+    """Régression — D23 (2026-09-29, art. 58): a caller-supplied payee went
+    to the register as typed — « Jean Tremblay » passed. It must name the
+    lawyer or his firm, as the firm profile names them; it is stored as the
+    profile spells it; omitted, it is the firm."""
+    _cleared_deposit(fake)
+    refusal = _refused("record_trust_entry", **_fee(20000, counterparty="Jean Tremblay"))
+    assert refusal.reason == "accounting_refused"
+    text = str(refusal)
+    assert "`counterparty`" in text and "art. 58" in text
+    assert "« Poirier Lavoie, avocat » ou « Me Jason Poirier Lavoie »" in text
+    assert not any(t.get("purpose") == "virement_honoraires"
+                   for t in _entries(fake, "trust_transactions").values())
+
+    payload = _call("record_trust_entry", **_fee(
+        20000, counterparty="  me JASON poirier   lavoie "))
+    assert payload["entity"]["counterparty"] == "Me Jason Poirier Lavoie"
+    stored = fake.peek(f"trust_transactions/{payload['entity']['id']}")
+    assert stored["counterparty"] == "Me Jason Poirier Lavoie"
+    assert not any("Bénéficiaire inscrit" in w for w in payload["warnings"])
+
+
+def test_d23_a_profile_that_names_no_one_refuses_every_fee_payment(fake):
+    _cleared_deposit(fake)
+    fake.seed("settings/cabinet", {"nom": "", "organisation": ""})
+    refusal = _refused("record_trust_entry", **_fee(20000))
+    assert refusal.reason == "accounting_refused"
+    assert "ne nomme ni l'avocat ni le cabinet" in str(refusal)
+
+
+def test_d24_the_objet_sens_rule_is_the_model_s_too(fake):
+    """D24 (2026-09-29): the handler's refusal of an objet that contradicts
+    its sens is a REPETITION — the model refuses the same pair for every
+    caller (the web form included), in its own words."""
+    report = svc.enregistrer_ecriture_fideicommis({
+        "account_id": "acc1", "direction": "déboursé", "amount": 1000,
+        "purpose": "dépôt_client", "method": "chèque",
+        "counterparty": "Jean Tremblay", "dossier_id": "dos1", "client_id": "c1",
+        "date": _d(2026, 9, 4), "reference": "", "description": ""})
+    assert not report["ok"] and report["reason"] == "objet_sens_incohérent"
+    assert report["errors"] == [trust._ABORT_MESSAGES["objet_sens_incohérent"]]
 
 
 def test_fee_only_arguments_are_refused_on_an_ordinary_entry(fake):

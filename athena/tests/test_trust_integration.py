@@ -174,8 +174,10 @@ def test_echange_htmx_reemet_header_et_export(web_rendu, monkeypatch):
 def test_la_fiche_affiche_l_avertissement_d_un_paiement(web_rendu, monkeypatch):
     """Rendu réel de trust/detail.html : un code connu devient son texte
     français dans un bandeau ambre (classes déjà compilées) ; un code
-    inconnu — un ancien lien « avertissement=administration » — n'affiche
-    rien, et l'URL n'est jamais recopiée dans la page."""
+    inconnu — un ancien lien « avertissement=administration », ou
+    « facture_autre_client », devenu un REFUS le 2026-09-29 (D21) — n'affiche
+    rien, et l'URL n'est jamais recopiée dans la page. (Réécrit
+    délibérément : son code connu était « facture_autre_client ».)"""
     entry = {
         "id": "t1", "account_id": "ta1", "sequence": 7, "status": "en_circulation",
         "date": datetime(2026, 9, 10, tzinfo=timezone.utc), "direction": "déboursé",
@@ -188,8 +190,10 @@ def test_la_fiche_affiche_l_avertissement_d_un_paiement(web_rendu, monkeypatch):
     monkeypatch.setattr(rt.trust, "get_transaction", lambda tx_id: dict(entry) if tx_id == "t1" else None)
     monkeypatch.setattr(rt.trust, "get_account", lambda aid: dict(_ACC))
     html = web_rendu.get(
-        "/fideicommis/t1?avertissement=facture_autre_client,administration"
+        "/fideicommis/t1?avertissement=sans_recette_liee,administration,"
+        "facture_autre_client"
     ).get_data(as_text=True)
-    assert rt.comptabilite.WARNING_MESSAGES["facture_autre_client"] in html.replace("&#39;", "'")
+    assert rt.comptabilite.WARNING_MESSAGES["sans_recette_liee"] in html.replace("&#39;", "'")
+    assert "autre client du dossier" not in html
     assert "bg-amber-50 border border-amber-200" in html
     assert "administration," not in html and "avertissement=" not in html

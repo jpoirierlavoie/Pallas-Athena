@@ -87,6 +87,13 @@ NO_DOSSIER_PURPOSES = ("intérêts", "frais_bancaires", "correction")
 REVERSAL_PURPOSE = "correction"
 # The purpose of BOTH legs of an inter-dossier transfer; a pair is linked by
 # ``related_transaction_id`` and reverses as one (see reverse_transaction).
+# RESERVED to :func:`create_inter_dossier_transfer` since decision D24
+# (2026-09-29): the public create path refuses it
+# (``virement_inter_dossiers_réservé``) — until then the web entry form
+# offered it, and every such entry was a SINGLE leg, one client's balance
+# moved with no counter-leg anywhere. The legs already written stay in the
+# register and stay reversible alone (``_read_reverse``); the integrity
+# script's check 8 lists them as NOTES.
 TRANSFER_PURPOSE = "virement_inter_dossiers"
 # The fee payment (« Paiement d'honoraires ») — the one purpose whose trust
 # leg is written together with its administration recette and the payment
@@ -100,13 +107,14 @@ FEE_PAYMENT_PURPOSE = "virement_honoraires"
 # bancaires » go either way, the fee payment keeps its own composite path
 # (always a déboursé), and the two reserved purposes are the model's.
 #
-# A VOCABULARY here, not yet a rule of this module: the CONNECTOR refuses an
-# incoherent pair (mcp/handlers.record_trust_entry, lot 5b review), while
-# the web form still lets the lawyer pair any objet with any sens —
-# extending the refusal to the web is HIS decision (a pairing he actually
-# uses would start being refused). ``scripts/verify_trust_integrity``
-# check 8 lists the incoherent pairs already in the register, from this
-# same map, which is the measure that decision needs.
+# A RULE of this module since decision D24 (2026-09-29): the public create
+# path refuses an incoherent pair (``objet_sens_incohérent``) for EVERY
+# caller — the web form included, which used to accept any pairing, and the
+# connector, which refused it first (lot 5b review) and still repeats the
+# refusal naming its own arguments. Entries already written are untouched
+# (the register is append-only) and stay reversible;
+# ``scripts/verify_trust_integrity`` check 8 keeps listing them, from this
+# same map, as NOTES.
 PURPOSE_DIRECTIONS = {
     "avance_honoraires": "recette",
     "dépôt_client": "recette",
@@ -382,6 +390,14 @@ CREATE_OUTCOME_UNCERTAIN = (
 OUTCOME_UNCERTAIN_REASON = "issue_incertaine"
 
 
+def _purposes_of(direction: str) -> str:
+    """« A » et « B » — the labels of the purposes whose name implies
+    *direction* (``PURPOSE_DIRECTIONS``), for a refusal that must say which."""
+    names = [f"« {PURPOSE_LABELS[p]} »" for p, d in PURPOSE_DIRECTIONS.items()
+             if d == direction]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " et " + names[-1]
+
+
 # Machine-stable abort reason → French user message.
 _ABORT_MESSAGES = {
     "compte_introuvable": "Compte en fidéicommis introuvable.",
@@ -389,6 +405,24 @@ _ABORT_MESSAGES = {
     "montant_invalide": "Le montant doit être un nombre entier de cents positif.",
     "direction_invalide": "Le sens de l'opération est invalide.",
     "objet_invalide": "L'objet de l'opération est invalide.",
+    # D24 (2026-09-29) — the objet ↔ sens map is the model's rule, web
+    # included. Derived from the map, so a fifth unambiguous purpose names
+    # itself here the day it joins it.
+    "objet_sens_incohérent": (
+        "L'objet contredit le sens de l'opération : "
+        + _purposes_of("recette") + " sont des recettes, "
+        + _purposes_of("déboursé") + " des déboursés. Inscrite ainsi, la "
+        "ligne du registre dirait le contraire du mouvement : choisissez "
+        "l'objet ou le sens qui décrit ce qui s'est passé à la banque."
+    ),
+    # D24 — the purpose belongs to the two-leg transfer alone.
+    "virement_inter_dossiers_réservé": (
+        "Un virement inter-dossiers ne s'inscrit pas comme une écriture "
+        "isolée : il déplace les fonds d'un client vers un autre, et "
+        "s'inscrit par l'écran « Virement inter-dossiers », qui écrit ses "
+        "deux volets ensemble — le déboursé du client d'origine et la "
+        "recette du client destinataire."
+    ),
     "mode_invalide": "Le mode est invalide.",
     "date_requise": "La date de l'opération est requise.",
     "contrepartie_requise": "La contrepartie (« Somme reçue de / Bénéficiaire ») est requise.",
@@ -404,8 +438,23 @@ _ABORT_MESSAGES = {
     ),
     "virement_direction": "Un paiement d'honoraires doit être un déboursé.",
     "facture_introuvable": "Facture introuvable.",
-    "facture_non_émise": "La facture doit être émise (envoyée ou en retard).",
+    # D20 (2026-09-29, art. 56 2°) — the check still trusts the invoice's
+    # status; the refusal names who attests it (the lawyer) and says the
+    # rule, never a way around it (no « promote it first »).
+    "facture_non_émise": (
+        "Seule la facture envoyée par le juriste ouvre un retrait "
+        "d'honoraires (art. 56 2°, RLRQ c. B-1, r. 5), tant qu'elle reste "
+        "due : celle-ci n'est ni « envoyée » ni « en retard »."
+    ),
     "facture_autre_dossier": "La facture appartient à un autre dossier.",
+    # D21 (2026-09-29) — no override: one client's trust funds never settle
+    # another client's invoice. Neither a name nor an amount (the web
+    # re-render and the connector show it as is).
+    "facture_autre_client": (
+        "La facture est adressée à un autre client du dossier : un paiement "
+        "d'honoraires ne tire que sur les fonds en fidéicommis du client à "
+        "qui la facture est adressée."
+    ),
     "virement_excède_facture": "Le montant dépasse le solde dû de la facture.",
     "facture_avec_provision": (
         "Cette facture impute déjà une provision : son solde dû en est net. Un "
@@ -931,6 +980,18 @@ def _precheck_reason(clean: dict, *, reserved_ok: tuple = ()) -> Optional[str]:
     # no trace in the operations account — the July 2026 incident class.
     if purpose == FEE_PAYMENT_PURPOSE and FEE_PAYMENT_PURPOSE not in reserved_ok:
         return "paiement_honoraires_composite"
+    # D24 (2026-09-29): an inter-dossier transfer is TWO linked legs, written
+    # together by create_inter_dossier_transfer — never one leg on its own
+    # (the web entry form offered the purpose; each such entry moved one
+    # client's balance with no counter-leg anywhere).
+    if purpose == TRANSFER_PURPOSE:
+        return "virement_inter_dossiers_réservé"
+    # D24: the purpose's NAME and the direction agree, whoever the caller —
+    # a « Dépôt du client » paid out prints a register line that says the
+    # opposite of the movement.
+    implied = PURPOSE_DIRECTIONS.get(purpose)
+    if implied is not None and direction != implied:
+        return "objet_sens_incohérent"
     if method not in VALID_METHODS:
         return "mode_invalide"
     # Art. 58 — a fee payment leaves trust by cheque or by transfer, never by
@@ -1164,7 +1225,8 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
             raise _TxnAbort("remboursement_espèces_excède")
     # A fee transfer must be BACKED BY AN INVOICE. Two ways to satisfy that:
     #   1. a linked Pallas Athéna invoice — fully verifiable (issued, same
-    #      dossier, amount <= solde dû); or
+    #      dossier, addressed to THIS client, no provision, amount <= solde
+    #      dû); or
     #   2. an external invoice number, for an invoice that predates Pallas
     #      Athéna and has no row to link (user decision 2026-07-17). The
     #      amount CANNOT be verified in that case — the register records what
@@ -1179,6 +1241,17 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
                 raise _TxnAbort("facture_non_émise")
             if invoice.get("dossier_id") != dossier_id:
                 raise _TxnAbort("facture_autre_dossier")
+            # D21 (2026-09-29): the funds withdrawn are the INVOICED client's
+            # — never another client's of the same dossier, whatever he may
+            # have authorised (no override; until then a warning shown after
+            # the commit, the fees already out), judged here on the invoice
+            # this transaction read, so web and connector cannot differ. An
+            # invoice that names no client (an import that carried none)
+            # names no OTHER client either, and is not refused on this
+            # ground.
+            invoice_client = str(invoice.get("client_id") or "").strip()
+            if invoice_client and invoice_client != client_id:
+                raise _TxnAbort("facture_autre_client")
             # A provision imputed BY THE INVOICE (retainer_applied) is
             # the client's trust money, already deducted from
             # amount_due: withdrawing it again as a fee payment counts
