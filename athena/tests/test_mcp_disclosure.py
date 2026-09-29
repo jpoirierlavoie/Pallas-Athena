@@ -251,6 +251,21 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # and a false-claim entry must never refuse a true sentence.
     "nothing can ever be deleted here.",
     "deleted here: a cancelled task or event is kept, with its status.",
+    # Lot 5, step 5 (the final « never » set): the claims its texts
+    # replaced, and the claude.ai skill's phrasings of the promises lot 5
+    # falsified (DEPLOYMENT.md §15 « Lot 5 » lists them for the skill's own
+    # update). The reversal is the only correction of a TRUST entry (and of
+    # an administration entry no longer editable), never of « a register
+    # entry »; a trust recette or déboursé inscribes nothing at
+    # administration (only a fee payment does); the administration revision
+    # trail keeps its 25 latest changes, not « every » one.
+    "le fidéicommis est en lecture seule intégrale",
+    "`reverse_register_entry` is the only correction:",
+    "the only correction of a register entry",
+    "c'est la seule correction, et l'original",
+    "paiements d'honoraires — chacun inscrit",
+    "chaque correction étant conservée",
+    "every change is kept in the entry's revision trail",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -282,6 +297,17 @@ KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bconnector\s+cannot close a dossier",
     r"closing a dossier is done (?:only )?in the application(?: only)?\s*"
     r"(?:[.;)]|$)",
+    # Lot 5, step 5 (the final « never » set): under the accounting grant
+    # the connector WRITES both registers and a payment exists as a register
+    # entry. Bound to their subject or to the absence of the grant's
+    # qualification, so the true sentences that name the grant still pass
+    # (« Without the separate … grant this connector never records a
+    # payment; under it … »).
+    r"(?<!grant )\b(?:this|the) connector never records a payment",
+    r"(?<!grant it )\bnever touches trust accounting",
+    r"\bconnecteur\b[^.]{0,80}\bn'enregistre aucun paiement",
+    r"\bpaiements?\s+ne sont inscriptibles par aucun outil",
+    r"\btrust (?:accounting |register )?is (?:entirely |fully )?read-only",
 )
 
 
@@ -841,6 +867,9 @@ def test_no_known_false_claim_in_the_connector_texts():
     ]
     assert offenders == [], offenders
     assert _false_claims_in(endpoint.INSTRUCTIONS) == []
+    # Lot 5, step 5: the text a token holding athena:comptabilite reads was
+    # never scanned — the variant that speaks of money.
+    assert _false_claims_in(endpoint.INSTRUCTIONS_COMPTABILITE) == []
     for name, spec in tools.TOOLS.items():
         assert _false_claims_in(spec["description"]) == [], name
 
@@ -1058,10 +1087,12 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "trust_identity" not in keys
     # Lot 5b narrowed it to the tokens WITHOUT the accounting grant — and
-    # says so, so it stays true for every token.
+    # says so, so it stays true for every token. REWRITTEN in lot 5, step 5:
+    # « touches » became « writes to » — reading the trust register stays
+    # under athena:read, so the promise is about WRITES.
     assert keys["trust"].en == (
-        "Without the separate `athena:comptabilite` grant it never touches "
-        "trust accounting — neither the trust register nor the "
+        "Without the separate `athena:comptabilite` grant it never writes "
+        "to trust accounting — neither the trust register nor the "
         "administration ledger.")
     kyc_never = keys["kyc"]
     assert "confirm_kyc_status" in kyc_never.forbidden
@@ -1160,9 +1191,12 @@ def test_review_of_the_lot_4b_text_step():
     assert "unless `warnings` say the status moved during the call" in desc
     assert "never resend yours" in desc
 
+    # REWRITTEN in lot 5, step 5: « Les paiements ne sont inscriptibles par
+    # aucun outil » was TRUE when lot 4b wrote this test, and lot 5 made it
+    # false — under the accounting grant an encaissement or a fee payment
+    # records one. It moved to the false list below.
     for true in (
         "A cancelled task or event is kept, with its status.",
-        "Les paiements ne sont inscriptibles par aucun outil.",
         "Terminer la dernière tâche ne ferme pas un dossier.",
         "complete_task never closes anything else: it cannot close a "
         "dossier.",
@@ -1182,5 +1216,139 @@ def test_review_of_the_lot_4b_text_step():
         "This connector cannot close a dossier.",
         "Closing a dossier is done in the application only.",
         "Identity and conflict checks are not writable by any tool.",
+        "Les paiements ne sont inscriptibles par aucun outil.",
     ):
         assert _false_claims_in(false), false
+
+
+def test_the_lot_5_texts_state_the_final_never_set():
+    """Lot 5, step 5 — the final « never » set. Each assertion fails on the
+    texts of 17fb0d1:
+
+    * « toucher au fidéicommis » is gone: the general promise is about
+      WRITES (reading stays under athena:read), and beside the accounting
+      box it points to that box's own list instead of a bare « sauf avec la
+      case » that named nothing;
+    * a payment exists ONLY as a register entry, and the payment bullet
+      names both — the administration encaissement, the trust fee payment;
+    * what stays impossible under the grant is the PRECISE list — no entry
+      deleted (each register's correction said), no reconciliation, no
+      account, no transfer between dossiers, no cash withdrawal, no fee
+      payment on a paper, UNSENT or provision-imputing invoice, no bank
+      number — each item its own promise, with its own sweep or test;
+    * « the reversal is the only correction » is said of TRUST (and of an
+      administration entry no longer editable) — never of every entry,
+      beside update_admin_entry, which corrects one;
+    * a trust recette or déboursé inscribes nothing at administration: the
+      box's summary says it of the fee payment alone.
+    """
+    keys = {n.key: n for n in disclosure.NEVERS}
+
+    trust = keys["trust"]
+    for text in (trust.fr, trust.fr_comptabilite, trust.en):
+        assert "toucher" not in text and "touches" not in text
+    assert trust.fr == (
+        "écrire au <strong>fidéicommis</strong> ou au registre "
+        "d'administration")
+    assert "énuméré avec elle, plus bas" in trust.fr_comptabilite
+
+    payment = keys["payment"]
+    for fragment in ("autrement que par une écriture aux registres comptables",
+                     "un encaissement au compte d'administration",
+                     "un paiement d'honoraires au fidéicommis",
+                     "inscrit lui-même le paiement sur la facture"):
+        assert fragment in payment.fr_comptabilite, fragment
+    assert "an administration encaissement, or a trust fee payment" in payment.en
+
+    assert [n.key for n in disclosure.accounting_nevers()] == [
+        "register_delete", "register_setup", "register_transfer",
+        "trust_withdrawal", "fee_invoice", "account_number"]
+    listed_fr = " ".join(n.fr for n in disclosure.accounting_nevers())
+    listed_en = " ".join(n.en for n in disclosure.accounting_nevers())
+    for fr, en in (
+        ("<strong>supprimer</strong> une écriture", "never deletes a register entry"),
+        ("conciliation</strong>", "reconciliation"),
+        ("un <strong>compte</strong>", "never creates or modifies an account"),
+        ("<strong>virer des fonds</strong> du fidéicommis d'un dossier à un autre",
+         "never transfers trust funds between dossiers"),
+        ("<strong>en espèces</strong> (art. 57", "in cash (art. 57"),
+        ("facture papier", "with a paper invoice"),
+        ("facture <strong>pas encore envoyée</strong>", "with an invoice not yet sent"),
+        ("une <strong>provision</strong>", "an invoice that imputes a provision"),
+        ("<strong>numéro de compte</strong>", "a bank transit or account number"),
+    ):
+        assert fr in listed_fr, fr
+        assert en in listed_en, en
+
+    delete = keys["register_delete"]
+    assert "au fidéicommis, une erreur ne se corrige que par une" in delete.fr
+    assert "une écriture se corrige tant qu'elle reste modifiable" in delete.fr
+    assert "a trust entry is corrected only by a reversal" in delete.en
+    assert "`update_admin_entry` while it stays editable" in delete.en
+    # Each item carries the calls it forbids — split three ways.
+    assert set(delete.forbidden) == {"delete_transaction", "delete_card_payment"}
+    assert keys["register_transfer"].forbidden == ("create_inter_dossier_transfer",)
+    assert "create_inter_dossier_transfer" not in keys["register_setup"].forbidden
+    assert keys["register_transfer"].behavioural_test.endswith(
+        "test_a_transfer_between_dossiers_is_never_reversed_here")
+    assert keys["trust_withdrawal"].forbidden_inputs == (("*", "cash_receipt_id"),)
+    assert keys["fee_invoice"].forbidden_inputs == (("*", "invoice_external_ref"),)
+    # The behavioural test the fee-invoice promise names refuses all three
+    # invoices — the paper one, the provision, and the UNSENT draft.
+    source = (_ATHENA / "tests" / "test_mcp_accounting.py").read_text(encoding="utf-8")
+    body = source[source.index(
+        "def " + keys["fee_invoice"].behavioural_test.partition("::")[2]):]
+    body = body[:body.index("\ndef ")]
+    assert 'invoice_external_ref' in body and '"provision" in str(provision)' in body
+    assert '"envoyée" in str(draft)' in body
+
+    summary = " ".join(str(disclosure.comptabilite_summary_fr()).split())
+    assert summary.endswith(
+        "Jamais de suppression, jamais de conciliation ni de compte, jamais "
+        "de virement entre dossiers, jamais de retrait en espèces, jamais de "
+        "paiement d'honoraires sur une facture papier, non envoyée ou qui "
+        "impute une provision.")
+
+    accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
+    assert ("des recettes et des déboursés, et des paiements d'honoraires — "
+            "dont chacun inscrit") in accounting.checkbox_summary_fr
+    assert ("`reverse_register_entry` is the ONLY correction of a trust entry, "
+            "and of an administration entry no longer editable") in accounting.instructions_en
+    assert tools.TOOLS["reverse_register_entry"]["description"].startswith(
+        "ACCOUNTING — WRITE. The ONLY correction of a trust entry, and of an "
+        "administration entry update_admin_entry can no longer edit")
+    assert "(its latest 25 kept)" in tools.TOOLS["update_admin_entry"]["description"]
+
+    # The accounting promises reach the tokens holding the grant — and only
+    # them; the general ones reach every token.
+    for never in disclosure.accounting_nevers():
+        assert never.en in endpoint.INSTRUCTIONS_COMPTABILITE, never.key
+        assert never.en not in endpoint.INSTRUCTIONS, never.key
+    assert trust.en in endpoint.INSTRUCTIONS
+    assert payment.en in endpoint.INSTRUCTIONS
+
+
+def test_the_lot_5_false_claim_entries_bite_and_spare_the_true_sentences():
+    """Non-vacuous both ways: each lot 5 entry catches the phrasing it was
+    written for, and the true sentences that NAME the grant still pass."""
+    for false in (
+        "Le fidéicommis est en lecture seule intégrale. Aucun outil n'y écrit.",
+        "Le connecteur ne change aucun statut de facture et n'enregistre "
+        "aucun paiement.",
+        "This connector never records a payment.",
+        "It never touches trust accounting.",
+        "Trust accounting is read-only here.",
+        "`reverse_register_entry` is the only correction: a fee payment…",
+    ):
+        assert _false_claims_in(false), false
+    for true in (
+        endpoint.INSTRUCTIONS, endpoint.INSTRUCTIONS_COMPTABILITE,
+        "Without the separate `athena:comptabilite` grant this connector "
+        "never records a payment; under it, a payment exists only as a "
+        "register entry.",
+        "Without the separate `athena:comptabilite` grant it never touches "
+        "trust accounting.",
+        "get_trust_balance is read-only.",
+        "cet outil n'inscrit aucun paiement",
+    ):
+        assert not _false_claims_in(true), true

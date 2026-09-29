@@ -305,10 +305,11 @@ def test_clearing_refuses_what_the_statement_cannot_show(fake):
 
 def test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice(fake):
     """The « trust_withdrawal » promise (mcp/disclosure): no cash withdrawal
-    (art. 57), no fee payment on a paper invoice (no tool DECLARES
+    (art. 57) — and the « fee_invoice » promise (split from it in lot 5,
+    step 5): no fee payment on a paper invoice (no tool DECLARES
     invoice_external_ref, and the service call turns the external path
-    off), none on an invoice that imputes a provision — each refused, and
-    nothing written anywhere."""
+    off), none on an invoice that imputes a provision, none on an invoice
+    not yet sent — each refused, and nothing written anywhere."""
     _cleared_deposit(fake)
     before = {c: _entries(fake, c) for c in (
         "trust_transactions", "admin_transactions", "invoices")}
@@ -624,8 +625,9 @@ def test_reversing_an_uncleared_trust_entry_voids_both(fake):
 
 def test_a_transfer_between_dossiers_is_never_reversed_here(fake):
     """Its reversal moves one client's funds back to another — the transfer
-    the connector never makes (« register_setup »): refused before the
-    model, nothing written."""
+    the connector never makes (« register_transfer », split from
+    « register_setup » in lot 5, step 5): refused before the model, nothing
+    written."""
     fake.seed("trust_transactions/tv1", {
         "id": "tv1", "account_id": "acc1", "sequence": 1,
         "date": _d(2026, 9, 2), "direction": "déboursé", "amount": 1000,

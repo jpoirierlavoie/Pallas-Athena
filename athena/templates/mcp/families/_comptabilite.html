@@ -6,7 +6,14 @@
    rules are stated HERE, beside the capability they bound — each one is the
    MODEL's (models/trust, models/admin_ledger, models/fee_payment), so the
    application refuses exactly what this screen says the connector cannot
-   do. The class strings are the write block's, verbatim. #}
+   do. The class strings are the write block's, verbatim. Lot 5, step 5:
+   « contre-passer … c'est la seule correction » stood beside « corriger une
+   écriture d'administration » — the reversal is the only correction at
+   TRUST, and at administration only once an entry is no longer editable;
+   and the editable conditions now name the card payment and the reversal
+   pair too (models/admin_ledger._entry_lock_reason). « Chaque correction
+   étant conservée » overstated a trail the model caps at 25
+   (_REVISIONS_CAP). #}
 <p class="mt-3">
   <strong>Lire</strong> le registre d'administration&nbsp;: les comptes
   d'opérations et les cartes de crédit, leurs soldes, leur dernière
@@ -31,17 +38,21 @@
   <strong>encaissements de facture</strong> — qui inscrivent le paiement sur
   la facture dans la même opération — et des paiements de carte&nbsp;;
   <strong>corriger</strong> une écriture d'administration tant qu'elle reste
-  modifiable (en circulation, hors période conciliée, liée à aucune facture
-  ni à aucun paiement d'honoraires), chaque correction étant conservée.
+  modifiable (en circulation, hors période conciliée, liée à aucune facture,
+  à aucun paiement d'honoraires ni à aucun paiement de carte, et jamais
+  contre-passée), ses corrections inscrites sur l'écriture (les 25
+  dernières conservées).
 </p>
 <p class="mt-2">
   <strong>Compenser</strong> jusqu'à {{ disclosure.register_clear_max }}
   écritures d'un compte à la <strong>date du relevé bancaire</strong> —
   au fidéicommis, compenser un dépôt le rend disponible pour un déboursé
   —, et <strong>contre-passer</strong> une écriture&nbsp;: c'est la seule
-  correction, et l'original comme sa contre-passation restent au registre
-  pour toujours. Un paiement d'honoraires se contre-passe avec sa recette
-  et le paiement porté sur la facture.
+  correction d'une écriture du fidéicommis, et d'une écriture
+  d'administration qui n'est plus modifiable&nbsp;; l'original comme sa
+  contre-passation restent au registre pour toujours. Un paiement
+  d'honoraires se contre-passe avec sa recette et le paiement porté sur la
+  facture.
 </p>
 <p class="mt-2">
   Aucune écriture, compensation ni contre-passation n'est datée dans une

@@ -601,6 +601,55 @@ def test_initialize_describes_the_accounting_tools_only_to_a_token_that_sees_the
     bearer.reset_brake_state()
 
 
+# Lot 5, step 5 — the numbers the lawyer reads off `tools/list` in the
+# train (DEPLOYMENT.md §15 « Lot 5 »), LITERAL on purpose: every other
+# assertion of this module derives its set from the registry, and a derived
+# check passes whatever the registry holds. 86 = 32 reads + 54 writes; the
+# six accounting tools (the read get_admin_ledger and the five ACCOUNTING
+# writes) appear ONLY to a token holding athena:comptabilite while
+# MCP_COMPTABILITE_ENABLED is on — and the five writes only while
+# MCP_WRITE_ENABLED is on too (the master switch).
+@pytest.mark.parametrize("scope, write_on, compta_on, expected", [
+    ("athena:read", True, True, 31),
+    ("athena:read athena:write", True, True, 80),
+    (_ALL_SCOPES, True, True, 86),
+    (_ALL_SCOPES, True, False, 80),
+    ("athena:read athena:comptabilite", True, True, 37),
+    ("athena:read athena:comptabilite", True, False, 31),
+    (_ALL_SCOPES, False, True, 32),
+    (_ALL_SCOPES, False, False, 31),
+])
+def test_tools_list_counts_per_token_are_the_train_s_checklist(
+    monkeypatch, scope, write_on, compta_on, expected
+):
+    bearer.reset_brake_state()
+    assert len(tools.TOOLS) == 86 and len(tools.ACCOUNTING_TOOLS) == 6
+    cl = _client_for(monkeypatch, scope, MCP_WRITE_ENABLED=write_on,
+                     MCP_COMPTABILITE_ENABLED=compta_on)
+    listed = _listed(cl)
+    assert len(listed) == expected
+    sees_accounting = "athena:comptabilite" in scope and compta_on
+    assert ("get_admin_ledger" in listed) is sees_accounting
+    assert (listed >= tools.ACCOUNTING_WRITE_TOOLS) is (sees_accounting and write_on)
+    if not sees_accounting:
+        assert not listed & tools.ACCOUNTING_TOOLS
+    bearer.reset_brake_state()
+
+
+def test_exactly_the_six_accounting_tools_hide_behind_scope_and_switch(monkeypatch):
+    """The same token, the accounting switch flipped: the difference is the
+    six accounting tools, by name — nothing else appears or vanishes."""
+    bearer.reset_brake_state()
+    on = _listed(_client_for(monkeypatch, _ALL_SCOPES, MCP_COMPTABILITE_ENABLED=True))
+    off = _listed(_client_for(monkeypatch, _ALL_SCOPES, MCP_COMPTABILITE_ENABLED=False))
+    assert on - off == {
+        "get_admin_ledger", "record_trust_entry", "record_admin_entry",
+        "update_admin_entry", "clear_register_entries", "reverse_register_entry",
+    }
+    assert off <= on
+    bearer.reset_brake_state()
+
+
 def test_revalidation_demands_the_accounting_scope_not_the_write_one(
     accounting, monkeypatch, caplog
 ):

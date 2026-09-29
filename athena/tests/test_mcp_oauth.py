@@ -889,6 +889,9 @@ def test_the_accounting_box_is_absent_while_its_switch_is_off(fake):
     assert "Sans la case ci-dessous" in flat
     assert "aucune des cases" not in flat
     assert "sauf avec la case" not in flat
+    # Lot 5, step 5: no bullet points to a box this page does not offer.
+    assert "Autoriser la comptabilité" not in flat
+    assert "écrire au <strong>fidéicommis</strong> ou au registre d'administration;" in flat.replace("&nbsp;", "")
     form["grant_write"] = "on"
     form["grant_comptabilite"] = "on"          # forged past the missing control
     code = _code_from(client.post("/oauth/authorize", data=form))
@@ -900,7 +903,16 @@ def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake
     like the write block — the ACCOUNTING family's partial (with the D14
     rules beside the capability they bound), the French title of EVERY tool
     under the scope, and the promises the grant keeps — and its label is
-    the derived summary."""
+    the derived summary.
+
+    REWRITTEN in lot 5, step 5 (the final « never » set): the block's
+    closing sentence « Une écriture inscrite par erreur ne s'efface pas :
+    elle se contre-passe » is gone — an administration entry still editable
+    is CORRECTED, not reversed —, and the partial now says the reversal is
+    the only correction of a TRUST entry and of an administration entry no
+    longer editable, names every editability condition of the model, and
+    the revision trail's real 25-entry ceiling. The known false claims are
+    scanned on THIS page too (the write-only page already was)."""
     client = _make_app(MCP_COMPTABILITE_ENABLED=True).test_client()
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
@@ -919,9 +931,20 @@ def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake
         "date du relevé bancaire",
         "période déjà <strong>conciliée</strong>",
         "marquée comme provenant de Claude",
-        "Une écriture inscrite par erreur ne s'efface pas",
+        "Le connecteur n'efface jamais une écriture.",
+        "c'est la seule correction d'une écriture du fidéicommis, et d'une "
+        "écriture d'administration qui n'est plus modifiable",
+        "à aucun paiement d'honoraires ni à aucun paiement de carte, et "
+        "jamais contre-passée",
+        "(les 25 dernières conservées)",
     ):
         assert fragment in block, fragment
+    for gone in ("Une écriture inscrite par erreur ne s'efface pas",
+                 "c'est la seule correction, et l'original",
+                 "chaque correction étant conservée"):
+        assert gone not in block, gone
+    from tests.test_mcp_disclosure import _false_claims_in
+    assert _false_claims_in(" ".join(body.split())) == []
     for never in disclosure.accounting_nevers():
         assert " ".join(never.fr.split()) in block, never.key
     label = " ".join(_ACCOUNTING_LABEL_RE.search(body).group(0).split())
@@ -950,10 +973,22 @@ def test_the_accounting_box_renders_unticked_and_lists_its_tools(fake, monkeypat
     assert 'name="grant_write"' in body
     # In number with the boxes, and the two « jamais » the box lifts are
     # qualified — the page never forbids what it offers two blocks down.
+    # REWRITTEN in lot 5, step 5: the payment bullet names the TWO register
+    # entries a payment can be, and the trust bullet points to the precise
+    # list the accounting block states (it said only « sauf avec la case »).
     assert "Si vous ne cochez aucune des cases ci-dessous" in flat
     assert "Sans la case ci-dessous" not in flat
-    assert "sauf par une écriture aux registres comptables" in flat
-    assert "(sauf avec la case «&nbsp;Autoriser la comptabilité&nbsp;»)" in flat
+    assert ("inscrire un <strong>paiement</strong> autrement que par une "
+            "écriture aux registres comptables") in flat
+    assert ("un encaissement au compte d'administration ou un paiement "
+            "d'honoraires au fidéicommis, qui inscrit lui-même le paiement "
+            "sur la facture") in flat
+    assert ("écrire au <strong>fidéicommis</strong> ou au registre "
+            "d'administration sans la case «&nbsp;Autoriser la "
+            "comptabilité&nbsp;» — ce qu'elle-même ne permet jamais est "
+            "énuméré avec elle, plus bas") in flat
+    assert "sauf avec la case" not in flat
+    assert "toucher au <strong>fidéicommis</strong>" not in flat
     assert "Le client a demandé cet accès" not in _ACCOUNTING_LABEL_RE.search(body).group(0)
 
 

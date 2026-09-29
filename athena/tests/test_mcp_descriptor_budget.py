@@ -19,7 +19,10 @@ with outputSchema included.
 
 Measured again 2026-09-29 with lot 5b's six accounting tools: 86 tools,
 250 651 bytes in total (the six weigh 18 505, the largest `record_admin_entry`
-at 4 640).
+at 4 640). After lot 5's text step (the same day — two accounting
+descriptions made true: the reversal is the only correction of a TRUST entry,
+the revision trail keeps its latest 25): 251 024 bytes, the six 18 878, the
+largest descriptor overall still `update_partie` at 7 858.
 
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """

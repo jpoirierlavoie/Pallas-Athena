@@ -69,10 +69,16 @@ privileged material out of a consumer product — no longer holds. Nothing
 was ever stored in ``chat_drafts``; the feature never saw use.
 **NOTHING is ever deleted** — a detached party or mandataire is a LINK
 leaving an array, the contact staying, and a reopened dossier's DAV
-tombstones are sync bookkeeping, not records —, no payment is ever
-recorded and no invoice is
-ever marked « payée » (``mcp.disclosure.NEVERS`` — the sweep would catch a
-handler reaching one). Since lot 3b (BILL) an invoice IS created from real
+tombstones are sync bookkeeping, not records —, no handler writes a
+payment itself and no invoice is ever marked « payée » by a status change
+(``mcp.disclosure.NEVERS`` — the sweep would catch a handler reaching a
+payment writer). Since lot 5b a payment exists only as a REGISTER entry,
+under the separate ``athena:comptabilite`` grant: an administration
+encaissement or a trust fee payment, whose model writes the invoice's
+payment in the entry's own transaction (which may turn the invoice payée)
+— the ACCOUNTING handlers reach it through ``services/comptabilite``
+alone, and no other handler reaches a register writer (derived:
+``tests/test_mcp_accounting.py``). Since lot 3b (BILL) an invoice IS created from real
 unbilled sources — consuming the year's next number, allocated inside the
 model's transaction —, corrected while a brouillon, promoted (envoyée,
 en_retard) and voided, and a budget version is appended: the ``budgets``

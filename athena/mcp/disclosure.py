@@ -597,9 +597,14 @@ FAMILIES: tuple[Family, ...] = (
             "clear_register_entries", "reverse_register_entry",
         ),
         consent_template="mcp/families/_comptabilite.html",
+        # Lot 5, step 5: « des recettes, des déboursés et des paiements
+        # d'honoraires — chacun inscrit … la recette au compte
+        # d'administration » bound « chacun » to all three, and a trust
+        # recette or déboursé inscribes nothing at administration. Only the
+        # fee payment does.
         checkbox_summary_fr=(
-            "inscrire au fidéicommis des recettes, des déboursés et des "
-            "paiements d'honoraires — chacun inscrit, dans la même "
+            "inscrire au fidéicommis des recettes et des déboursés, et des "
+            "paiements d'honoraires — dont chacun inscrit, dans la même "
             "opération, la recette au compte d'administration et le "
             "paiement sur la facture —, inscrire au compte "
             "d'administration des dépenses, d'autres recettes, des "
@@ -613,8 +618,8 @@ FAMILIES: tuple[Family, ...] = (
             "(ONLY under the separate `athena:comptabilite` grant, which "
             "this authorization holds.) Record ONLY movements that happened "
             "at the bank, dated the day they happened; a register entry is "
-            "NEVER deleted — a mistake is corrected by a reversal, and both "
-            "entries stay in the register for good. `get_admin_ledger` (a "
+            "NEVER deleted, and a reversal keeps both entries in the "
+            "register for good. `get_admin_ledger` (a "
             "read) gives the administration accounts, their lock floors and "
             "entries (with etags); `get_trust_snapshot` gives the trust "
             "accounts, `list_trust_transactions` the trust entries. "
@@ -636,8 +641,10 @@ FAMILIES: tuple[Family, ...] = (
             "compensée at the BANK STATEMENT's date — at trust this makes a "
             "deposit's funds available for a déboursé, so never clear what "
             "the statement does not show. `reverse_register_entry` is the "
-            "only correction: a fee payment reverses with its recettes and "
-            "invoice payments, a card-payment leg with its pair. Nothing is "
+            "ONLY correction of a trust entry, and of an administration "
+            "entry no longer editable: a fee payment reverses with its "
+            "recettes and invoice payments, a card-payment leg with its "
+            "pair. Nothing is "
             "ever dated on or before an account's last completed "
             "reconciliation. Every accounting write REQUIRES an "
             "idempotency_key and refuses when the replay store is "
@@ -671,12 +678,20 @@ TOOL_CODE_MODULES: frozenset[str] = frozenset({
 # writers — create/update/clear/reverse, the card payment — and backed a
 # promise that NO tool touched the registers; the ACCOUNTING family reaches
 # those now, and what keeps them away from every other tool is the derived
-# reach test the « trust » promise names.)
+# reach test the « trust » promise names.) Lot 5, step 5 split the one list
+# three ways — deleting an entry, the reconciliations and accounts, the
+# inter-dossier transfer —, each the forbidden calls of its OWN promise, so
+# the screen states each impossibility where its sweep backs it.
+_REGISTER_DELETERS: tuple[str, ...] = (
+    "delete_transaction", "delete_card_payment",
+)
 _REGISTER_SETUP_WRITERS: tuple[str, ...] = (
     "create_reconciliation", "complete_reconciliation",
     "delete_reconciliation", "create_account", "update_account",
-    "create_inter_dossier_transfer", "attach_receipt",
-    "delete_transaction", "delete_card_payment",
+    "attach_receipt",
+)
+_REGISTER_TRANSFER_WRITERS: tuple[str, ...] = (
+    "create_inter_dossier_transfer",
 )
 
 NEVERS: tuple[Never, ...] = (
@@ -712,10 +727,15 @@ NEVERS: tuple[Never, ...] = (
     Never(
         key="payment",
         fr="inscrire ou encaisser un <strong>paiement</strong>",
+        # Lot 5, step 5: « sauf par une écriture aux registres » named no
+        # entry. A payment exists as exactly TWO register entries, and the
+        # screen now names both — and says who writes it onto the invoice.
         fr_comptabilite=(
-            "inscrire ou encaisser un <strong>paiement</strong> — sauf par "
-            "une écriture aux registres comptables, avec la case "
-            "«&nbsp;Autoriser la comptabilité&nbsp;»"
+            "inscrire un <strong>paiement</strong> autrement que par une "
+            "écriture aux registres comptables, avec la case «&nbsp;Autoriser "
+            "la comptabilité&nbsp;» — un encaissement au compte "
+            "d'administration ou un paiement d'honoraires au fidéicommis, "
+            "qui inscrit lui-même le paiement sur la facture"
         ),
         # Lot 5b made the old sentence true for a token WITHOUT the
         # accounting grant only: under it, an encaissement or a trust fee
@@ -742,7 +762,9 @@ NEVERS: tuple[Never, ...] = (
         summary_fr="de paiement",
         summary_fr_comptabilite=(
             "de paiement (seule la case «&nbsp;Autoriser la "
-            "comptabilité&nbsp;» en inscrit, par une écriture aux registres)"
+            "comptabilité&nbsp;» en inscrit, et seulement par une écriture "
+            "aux registres&nbsp;: un encaissement ou un paiement "
+            "d'honoraires)"
         ),
     ),
     # Lot 3b (BILL) falsified two promises and DELETED them: « it never
@@ -825,24 +847,33 @@ NEVERS: tuple[Never, ...] = (
     # promise below (« kyc »).
     Never(
         key="trust",
+        # Lot 5, step 5 (the final « never » set): « toucher au fidéicommis »
+        # was replaced. Reading stays under athena:read (the balances, the
+        # register, the snapshot), so « toucher » overstated a promise about
+        # WRITES; and beside the accounting box a bare « (sauf avec la
+        # case …) » named nothing of what that box still forbids. What
+        # stays impossible under it is now a precise list, each item its
+        # own promise below (accounting_only), and this bullet points to it.
         fr=(
-            "toucher au <strong>fidéicommis</strong> ou au registre "
+            "écrire au <strong>fidéicommis</strong> ou au registre "
             "d'administration"
         ),
         fr_comptabilite=(
-            "toucher au <strong>fidéicommis</strong> ou au registre "
-            "d'administration (sauf avec la case «&nbsp;Autoriser la "
-            "comptabilité&nbsp;»)"
+            "écrire au <strong>fidéicommis</strong> ou au registre "
+            "d'administration sans la case «&nbsp;Autoriser la "
+            "comptabilité&nbsp;» — ce qu'elle-même ne permet jamais est "
+            "énuméré avec elle, plus bas"
         ),
         # Lot 5b: true for a token WITHOUT the accounting grant — and said
         # so. The register writers the ACCOUNTING family reaches (through
         # services/comptabilite) left the global sweep; what backs the
         # promise now is DERIVED: no tool outside ACCOUNTING_TOOLS reaches a
         # register writer, and every one of those demands the scope. The
-        # writers no tool may EVER reach moved to « register_setup » below.
+        # writers no tool may EVER reach are the accounting-only promises
+        # below (« register_delete », « register_setup », « register_transfer »).
         en=(
             "Without the separate `athena:comptabilite` grant it never "
-            "touches trust accounting — neither the trust register nor the "
+            "writes to trust accounting — neither the trust register nor the "
             "administration ledger."
         ),
         behavioural_test=(
@@ -1083,32 +1114,80 @@ NEVERS: tuple[Never, ...] = (
         ),
         forbidden=("set_active_template", "clear_active_template"),
     ),
-    # ── Lot 5b — what the ACCOUNTING grant itself never does ────────────
+    # ── Lot 5 — what the ACCOUNTING grant itself never does ─────────────
     # Shown in the accounting block of the consent screen and in the
     # INSTRUCTIONS of a token holding the scope (``accounting_only``); swept
     # over every connector module and reached service all the same.
+    #
+    # Step 5 made this the FINAL set, the precise list that replaced
+    # « toucher au fidéicommis » (plan D1, D14): no entry deleted — the
+    # correction each register allows, said —, no reconciliation and no
+    # account, no transfer between dossiers, no cash withdrawal, no fee
+    # payment on a paper, unsent or provision-imputing invoice, no bank
+    # number shown. Lot 5b had two broader bullets (« register_setup »
+    # carried the deletion and the transfer; « trust_withdrawal » the
+    # invoice rules) and no word of the UNSENT invoice the model refuses.
     Never(
-        key="register_setup",
+        key="register_delete",
         fr=(
-            "<strong>supprimer</strong> une écriture, ni "
-            "<strong>compléter</strong>, commencer ou abandonner une "
-            "conciliation, créer ou modifier un compte, <strong>virer des "
-            "fonds</strong> d'un dossier à un autre, ni joindre un reçu — "
-            "vous seul le faites, dans l'application"
+            "<strong>supprimer</strong> une écriture — au fidéicommis, une "
+            "erreur ne se corrige que par une "
+            "<strong>contre-passation</strong>, l'original et sa "
+            "contre-passation restant au registre pour toujours&nbsp;; au "
+            "compte d'administration, une écriture se corrige tant qu'elle "
+            "reste modifiable, puis par une contre-passation"
         ),
         en=(
             "Even under the accounting grant it never deletes a register "
-            "entry, never starts, completes or abandons a reconciliation, "
-            "never creates or modifies an account, never transfers funds "
-            "between dossiers and never attaches a receipt: only the lawyer "
-            "does, in the application."
+            "entry: a trust entry is corrected only by a reversal, the "
+            "original and its reversal staying in the register for good; an "
+            "administration entry is corrected with `update_admin_entry` "
+            "while it stays editable, and by a reversal afterwards."
         ),
-        # Every writer of the two registers that no tool reaches — their
-        # deleters named too, beside the « delete » promise's pattern.
+        # The registers' deleters, named beside the « delete » promise's
+        # pattern (which matches them too): a promise about ENTRIES keeps
+        # its own sweep.
+        forbidden=_REGISTER_DELETERS,
+        accounting_only=True,
+    ),
+    Never(
+        key="register_setup",
+        fr=(
+            "<strong>commencer, compléter ou abandonner une "
+            "conciliation</strong>, ni créer ou modifier un "
+            "<strong>compte</strong>, ni joindre un reçu — vous seul le "
+            "faites, dans l'application"
+        ),
+        en=(
+            "It never starts, completes or abandons a reconciliation, never "
+            "creates or modifies an account and never attaches a receipt: "
+            "only the lawyer does, in the application."
+        ),
         forbidden=_REGISTER_SETUP_WRITERS,
-        summary_fr=(
-            "de conciliation, de compte ni de virement entre dossiers"
+        summary_fr="de conciliation ni de compte",
+        accounting_only=True,
+    ),
+    Never(
+        key="register_transfer",
+        fr=(
+            "<strong>virer des fonds</strong> du fidéicommis d'un dossier à "
+            "un autre, ni contre-passer un volet d'un tel virement — vous "
+            "seul le faites, dans l'application"
         ),
+        en=(
+            "It never transfers trust funds between dossiers, nor reverses "
+            "a leg of such a transfer: only the lawyer does, in the "
+            "application."
+        ),
+        # The writer is swept; the reversal of a leg is refused by the
+        # handler before the model (a leg's reversal moves one client's
+        # funds back to another) — pinned by its behavioural test.
+        forbidden=_REGISTER_TRANSFER_WRITERS,
+        behavioural_test=(
+            "tests/test_mcp_accounting.py::"
+            "test_a_transfer_between_dossiers_is_never_reversed_here"
+        ),
+        summary_fr="de virement entre dossiers",
         accounting_only=True,
     ),
     Never(
@@ -1116,27 +1195,50 @@ NEVERS: tuple[Never, ...] = (
         fr=(
             "retirer du fidéicommis <strong>en espèces</strong> (art. 57 — "
             "le remboursement en espèces de l'art. 72 s'inscrit dans "
-            "l'application), ni appuyer un paiement d'honoraires sur une "
-            "<strong>facture papier</strong> ou sur une facture qui impute "
-            "une provision"
+            "l'application)"
         ),
         en=(
             "It never withdraws trust funds in cash (art. 57 — the art. 72 "
-            "cash refund is recorded in the application) and never backs a "
-            "fee payment with a paper invoice or with an invoice that "
-            "imputes a provision."
+            "cash refund is recorded in the application)."
         ),
         # The model refuses a cash withdrawal unless it cites the art. 72
-        # cash receipt, and the external-invoice path unless its caller
-        # turns it on — so no tool may even DECLARE either input.
-        forbidden_inputs=(
-            ("*", "cash_receipt_id"), ("*", "invoice_external_ref"),
-        ),
+        # cash receipt — so no tool may even DECLARE that input.
+        forbidden_inputs=(("*", "cash_receipt_id"),),
         behavioural_test=(
             "tests/test_mcp_accounting.py::"
             "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
         ),
         summary_fr="de retrait en espèces",
+        accounting_only=True,
+    ),
+    Never(
+        key="fee_invoice",
+        fr=(
+            "appuyer un <strong>paiement d'honoraires</strong> sur une "
+            "facture papier, sur une facture <strong>pas encore "
+            "envoyée</strong> ou sur une facture qui impute une "
+            "<strong>provision</strong>"
+        ),
+        en=(
+            "It never backs a fee payment with a paper invoice, with an "
+            "invoice not yet sent, or with an invoice that imputes a "
+            "provision."
+        ),
+        # The model refuses an unsent invoice (facture_non_émise) and a
+        # provision (facture_avec_provision) on every path, and the
+        # external-invoice path unless its caller turns it on — the web
+        # form does, the connector never (allow_external_ref=False): no
+        # tool may even DECLARE the paper-invoice input. The same test
+        # pins all three refusals.
+        forbidden_inputs=(("*", "invoice_external_ref"),),
+        behavioural_test=(
+            "tests/test_mcp_accounting.py::"
+            "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
+        ),
+        summary_fr=(
+            "de paiement d'honoraires sur une facture papier, non envoyée "
+            "ou qui impute une provision"
+        ),
         accounting_only=True,
     ),
     Never(

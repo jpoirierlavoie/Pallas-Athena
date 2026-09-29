@@ -6617,8 +6617,9 @@ TOOLS: dict[str, dict] = {
             "ACCOUNTING — WRITE. REPLACES the fields you name on ONE "
             "administration entry, against `expected_etag` "
             "(get_admin_ledger); a field you omit is left alone, values "
-            "already stored write nothing, and every change is kept in the "
-            "entry's revision trail. Only an EDITABLE entry: en circulation, "
+            "already stored write nothing, and each change is recorded in the "
+            "entry's revision trail (its latest 25 kept). Only an EDITABLE "
+            "entry: en circulation, "
             "after the last completed reconciliation, linked to no invoice, "
             "fee payment or card payment, part of no reversal — anything "
             "else is corrected by reverse_register_entry. `kind` moves only "
@@ -6715,8 +6716,9 @@ TOOLS: dict[str, dict] = {
     "reverse_register_entry": {
         "title": "Contre-passer une écriture",
         "description": (
-            "ACCOUNTING — WRITE. The ONLY correction of a register entry: an "
-            "opposite « Correction » entry; the original and its reversal "
+            "ACCOUNTING — WRITE. The ONLY correction of a trust entry, and of "
+            "an administration entry update_admin_entry can no longer edit: "
+            "an opposite « Correction » entry; the original and its reversal "
             "stay in the register for good. An entry en circulation and its "
             "reversal both become annulée; a compensée one stays compensée "
             "and its reversal enters en circulation (a real movement to "
