@@ -193,6 +193,12 @@ def _entries(fake, collection: str) -> dict:
     return fake.peek_collection(collection)
 
 
+def _etags(fake, *tx_ids: str) -> list:
+    """The STORED etag of each administration entry — what a fresh
+    get_admin_ledger read would hand the caller for `expected_etags`."""
+    return [fake.peek(f"admin_transactions/{t}")["etag"] for t in tx_ids]
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 0. Le registre des outils — ce qu'il déclare, les modèles le tiennent
 # ══════════════════════════════════════════════════════════════════════
@@ -607,12 +613,93 @@ def test_a_depense_amount_moves_only_with_its_ventilation(fake):
 def test_a_cleared_entry_is_no_longer_editable(fake):
     made = _call("record_admin_entry", **_depense())["entity"]
     _call("clear_register_entries", register="admin", tx_ids=[made["id"]],
-          cleared_date="2026-09-08")
+          cleared_date="2026-09-08",
+          expected_etags=_etags(fake, made["id"]))
     current = fake.peek(f"admin_transactions/{made['id']}")
     refusal = _refused("update_admin_entry", tx_id=made["id"],
                        expected_etag=current["etag"], description="x")
     assert refusal.reason == "accounting_refused"
     assert "reverse_register_entry" in str(refusal)
+
+
+def test_an_admin_clearing_certifies_the_version_the_caller_read(fake):
+    """Finitions, money-3 — the connector's half of the lot-5b « Compenser »
+    fix. Claude reads a dépense of 114,98 $ (get_admin_ledger) to compare it
+    with the statement; meanwhile the entry is corrected to 200,00 $. The
+    clearing sent with the etag Claude READ is refused, whole, and nothing
+    is locked: the 200,00 $ is never certified « on the statement » by a
+    call that compared 114,98 $."""
+    made = _call("record_admin_entry", **_depense())["entity"]
+    (row,) = handlers.get_admin_ledger({"account_id": "ops1"})["transactions"]
+    seen = row["etag"]
+    assert row["amount_cents"] == 11498
+    _call("update_admin_entry", tx_id=made["id"], expected_etag=seen,
+          amount_cents=20000, ventilation="sans_taxe")
+    before = _entries(fake, "admin_transactions")
+
+    refusal = _refused("clear_register_entries", register="admin",
+                       tx_ids=[made["id"]], cleared_date="2026-09-08",
+                       expected_etags=[seen])
+
+    assert refusal.reason == "stale_etag"
+    assert made["id"] in str(refusal) and "Rien n'a été compensé" in str(refusal)
+    assert "get_admin_ledger" in str(refusal)
+    assert "20000" not in str(refusal) and "200,00" not in str(refusal)
+    assert _entries(fake, "admin_transactions") == before
+    assert fake.peek(f"admin_transactions/{made['id']}")["status"] == "en_circulation"
+    # With the version read AFTER the correction, it clears.
+    ok = _call("clear_register_entries", register="admin", tx_ids=[made["id"]],
+               cleared_date="2026-09-08",
+               expected_etags=_etags(fake, made["id"]))
+    assert ok["entries"][0]["status"] == "compensée"
+    assert ok["entries"][0]["amount_cents"] == 20000
+
+
+def test_an_admin_clearing_is_refused_when_the_entry_moves_inside_the_call(
+        fake, monkeypatch):
+    """The model re-checks each version in its transaction: an edit landing
+    between the handler's read and the commit refuses too — the handler's
+    read agreeing with the caller proves nothing about the commit."""
+    made = _call("record_admin_entry", **_depense())["entity"]
+    seen = _etags(fake, made["id"])
+    stale_copy = dict(fake.peek(f"admin_transactions/{made['id']}"))
+    _call("update_admin_entry", tx_id=made["id"], expected_etag=seen[0],
+          amount_cents=20000, ventilation="sans_taxe")
+    # The handler's own read still sees the version the caller saw.
+    real_read = svc.lire_ecriture
+    monkeypatch.setattr(svc, "lire_ecriture", lambda register, tx_id: (
+        stale_copy if tx_id == made["id"] else real_read(register, tx_id)))
+
+    refusal = _refused("clear_register_entries", register="admin",
+                       tx_ids=[made["id"]], cleared_date="2026-09-08",
+                       expected_etags=seen)
+
+    assert refusal.reason == "stale_etag"
+    assert made["id"] in str(refusal)
+    assert fake.peek(f"admin_transactions/{made['id']}")["status"] == "en_circulation"
+
+
+def test_the_clearing_s_etags_are_required_at_admin_and_refused_at_trust(fake):
+    made = _call("record_admin_entry", **_depense())["entity"]
+    missing = _refused("clear_register_entries", register="admin",
+                       tx_ids=[made["id"]], cleared_date="2026-09-08")
+    assert "`expected_etags` est requis" in str(missing)
+    other = _call("record_admin_entry", **_depense(500))["entity"]
+    short = _refused("clear_register_entries", register="admin",
+                     tx_ids=[made["id"], other["id"]], cleared_date="2026-09-08",
+                     expected_etags=_etags(fake, made["id"]))
+    assert "un etag par écriture" in str(short)
+    rec = _call("record_trust_entry", **_deposit())["entity"]
+    trust_refusal = _refused("clear_register_entries", register="trust",
+                             tx_ids=[rec["id"]], cleared_date="2026-09-03",
+                             expected_etags=[rec["etag"]])
+    assert "ne vaut qu'au registre d'administration" in str(trust_refusal)
+    for tx in (made["id"], other["id"]):
+        assert fake.peek(f"admin_transactions/{tx}")["status"] == "en_circulation"
+    assert fake.peek(f"trust_transactions/{rec['id']}")["status"] == "en_circulation"
+    spec = tools.TOOLS["clear_register_entries"]
+    assert "expected_etags" in spec["concurrency_reason"]
+    assert "expected_etags" in spec["description"]
 
 
 def test_the_train_s_pilot_moves_the_balance_as_deployment_says_and_locks_both_sides(fake):
@@ -648,7 +735,8 @@ def test_the_train_s_pilot_moves_the_balance_as_deployment_says_and_locks_both_s
     assert (stored["net_amount"], stored["gst_amount"], stored["qst_amount"]) == (100, 0, 0)
     # (b) cleared at today's date: the balance does not move.
     _call("clear_register_entries", register="admin", tx_ids=[made["id"]],
-          cleared_date="2026-09-20")
+          cleared_date="2026-09-20",
+          expected_etags=_etags(fake, made["id"]))
     assert fake.peek(f"admin_transactions/{made['id']}")["status"] == "compensée"
     assert balance() == -100
     # (c) reversed: the reversal enters en circulation — and the balance is
@@ -671,7 +759,8 @@ def test_the_train_s_pilot_moves_the_balance_as_deployment_says_and_locks_both_s
     # (d) the reversal cleared: still zero, nothing outstanding — and the
     # account holds exactly TWO entries.
     _call("clear_register_entries", register="admin", tx_ids=[reversal_id],
-          cleared_date="2026-09-20")
+          cleared_date="2026-09-20",
+          expected_etags=_etags(fake, reversal_id))
     rows = [r for r in _entries(fake, "admin_transactions").values()
             if r.get("account_id") == "essai"]
     assert len(rows) == 2 and balance() == 0
@@ -704,12 +793,14 @@ def test_nothing_is_dated_in_a_reconciled_period(fake):
     # An entry left outstanding by the reconciliation clears only AFTER it.
     tx = outstanding["entity"]["id"]
     in_period = _refused("clear_register_entries", register="admin",
-                         tx_ids=[tx], cleared_date="2026-09-10")
+                         tx_ids=[tx], cleared_date="2026-09-10",
+                         expected_etags=_etags(fake, tx))
     assert in_period.reason == "accounting_refused"
     assert "conciliée" in str(in_period)
     assert fake.peek(f"admin_transactions/{tx}")["status"] == "en_circulation"
     ok = _call("clear_register_entries", register="admin", tx_ids=[tx],
-               cleared_date="2026-09-11")
+               cleared_date="2026-09-11",
+               expected_etags=_etags(fake, tx))
     assert ok["entries"][0]["status"] == "compensée"
     # …and its date is behind the lock now: no longer editable.
     (row,) = [r for r in handlers.get_admin_ledger({"account_id": "ops1"})[
@@ -831,7 +922,8 @@ def test_the_ledger_reads_newest_first_with_running_balances(fake):
 def test_a_locked_row_says_why(fake):
     made = _call("record_admin_entry", **_depense())["entity"]
     _call("clear_register_entries", register="admin", tx_ids=[made["id"]],
-          cleared_date="2026-09-08")
+          cleared_date="2026-09-08",
+          expected_etags=_etags(fake, made["id"]))
     (row,) = handlers.get_admin_ledger({"account_id": "ops1"})["transactions"]
     assert row["locked"] is True and row["lock_reason"] == "écriture_verrouillée"
 
@@ -996,7 +1088,9 @@ def test_a_lost_answer_never_applies_a_reversal_a_clearing_or_a_correction_twice
                          "cleared_date": "2026-09-03"}, "/trust_transactions/"),
         "admin_clear": ("clear_register_entries",
                         {"register": "admin", "tx_ids": [target["id"]],
-                         "cleared_date": "2026-09-06"}, "/admin_transactions/"),
+                         "cleared_date": "2026-09-06",
+                         "expected_etags": [target["etag"]]},
+                        "/admin_transactions/"),
         "admin_correction": ("update_admin_entry",
                              {"tx_id": target["id"], "expected_etag": target["etag"],
                               "description": "Loyer de septembre"},
@@ -1056,7 +1150,8 @@ def test_an_administration_clearing_that_errors_never_reads_as_a_verdict(
     monkeypatch.setattr(server, "commit", _unavailable)
     before = _entries(fake, "admin_transactions")
     refusal = _refused("clear_register_entries", register="admin",
-                       tx_ids=[made["id"]], cleared_date="2026-09-06")
+                       tx_ids=[made["id"]], cleared_date="2026-09-06",
+                       expected_etags=_etags(fake, made["id"]))
     assert "Erreur lors de la compensation" in str(refusal)
     assert "déjà compensée ou annulée" not in str(refusal)
     assert _entries(fake, "admin_transactions") == before
@@ -1555,7 +1650,9 @@ def test_the_admin_writes_honour_their_output_contract(fake):
     assert unchanged["outcome"] == "unchanged"
     cleared = handlers.clear_register_entries({
         "register": "admin", "tx_ids": [dep["entity"]["id"]],
-        "cleared_date": "2026-09-08", "idempotency_key": _key()})
+        "cleared_date": "2026-09-08",
+        "expected_etags": [unchanged["entity"]["etag"]],
+        "idempotency_key": _key()})
     _conforms("clear_register_entries", cleared)
     assert cleared["released_funds"] == []
     rev_args = {"register": "admin", "tx_id": enc["entity"]["id"],
@@ -1599,7 +1696,8 @@ def test_the_integrity_scripts_agree_with_what_the_connector_wrote(fake, monkeyp
                   expected_etag=depense["etag"], amount_cents=22996,
                   ventilation="ventiler")["entity"]
     _call("clear_register_entries", register="admin", tx_ids=[fixed["id"]],
-          cleared_date="2026-09-13")
+          cleared_date="2026-09-13",
+          expected_etags=_etags(fake, fixed["id"]))
     _call("record_admin_entry", account_id="ops1", kind="recette_autre",
           amount_cents=1500, date="2026-09-13", method="virement",
           counterparty="Remboursement")

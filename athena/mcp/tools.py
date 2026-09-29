@@ -569,7 +569,9 @@ def _write_protocol_props() -> dict:
 #   handlers demand the etag exactly when they do (a note's ``content``,
 #   the théorie's ``operations``/``full``) and refuse its absence.
 # * ``exempt`` — the tool accepts no ``expected_etag``; ``"concurrency_reason"``
-#   says why, in one sentence a reviewer can check.
+#   says why, in one sentence a reviewer can check. A BATCH may still carry
+#   its rows' versions under another name — ``clear_register_entries``'
+#   ``expected_etags``, one per ``tx_ids`` item — and its reason says so.
 CONCURRENCY_OPTIONAL = "optional"
 CONCURRENCY_REQUIRED = "required"
 CONCURRENCY_EXEMPT = "exempt"
@@ -6677,7 +6679,10 @@ TOOLS: dict[str, dict] = {
             "cannot be cleared refuses the call, each named. There is no "
             "« un-clear ». In the trust register, clearing a deposit makes "
             "its funds AVAILABLE for a déboursé (`released_funds` says "
-            "which): never clear what the statement does not show. "
+            "which): never clear what the statement does not show. An "
+            "administration entry stays editable until it is cleared, so "
+            "`register` admin REQUIRES `expected_etags` — the version of "
+            "each entry you compared with the statement. "
             "idempotency_key REQUIRED."
         ),
         "input_schema": {
@@ -6703,6 +6708,21 @@ TOOLS: dict[str, dict] = {
                 "cleared_date": _date(
                     "The bank statement date, YYYY-MM-DD. Required."
                 ),
+                "expected_etags": {
+                    "type": "array", "minItems": 1,
+                    "maxItems": REGISTER_CLEAR_MAX,
+                    "items": {"type": "string", "maxLength": 64,
+                              "description": "One entry's etag."},
+                    "description": (
+                        "admin only, and REQUIRED there: the `etag` "
+                        "get_admin_ledger showed for each entry, in the SAME "
+                        "order as `tx_ids`. Clearing states that THIS amount "
+                        "is on the statement: an entry changed since your "
+                        "read refuses the whole call, nothing cleared — "
+                        "re-read, then retry. Refused at trust, whose "
+                        "entries never change."
+                    ),
+                },
                 **_write_protocol_props(),
             },
             "required": ["register", "tx_ids", "cleared_date",
@@ -6714,9 +6734,13 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
-            "a status TARGET decided inside the model's transaction: an "
-            "entry no longer en circulation is refused there, so no stale "
-            "view can clear it twice"
+            "a BATCH of status targets, with no single `expected_etag` to "
+            "give: at admin, where an entry stays editable until cleared, "
+            "`expected_etags` (required there) carries the version of each "
+            "entry the caller read, checked by the handler and again in the "
+            "model's transaction; a trust entry never changes, and one no "
+            "longer en circulation is refused in that transaction, so no "
+            "stale view can clear it twice"
         ),
     },
     "reverse_register_entry": {

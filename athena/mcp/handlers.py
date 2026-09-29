@@ -17342,6 +17342,21 @@ def _update_admin_entry_impl(args: dict) -> dict:
 # ── clear_register_entries (WRITE, status) ──────────────────────────────
 
 
+def _clear_stale_refusal(stale_ids: list) -> ToolArgumentError:
+    """An administration entry changed since the caller's read — the batch
+    is refused whole, each such entry named (ids only, never an amount or a
+    description). The remedy is a re-read against the STATEMENT, not a
+    blind retry with fresher etags: the amount that changed is the very
+    thing the call was about to certify."""
+    return ToolArgumentError(
+        "Écriture(s) d'administration modifiée(s) depuis votre lecture : "
+        + ", ".join(stale_ids) + ". Rien n'a été compensé. Relisez le "
+        "registre (get_admin_ledger), vérifiez de nouveau chaque montant "
+        "contre le relevé, puis renvoyez l'appel avec les etags actuels.",
+        reason="stale_etag",
+    )
+
+
 def clear_register_entries(args: dict) -> dict:
     return run_write("clear_register_entries", args,
                      lambda: _clear_register_entries_impl(args))
@@ -17359,10 +17374,43 @@ def _clear_register_entries_impl(args: dict) -> dict:
             "Une écriture figure plus d'une fois dans `tx_ids` ("
             + ", ".join(doubles) + ") : rien n'a été compensé. Chaque écriture "
             "ne se compense qu'une fois.")
+    # The versions the caller compared with the statement (finitions,
+    # money-3). An administration entry stays editable — in the application
+    # and by update_admin_entry — until it is cleared, and clearing locks
+    # it « on the statement »: a page, or a get_admin_ledger read, showing
+    # 114,98 $ must never clear the 200,00 $ written meanwhile. The web's
+    # « Compenser » carries its etag since lot 5b; this is the connector's
+    # half. A trust entry never changes (only its status, refused below
+    # when it is no longer en circulation), so the argument is refused
+    # there rather than accepted and ignored.
+    etags = [str(e or "") for e in (args.get("expected_etags") or [])]
+    if register == "trust" and "expected_etags" in args:
+        raise ToolArgumentError(
+            "`expected_etags` ne vaut qu'au registre d'administration : une "
+            "écriture du fidéicommis ne se modifie jamais, seul son statut "
+            "change. Rien n'a été compensé.")
+    if register == "admin":
+        if "expected_etags" not in args:
+            raise ToolArgumentError(
+                "`expected_etags` est requis au registre d'administration : "
+                "l'etag de chaque écriture lue par get_admin_ledger, dans "
+                "l'ordre de `tx_ids`. Rien n'a été compensé.")
+        if len(etags) != len(ids):
+            raise ToolArgumentError(
+                f"`expected_etags` doit compter un etag par écriture de "
+                f"`tx_ids` ({len(ids)}), dans le même ordre. Rien n'a été "
+                "compensé.")
     cleared_date = _write_date(args, "cleared_date", required=True)
     _not_future(cleared_date, "cleared_date")
 
     entries = [_read_register_entry(register, i) for i in ids]
+    if register == "admin":
+        # Checked FIRST (plan rule 3): the useful answer to an outdated view
+        # is « re-read », not the first domain guard it happens to trip.
+        stale = [tx_id for tx_id, entry, wanted in zip(ids, entries, etags)
+                 if concurrency.etag_of(entry) != wanted]
+        if stale:
+            raise _clear_stale_refusal(stale)
     accounts = {e.get("account_id") for e in entries}
     if len(accounts) > 1:
         raise ToolArgumentError(
@@ -17394,8 +17442,13 @@ def _clear_register_entries_impl(args: dict) -> dict:
     if register == "trust":
         report = comptabilite_service.compenser_fideicommis(ids, cleared_date)
     else:
-        report = comptabilite_service.compenser_administration(ids, cleared_date)
+        # The model re-checks each version inside its transaction: an edit
+        # landing between the read above and the commit refuses too.
+        report = comptabilite_service.compenser_administration(
+            ids, cleared_date, expected_etags=dict(zip(ids, etags)))
     if not report["ok"]:
+        if report.get("stale"):
+            raise _clear_stale_refusal(list(report.get("failed") or ids))
         failed = report.get("failed") or []
         if failed:
             report = {**report, "errors": list(report.get("errors") or []) + [

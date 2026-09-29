@@ -3021,7 +3021,10 @@ Notes:
      figure: nothing reaches a TPS/TVQ total), a `method` and a
      `counterparty` (both required) — the account's balance reads
      **−1,00 $**, the entry « en circulation »; (b) `clear_register_entries`
-     (`register: admin`) on it at today's date — still **−1,00 $**, the
+     (`register: admin`) on it at today's date, with the `etag` its
+     `get_admin_ledger` row shows in `expected_etags` (required at admin
+     since the finitions: an entry edited after that read is refused, never
+     cleared at its new amount) — still **−1,00 $**, the
      entry « compensée » (clearing moves no balance: the ledger balance
      counts every status); (c) `reverse_register_entry` on it, with a
      `reason` — a cleared entry's reversal enters « en circulation », a
