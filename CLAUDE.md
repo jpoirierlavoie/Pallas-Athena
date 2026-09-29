@@ -2113,8 +2113,10 @@ The record of the connector's `begin_upload` → sandbox PUT → `finalize_uploa
     "declared_md5_b64": str,          # canonical base64 of the 16-byte digest
     "staging_object": "staging/{uid}/mcp/{ticketId}/upload{ext}",
                                       # under require_uid(owner); no client name in
-                                      # any path; 5 segments, so the web finalizer
-                                      # (staging/{uid}/{uuid4}/{name}) refuses it
+                                      # any path; 5 segments, so BOTH web finalizers
+                                      # (documents.api_finaliser + the receipt's
+                                      # admin_ledger.api_recu, each accepting only
+                                      # staging/{uid}/{uuid4}/{name}) refuse it
     "reserved_document_id": UUIDv4 | "",   # purpose document
     "reserved_template_id": UUIDv4 | "",   # purpose gabarit, mode create
     "bound_metadata": {"folder_id", "category", "display_name",
@@ -2608,7 +2610,7 @@ All `@login_required`, French UI, standard CSRF, POST+redirect with inline error
 | `/administration/<tx_id>/compenser` | POST | Single clear (the worksheet is the bulk path — no `/compenser-lot` route by design) |
 | `/administration/<tx_id>/contrepasser` | GET·POST | Reversal with a CHOOSABLE date ∈ [date originale, aujourd'hui], above the lock floor; a card-payment leg reverses both; an invoice-linked entry reduces the recorded payment IN THE REVERSAL'S OWN COMMIT (lot 5a), or the reversal is refused (`paiement_facture_incohérent` — never clamped) |
 | `/administration/paiement-carte` | GET·POST | One economic event, two linked legs (bank déboursé + card recette) |
-| `/administration/api/televersement` · `/<tx_id>/api/recu` · `/<tx_id>/recu` | POST·POST·GET | Receipts: resumable GCS session on the RECEIPT whitelist (PDF/JPG/PNG/TIFF ≤ 10 Mo — unambiguous magics), sniff + rewrite to `users/{uid}/administration/{tx_id}/`, staging consumed both outcomes, replace deletes the old blob; serving = 302 to a signed URL, attachment forced |
+| `/administration/api/televersement` · `/<tx_id>/api/recu` · `/<tx_id>/recu` | POST·POST·GET | Receipts: resumable GCS session on the RECEIPT whitelist (PDF/JPG/PNG/TIFF ≤ 10 Mo — unambiguous magics), sniff + rewrite to `users/{uid}/administration/{tx_id}/`, staging consumed both outcomes — but only the `staging/{uid}/{uuid4}/{name}` shape its own session mints is finalizable (a connector ticket's `staging/{uid}/mcp/…` or a zip's `…/exports/…` is refused before the bucket is touched), replace deletes the old blob; serving = 302 to a signed URL, attachment forced |
 | `/administration/dossier-search` | GET | HTMX autocomplete (optional dossier linkage) |
 | `/administration/comptes/…` | GET/POST | Account list/create/detail/edit (type immutable; balances never form-editable) |
 | `/administration/conciliations/…` | GET/POST | List / new (card statement entered as stated — positive solde dû) / worksheet (live Alpine variance on `statement_ledger`, resurrection sets read-only) / completer (**locks the period**) / abandonner (draft only) |

@@ -60,7 +60,12 @@ from models.admin_ledger import (
 )
 from models.audit_event import record_deletion
 from services import comptabilite
-from models.document import _sniff_header, build_attachment_disposition, sign_blob_url
+from models.document import (
+    _sniff_header,
+    build_attachment_disposition,
+    is_canonical_uuid4,
+    sign_blob_url,
+)
 from models.dossier import get_dossier
 from security import safe_internal_redirect
 from utils.deadlines import today_mtl
@@ -657,6 +662,19 @@ def api_recu(tx_id: str):
     except storage_identity.StorageIdentityUnavailable as exc:
         return jsonify({"erreur": str(exc)}), 503
     if not objet.startswith(f"staging/{user_id}/"):
+        return jsonify({"erreur": "Requête invalide."}), 400
+    # staging/{uid}/{uuid4}/{nom} — EXACTEMENT la forme que frappe
+    # api_televersement ci-dessus, et que routes/documents.api_finaliser
+    # exige déjà. Le seul préfixe laissait classer comme pièce justificative
+    # l'objet d'un billet de téléversement du connecteur
+    # (staging/{uid}/mcp/{billet}/upload{ext}) — sans le contrôle de taille
+    # et d'empreinte du billet, sans son échéance, sans claim_ticket — et le
+    # CONSOMMAIT, si bien que finalize_upload répondait ensuite « rien
+    # reçu ». Même chose pour une archive staging/{uid}/exports/… : refusées
+    # ici, avant tout reload ni delete.
+    segments = objet.split("/")
+    if (len(segments) != 4 or not segments[3]
+            or not is_canonical_uuid4(segments[2])):
         return jsonify({"erreur": "Requête invalide."}), 400
     entry = al.get_transaction(tx_id)
     if entry is None:

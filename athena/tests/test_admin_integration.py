@@ -208,6 +208,40 @@ def test_televersement_ouvre_une_session_staging(web, monkeypatch):
     assert kwargs["origin"]
 
 
+# The exact shape api_televersement mints — staging/{uid}/{uuid4}/{name}.
+_STAGING_RECU = "staging/u1/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/recu.pdf"
+
+
+@pytest.mark.parametrize("objet", [
+    # A connector upload ticket's staging object (models/upload_ticket):
+    # filing it as a receipt would skip the ticket's size + MD5 check, its
+    # expiry and claim_ticket, and consume it under finalize_upload.
+    "staging/u1/mcp/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/upload.pdf",
+    # A folder-zip export (models/document.build_folder_zip_url).
+    "staging/u1/exports/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/dossier.pdf",
+    # Third segment not a canonical uuid4.
+    "staging/u1/aaaa/recu.pdf",
+    "staging/u1/3F2B8C1E-9D4A-4E6B-8F7A-1C2D3E4F5A6B/recu.pdf",
+    # No file name.
+    "staging/u1/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/",
+])
+def test_recu_refuse_toute_autre_forme_de_staging_sans_toucher_l_objet(
+        web, monkeypatch, objet):
+    """security-2 — only the shape the receipt's OWN session mints is
+    finalizable, and anything else is refused BEFORE the bucket is touched:
+    no reload, no rewrite, and above all no delete (consuming a ticket's
+    staging object is what made finalize_upload answer « rien reçu »)."""
+    monkeypatch.setattr(ra.al, "get_transaction", lambda t: {"id": t})
+    bucket = mock.Mock()
+    monkeypatch.setattr(ra.storage, "bucket", lambda: bucket)
+
+    reponse = _post(web, "/administration/t1/api/recu", {
+        "objet": objet, "name": "recu.pdf",
+    })
+    assert reponse.status_code == 400
+    bucket.blob.assert_not_called()
+
+
 def test_recu_objet_etranger_400(web):
     assert _post(web, "/administration/t1/api/recu", {
         "objet": "staging/autre-uid/x/recu.pdf", "name": "recu.pdf",
@@ -227,7 +261,7 @@ def test_recu_sniff_mismatch_consomme_le_staging(web, monkeypatch):
     monkeypatch.setattr(ra.storage, "bucket", lambda: bucket)
 
     reponse = _post(web, "/administration/t1/api/recu", {
-        "objet": "staging/u1/aaaa/recu.pdf", "name": "recu.pdf",
+        "objet": _STAGING_RECU, "name": "recu.pdf",
     })
     assert reponse.status_code == 422
     assert "extension" in reponse.get_json()["erreur"]
@@ -253,7 +287,7 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
     monkeypatch.setattr(ra.storage, "bucket", lambda: bucket)
 
     reponse = _post(web, "/administration/t9/api/recu", {
-        "objet": "staging/u1/aaaa/recu.pdf", "name": "recu.pdf",
+        "objet": _STAGING_RECU, "name": "recu.pdf",
     })
     assert reponse.status_code == 200
     assert attached["path"] == "users/u1/administration/t9/recu.pdf"
