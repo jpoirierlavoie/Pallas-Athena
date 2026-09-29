@@ -1320,3 +1320,84 @@ def test_every_tool_declaring_persist_never_stores_an_upload_url(fake, hooks):
         assert "upload_url" not in repr(entry), tool
         assert not ws.capability_in(entry), tool
     assert not any("upload_id" in t for t in _stored_texts(fake))
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 11. A result that must not be replayed — ``_no_replay`` (lot 4b)
+# ══════════════════════════════════════════════════════════════════════
+#
+# set_dossier_status writes a status, then drains or restores the dossier's
+# DavX5 collection. When the second half could not finish, the status is
+# written and the REPAIR is the same call again. Recorded, the « incomplete »
+# answer would be replayed to every same-key retry for 24 h and the drain
+# would never run again. Before lot 4b the marker did not exist: the result
+# was stored — marker included — and handed back as-is.
+
+
+def _incomplete(calls: list):
+    def execute():
+        calls.append("exécutée")
+        return {"updated": True, "entity": {"id": DOSSIER_ID},
+                ws.NO_REPLAY_KEY: True}
+    return execute
+
+
+def test_a_no_replay_result_is_never_stored_and_the_retry_runs_again(fake):
+    calls: list = []
+    first = ws.run_write("create_note", _args(), _incomplete(calls))
+    assert ws.NO_REPLAY_KEY not in first          # never reaches the caller
+    assert first["idempotent_replay"] is False
+    assert _entries(fake) == {}                   # the claim was RELEASED
+
+    second = ws.run_write("create_note", _args(), _incomplete(calls))
+    assert calls == ["exécutée", "exécutée"]      # executed afresh, not replayed
+    assert second["idempotent_replay"] is False
+    assert _entries(fake) == {}
+
+
+def test_a_complete_result_after_an_incomplete_one_is_recorded_and_replayed(fake):
+    """The repair's own result — complete — IS final: recorded, then replayed."""
+    calls: list = []
+    ws.run_write("create_note", _args(), _incomplete(calls))
+
+    def complete():
+        calls.append("complète")
+        return {"updated": True, "entity": {"id": DOSSIER_ID}}
+
+    ws.run_write("create_note", _args(), complete)
+    assert fake.peek(_path("create_note"))["status"] == "committed"
+    third = ws.run_write("create_note", _args(), complete)
+    assert third["idempotent_replay"] is True
+    assert calls == ["exécutée", "complète"]
+
+
+def test_a_false_marker_is_popped_and_the_result_recorded(fake):
+    result = ws.run_write("create_note", _args(), lambda: {
+        "created": True, "note": {"id": "n-1"}, ws.NO_REPLAY_KEY: False})
+    assert ws.NO_REPLAY_KEY not in result
+    stored = fake.peek(_path("create_note"))
+    assert stored["status"] == "committed"
+    assert ws.NO_REPLAY_KEY not in stored["result"]
+
+
+def test_a_no_replay_result_without_a_key_is_simply_returned(fake):
+    result = ws.run_write("create_note", {"title": "T"}, _incomplete([]))
+    assert ws.NO_REPLAY_KEY not in result
+    assert _entries(fake) == {}
+
+
+def test_a_no_replay_release_that_fails_is_logged_never_raised(fake, caplog):
+    """The release is the claim's own guarded delete: someone who touched
+    the entry meanwhile keeps it, and the committed result is still
+    returned (a raise here would report a committed write as a failure)."""
+    def execute():
+        entry = fake.peek(_path("create_note"))
+        fake.external_write(_path("create_note"), {**entry, "claim_id": "autre"})
+        return {"updated": True, ws.NO_REPLAY_KEY: True}
+
+    with caplog.at_level(logging.WARNING, logger="pallas.mcp"):
+        result = ws.run_write("create_note", _args(), execute)
+    assert result["updated"] is True and ws.NO_REPLAY_KEY not in result
+    assert fake.peek(_path("create_note"))["claim_id"] == "autre"
+    assert [(f["op"], f["error_type"]) for f in _store_failures(caplog)] == [
+        ("release", "FailedPrecondition")]

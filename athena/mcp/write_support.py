@@ -172,6 +172,28 @@ same-key retry is refused as in flight rather than duplicated. A tool that
 forgets its hooks therefore degrades to « no replay », never to a
 capability kept 24 h in Firestore. A ``persist`` that raises is the same
 failure (its exception's class is what is logged).
+
+5. A result that must not be replayed — ``_no_replay`` (plan lot 4b)
+--------------------------------------------------------------------
+Some committed results are NOT final. ``set_dossier_status`` writes a
+status, then drains or restores the dossier's DavX5 collection; when that
+second half could not finish, the status is written but the phone is out of
+step, and the repair is simply to call the tool AGAIN with the same status
+(a same-status call re-applies the visibility). Recorded, that result would
+be replayed for 24 h to every same-key retry — the retry would hand back the
+stale « incomplete » answer and never re-run the drain. The same holds for
+a batch that refused some of its rows (``update_dossier_party``'s
+``refresh_names``): the retry must re-run, not replay the refusals.
+
+So a handler whose payload carries :data:`NO_REPLAY_KEY` (``"_no_replay"``,
+truthy) opts that result out of the store: the marker is POPPED from the
+payload the caller receives, nothing is stored, and a claim this call made
+is RELEASED (the ``delete()`` under its own precondition, § 2) — the
+same-key retry then executes afresh, exactly like a first call. Opt-in, and
+only for tools that are NATURALLY idempotent on a retry: releasing the key
+of a tool whose second execution writes a second record would reopen the
+duplicate the claim exists to prevent. A marker on a partial failure is
+irrelevant — :class:`CommittedWriteError` is raised before any payload.
 """
 
 import copy
@@ -201,6 +223,7 @@ __all__ = [
     "CommittedWriteError",
     "IDEMPOTENCY_TTL",
     "IN_FLIGHT_WINDOW",
+    "NO_REPLAY_KEY",
     "PLATFORM_REQUEST_DEADLINE",
     "PersistenceHooks",
     "args_fingerprint",
@@ -227,6 +250,10 @@ IN_FLIGHT_WINDOW = PLATFORM_REQUEST_DEADLINE + _CLOCK_SKEW_MARGIN
 STATUS_PENDING = "pending"
 STATUS_COMMITTED = "committed"
 STATUS_PARTIAL = "partial"
+
+# A payload key a handler sets to keep ITS result out of the store (module
+# docstring, § 5) — popped before the caller sees the payload.
+NO_REPLAY_KEY = "_no_replay"
 
 # A claim that loses a race is re-read and decided again; three rounds is
 # far more than a single-user connector can contend for one key.
@@ -866,8 +893,14 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
                 _release(tool, claim)
             raise
 
+    # § 5: a result the handler declared not final is never stored — and
+    # this call's claim is RELEASED, so the same-key retry runs afresh. The
+    # marker never reaches the caller (nor the store).
+    no_replay = bool(payload.pop(NO_REPLAY_KEY, False))
     payload["idempotent_replay"] = False
-    if key:
+    if key and no_replay:
+        _release(tool, claim)
+    elif key:
         # What may be STORED (§ 4): the persist hook's copy, and never a
         # capability. None → nothing is stored and the claim stays pending.
         stored = _storable(tool, payload, claim is not None)
