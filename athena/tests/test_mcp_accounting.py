@@ -822,6 +822,77 @@ def test_an_uncertain_outcome_keeps_the_claim_and_never_writes_twice(fake, monke
     assert len(_entries(fake, "trust_transactions")) == 1
 
 
+
+def test_every_accounting_write_fails_closed_when_its_claim_cannot_be_read(
+    fake, monkeypatch,
+):
+    """Plan rule 7: a money write never runs UNCLAIMED. With the idempotency
+    store down, each of the five writes — through its REAL handler — is
+    refused before anything reaches a register: an unclaimed run could be
+    retried into a second entry that only a reversal takes back."""
+    made = _call("record_admin_entry", **_depense())["entity"]
+    deposit = _call("record_trust_entry", **_deposit())["entity"]
+    registers = ("trust_transactions", "admin_transactions", "invoices",
+                 "trust_accounts", "admin_accounts", "dossiers")
+    before = {c: _entries(fake, c) for c in registers}
+    broken = mock.Mock()
+    broken.collection.side_effect = RuntimeError("firestore down")
+    monkeypatch.setattr(write_support, "db", broken)
+    calls = {
+        "record_trust_entry": _deposit(),
+        "record_admin_entry": _depense(),
+        "update_admin_entry": {"tx_id": made["id"], "expected_etag": made["etag"],
+                               "description": "Loyer"},
+        "clear_register_entries": {"register": "trust", "tx_ids": [deposit["id"]],
+                                   "cleared_date": "2026-09-03"},
+        "reverse_register_entry": {"register": "admin", "tx_id": made["id"],
+                                   "reason": "Doublon"},
+    }
+    assert set(calls) == set(tools.ACCOUNTING_WRITE_TOOLS)
+    for tool, args in calls.items():
+        refusal = _refused(tool, **args)
+        assert refusal.reason == "idempotency_store_unavailable", tool
+    assert {c: _entries(fake, c) for c in registers} == before
+
+
+def test_a_failure_after_the_commit_says_recorded_and_never_writes_twice(
+    fake, monkeypatch,
+):
+    """The commit point is structural (plan rule 7): every register writer
+    notes its commit, so a failure AFTER it — here the payload builder —
+    comes back as CommittedWriteError (« ENREGISTRÉE — NE PAS RÉESSAYER »),
+    never a retryable internal error; and the same-key retry re-raises it
+    from the stored partial without touching a register again."""
+    made = _call("record_admin_entry", **_depense())["entity"]
+    other = _call("record_admin_entry", **_depense(date="2026-09-06"))["entity"]
+    deposit = _call("record_trust_entry", **_deposit())["entity"]
+    calls = {
+        "record_trust_entry": _deposit(5000, day="2026-09-05"),
+        "record_admin_entry": _depense(date="2026-09-07"),
+        "update_admin_entry": {"tx_id": made["id"], "expected_etag": made["etag"],
+                               "description": "Loyer corrigé"},
+        "clear_register_entries": {"register": "trust", "tx_ids": [deposit["id"]],
+                                   "cleared_date": "2026-09-03"},
+        "reverse_register_entry": {"register": "admin", "tx_id": other["id"],
+                                   "reason": "Doublon"},
+    }
+    assert set(calls) == set(tools.ACCOUNTING_WRITE_TOOLS)
+    registers = ("trust_transactions", "admin_transactions")
+    for tool, args in calls.items():
+        args = {**args, "idempotency_key": f"cle-apres-commit-{tool}"}
+        before = {c: _entries(fake, c) for c in registers}
+        with mock.patch.object(handlers, "_register_money",
+                               side_effect=RuntimeError("builder down")):
+            with pytest.raises(tools.CommittedWriteError) as first:
+                _call(tool, **args)
+        assert first.value.replay is False, tool
+        written = {c: _entries(fake, c) for c in registers}
+        assert written != before, tool                    # it DID commit
+        with pytest.raises(tools.CommittedWriteError) as again:
+            _call(tool, **args)
+        assert again.value.replay is True, tool
+        assert {c: _entries(fake, c) for c in registers} == written, tool
+
 # ── Une compensation glissée entre la lecture et la contre-passation ─────
 #
 # Revue du lot 5b (concurrence). Le statut d'une écriture DÉCIDE ce que fait
