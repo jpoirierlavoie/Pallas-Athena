@@ -512,3 +512,41 @@ def test_la_facture_d_un_autre_client_nomme_les_deux_clients(fake):
     same = svc.enregistrer_paiement_honoraires(_fee(amount=10000), admin_account_id="ops1")
     assert same["ok"] and same["warning_codes"] == [] and same["warnings"] == []
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Revue du lot 5a (concurrence) — l'issue inconnue traverse le service
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_une_issue_inconnue_traverse_le_service_sous_sa_raison(fake, monkeypatch):
+    """Le lot 5b doit GARDER la réservation de clé d'un paiement dont
+    l'issue est inconnue (keep_claim, la doctrine de create_invoice) : il la
+    reconnaît à la raison « issue_incertaine » que le service transmet,
+    jamais à un texte. Ici le commit ABOUTIT puis sa réponse se perd."""
+    from google.api_core import exceptions as gexc
+
+    from models import fee_payment
+
+    server = fake._fake_server
+    real_commit = server.commit
+    armed = {"on": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if armed["on"] and any("/trust_transactions/" in server._write_name(w)
+                               for w in writes):
+            armed["on"] = False
+            raise gexc.Aborted("the retried commit of a landed transaction")
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+    report = svc.enregistrer_paiement_honoraires(_fee(), admin_account_id="ops1")
+    assert report["ok"] is False
+    assert report["reason"] == "issue_incertaine"
+    assert report["errors"] == [fee_payment.CREATE_OUTCOME_UNCERTAIN]
+    fees = [t for t in fake.peek_collection("trust_transactions").values()
+            if t.get("purpose") == "virement_honoraires"]
+    assert len(fees) == 1                              # landed, ONCE
+    assert fake.peek("invoices/inv1")["amount_paid"] == 60000

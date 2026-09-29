@@ -1163,3 +1163,39 @@ def test_la_reprise_n_appelle_aucun_ecrivain_de_paiement_hors_du_depaiement():
     assert not any(isinstance(n, ast.ImportFrom)
                    and (n.module or "").startswith("services")
                    for n in ast.walk(tree))
+
+
+def test_un_paiement_dont_l_issue_est_inconnue_le_dit_au_formulaire(
+    client, fake, monkeypatch,
+):
+    """Revue du lot 5a (concurrence) — le commit du paiement d'honoraires
+    ABOUTIT, puis le client reçoit une expiration. Le formulaire se réaffiche
+    en disant que l'issue est INCONNUE et qu'il faut vérifier le journal —
+    jamais « Rien n'a été inscrit. Veuillez réessayer », que l'ancien code
+    affichait par-dessus un retrait inscrit : la reprise de l'avocat
+    retirait les honoraires une seconde fois."""
+    from google.api_core import exceptions as gexc
+
+    from models import fee_payment
+
+    _seed_trust(fake)
+    server = fake._fake_server
+    real_commit = server.commit
+    armed = {"on": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if armed["on"] and any("/trust_transactions/" in server._write_name(w)
+                               for w in writes):
+            armed["on"] = False
+            raise gexc.DeadlineExceeded("answer lost")
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+    resp = client.post("/fideicommis/", data=_fee_form())
+    assert resp.status_code == 400
+    page = html.unescape(resp.get_data(as_text=True))
+    assert "Rien n'a été inscrit" not in page
+    assert html.unescape(fee_payment.CREATE_OUTCOME_UNCERTAIN) in page
+    _fee_entry(fake)                                   # it DID land, once
