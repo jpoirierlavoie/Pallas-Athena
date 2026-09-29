@@ -453,9 +453,14 @@ def modifier_ecriture_administration(
                    stale=False)
 
 
-def compenser_administration(tx_ids: list, cleared_date) -> dict:
+def compenser_administration(
+    tx_ids: list, cleared_date, *, expected_etags: Optional[dict] = None,
+) -> dict:
     """Clear administration entries at the statement date — required.
-    All-or-nothing; above the lock floor."""
+    All-or-nothing; above the lock floor. ``expected_etags`` —
+    ``{tx_id: etag}``, the versions the caller SAW (an administration entry
+    stays editable until cleared, by the connector too): a changed one
+    refuses the batch (``stale: True``), nothing written."""
     ids = list(tx_ids or [])
     if cleared_date is None:
         return _refused(["Indiquez la date de compensation — celle du relevé bancaire."],
@@ -463,11 +468,14 @@ def compenser_administration(tx_ids: list, cleared_date) -> dict:
     if not ids:
         return _refused(["Aucune écriture à compenser."], "aucune_écriture", entries=[])
     report: dict = {}
-    count, failed = al.clear_transactions_bulk(ids, cleared_date, _report_out=report)
+    count, failed = al.clear_transactions_bulk(ids, cleared_date,
+                                               expected_etags=expected_etags,
+                                               _report_out=report)
     if failed:
         return _refused([report.get("message") or al._ABORT_MESSAGES["compensation_invalide"]],
                         report.get("reason") or "compensation_invalide",
-                        entries=[], failed=list(failed))
+                        entries=[], failed=list(failed),
+                        stale=report.get("reason") == STALE_REASON)
     return _report(True, entries=report.get("cleared", []))
 
 

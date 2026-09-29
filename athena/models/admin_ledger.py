@@ -1644,6 +1644,7 @@ def delete_card_payment(tx_id: str) -> tuple[Optional[list[dict]], list[str]]:
 def _clear_entries(
     tx_ids: list, cleared_date, reconciliation_id: Optional[str],
     _reason_out: Optional[dict] = None,
+    expected_etags: Optional[dict] = None,
 ) -> tuple[list[dict], list[str]]:
     """Clear en_circulation entries to compensée, all-or-nothing, in one
     transaction. No balance moves (no bank_balance here) — but the account
@@ -1651,7 +1652,16 @@ def _clear_entries(
     reconciliation completion sentinel must see it. ``_reason_out`` receives
     the machine reason on refusal so the caller can surface the RIGHT
     French message (the locked-period refusal must not read as a generic
-    « date invalide »)."""
+    « date invalide »).
+
+    ``expected_etags`` (lot 5b review) — ``{tx_id: etag}``, the version of
+    each entry its caller SAW: a clearing states « this amount, at this
+    date, is on my bank statement », and an administration entry stays
+    editable — by the connector too, since lot 5b — until it is cleared. A
+    page showing 114,98 $ would otherwise clear the 200,00 $ Claude wrote
+    meanwhile, and lock it there. A mismatch refuses the whole batch
+    (``écriture_modifiée``), checked FIRST on each entry; an id absent from
+    the map, or ``None``, asserts nothing."""
     if _reason_out is None:
         _reason_out = {}
     if not tx_ids:
@@ -1678,9 +1688,13 @@ def _clear_entries(
         entries = []
         account_id = None
         failed = []
+        stale = []
         for ref in tx_refs:
             snap = ref.get(transaction=txn)
             e = snap.to_dict() if snap.exists else None
+            if e and not concurrency.matches(e, (expected_etags or {}).get(ref.id)):
+                stale.append(ref.id)
+                continue
             ed = _as_utc(e.get("date")) if e else None
             if (
                 not e
@@ -1695,6 +1709,10 @@ def _clear_entries(
                 failed.append(ref.id)
                 continue
             entries.append(e)
+        if stale:
+            outcome["failed"] = stale
+            _reason_out["reason"] = "écriture_modifiée"
+            raise _TxnAbort("écriture_modifiée")
         if failed or not entries:
             outcome["failed"] = failed or list(tx_ids)
             raise _TxnAbort("compensation_invalide")
@@ -1741,11 +1759,17 @@ def _clear_entries(
     return outcome["cleared"], []
 
 
-def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[str]]:
-    """Step 2 of the lifecycle: mark one en_circulation entry compensée."""
+def clear_transaction(
+    tx_id: str, cleared_date, *, expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Step 2 of the lifecycle: mark one en_circulation entry compensée.
+    ``expected_etag`` — the version the caller saw (see
+    :func:`_clear_entries`); ``None`` asserts nothing."""
     outcome_holder: dict = {}
-    cleared, failed = _clear_entries([tx_id], cleared_date, None,
-                                     _reason_out=outcome_holder)
+    cleared, failed = _clear_entries(
+        [tx_id], cleared_date, None, _reason_out=outcome_holder,
+        expected_etags=None if expected_etag is None else {tx_id: expected_etag},
+    )
     if failed or not cleared:
         reason = outcome_holder.get("reason", "compensation_invalide")
         return None, [_ABORT_MESSAGES.get(reason, _ABORT_MESSAGES["compensation_invalide"])]
@@ -1759,14 +1783,18 @@ def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[st
 
 
 def clear_transactions_bulk(
-    tx_ids: list, cleared_date, *, _report_out: Optional[dict] = None,
+    tx_ids: list, cleared_date, *, expected_etags: Optional[dict] = None,
+    _report_out: Optional[dict] = None,
 ) -> tuple[int, list[str]]:
-    """Clear many entries at once, all-or-nothing. ``_report_out``, when
-    given, receives ``reason`` and its French ``message`` on a refusal, or
-    the cleared entries under ``cleared``."""
+    """Clear many entries at once, all-or-nothing. ``expected_etags`` —
+    ``{tx_id: etag}``, the versions the caller saw (see
+    :func:`_clear_entries`). ``_report_out``, when given, receives
+    ``reason`` and its French ``message`` on a refusal, or the cleared
+    entries under ``cleared``."""
     reason_out: dict = {}
     cleared, failed = _clear_entries(list(tx_ids), cleared_date, None,
-                                     _reason_out=reason_out)
+                                     _reason_out=reason_out,
+                                     expected_etags=expected_etags)
     if failed:
         if _report_out is not None:
             reason = reason_out.get("reason", "compensation_invalide")

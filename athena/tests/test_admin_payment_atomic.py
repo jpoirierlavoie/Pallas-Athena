@@ -1321,3 +1321,54 @@ def test_une_version_illisible_a_la_contre_passation_est_un_400_en_francais(
     assert resp.status_code == 400
     assert "Rien n'a été enregistré" in resp.get_data(as_text=True)
     assert fake.peek_collection("trust_transactions") == before
+
+
+# ── La compensation d'une écriture d'administration porte la version vue ──
+#
+# Compenser affirme que CE montant, à CETTE date, figure au relevé — et une
+# écriture d'administration reste modifiable, par le connecteur aussi
+# (update_admin_entry, lot 5b), jusqu'à sa compensation. La fiche ouverte sur
+# 114,98 $ compensait les 200,00 $ que Claude avait écrits entre-temps, et
+# les verrouillait là.
+
+
+def test_une_compensation_d_une_ecriture_modifiee_entre_temps_n_ecrit_rien(
+    client, fake,
+):
+    """Régression — la fiche affichait un montant, le connecteur l'a corrigé,
+    le bouton « Compenser » compensait le nouveau montant, jamais vu."""
+    entry, errs = al.create_transaction(_depense())
+    assert errs == [], errs
+    tx_id = entry["id"]
+    page = client.get(f"/administration/{tx_id}").get_data(as_text=True)
+    (shown,) = _etags(page)
+    assert shown == entry["etag"]
+    edited, errs = al.update_transaction(                       # Claude
+        tx_id, {"amount": 20000, "net_amount": 20000, "gst_amount": 0,
+                "qst_amount": 0}, expected_etag=shown)
+    assert errs == [], errs
+    before = _entries(fake)[tx_id]
+
+    resp = client.post(f"/administration/{tx_id}/compenser", data={
+        "cleared_date": "2026-09-12", "expected_etag": shown})
+    assert resp.status_code == 302
+    assert "avertissement=compensation_modifiee" in resp.location
+    assert _entries(fake)[tx_id] == before                      # nothing written
+    landing = html.unescape(client.get(resp.location).get_data(as_text=True))
+    assert "n'a PAS été compensée" in landing
+    assert _etags(landing) == [before["etag"]]
+
+    again = client.post(f"/administration/{tx_id}/compenser", data={
+        "cleared_date": "2026-09-12", "expected_etag": before["etag"]})
+    assert again.status_code == 302 and "avertissement" not in again.location
+    stored = _entries(fake)[tx_id]
+    assert stored["status"] == "compensée" and stored["amount"] == 20000
+
+
+def test_une_compensation_sans_le_champ_ne_verifie_rien(client, fake):
+    entry, errs = al.create_transaction(_depense())
+    assert errs == [], errs
+    resp = client.post(f"/administration/{entry['id']}/compenser",
+                       data={"cleared_date": "2026-09-12"})
+    assert resp.status_code == 302 and "avertissement" not in resp.location
+    assert _entries(fake)[entry["id"]]["status"] == "compensée"

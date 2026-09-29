@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Écriture #{{ entry.sequence }} — Administration — Pallas Athena{% endblock %}
 {% block content %}
+{% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-2xl mx-auto px-4 py-6" x-data="{ deleteOpen: false }">
   <div class="flex items-center gap-2 mb-4">
     <a href="{{ url_for('admin_ledger.journal', account_id=entry.account_id) }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
@@ -20,6 +21,12 @@
     verrouillée (compensée, conciliée ou contre-passée) : vos changements
     n'ont pas été enregistrés. Une correction passe maintenant par une
     contre-passation.
+  </div>
+  {% elif avertissement == 'compensation_modifiee' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Cette écriture a été modifiée entre-temps — dans l'application ou par le
+    connecteur — : elle n'a PAS été compensée. Vérifiez ci-dessous son
+    montant et sa date contre le relevé, puis compensez-la de nouveau.
   </div>
   {% elif avertissement == 'compensation' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
@@ -160,6 +167,10 @@
     {% if entry.status == 'en_circulation' %}
     <form method="post" action="{{ url_for('admin_ledger.entry_clear', tx_id=entry.id) }}" class="flex items-end gap-2">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {# La version affichée : compenser affirme que CE montant, à CETTE
+         date, figure au relevé — et l'écriture reste modifiable, par le
+         connecteur aussi, jusqu'à sa compensation. #}
+      {{ etag_field(entry) }}
       <input type="hidden" name="return_to" value="{{ url_for('admin_ledger.entry_detail', tx_id=entry.id) }}">
       <div>
         <label class="block text-xs font-medium text-gray-700 mb-1">Compenser (date au relevé)</label>

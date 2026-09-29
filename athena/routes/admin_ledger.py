@@ -493,8 +493,18 @@ def entry_clear(tx_id: str):
     cleared_date = _parse_date(request.form.get("cleared_date", "")) or datetime(
         d.year, d.month, d.day, tzinfo=timezone.utc
     )
-    errors = comptabilite.compenser_administration([tx_id], cleared_date)["errors"]
-    params = {"avertissement": "compensation"} if errors else {}
+    # D9 (lot 5b review): the version the detail page showed. A clearing
+    # says « this amount, at this date, is on my statement » — and the
+    # connector can correct an entry until it is cleared. None for a page
+    # rendered before the field: nothing is checked, as before.
+    expected = edit_conflict.submitted_etag()
+    report = comptabilite.compenser_administration(
+        [tx_id], cleared_date,
+        expected_etags=None if expected is None else {tx_id: expected},
+    )
+    errors = report["errors"]
+    params = ({"avertissement": "compensation_modifiee" if report.get("stale")
+               else "compensation"} if errors else {})
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), ""
     )
