@@ -821,3 +821,38 @@ def test_the_status_cascade_bumps_the_collection_the_task_lives_in(fake):
     assert payload["ctag_bumped"] is True
     assert fake.peek("dav_sync/general")["ctag"] != "g0"
     assert _ctag(fake) == "c0"          # the protocol's dossier: untouched
+
+
+def test_a_task_the_connector_links_to_a_step_carries_the_dated_mention(fake):
+    """Finitions, truth-2. The consent screen and INSTRUCTIONS promise a
+    dated « … par Claude le … » line on every task Claude creates; the
+    tasks create_protocol / add_protocol_step made through
+    models/protocol.create_linked_tasks carried none — only the invisible
+    created_via. They carry create_task's own words now."""
+    payload = handlers.create_protocol({
+        "dossier_id": "d1", "protocol_type": "cq_simplifié",
+        "start_date": "2026-09-01", "create_linked_tasks": True})
+    pid = payload["entity"]["id"]
+    tasks = fake.peek_collection("tasks").values()
+    assert tasks
+    for task in tasks:
+        assert task["description"].startswith("Étape du protocole — ")
+        assert "*Créée par Claude le " in task["description"]
+    step = handlers.add_protocol_step({
+        "protocol_id": pid, "title": "Interrogatoire",
+        "deadline_date": "2099-06-01", "create_linked_task": True})
+    linked = fake.peek(f"tasks/{step['linked_task_id']}")
+    assert "*Créée par Claude le " in linked["description"]
+
+
+def test_a_task_the_application_links_carries_no_claude_mention(fake):
+    """The web's protocol creation writes through the same helper: no
+    mention there — Claude did not create it."""
+    protocol, errors = protocol_model.create_protocol(
+        "d1", "cq_simplifié", datetime(2026, 9, 1, tzinfo=timezone.utc), {},
+        auto_create_tasks=True)
+    assert errors == [], errors
+    tasks = fake.peek_collection("tasks").values()
+    assert tasks
+    for task in tasks:
+        assert "par Claude" not in task["description"]

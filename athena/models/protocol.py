@@ -2086,14 +2086,24 @@ def create_linked_tasks(
     """
     from dav.sync import bump_ctag, collection_for
     from models.task import create_task
+    from utils.format_fr import format_date_fr
 
     dossier_id = protocol.get("dossier_id")
     report = {"created": 0, "linked": 0, "failed": 0}
+    # A task the CONNECTOR creates carries the dated mention its own
+    # create_task writes (finitions, truth-2): the consent screen and
+    # INSTRUCTIONS promise it on every task Claude creates, and the ones a
+    # create_protocol / add_protocol_step made through here carried none —
+    # only the invisible created_via. The same words, the Montréal day.
+    stamp = ""
+    if provenance.current_via() == "mcp":
+        stamp = ("\n\n*Créée par Claude le "
+                 f"{format_date_fr(deadlines.today_mtl())}*")
     for step in steps:
         task_data = {
             "title": step["title"],
             "description": (
-                f"Étape du protocole — {protocol.get('title', '')}"
+                f"Étape du protocole — {protocol.get('title', '')}{stamp}"
             ),
             "dossier_id": dossier_id,
             "dossier_file_number": protocol.get("dossier_file_number", ""),
