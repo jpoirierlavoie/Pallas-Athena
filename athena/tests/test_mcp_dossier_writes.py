@@ -40,6 +40,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import dav.sync as dav_sync
     import mcp.handlers as handlers
+    import mcp.output_schemas as output_schemas
     import mcp.tools as tools
     import mcp.write_support as write_support
     from models import dossier as dossier_model
@@ -415,14 +416,14 @@ def test_update_sets_a_lawyer_by_contact_id_and_snapshots_his_name(db):
     did = _dossier(db)
     payload = handlers.update_dossier_party({
         "action": "update", "dossier_id": did, "partie_id": "p3",
-        "avocat_id": "av1"})
+        "avocat_partie_id": "av1"})
     entry = _stored(db, did)["opposing_parties"][0]
     assert entry["avocat_id"] == "av1" and entry["avocat_name"] == "Me Anne Roy"
     assert payload["party"]["avocat_name_after"] == "Me Anne Roy"
 
     handlers.update_dossier_party({
         "action": "update", "dossier_id": did, "partie_id": "p3",
-        "avocat_id": ""})
+        "avocat_partie_id": ""})
     entry = _stored(db, did)["opposing_parties"][0]
     assert entry["avocat_id"] == "" and entry["avocat_name"] == ""
 
@@ -432,7 +433,36 @@ def test_an_unknown_lawyer_is_refused_naming_where_to_find_one(db):
     with pytest.raises(tools.ToolArgumentError, match="list_parties"):
         handlers.update_dossier_party({
             "action": "update", "dossier_id": did, "partie_id": "p3",
-            "avocat_id": "ghost"})
+            "avocat_partie_id": "ghost"})
+
+
+def test_the_lawyer_goes_by_one_name_across_the_connector():
+    """update_dossier_party names a party's lawyer as the party entries of
+    create_dossier and update_dossier do — `avocat_partie_id` (fixes of lot
+    4: it took `avocat_id`, the STORED field's name, so one lawyer had two
+    argument names across the connector). The OUTPUT keeps the stored name
+    (avocat_id_before / avocat_id_after), and the old argument is refused by
+    the schema, which lists the supported one."""
+    tool_props = tools.TOOLS["update_dossier_party"]["input_schema"]["properties"]
+    assert "avocat_partie_id" in tool_props and "avocat_id" not in tool_props
+    for tool, key in (("create_dossier", "clients"),
+                      ("create_dossier", "opposing_parties"),
+                      ("update_dossier", "add_clients"),
+                      ("update_dossier", "add_opposing_parties")):
+        entry = tools.TOOLS[tool]["input_schema"]["properties"][key]["items"]
+        assert "avocat_partie_id" in entry["properties"], (tool, key)
+    description = tools.TOOLS["update_dossier_party"]["description"]
+    assert "`avocat_partie_id`" in description
+    assert "`avocat_id`" not in description
+    errors = tools.validate_args(
+        tools.TOOLS["update_dossier_party"]["input_schema"],
+        {"action": "update", "dossier_id": "d", "partie_id": "p",
+         "avocat_id": "av1"})
+    assert errors and "`avocat_id` is not a supported argument" in errors[0]
+    assert "`avocat_partie_id`" in errors[0]
+    out = output_schemas.OUTPUT_SCHEMAS["update_dossier_party"]
+    party = out["properties"]["party"]["properties"]
+    assert {"avocat_id_before", "avocat_id_after", "avocat_name_after"} <= set(party)
 
 
 def test_the_roles_already_stored_write_nothing(db):
@@ -474,7 +504,7 @@ def test_a_party_not_on_the_dossier_is_refused_pointing_to_update_dossier(db):
 
 @pytest.mark.parametrize("args, stray", [
     ({"action": "remove", "roles": ["demandeur"]}, "roles"),
-    ({"action": "remove", "avocat_id": ""}, "avocat_id"),
+    ({"action": "remove", "avocat_partie_id": ""}, "avocat_partie_id"),
     ({"action": "refresh_names", "side": "clients"}, "side"),
     ({"action": "refresh_names", "expected_etag": "x"}, "expected_etag"),
 ])

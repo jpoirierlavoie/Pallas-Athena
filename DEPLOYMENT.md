@@ -2699,7 +2699,11 @@ Notes:
 
   Then update BOTH copies of the claude.ai skill `pallas-athena` the same
   day. What lot 4 makes false there (on top of the lot 1, 2A, 2B and 3
-  lists above): every tool count (now 80: 31 + 49 — the synced copies still
+  lists above) — and one NAME to write as shipped: `update_dossier_party`
+  names a party's lawyer `avocat_partie_id`, the key of the party entries
+  of `create_dossier` / `update_dossier` — never `avocat_id`, the stored
+  field's name, which its schema refuses (the RESULT keeps that name:
+  `avocat_id_before` / `avocat_id_after`): every tool count (now 80: 31 + 49 — the synced copies still
   say 49: 27 + 22); SKILL.md « Le `status` choisi à la création d'un dossier
   ne peut plus jamais être changé ici » (`set_dossier_status`); « Les
   écritures qu'aucun outil ne fait : Fermer un dossier; … vérifier une

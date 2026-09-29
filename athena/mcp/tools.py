@@ -4926,7 +4926,8 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE — one party LINK of a dossier. action \"update\": "
             "REPLACES the party's `roles` (the full list; [] clears them) "
-            "and/or its lawyer (`avocat_id`; \"\" removes him); every other "
+            "and/or its lawyer (`avocat_partie_id`, as in create_dossier's "
+            "party entries; \"\" removes him); every other "
             "entry is written back as stored, and the dossier-level role the "
             "gabarits cite is re-derived. \"remove\": DETACHES the party — "
             "the contact itself is never deleted, the detach is journaled "
@@ -4973,9 +4974,10 @@ TOOLS: dict[str, dict] = {
                         "replacement, no duplicate."
                     ),
                 },
-                "avocat_id": _id(
+                "avocat_partie_id": _id(
                     "update: the party's lawyer, a contact id (list_parties) "
-                    "— or \"\" to remove him. His name is snapshotted here."
+                    "— or \"\" to remove him. His name is snapshotted here; "
+                    "the result reports him as avocat_id_before / _after."
                 ),
                 **_expected_etag_only_for(
                     _DOSSIER_ETAG_READERS, "update / remove"),

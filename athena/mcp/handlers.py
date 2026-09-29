@@ -7812,12 +7812,12 @@ _PARTY_ACTIONS = ("update", "remove", "refresh_names")
 # refused by name, never ignored (a `roles` on a remove would otherwise be
 # silently dropped while the caller believed it applied).
 _PARTY_ACTION_ARGS = {
-    "update": ("dossier_id", "partie_id", "side", "roles", "avocat_id",
+    "update": ("dossier_id", "partie_id", "side", "roles", "avocat_partie_id",
                "expected_etag"),
     "remove": ("dossier_id", "partie_id", "side", "expected_etag"),
     "refresh_names": ("dossier_id", "partie_id"),
 }
-_PARTY_ARGS = ("dossier_id", "partie_id", "side", "roles", "avocat_id",
+_PARTY_ARGS = ("dossier_id", "partie_id", "side", "roles", "avocat_partie_id",
                "expected_etag")
 
 
@@ -7847,9 +7847,10 @@ def _update_dossier_party_impl(args: dict) -> dict:
         raise ToolArgumentError(
             f"`action` « {action} » exige `dossier_id` et `partie_id`."
         )
-    if action == "update" and "roles" not in args and "avocat_id" not in args:
+    if (action == "update" and "roles" not in args
+            and "avocat_partie_id" not in args):
         raise ToolArgumentError(
-            "Rien à modifier : donnez `roles` et/ou `avocat_id`."
+            "Rien à modifier : donnez `roles` et/ou `avocat_partie_id`."
         )
     # STRICT, like set_dossier_status: the fail-open get_dossier would read
     # an outage as « Dossier introuvable » and send the caller hunting for a
@@ -7861,7 +7862,12 @@ def _update_dossier_party_impl(args: dict) -> dict:
     side = args.get("side")
 
     if action == "update":
-        avocat_id = args.get("avocat_id")
+        # The argument is `avocat_partie_id` — the name create_dossier's
+        # and update_dossier's party entries use (fixes of lot 4: it was
+        # `avocat_id`, the STORED field's name, so one lawyer went by two
+        # names across the connector); the model keyword and the result's
+        # avocat_id_before / _after keep the stored name.
+        avocat_id = args.get("avocat_partie_id")
         if avocat_id is not None:
             avocat_id = str(avocat_id).strip()
             # Named here, where the model would only say « Avocat
