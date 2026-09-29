@@ -20,13 +20,21 @@ Two vocabularies, both French and both closed:
 * ``signalement`` — something worth a look, not a breach.
 
 **A finding is an observation, never an instruction.** Every ``detail``
-string says what to do IN THE APPLICATION. Some of those fixes are also
-connector writes (``create_protocol`` since lot 1b, ``record_signification``
-since July 2026). An identity or conflict check is NOT one of them in
-substance: since lot 4b the connector can INSCRIBE one
+string that says what to do says it IN THE APPLICATION first — and, where a
+connector write does the same thing, names that tool beside it (the IMP-07
+convention of ``mcp/import_audit.py``; finitions, truth-8): a protocol
+(``create_protocol`` since lot 1b; a wrong regime suspended by
+``update_protocol``), a signification (``record_signification``, since July
+2026), the recourse (``complete_dossier`` / ``update_dossier``), a task left
+open on a closed file (``complete_task``, ``set_dossier_status``). Until then
+every detail pointed at the application alone, and a caller reading it
+concluded the connector could not act. An identity or conflict check is NOT
+one of them in substance: since lot 4b the connector can INSCRIBE one
 (``record_kyc_status``), but only as PRESUMED — the verification itself
-stays the lawyer's, and a report that implied the connector could close the
-check would invite a write it must never make (see below).
+stays the lawyer's, so its detail names the tool together with that limit
+(the check stays open until he confirms it), never as a way to close the
+finding: a report that implied the connector could close the check would
+invite a write it must never make (see below).
 
 **A presumed check is an OPEN check** (D7, lot 4a). A status the connector
 inscribes is stored as presumed until the lawyer clicks « Confirmer » in the
@@ -109,7 +117,7 @@ def _proto_absent(d: dict, ctx: dict) -> Optional[str]:
         return None
     return (
         "Instance liée, mais aucun protocole actif. Créez-le dans "
-        "l'application (onglet Protocole du dossier)."
+        "l'application (onglet Protocole du dossier) ou par create_protocol."
     )
 
 
@@ -120,7 +128,9 @@ def _proto_regime(d: dict, ctx: dict) -> Optional[str]:
     return (
         f"Le protocole « {proto.get('protocol_type', '')} » ne correspond pas "
         f"au tribunal du dossier ({d.get('tribunal') or 'non précisé'}). Ses "
-        "échéances sont suspectes : reprenez-le dans l'application."
+        "échéances sont suspectes : reprenez-le dans l'application — ou "
+        "suspendez-le (update_protocol, status « suspendu ») et créez celui "
+        "du bon régime (create_protocol)."
     )
 
 
@@ -131,8 +141,8 @@ def _sign_absente(d: dict, ctx: dict) -> Optional[str]:
         return None
     return (
         f"{len(_opposing_ids(d))} partie(s) adverse(s) au dossier et aucune "
-        "signification consignée. Inscrivez-les dans l'application si elles "
-        "ont eu lieu."
+        "signification consignée. Inscrivez-les dans l'application (ou par "
+        "record_signification) si elles ont eu lieu."
     )
 
 
@@ -146,7 +156,8 @@ def _sign_partielle(d: dict, ctx: dict) -> Optional[str]:
     return (
         f"{len(served)} partie(s) adverse(s) signifiée(s) sur {len(opposing)}. "
         "Les délais des arts. 145 et 147 C.p.c. courent PAR PARTIE — vérifiez "
-        "les manquantes dans l'application."
+        "les manquantes dans l'application (record_signification inscrit "
+        "celles qui ont eu lieu)."
     )
 
 
@@ -155,7 +166,9 @@ def _prescription_a_verifier(d: dict, ctx: dict) -> Optional[str]:
         return None
     return (
         "La prescription n'est pas qualifiable : ni délai confirmé ni date "
-        "pour agir calculable. Complétez le recours dans l'application."
+        "pour agir calculable. Complétez le recours dans l'application (ou "
+        "par complete_dossier / update_dossier : prescription_type, "
+        "droit_action_date)."
     )
 
 
@@ -189,6 +202,15 @@ def _valeur_absente(d: dict, ctx: dict) -> Optional[str]:
         "Valeur en litige non saisie — la classe (I à IV) et le tarif en "
         "dépendent."
     )
+
+
+# The connector path of the two deontological checks, with its limit —
+# the tool is named because it exists, never as a way to close the finding.
+_KYC_CONNECTOR_CLAUSE = (
+    " Le connecteur ne peut que l'inscrire présumée (record_kyc_status, sur "
+    "l'instruction du juriste) : elle reste alors ouverte ici jusqu'à sa "
+    "confirmation dans la fiche."
+)
 
 
 def _presumed_clause(unresolved: list, field: str) -> str:
@@ -232,7 +254,8 @@ def _conflit_non_verifie(d: dict, ctx: dict) -> Optional[str]:
     return (
         f"Vérification des conflits non faite pour {len(unresolved)} "
         "client(s). Obligation déontologique — à consigner dans la fiche du "
-        "contact." + _presumed_clause(unresolved, kyc.FIELD_CONFLICT)
+        "contact." + _KYC_CONNECTOR_CLAUSE
+        + _presumed_clause(unresolved, kyc.FIELD_CONFLICT)
         + _presumed_conflict_clause(unresolved)
     )
 
@@ -247,6 +270,7 @@ def _identite_non_verifiee(d: dict, ctx: dict) -> Optional[str]:
     return (
         f"Identité non vérifiée pour {len(unresolved)} client(s). "
         "« Exempté » compte comme décidé — à consigner dans la fiche."
+        + _KYC_CONNECTOR_CLAUSE
         + _presumed_clause(unresolved, kyc.FIELD_IDENTITY)
     )
 

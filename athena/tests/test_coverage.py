@@ -216,10 +216,16 @@ def test_un_dossier_sain_ne_produit_rien():
 
 
 def test_chaque_detail_renvoie_a_l_application_jamais_au_connecteur():
-    """Le rapport crée un appel à l'action auquel le connecteur ne doit pas
-    répondre : il ne peut ni créer un protocole, ni vérifier une identité,
-    ni signifier. Un detail qui le laisserait croire inviterait une écriture
-    interdite."""
+    """Aucun detail ne PROMET une action du connecteur (« je vais… ») : un
+    constat est une observation, jamais une instruction.
+
+    Docstring réécrite délibérément aux finitions (truth-8) : elle disait
+    que le connecteur ne peut « ni créer un protocole, ni vérifier une
+    identité, ni signifier » — faux depuis create_protocol (lot 1b),
+    record_signification (juillet 2026) et record_kyc_status (lot 4b, qui
+    INSCRIT une vérification présumée). Les assertions n'ont pas changé ;
+    que les details NOMMENT désormais ces outils est épinglé par le test
+    suivant."""
     view = _d(court_file_number="", valeur_cents=None, action_a_valider=True,
               prescription_status="a_verifier",
               opposing_parties=[{"id": "p1"}], client_ids=["p9"])
@@ -233,6 +239,56 @@ def test_chaque_detail_renvoie_a_l_application_jamais_au_connecteur():
         lowered = f["detail"].lower()
         for forbidden in ("je vais", "je peux", "créons", "j'ai créé"):
             assert forbidden not in lowered, (f["code"], f["detail"])
+
+
+def test_chaque_detail_nomme_l_outil_du_connecteur_a_cote_de_l_application():
+    """Finitions, truth-8 — la convention d'IMP-07 (mcp/import_audit.py).
+
+    Chaque detail disait quoi faire DANS L'APPLICATION seulement : lu par
+    un appelant, il concluait que le connecteur ne pouvait rien, alors que
+    create_protocol, record_signification et complete_dossier font la même
+    chose. L'application vient d'abord, l'outil à côté. Pour les deux
+    contrôles déontologiques, l'outil est nommé AVEC sa limite : il
+    n'inscrit qu'une vérification présumée, qui laisse le constat ouvert —
+    jamais une façon de le clore. Échoue sur 7817412."""
+    served_one = [{"partie_id": "a1"}]
+    cases = {
+        "PROTO_ABSENT": (_d(), _ctx(),
+                         ("dans l'application", "create_protocol")),
+        "PROTO_REGIME": (
+            _d(), _ctx(active=["d1"], protocols={"d1": {
+                "protocol_type": "cq_simplifié", "regime_mismatch": True}}),
+            ("dans l'application", "update_protocol", "create_protocol")),
+        "SIGN_ABSENTE": (_d(opposing_parties=[{"id": "a1"}]), _ctx(),
+                         ("dans l'application", "record_signification")),
+        "SIGN_PARTIELLE": (
+            _d(opposing_parties=[{"id": "a1"}, {"id": "a2"}],
+               significations=served_one), _ctx(),
+            ("dans l'application", "record_signification")),
+        "PRESCRIPTION_A_VERIFIER": (
+            _d(prescription_status="a_verifier"), _ctx(),
+            ("dans l'application", "complete_dossier", "update_dossier")),
+        "CONFLIT_NON_VERIFIE": (
+            _d(client_ids=["p1"]),
+            _ctx(clients=[{"identity_verified": "vérifié",
+                           "conflict_check": "non_vérifié"}]),
+            ("fiche", "record_kyc_status", "reste alors ouverte")),
+        "IDENTITE_NON_VERIFIEE": (
+            _d(client_ids=["p1"]),
+            _ctx(clients=[{"identity_verified": "non_vérifié",
+                           "conflict_check": "vérifié"}]),
+            ("fiche", "record_kyc_status", "reste alors ouverte")),
+    }
+    for code, (view, ctx, fragments) in cases.items():
+        detail = _finding(view, ctx, code)["detail"]
+        for fragment in fragments:
+            assert fragment in detail, (code, fragment, detail)
+        # The application FIRST, the tool beside it.
+        assert detail.index(fragments[0]) < detail.index(fragments[1]), code
+    # The KYC clause never presents the tool as closing the finding.
+    kyc_detail = _finding(*cases["IDENTITE_NON_VERIFIEE"][:2],
+                          "IDENTITE_NON_VERIFIEE")["detail"]
+    assert "que l'inscrire présumée" in kyc_detail
 
 
 def test_le_registre_est_coherent():

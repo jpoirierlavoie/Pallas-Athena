@@ -3643,9 +3643,19 @@ def get_coverage_report(args: dict) -> dict:
     """Firm-wide hygiene sweep — which open files are missing something.
 
     Six round-trips for the whole firm, instead of one get_dossier per
-    dossier. Every finding is an OBSERVATION: the connector cannot create a
-    protocol, verify an identity or file a signification, and each detail
-    string points at the application.
+    dossier. Every finding is an OBSERVATION, never an instruction. Each
+    detail string points at the application and, where a connector write
+    does the same, names it beside (truth-8, finitions — the IMP-07
+    convention): the connector CAN create a protocol (``create_protocol``),
+    record a signification (``record_signification``), complete the
+    recourse (``complete_dossier`` / ``update_dossier``) and close a task
+    left open on a closed file (``complete_task``). It can only INSCRIBE an
+    identity or conflict check as PRESUMED (``record_kyc_status``), which
+    this report keeps OPEN until the lawyer confirms it in the fiche — the
+    one finding a connector write never closes. (This docstring said the
+    connector « cannot create a protocol, verify an identity or file a
+    signification » until the finitions: false since lot 1b, July 2026 and
+    lot 4b respectively.)
     """
     status = args.get("status", "actif")
     limit = _limit_arg(args, 25)
@@ -3756,7 +3766,9 @@ def get_coverage_report(args: dict) -> dict:
                         "TACHE_OUVERTE_DOSSIER_FERME", closed[did],
                         f"{count} tâche(s) encore active(s) sur un dossier "
                         f"« {closed[did].get('status', '')} ». Fermez-les ou "
-                        "rouvrez le dossier dans l'application.",
+                        "rouvrez le dossier dans l'application — ou par "
+                        "complete_task (terminée, annulée) ou "
+                        "set_dossier_status.",
                     ))
             if "PROTO_ACTIF_DOSSIER_FERME" not in skip and protocol_index_complete:
                 for did in by_dossier:

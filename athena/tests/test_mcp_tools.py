@@ -4134,6 +4134,39 @@ def test_the_report_never_promises_the_connector_will_fix_it(cov):
     assert "cannot create a protocol" not in description
 
 
+def test_the_report_names_the_connector_path_beside_the_application(cov):
+    """Finitions, truth-8. The handler's docstring said the connector
+    « cannot create a protocol, verify an identity or file a signification »
+    — false about the protocol since lot 1b, the signification since July
+    2026, and incomplete since lot 4b (record_kyc_status INSCRIBES a
+    presumed check). Its details pointed at the application alone, so a
+    caller concluded the connector could not act. Now the docstring says
+    what the connector CAN do, the description says the details name the
+    tool, and a cross-scope detail names complete_task and
+    set_dossier_status beside the application. Fails on 7817412."""
+    doc = handlers.get_coverage_report.__doc__
+    assert "cannot create a" not in doc.replace("« cannot create a", "")
+    for tool in ("create_protocol", "record_signification",
+                 "record_kyc_status", "complete_task"):
+        assert f"``{tool}``" in doc, tool
+    assert "PRESUMED" in doc and "OPEN until the lawyer confirms" in doc
+
+    description = tools.TOOLS["get_coverage_report"]["description"]
+    assert "says what to do in the application and, where a tool" in (
+        description)
+    for tool in ("create_protocol", "record_signification"):
+        assert tool in description, tool
+
+    cov["dossiers"] = [_cov_dossier("d1"),
+                       _cov_dossier("d12", status="fermé")]
+    cov["tasks"] = [{"id": "t1", "status": "à_faire", "dossier_id": "d12"}]
+    payload = handlers.get_coverage_report({})
+    cross = {f["code"]: f for f in payload["cross_scope_findings"]}
+    detail = cross["TACHE_OUVERTE_DOSSIER_FERME"]["detail"]
+    assert detail.index("dans l'application") < detail.index("complete_task")
+    assert "set_dossier_status" in detail
+
+
 def test_the_codes_enum_is_derived_from_the_running_checks():
     """Not a hand-copied literal: mcp.coverage imports no model, so the enum
     is the registry itself and cannot drift from what actually runs."""
