@@ -500,6 +500,12 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "supersedes the dossier's reference budget — the version whose "
         "« Estimation » is the client quote; earlier ones are kept (lot 3b)"
     ),
+    "record_kyc_status": (
+        "replaces a client's stored identity or conflict-check status — "
+        "presumed until the lawyer confirms it, never over his own "
+        "attestation, but a compliance record replaced all the same "
+        "(lot 4b, D7)"
+    ),
 }
 
 

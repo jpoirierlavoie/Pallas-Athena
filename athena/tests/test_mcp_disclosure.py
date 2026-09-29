@@ -224,6 +224,14 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "is deliberately not accepted: closing a dossier",
     "fixez le statut à la création",
     "ne se change pas par le connecteur",
+    # Lot 4b (CONTACTS): record_kyc_status INSCRIBES a presumed compliance
+    # check and update_partie_mandataire writes a contact's representations
+    # — « trust_identity » was split, and these phrasings are false now.
+    "never touches trust accounting, identity verification",
+    "à la vérification d'identité ou à la vérification des conflits",
+    "not writable here and never will be",
+    "mandataires are not writable",
+    "never verifies an identity or a conflict",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -912,7 +920,8 @@ def test_the_lot_4b_texts_say_what_the_dossier_tools_do():
         assert fragment in dossiers.instructions_en, fragment
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "dossier_status" not in keys
-    assert "detaching a party from a dossier removes a LINK" in keys["delete"].en
+    assert ("detaching a party from a dossier or a mandataire from a contact "
+            "removes a LINK") in keys["delete"].en
     assert "le contact reste" in keys["delete"].fr
     text = endpoint.INSTRUCTIONS
     assert "DOSSIERS: " in text
@@ -928,3 +937,42 @@ def test_the_lot_4b_texts_say_what_the_dossier_tools_do():
     assert "set_dossier_status" in (
         tools.TOOLS["create_dossier"]["input_schema"]["properties"]["status"]
         ["description"])
+
+
+
+def test_the_lot_4b_texts_say_what_the_contact_tools_do():
+    """Lot 4b (CONTACTS). A compliance check the connector inscribes is
+    PRESUMED — « à confirmer » on the fiche, still OPEN in the coverage
+    report, confirmed only by the lawyer — and never written over one he
+    decided or confirmed; a detached mandataire is a LINK. The trust
+    promise stays whole on its own, and the compliance one is backed by
+    code: no connector call confirms, every update_kyc_status names its
+    source, and no write tool takes the stored compliance fields."""
+    contacts = next(f for f in disclosure.FAMILIES if f.key == "contacts")
+    assert contacts.tools == ("update_partie_mandataire", "record_kyc_status")
+    for fragment in ("PRESUMED", "keeps it OPEN", "never here",
+                     "REFUSED on a check the lawyer decided or confirmed",
+                     "APPENDED under a dated line",
+                     "the mandataire contact stays"):
+        assert fragment in contacts.instructions_en, fragment
+    keys = {n.key: n for n in disclosure.NEVERS}
+    assert "trust_identity" not in keys
+    assert keys["trust"].en == "It never touches trust accounting."
+    kyc_never = keys["kyc"]
+    assert "confirm_kyc_status" in kyc_never.forbidden
+    assert ("update_kyc_status", "source") in kyc_never.required_keywords
+    assert ("*", "identity_verified_source") in kyc_never.forbidden_inputs
+    assert "stays PRESUMED" in kyc_never.en
+    assert "à confirmer" in kyc_never.fr
+    text = endpoint.INSTRUCTIONS
+    assert "CONTACTS: " in text
+    assert "It never CONFIRMS an identity or conflict-of-interest check" in text
+    partial = (_TEMPLATES / "mcp" / "families" / "_contacts.html").read_text(
+        encoding="utf-8")
+    flat = " ".join(partial.split())
+    assert "<strong>présumée</strong>" in flat
+    assert "<strong>jamais</strong> modifiée par le connecteur" in flat
+    desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
+    assert "record_kyc_status" in desc["create_partie"]
+    assert "update_partie_mandataire" in desc["update_partie"]
+    assert "`*_presumed`" in desc["get_partie"]

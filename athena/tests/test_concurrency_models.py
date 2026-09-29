@@ -1051,6 +1051,24 @@ def _roles_of_first_client(roles: list):
     return lambda clients: clients[0]["roles"] == roles
 
 
+def _represented(db):
+    """A client with one representation (m1): the tool is addressed by the
+    represented contact AND the mandataire (and an action)."""
+    pid = _partie_with_mandataire(db)
+    return pid, {"action": "update", "partie_id": pid,
+                 "mandataire_partie_id": "m1"}
+
+
+def _notes_of_m1(notes: str):
+    return lambda entries: [e["notes"] for e in entries
+                            if e["id"] == "m1"] == [notes]
+
+
+def _kyc_client(db):
+    pid = _partie(db)
+    return pid, {"partie_id": pid, "check": "identity"}
+
+
 # tool → (collection, factory, id key, arguments, (field, stored value))
 _HANDLER_CASES = {
     "update_partie": ("parties", _partie, "partie_id",
@@ -1113,6 +1131,15 @@ _HANDLER_CASES = {
     "update_dossier_party": ("dossiers", _dossier_party, None,
                              {"roles": ["intimé"]},
                              ("clients", _roles_of_first_client(["intimé"]))),
+    # Lot 4b — CONTACTS: one representation, and a PRESUMED compliance
+    # inscription (a client's; the lawyer's own is refused elsewhere).
+    "update_partie_mandataire": ("parties", _represented, None,
+                                 {"notes": "Procuration notariée"},
+                                 ("mandataires",
+                                  _notes_of_m1("Procuration notariée"))),
+    "record_kyc_status": ("parties", _kyc_client, None,
+                          {"status": "vérifié"},
+                          ("identity_verified", "vérifié")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -1123,6 +1150,8 @@ _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
 _SECOND_ARGS = {
     "reopen_task": {"status": "à_faire"},
     "update_dossier_party": {"roles": ["intervenant"]},
+    "update_partie_mandataire": {"notes": "Procuration révoquée"},
+    "record_kyc_status": {"status": "exempté"},
     "edit_analyse": {"operations": [{"bloc": "D", "mode": "append",
                                      "content": "Deuxième version"}]},
 }
@@ -1159,6 +1188,8 @@ _HANDLER_GETTERS = {
     "update_template": (doc_template_model, "get_template"),
     "update_invoice": (invoice_model, "get_invoice"),
     "update_dossier_party": (dossier_model, "get_dossier"),
+    "update_partie_mandataire": (partie_model, "get_partie"),
+    "record_kyc_status": (partie_model, "get_partie"),
 }
 
 

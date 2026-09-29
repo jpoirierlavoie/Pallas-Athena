@@ -541,6 +541,35 @@ FAMILIES: tuple[Family, ...] = (
             "(CORRECT)."
         ),
     ),
+    Family(
+        key="contacts",
+        label="CONTACTS",
+        scope=SCOPE_WRITE,
+        tools=("update_partie_mandataire", "record_kyc_status"),
+        consent_template="mcp/families/_contacts.html",
+        checkbox_summary_fr=(
+            "tenir les mandataires d'un contact (en ajouter, corriger, "
+            "détacher — le contact mandataire reste), et inscrire une "
+            "vérification d'identité ou de conflits d'intérêts comme "
+            "PRÉSUMÉE — «&nbsp;à confirmer&nbsp;» sur la fiche jusqu'à votre "
+            "confirmation, jamais par-dessus une vérification que vous avez "
+            "vous-même décidée"
+        ),
+        instructions_en=(
+            "`update_partie_mandataire` adds, corrects or DETACHES one "
+            "representation of a contact (a mandataire of the same "
+            "contact_role, an individual; the mandataire contact stays, a "
+            "detach is journaled). `record_kyc_status` INSCRIBES a client's "
+            "identity or conflict-of-interest check as PRESUMED: the fiche "
+            "shows it « (présumé) — inscrit par Claude, à confirmer » and "
+            "`get_coverage_report` keeps it OPEN until the lawyer confirms it "
+            "in the application — never here. It is REFUSED on a check the "
+            "lawyer decided or confirmed (`get_partie`: `*_presumed` false on "
+            "a decided status); tell him instead. Its notes are APPENDED "
+            "under a dated line. A detected conflict you inscribe must be "
+            "reported to the lawyer at once."
+        ),
+    ),
 )
 
 
@@ -581,14 +610,14 @@ NEVERS: tuple[Never, ...] = (
         fr=(
             "<strong>supprimer</strong> quoi que ce soit dans Athéna — "
             "annuler une tâche ou un événement les conserve, avec leur "
-            "statut&nbsp;; détacher une partie d'un dossier retire un lien, "
-            "le contact reste"
+            "statut&nbsp;; détacher une partie d'un dossier ou un mandataire "
+            "d'un contact retire un lien, le contact reste"
         ),
         en=(
             "NOTHING in Athéna can EVER be DELETED here: a cancelled task or "
             "event is kept, with its status; detaching a party from a "
-            "dossier removes a LINK — the contact stays, and the detach is "
-            "journaled (list_deletions)."
+            "dossier or a mandataire from a contact removes a LINK — the "
+            "contact stays, and the detach is journaled (list_deletions)."
         ),
         forbidden=(r"delete_\w+", r"record_deletion"),
         # The protocol layer deletes its own bookkeeping (an expired OAuth
@@ -675,32 +704,61 @@ NEVERS: tuple[Never, ...] = (
     # status reaches the model without its drain — is pinned by
     # tests/test_mcp_import.py (the tripwire) and tests/test_mcp_dossier_
     # writes.py.
+    # Lot 4b split « trust_identity »: record_kyc_status INSCRIBES a
+    # compliance check (update_kyc_status, source « mcp »), which falsified
+    # « never touches identity verification or conflict checks ». The trust
+    # half stays whole; what stays true of the compliance half is its own
+    # promise below (« kyc »).
     Never(
-        key="trust_identity",
-        fr=(
-            "toucher au <strong>fidéicommis</strong>, à la vérification "
-            "d'identité ou à la vérification des conflits d'intérêts"
-        ),
+        key="trust",
+        fr="toucher au <strong>fidéicommis</strong>",
         fr_comptabilite=(
             "toucher au <strong>fidéicommis</strong> (sauf avec la case "
-            "«&nbsp;Autoriser la comptabilité&nbsp;»), à la vérification "
-            "d'identité ou à la vérification des conflits d'intérêts"
+            "«&nbsp;Autoriser la comptabilité&nbsp;»)"
+        ),
+        en="It never touches trust accounting.",
+        forbidden=_REGISTER_WRITERS,
+        forbidden_modules=("models.admin_ledger",),
+    ),
+    Never(
+        key="kyc",
+        # D7: a check the connector inscribes is PRESUMED — the model stamps
+        # its source « mcp », the fiche shows « à confirmer », the coverage
+        # report keeps it open — and the ONE way out is the lawyer's
+        # « Confirmer » (models/partie.confirm_kyc_status, which refuses the
+        # connector as a writer). A check the lawyer decided or confirmed is
+        # refused to an « mcp » write by the model (utils/kyc
+        # .apply_status_transition, update_kyc_status) — the behaviour is
+        # pinned; every connector call names its source (required keyword),
+        # and no write tool takes the stored compliance fields as input.
+        fr=(
+            "<strong>confirmer</strong> une vérification d'identité ou de "
+            "conflits d'intérêts, ni modifier une vérification que vous avez "
+            "décidée ou confirmée — ce que Claude inscrit reste "
+            "«&nbsp;à confirmer&nbsp;»"
         ),
         en=(
-            "It never touches trust accounting, identity verification or "
-            "conflict-of-interest checks."
+            "It never CONFIRMS an identity or conflict-of-interest check, "
+            "nor changes one the lawyer decided or confirmed: a check it "
+            "inscribes stays PRESUMED until the lawyer confirms it in the "
+            "application."
         ),
-        forbidden=_REGISTER_WRITERS + (
-            "update_kyc_status", "link_kyc_document",
-        ),
-        forbidden_modules=("models.admin_ledger",),
+        forbidden=("confirm_kyc_status", "link_kyc_document"),
+        required_keywords=(("update_kyc_status", "source"),),
         forbidden_inputs=tuple(
             ("*", field) for field in (
                 "identity_verified", "identity_verified_date",
-                "identity_verified_notes", "conflict_check",
+                "identity_verified_notes", "identity_verified_source",
+                "identity_verified_confirmed_at",
+                "identity_verified_confirmed_by", "conflict_check",
                 "conflict_check_date", "conflict_check_notes",
-                "kyc_document_ids",
+                "conflict_check_source", "conflict_check_confirmed_at",
+                "conflict_check_confirmed_by", "kyc_document_ids",
             )
+        ),
+        behavioural_test=(
+            "tests/test_mcp_contact_writes.py::"
+            "test_record_kyc_status_never_changes_or_confirms_the_lawyer_s_attestation"
         ),
     ),
     Never(

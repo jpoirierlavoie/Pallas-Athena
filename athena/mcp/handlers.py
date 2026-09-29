@@ -159,8 +159,8 @@ from services import rendez_vous as rendez_vous_service
 from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, budget_math, deadlines, docx_templatize, pdf_text, phases,
-    recurrence, storage_identity, taxonomie,
+    analyse_blocs, budget_math, deadlines, docx_templatize, kyc, pdf_text,
+    phases, recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import extract_placeholders, validate_template
@@ -174,7 +174,8 @@ from utils.docx_leak_scan import (
 )
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import (
-    log_dossier_event, log_hearing_series_event, log_unexpected,
+    log_dossier_event, log_hearing_series_event, log_partie_event,
+    log_unexpected,
 )
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
@@ -2362,6 +2363,20 @@ def get_partie(args: dict) -> dict:
         "conflict_check": p.get("conflict_check", ""),
         "conflict_check_date": iso_mtl(_as_utc(p.get("conflict_check_date"))),
         "conflict_check_notes": p.get("conflict_check_notes", ""),
+        # D7 (lot 4b): WHO decided each check. « mcp » = inscribed by this
+        # connector — PRESUMED until the lawyer confirms it in the fiche;
+        # record_kyc_status refuses to touch a check that is not presumed
+        # but decided (the lawyer's attestation).
+        **{
+            f"{field}_{key}": value
+            for field in kyc.FIELDS
+            for key, value in (
+                ("source", kyc.source_of(p, field)),
+                ("presumed", kyc.is_presumed(p, field)),
+                ("confirmed_at",
+                 iso_mtl(_as_utc(p.get(kyc.confirmed_at_key(field))))),
+            )
+        },
         "kyc_document_ids": p.get("kyc_document_ids", []),
         "mandataires": p.get("mandataires", []),
         "notes": p.get("notes", ""),
@@ -5010,13 +5025,26 @@ def _partie_entity(doc: dict) -> dict:
     }
 
 
-def _partie_write_result(doc: dict, *, verb: str) -> dict:
+def _partie_write_result(doc: dict, *, verb: str, wrote: bool = True) -> dict:
+    """Success payload of a contact write — and its CardDAV bump.
+
+    ``wrote=False`` is a NO-OP (lot 4b: a representation or a compliance
+    status already so): nothing was stored, so nothing is bumped — a bump
+    would tell DavX5 to re-fetch an addressbook that did not change — and
+    both sync keys read ``false`` with no warning, the
+    ``_entity_write_result(wrote=)`` rule. The keys are still EMITTED: the
+    declared outputSchema requires them.
+    """
     payload: dict[str, Any] = {
         verb: True,
         "entity_type": "partie",
         "entity": _partie_entity(doc),
         "warnings": [],
     }
+    if not wrote:
+        payload["ctag_bumped"] = False
+        payload["dav_synced"] = False
+        return payload
     bumped = _bump_parties_ctag()
     payload["ctag_bumped"] = bumped
     payload["dav_synced"] = bumped
@@ -5124,6 +5152,340 @@ def _update_partie_impl(args: dict) -> dict:
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _partie_write_result(partie, verb="updated")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 4b — CONTACTS: a contact's representations, and the PRESUMED
+# compliance inscription (D7)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Both write a contact through models/partie — the one-representation
+# helpers of lot 4a, and update_kyc_status with source « mcp » — whose
+# rules every path meets (the forward and reverse mandataire rules, the
+# « never over the lawyer's attestation » rule). Contacts ARE DAV-exposed
+# (CardDAV): every write bumps « parties » through _partie_write_result,
+# even though vCard carries neither mandataires nor compliance — the etag
+# moves, and without the bump DavX5's next If-Match PUT answers 412.
+
+_PARTIE_SUBJECT = "Ce contact a été modifié"
+_PARTIE_NOT_FOUND = (
+    "Contact introuvable : {id}. Utilisez list_parties pour obtenir un "
+    "partie_id valide."
+)
+
+
+def _read_partie_for_write(partie_id: str) -> dict:
+    existing = partie_model.get_partie(partie_id)
+    if existing is None:
+        raise ToolArgumentError(_PARTIE_NOT_FOUND.format(id=partie_id))
+    return existing
+
+
+# ── update_partie_mandataire (WRITE — LINKS) ─────────────────────────────
+
+_MANDATAIRE_ACTIONS = ("add", "update", "remove")
+# What each action accepts beside the two ids — anything else is refused by
+# name (a `kind` on a remove would otherwise be silently ignored).
+_MANDATAIRE_ACTION_ARGS = {
+    "add": ("kind", "notes", "expected_etag"),
+    "update": ("kind", "notes", "expected_etag"),
+    "remove": ("expected_etag",),
+}
+_MANDATAIRE_ARGS = ("kind", "notes", "expected_etag")
+
+
+def update_partie_mandataire(args: dict) -> dict:
+    return run_write(
+        "update_partie_mandataire", args,
+        lambda: _update_partie_mandataire_impl(args),
+    )
+
+
+def _update_partie_mandataire_impl(args: dict) -> dict:
+    action = args.get("action")
+    if action not in _MANDATAIRE_ACTIONS:
+        raise ToolArgumentError("`action` : add, update ou remove.")
+    stray = [k for k in _MANDATAIRE_ARGS
+             if k in args and k not in _MANDATAIRE_ACTION_ARGS[action]]
+    if stray:
+        raise ToolArgumentError(
+            f"`action` « {action} » n'accepte pas "
+            + ", ".join(f"`{k}`" for k in stray) + "."
+        )
+    partie_id = str(args.get("partie_id") or "").strip()
+    mandataire_id = str(args.get("mandataire_partie_id") or "").strip()
+    if not partie_id or not mandataire_id:
+        raise ToolArgumentError(
+            "`partie_id` (le contact représenté) et `mandataire_partie_id` "
+            "sont requis."
+        )
+    if action == "add" and "kind" not in args:
+        raise ToolArgumentError(
+            "`kind` est requis pour ajouter une représentation."
+        )
+    if action == "update" and "kind" not in args and "notes" not in args:
+        raise ToolArgumentError(
+            "Rien à modifier : donnez `kind` et/ou `notes`."
+        )
+    existing = _read_partie_for_write(partie_id)
+    expected = _expected_etag(
+        args, existing, tool="update_partie_mandataire",
+        subject=_PARTIE_SUBJECT,
+    )
+    stored_entry = next(
+        (e for e in (existing.get("mandataires") or [])
+         if isinstance(e, dict)
+         and str(e.get("id") or "").strip() == mandataire_id), None)
+
+    if action == "add":
+        # Named here, where the model would say only « Mandataire
+        # introuvable » without the way to find a valid id.
+        if partie_model.get_partie(mandataire_id) is None:
+            raise ToolArgumentError(
+                f"Mandataire introuvable : {mandataire_id}. Utilisez "
+                "list_parties pour obtenir l'id d'un contact existant."
+            )
+        doc, errors, report = partie_model.add_partie_mandataire(
+            partie_id, mandataire_id, kind=args.get("kind"),
+            notes=args.get("notes", ""), expected_etag=expected,
+        )
+    elif action == "update":
+        doc, errors, report = partie_model.update_partie_mandataire(
+            partie_id, mandataire_id, kind=args.get("kind"),
+            notes=args.get("notes"), expected_etag=expected,
+        )
+    else:
+        doc, errors, report = partie_model.remove_partie_mandataire(
+            partie_id, mandataire_id, expected_etag=expected,
+        )
+    _raise_if_stale(
+        errors, tool="update_partie_mandataire", subject=_PARTIE_SUBJECT,
+        reread=lambda: partie_model.get_partie(partie_id),
+    )
+    if errors:
+        message = "; ".join(errors)
+        if errors == [partie_model.MANDATAIRE_NOT_LISTED]:
+            message += " get_partie liste ses mandataires."
+        elif errors == [partie_model.MANDATAIRE_ALREADY_LISTED]:
+            message += " (action update)"
+        raise ToolArgumentError(message)
+
+    # ── Committed (or nothing to write): nothing below may refuse. ─────
+    changed = bool(report.get("changed"))
+    payload = _partie_write_result(doc, verb="updated", wrote=changed)
+    if action == "remove":
+        notes_after = str((stored_entry or {}).get("notes") or "")
+    else:
+        notes_after = str(report.get("notes") or "")
+    payload.update({
+        "action": action,
+        "outcome": "applied" if changed else "unchanged",
+        "mandataire": {
+            "partie_id": mandataire_id,
+            "kind": str(report.get("kind") or ""),
+            "has_notes": bool(notes_after.strip()),
+        },
+        "mandataires_count": int(report.get("mandataires_count") or 0),
+        "journaled": bool(report.get("journaled")),
+    })
+    if not changed:
+        payload["warnings"].append(
+            "Cette représentation est déjà ainsi : rien n'a été écrit."
+        )
+    elif action == "remove":
+        payload["warnings"].append(
+            "Le LIEN est retiré ; le contact mandataire lui-même reste, "
+            "inchangé. "
+            + ("Le retrait est inscrit au journal des suppressions "
+               "(list_deletions, mandataire)." if report.get("journaled") else
+               "Le retrait n'a pas pu être inscrit au journal des "
+               "suppressions.")
+        )
+    return payload
+
+
+# ── record_kyc_status (WRITE — ATTEST, PRESUMED) ─────────────────────────
+
+_KYC_CHECK_FIELDS = {
+    "identity": kyc.FIELD_IDENTITY,
+    "conflict": kyc.FIELD_CONFLICT,
+}
+# models/partie sanitizes every string at 2000: a combined text past it
+# would be TRUNCATED in silence — refused instead, before the model.
+_KYC_NOTES_CEILING = 2000
+_KYC_NOTE_MAX = 1000
+_KYC_NOT_A_CLIENT = (
+    "Une vérification d'identité ou de conflits ne s'inscrit que pour un "
+    "client — un contact de rôle « client », ou client d'un dossier : la "
+    "fiche de tout autre contact ne la montre pas, le juriste ne pourrait "
+    "ni la voir ni la confirmer."
+)
+_KYC_CLIENTS_UNREADABLE = (
+    "Les dossiers de ce contact n'ont pas pu être lus pour vérifier qu'il en "
+    "est client : rien n'a été écrit. Réessayez dans un instant."
+)
+_KYC_LAWYERS = (
+    "Seul le juriste peut modifier une vérification qu'il a consignée ou "
+    "confirmée : rien n'a été écrit. Si elle doit changer, dites-le-lui "
+    "(get_partie : {field}_source « juriste », ou {field}_presumed false)."
+)
+
+
+def _require_kyc_client(existing: dict, partie_id: str) -> None:
+    """The fiche shows its Conformité section to a « client » contact and
+    to any client of a dossier (routes/parties) — the connector inscribes
+    nowhere the lawyer could not see it, and so never confirm it."""
+    if existing.get("contact_role") == "client":
+        return
+    try:
+        dossiers = dossier_model.list_dossiers_for_partie_strict(partie_id)
+    except Exception:
+        log_unexpected("mcp record_kyc_status: dossiers unreadable")
+        raise ToolArgumentError(_KYC_CLIENTS_UNREADABLE)
+    if not any(partie_id in (d.get("client_ids") or []) for d in dossiers):
+        raise ToolArgumentError(_KYC_NOT_A_CLIENT)
+
+
+def _kyc_notes_with(existing: dict, field: str, raw: str) -> str:
+    """The check's notes with *raw* APPENDED under a dated line — the
+    STORED string, checked whole (the append_to_note lesson: TAG_RE spans
+    lines, so an unpaired « < » already stored plus a « > » in the addition
+    would delete ACROSS the join — each half survives alone)."""
+    note = raw.strip()
+    if len(note) > _KYC_NOTE_MAX:
+        raise ToolArgumentError(
+            f"`notes` dépasse {_KYC_NOTE_MAX} caractères : rien n'a été "
+            "écrit."
+        )
+    if not _survives_storage(note, _KYC_NOTES_CEILING):
+        raise ToolArgumentError(
+            "`notes` contient du texte entre chevrons qui serait supprimé à "
+            f"l'enregistrement. {_CHEVRON_ADVICE}"
+        )
+    line = (f"[{deadlines.today_mtl().isoformat()} — inscrit par Claude] "
+            f"{note}")
+    stored = str(existing.get(kyc.notes_key(field)) or "")
+    combined = f"{stored}\n\n{line}" if stored.strip() else line
+    if len(combined) > _KYC_NOTES_CEILING:
+        raise ToolArgumentError(
+            "Les notes de cette vérification dépasseraient "
+            f"{_KYC_NOTES_CEILING} caractères avec cet ajout : rien n'a été "
+            "écrit. Abrégez-le."
+        )
+    if not _survives_storage(combined, _KYC_NOTES_CEILING):
+        raise ToolArgumentError(
+            "Les notes déjà enregistrées de cette vérification contiennent "
+            "des chevrons (< >) : les réenregistrer avec l'ajout en "
+            "supprimerait une partie. Rien n'a été écrit — elles se "
+            "corrigent dans l'application."
+        )
+    return combined
+
+
+def record_kyc_status(args: dict) -> dict:
+    return run_write(
+        "record_kyc_status", args, lambda: _record_kyc_status_impl(args)
+    )
+
+
+def _record_kyc_status_impl(args: dict) -> dict:
+    partie_id = str(args.get("partie_id") or "").strip()
+    if not partie_id:
+        raise ToolArgumentError("`partie_id` est requis.")
+    field = _KYC_CHECK_FIELDS.get(args.get("check"))
+    if field is None:
+        raise ToolArgumentError("`check` : identity ou conflict.")
+    status = str(args.get("status") or "")
+    if status not in kyc.STATUSES[field]:
+        raise ToolArgumentError(
+            f"`status` : pour la vérification « {args.get('check')} », "
+            + ", ".join(kyc.STATUSES[field]) + "."
+        )
+    existing = _read_partie_for_write(partie_id)
+    _require_kyc_client(existing, partie_id)
+    expected = _expected_etag(
+        args, existing, tool="record_kyc_status", subject=_PARTIE_SUBJECT,
+    )
+    if kyc.is_decided(existing, field):
+        # The model refuses it too; said here with the field to read.
+        raise ToolArgumentError(
+            _KYC_LAWYERS.format(field=field), reason="kyc_lawyer_attestation",
+        )
+    status_before = kyc.stored_status(existing, field)
+    raw = args.get("notes")
+    combined = (_kyc_notes_with(existing, field, str(raw))
+                if raw is not None and str(raw).strip() else None)
+
+    wrote = status != status_before or combined is not None
+    doc = existing
+    if wrote:
+        doc, errors = partie_model.update_kyc_status(
+            partie_id, field, status, combined,
+            source=kyc.SOURCE_MCP, expected_etag=expected,
+        )
+        _raise_if_stale(
+            errors, tool="record_kyc_status", subject=_PARTIE_SUBJECT,
+            reread=lambda: partie_model.get_partie(partie_id),
+        )
+        if errors == [kyc.LAWYER_ATTESTATION]:
+            raise ToolArgumentError(
+                _KYC_LAWYERS.format(field=field),
+                reason="kyc_lawyer_attestation",
+            )
+        if errors:
+            raise ToolArgumentError("; ".join(errors))
+
+    # ── Committed (or nothing to write): nothing below may refuse. ─────
+    presumed = kyc.is_presumed(doc, field)
+    payload = _partie_write_result(doc, verb="recorded", wrote=wrote)
+    payload.update({
+        "outcome": "applied" if wrote else "unchanged",
+        "kyc": {
+            "check": args.get("check"),
+            "field": field,
+            "status_before": status_before,
+            "status_after": kyc.stored_status(doc, field),
+            "source": kyc.SOURCE_MCP,
+            "presumed": presumed,
+            "confirmation_required": presumed,
+            "recorded_at": iso_mtl(_as_utc(doc.get(kyc.date_key(field)))),
+            "notes_appended": combined is not None,
+        },
+    })
+    warnings = payload["warnings"]
+    if not wrote:
+        warnings.append(
+            "La vérification est déjà dans cet état : rien n'a été écrit."
+        )
+    if presumed:
+        warnings.append(
+            "Inscrite comme PRÉSUMÉE : la fiche l'affiche « "
+            f"{kyc.STATUS_LABELS[status]} (présumé) — inscrit par Claude, à "
+            "confirmer » jusqu'au « Confirmer » du juriste, et le rapport de "
+            "couverture la garde OUVERTE d'ici là. Ce connecteur ne la "
+            "confirme jamais."
+        )
+    if wrote and status == "conflit_détecté":
+        warnings.append(
+            "Un CONFLIT D'INTÉRÊTS présumé est inscrit : signalez-le au "
+            "juriste sans délai — la fiche le montre en rouge."
+        )
+    if (wrote and status == kyc.NON_VERIFIE
+            and status_before in kyc.DECIDED[field]):
+        warnings.append(
+            "Votre inscription présumée est retirée : la vérification "
+            "redevient « non vérifiée »."
+        )
+    if wrote:
+        try:
+            log_partie_event(
+                "kyc_recorded", partie_id, field=field, via="mcp",
+                status_changed=status != status_before, presumed=presumed,
+                notes_appended=combined is not None,
+            )
+        except Exception:
+            log_unexpected("mcp record_kyc_status logging failed")
+    return payload
 
 
 # ── 41-42. update_time_entry / update_expense (WRITE — remplacent) ──────

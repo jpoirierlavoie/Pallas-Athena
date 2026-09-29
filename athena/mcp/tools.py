@@ -27,6 +27,7 @@ from tz import to_mtl
 # models.* (see the literal-enum comment below).
 from utils import analyse_taxonomies as _tax
 from utils import docx_templatize as _templatize
+from utils import kyc as _kyc
 from utils import phases
 from utils import recurrence
 
@@ -805,6 +806,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # update_dossier_party REPLACES a party's roles or lawyer, DETACHES a
     # party (a link — the contact stays) or rewrites name snapshots.
     "set_dossier_status", "update_dossier_party",
+    # Lot 4b — CONTACTS. update_partie_mandataire REPLACES a representation's
+    # kind or notes, or DETACHES it (a link — the mandataire stays).
+    # record_kyc_status REPLACES a check's stored status (and appends to its
+    # notes) — presumed, never over the lawyer's attestation, yet a
+    # replacement all the same: under-warning is the wrong side.
+    "update_partie_mandataire", "record_kyc_status",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -1310,6 +1317,19 @@ _HEARING_REMINDERS = [15, 30, 60, 120, 1440, 2880, 10080]
 _SERIES_FREQUENCIES = list(recurrence.VALID_FREQUENCIES)
 _SERIES_MAX = recurrence.MAX_SERIE_OCCURRENCES
 _RENDEZ_VOUS_ACTIONS = ["confirmer", "refuser"]
+
+# Lot 4b — CONTACTS. The kinds of representation: a hand LITERAL (models.*
+# may not be imported here — models/__init__ builds the Firestore client),
+# pinned against models.partie.MANDATAIRE_KIND_LABELS by
+# tests/test_mcp_contact_writes.py.
+_MANDATAIRE_KINDS = [
+    "mandataire", "tuteur", "curateur", "représentant_légal", "autre",
+]
+# The compliance statuses — DERIVED from utils/kyc (pure: no model import,
+# the utils.phases precedent): identity's, then conflict's own, in order.
+# The handler refuses a value outside the chosen check's vocabulary.
+_KYC_STATUSES = list(dict.fromkeys(
+    _kyc.IDENTITY_STATUSES + _kyc.CONFLICT_STATUSES))
 
 # Analyse documentaire — DÉRIVÉS eux aussi, du même précédent.
 # `utils/analyse_taxonomies` est pur (aucun import de modèle, aucun client
@@ -2091,9 +2111,11 @@ TOOLS: dict[str, dict] = {
         "title": "Fiche d'un contact",
         "description": (
             "Fetch one contact's full card: personal and professional "
-            "coordinates, legal identifiers, KYC / conflict-check status, "
-            "mandataires, and the dossiers referencing them. KYC and "
-            "conflict-check notes may be sensitive."
+            "coordinates, legal identifiers, KYC / conflict-check status — "
+            "each with WHO decided it (`*_source`; `*_presumed` true = "
+            "inscribed by this connector, awaiting the lawyer's "
+            "confirmation) —, mandataires, and the dossiers referencing "
+            "them. KYC and conflict-check notes may be sensitive."
         ),
         "input_schema": {
             "type": "object",
@@ -2371,8 +2393,10 @@ TOOLS: dict[str, dict] = {
             "across runs, so a file can be tracked from one sweep to the "
             "next. "
             "EVERY FINDING IS AN OBSERVATION, never an instruction: each "
-            "`detail` says what to do in the application — and this "
-            "connector never verifies an identity or a conflict. "
+            "`detail` says what to do in the application. This connector can "
+            "only INSCRIBE an identity or conflict check as PRESUMED "
+            "(record_kyc_status), and this report keeps it OPEN until the "
+            "lawyer confirms it there. "
             "ALWAYS read `scope.checks_skipped` and `data_completeness` "
             "before reporting a file as clean: when the protocol index or "
             "the client contacts cannot be read, those checks are SUPPRESSED "
@@ -4976,9 +5000,9 @@ TOOLS: dict[str, dict] = {
             "completes a partial block with Montréal / Québec / Canada, so "
             "a Toronto contact sent with a street and no city is silently "
             "relocated — onto an invoice the client will receive. "
-            "Identity verification and conflict-of-interest checks are NOT "
-            "writable here and never will be: a machine must not attest "
-            "that a client's identity was verified."
+            "Identity and conflict-of-interest checks are not writable here: "
+            "record_kyc_status inscribes them PRESUMED — only the lawyer "
+            "confirms one."
         ),
         "input_schema": {
             "type": "object",
@@ -5011,13 +5035,13 @@ TOOLS: dict[str, dict] = {
             "payload from a full get_partie card. "
             "The same six-key ADDRESS BLOCK rule as create_partie: read the "
             "current block from get_partie and send it back complete. "
-            "`type` is not changeable here — flipping individual ↔ "
-            "organization strands the required-name rule and every display "
-            "name built from it. Identity verification, conflict checks and "
-            "mandataires are not writable. "
-            "Note the model re-validates the WHOLE merged record: a legacy "
-            "contact carrying an unparseable phone number will refuse every "
-            "edit, naming a field you did not touch — fix that field first."
+            "`type` is not changeable here (the required-name rule and "
+            "every display name hang on it). Compliance checks: "
+            "record_kyc_status; mandataires: update_partie_mandataire. A "
+            "role change is refused while it would unfit this contact as "
+            "someone's mandataire. The model re-validates the WHOLE merged "
+            "record: a legacy contact with an unparseable phone refuses "
+            "every edit, naming a field you did not touch — fix it first."
         ),
         "input_schema": {
             "type": "object",
@@ -5036,6 +5060,111 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "update_partie",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _PARTIE_ETAG_READERS,
+    },
+    "update_partie_mandataire": {
+        "title": "Tenir les mandataires d'un contact",
+        "description": (
+            "WRITE — ONE representation of a contact (a mandataire, a tutor, "
+            "a curator…). action \"add\": the mandataire must be an existing "
+            "INDIVIDUAL contact of the SAME contact_role as the represented "
+            "one, never the contact itself; the same representation again "
+            "writes nothing, a different kind or notes for one already listed "
+            "is refused (use update). \"update\": replaces its `kind` and/or "
+            "`notes`. \"remove\": DETACHES it — the mandataire contact stays, "
+            "the detach is journaled (list_deletions, mandataire). Every other "
+            "representation is written back as stored; notes are refused, "
+            "never altered, past 2000 characters or holding angle brackets. "
+            "get_partie lists them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string", "enum": ["add", "update", "remove"],
+                    "description": "What to do.",
+                },
+                "partie_id": _id("The REPRESENTED contact (UUIDv4)."),
+                "mandataire_partie_id": _id(
+                    "The mandataire's own contact id (list_parties)."
+                ),
+                "kind": {
+                    "type": "string", "enum": _MANDATAIRE_KINDS,
+                    "description": (
+                        "add (required) / update: the kind of representation."
+                    ),
+                },
+                "notes": {
+                    "type": "string", "maxLength": 2000,
+                    "description": (
+                        "add / update: the representation's notes — REPLACED "
+                        "on update (\"\" clears them)."
+                    ),
+                },
+                **_expected_etag_prop(_PARTIE_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["action", "partie_id", "mandataire_partie_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_partie_mandataire",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _PARTIE_ETAG_READERS,
+    },
+    "record_kyc_status": {
+        "title": "Inscrire une vérification de conformité (présumée)",
+        "description": (
+            "WRITE — INSCRIBES a client's identity verification or "
+            "conflict-of-interest check as PRESUMED: stored as Claude's, "
+            "shown on the fiche « … (présumé) — inscrit par Claude, à "
+            "confirmer », and still reported OPEN by get_coverage_report "
+            "until the lawyer clicks « Confirmer » in the application — this "
+            "connector never confirms one. REFUSED on a check the lawyer "
+            "decided or confirmed (get_partie: a decided status whose "
+            "`*_presumed` is false): only he changes his attestation. Only "
+            "for a client (contact_role client, or a client of a dossier). "
+            "`notes` are APPENDED under a dated « [AAAA-MM-JJ — inscrit par "
+            "Claude] » line, never replacing the stored ones. The status "
+            "already stored with no notes writes nothing; non_vérifié "
+            "withdraws your own presumed inscription."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "partie_id": _id("The client's contact id (UUIDv4)."),
+                "check": {
+                    "type": "string", "enum": ["identity", "conflict"],
+                    "description": (
+                        "identity = identity verification; conflict = "
+                        "conflict-of-interest check."
+                    ),
+                },
+                "status": {
+                    "type": "string", "enum": _KYC_STATUSES,
+                    "description": (
+                        "identity: non_vérifié, vérifié, exempté. conflict: "
+                        "non_vérifié, vérifié, conflit_détecté."
+                    ),
+                },
+                "notes": {
+                    "type": "string", "maxLength": 1000,
+                    "description": (
+                        "Appended to the check's notes under a dated line — "
+                        "what was verified, how. Never quoted back."
+                    ),
+                },
+                **_expected_etag_prop(_PARTIE_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["partie_id", "check", "status"],
+            "additionalProperties": False,
+        },
+        "handler": "record_kyc_status",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_OPTIONAL,

@@ -2900,3 +2900,70 @@ def test_update_dossier_party_conforms_on_every_action_and_outcome(monkeypatch):
     _conforms("update_dossier_party", partial)
     assert partial["outcome"] == "partial"
     assert partial["dossiers"][0]["reason"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 4b — CONTACTS : representations and the PRESUMED compliance record
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _contacts_world(monkeypatch):
+    fake, _did = _links_world(monkeypatch)
+    for pid, last in (("m1", "Roy"), ("m2", "Gagnon"), ("p1", "Tremblay")):
+        fake.seed(f"parties/{pid}", {
+            **handlers.partie_model._default_doc(), "id": pid,
+            "type": "individual", "contact_role": "client",
+            "first_name": "Jean", "last_name": last, "etag": f"e-{pid}",
+            "created_at": DT, "updated_at": DT,
+            **({"mandataires": [{"id": "m1", "kind": "tuteur", "notes": ""}]}
+               if pid == "p1" else {})})
+    return fake
+
+
+def test_update_partie_mandataire_conforms_on_every_action_and_outcome(
+        monkeypatch):
+    _contacts_world(monkeypatch)
+    added = handlers.update_partie_mandataire({
+        "action": "add", "partie_id": "p1", "mandataire_partie_id": "m2",
+        "kind": "mandataire"})
+    _conforms("update_partie_mandataire", added)
+    assert added["outcome"] == "applied" and added["ctag_bumped"] is True
+
+    again = handlers.update_partie_mandataire({
+        "action": "add", "partie_id": "p1", "mandataire_partie_id": "m2",
+        "kind": "mandataire"})
+    _conforms("update_partie_mandataire", again)
+    assert again["outcome"] == "unchanged" and again["ctag_bumped"] is False
+
+    updated = handlers.update_partie_mandataire({
+        "action": "update", "partie_id": "p1", "mandataire_partie_id": "m2",
+        "notes": "Procuration"})
+    _conforms("update_partie_mandataire", updated)
+
+    removed = handlers.update_partie_mandataire({
+        "action": "remove", "partie_id": "p1", "mandataire_partie_id": "m1"})
+    _conforms("update_partie_mandataire", removed)
+    assert removed["journaled"] is True
+
+
+def test_record_kyc_status_conforms_applied_unchanged_and_withdrawn(monkeypatch):
+    _contacts_world(monkeypatch)
+    recorded = handlers.record_kyc_status({
+        "partie_id": "p1", "check": "conflict", "status": "vérifié",
+        "notes": "Aucun lien."})
+    _conforms("record_kyc_status", recorded)
+    assert recorded["kyc"]["presumed"] is True
+
+    unchanged = handlers.record_kyc_status({
+        "partie_id": "p1", "check": "conflict", "status": "vérifié"})
+    _conforms("record_kyc_status", unchanged)
+    assert unchanged["outcome"] == "unchanged"
+
+    withdrawn = handlers.record_kyc_status({
+        "partie_id": "p1", "check": "conflict", "status": "non_vérifié"})
+    _conforms("record_kyc_status", withdrawn)
+    assert withdrawn["kyc"]["recorded_at"] is None
+
+    card = handlers.get_partie({"partie_id": "p1"})
+    _conforms("get_partie", card)
+    assert card["partie"]["conflict_check_presumed"] is False

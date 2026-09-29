@@ -283,13 +283,17 @@ def _party_refresh_row() -> dict:
     }, optional=("etag",))
 
 
-def _partie_write_result(verb: str) -> dict:
-    """The success payload of a contact write.
+def _partie_write_result(
+    verb: str, extra: Optional[dict[str, Any]] = None,
+) -> dict:
+    """The success payload of a contact write — plus *extra* keys (lot 4b's
+    representation and compliance tools).
 
     Carries ctag_bumped/dav_synced because parties ARE DAV-exposed (CardDAV,
     /dav/addressbook/) — unlike time entries and disbursements, whose result
     deliberately declares neither rather than fake a sync that does not
-    exist.
+    exist. Both are ``false`` on a lot-4b no-op, with no warning: nothing
+    was written, so nothing had to reach the phone.
     """
     return _obj({
         verb: {"type": "boolean", "enum": [True]},
@@ -306,11 +310,14 @@ def _partie_write_result(verb: str) -> dict:
         "ctag_bumped": _bool(
             "The addressbook CTag moved, so DavX5 will re-sync. false with a "
             "warning means the write landed but the sync was not triggered — "
-            "do NOT retry, it would duplicate the contact."
+            "do NOT retry, it would duplicate the contact; false with no "
+            "such warning means nothing was written (a no-op)."
         ),
-        "dav_synced": _bool("The contact will reach the phone."),
+        "dav_synced": _bool(
+            "The contact will reach the phone; false on a no-op."),
         "warnings": _arr(_str("French; empty when nothing is amiss.")),
         **_write_protocol_keys(),
+        **(extra or {}),
     })
 
 
@@ -2143,6 +2150,30 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "conflict_check": _str(),
                 "conflict_check_date": _nstr(),
                 "conflict_check_notes": _str("May be sensitive."),
+                **{
+                    f"{field}_{key}": schema
+                    for field in ("identity_verified", "conflict_check")
+                    for key, schema in (
+                        ("source", {
+                            "type": "string", "enum": ["juriste", "mcp"],
+                            "description": (
+                                "Who decided the current status: « mcp » = "
+                                "this connector (record_kyc_status); "
+                                "« juriste » = the lawyer — also every "
+                                "status recorded before provenance existed."),
+                        }),
+                        ("presumed", _bool(
+                            "true = a decided status this connector "
+                            "inscribed and the lawyer has not confirmed: "
+                            "still OPEN in the coverage report. A decided "
+                            "status with false is the lawyer's attestation "
+                            "— record_kyc_status refuses to touch it.")),
+                        ("confirmed_at", _nstr(
+                            "ISO-8601 Montréal: when the lawyer confirmed "
+                            "an inscription of this connector; null "
+                            "otherwise.")),
+                    )
+                },
                 "kyc_document_ids": _arr(_str()),
                 "mandataires": _arr(
                     _obj({"id": _str(), "kind": _str(), "notes": _str()},
@@ -2396,6 +2427,55 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "create_partie": _partie_write_result("created"),
     "update_partie": _partie_write_result("updated"),
+    # ── Lot 4b — CONTACTS ────────────────────────────────────────────────
+    "update_partie_mandataire": _partie_write_result("updated", extra={
+        "action": {"type": "string", "enum": ["add", "update", "remove"]},
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = the representation already was so: NOTHING "
+                "was written (no etag moved, no sync)."),
+        },
+        "mandataire": _obj({
+            "partie_id": _str("The mandataire's contact id."),
+            "kind": _str("The kind of representation (as stored, or as it "
+                         "was on a remove)."),
+            "has_notes": _bool("Whether it carries notes — never their text."),
+        }),
+        "mandataires_count": _int("Representations the contact has now."),
+        "journaled": _bool(
+            "remove: the detach is in the deletion journal (list_deletions, "
+            "mandataire). false otherwise."),
+    }),
+    "record_kyc_status": _partie_write_result("recorded", extra={
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = the status was already so and no notes were "
+                "given: NOTHING was written."),
+        },
+        "kyc": _obj({
+            "check": {"type": "string", "enum": ["identity", "conflict"]},
+            "field": _str("identity_verified | conflict_check."),
+            "status_before": _str(),
+            "status_after": _str("As stored now."),
+            "source": {
+                "type": "string", "enum": ["mcp"],
+                "description": "The provenance this tool ALWAYS writes."},
+            "presumed": _bool(
+                "true = shown « (présumé) — inscrit par Claude, à confirmer » "
+                "and still OPEN in the coverage report."),
+            "confirmation_required": _bool(
+                "true until the lawyer clicks « Confirmer » in the fiche — "
+                "this connector never can."),
+            "recorded_at": _nstr(
+                "ISO-8601 Montréal: when the current decided status was "
+                "inscribed; null for non_vérifié."),
+            "notes_appended": _bool(
+                "Your notes were appended under a dated line — never "
+                "quoted back."),
+        }),
+    }),
     "update_time_entry": _obj({
         "updated": {"type": "boolean", "enum": [True]},
         "entity_type": _str("Always « time_entry »."),
@@ -2789,7 +2869,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "label": _str(),
                 "detail": _str(
                     "French. Says what to do IN THE APPLICATION — the "
-                    "connector never verifies an identity or a conflict."
+                    "connector only inscribes a PRESUMED identity or "
+                    "conflict check, which stays open here until the lawyer "
+                    "confirms it."
                 ),
             })),
         }), "One entry per dossier WITH findings; clean files are omitted."),

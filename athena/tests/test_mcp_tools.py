@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 78  # 31 lectures + 47 ecritures
+    assert len(tools.TOOLS) == 80  # 31 lectures + 49 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -350,6 +350,9 @@ _IDEMPOTENT_WRITES = frozenset({
     # call (the party is no longer on the dossier) rather than answering it
     # (the manage_folder rule: one tool carries one hint).
     "set_dossier_status",
+    # NOT here (lot 4b): update_partie_mandataire — its remove refuses a
+    # second identical call (no longer listed) — and record_kyc_status,
+    # whose notes APPEND again on an identical call.
 })
 
 
@@ -411,6 +414,9 @@ def test_write_tools_set_is_pinned():
         # retour DavX5, comme l'application), tenir les liens de parties
         # (roles, avocat, detachement, noms).
         "set_dossier_status", "update_dossier_party",
+        # Lot 4b — CONTACTS : les mandataires d'un contact, et la
+        # verification de conformite INSCRITE comme presumee (D7).
+        "update_partie_mandataire", "record_kyc_status",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -456,6 +462,10 @@ def test_edit_tools_set_is_pinned():
         # of the dossier); a party link's roles/lawyer are replaced, or the
         # link detached, or a name snapshot rewritten.
         "set_dossier_status", "update_dossier_party",
+        # …a representation's kind/notes replaced or the link detached; a
+        # compliance check's status replaced (presumed — never over the
+        # lawyer's attestation, a replacement all the same).
+        "update_partie_mandataire", "record_kyc_status",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 
@@ -4025,16 +4035,20 @@ def test_the_report_never_promises_the_connector_will_fix_it(cov):
     connector « cannot create a protocol, verify an identity or file a
     signification » — false about the signification since July 2026
     (record_signification) and about the protocol since create_protocol.
-    What stays true, and what the regulatory checks need said, is that it
-    never verifies an identity or a conflict; every finding still points
-    to the application."""
+    Rewritten deliberately again at lot 4b: « never verifies an identity or
+    a conflict » had to say what record_kyc_status now does — INSCRIBE a
+    PRESUMED check, which the report keeps open until the lawyer confirms
+    it. Every finding still points to the application."""
     cov["dossiers"] = [_cov_dossier("d1", valeur=None, court_file_number="")]
     payload = handlers.get_coverage_report({})
     details = [f["detail"] for i in payload["items"] for f in i["findings"]]
     assert details
     description = tools.TOOLS["get_coverage_report"]["description"]
-    assert "never verifies an identity or a conflict" in description
+    assert "only INSCRIBE an identity or conflict check as PRESUMED" in (
+        description)
+    assert "keeps it OPEN until the lawyer confirms it" in description
     assert "in the application" in description
+    assert "never verifies an identity or a conflict" not in description
     assert "cannot create a protocol" not in description
 
 

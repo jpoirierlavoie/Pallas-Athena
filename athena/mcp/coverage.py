@@ -22,9 +22,11 @@ Two vocabularies, both French and both closed:
 **A finding is an observation, never an instruction.** Every ``detail``
 string says what to do IN THE APPLICATION. Some of those fixes are also
 connector writes (``create_protocol`` since lot 1b, ``record_signification``
-since July 2026) — but the connector never verifies an identity or a
-conflict, and a report that implied otherwise would invite a write this
-connector must never make.
+since July 2026). An identity or conflict check is NOT one of them in
+substance: since lot 4b the connector can INSCRIBE one
+(``record_kyc_status``), but only as PRESUMED — the verification itself
+stays the lawyer's, and a report that implied the connector could close the
+check would invite a write it must never make (see below).
 
 **A presumed check is an OPEN check** (D7, lot 4a). A status the connector
 inscribes is stored as presumed until the lawyer clicks « Confirmer » in the

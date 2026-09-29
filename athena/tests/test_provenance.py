@@ -577,6 +577,12 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     ("dossier", "update_dossier_party"): (("dossier", "_update_dossier"),),
     ("dossier", "remove_dossier_party"): (("dossier", "_update_dossier"),),
     ("dossier", "refresh_party_names"): (("dossier", "_update_dossier"),),
+    ("partie", "add_partie_mandataire"): (("partie", "_update_partie"),),
+    ("partie", "update_partie_mandataire"): (("partie", "_update_partie"),),
+    ("partie", "remove_partie_mandataire"): (("partie", "_update_partie"),),
+    # Lot 4b (record_kyc_status): the compliance write IS an update_partie
+    # of the check's keys (source « mcp »).
+    ("partie", "update_kyc_status"): (("partie", "_update_partie"),),
 }
 # Lot 2A (T9). Names the verb regex catches that are NOT tool writes, each
 # with its reason — and each held to the OPPOSITE rule, so an exemption
@@ -756,11 +762,12 @@ def _called_names(fn: ast.AST) -> set[str]:
 
 
 def _reachable_calls(module: str, name: str) -> set[str]:
-    """What *name* calls — and, transitively, what the PRIVATE helpers of
-    its own module it calls do (lot 4b: ``refresh_party_names`` saves
-    through ``_refresh_one``, the mandataire helpers through
-    ``_save_mandataires``). A public function is never followed: it would
-    be its own mutator, held to the rule by its own entry."""
+    """What *name* calls — and, transitively, what the functions of its
+    OWN module it calls do (lot 4b: ``refresh_party_names`` saves through
+    ``_refresh_one``, the mandataire helpers through ``_save_mandataires``,
+    ``update_kyc_status`` through the public ``update_partie``). Only the
+    PATH is proved here; the delegate named at the end of it is what the
+    stamp-and-commit test then holds to the rule."""
     tree = ast.parse((MODELS / f"{module}.py").read_text(encoding="utf-8"))
     defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     seen: set[str] = set()
@@ -773,7 +780,7 @@ def _reachable_calls(module: str, name: str) -> set[str]:
         seen.add(current)
         names = _called_names(defs[current])
         called |= names
-        stack.extend(n for n in names if n.startswith("_") and n in defs)
+        stack.extend(n for n in names if n in defs)
     return called
 
 

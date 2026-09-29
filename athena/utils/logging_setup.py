@@ -555,6 +555,11 @@ HearingSeriesEvent = Literal[
 # own. IDs and field names only: never a name, a note or a status text.
 PartieEvent = Literal[
     "kyc_confirmed",
+    # Lot 4b : le connecteur a INSCRIT une vérification (record_kyc_status)
+    # — présumée jusqu'au « Confirmer » du juriste. Champ et drapeaux
+    # seulement : jamais le statut en clair d'un contact nommé, jamais une
+    # note.
+    "kyc_recorded",
 ]
 DavOperation = Literal[
     "propfind",
