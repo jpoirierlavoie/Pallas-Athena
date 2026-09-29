@@ -210,6 +210,73 @@ def test_modified_confirmed_records_divergence_without_overwrite(monkeypatch, sp
     assert "start_datetime" not in data and "end_datetime" not in data
 
 
+# ── A write to a CONFIRMED import bumps its collection (finitions, sync-2) ──
+
+
+@pytest.fixture()
+def bumps(monkeypatch):
+    names = []
+    monkeypatch.setattr(tb, "bump_ctag", lambda name: names.append(name))
+    return names
+
+
+@pytest.mark.parametrize("days, dossier_id, expected", [
+    (5, "", "general"),        # slot moved → divergence recorded
+    (3, "", "general"),        # same slot → only graph_last_modified advances
+    (5, "d1", "dossier:d1"),   # a D10 move put it in its dossier's collection
+])
+def test_a_write_to_a_confirmed_import_bumps_its_collection(
+        monkeypatch, spy, bumps, days, dossier_id, expected):
+    """update_hearing regenerates the etag of a CONFIRMED import — a live
+    DAV member — even when it writes only the server-owned bookkeeping.
+    Without the bump the phone keeps the old etag, and its next edit of that
+    event (If-Match on it) answers 412: the phone's edit lost."""
+    stored = {**_stored("ical-1", confirmation="", last_mod=OLD, days=3),
+              "dossier_id": dossier_id}
+    _run(monkeypatch, [_ev("ical-1", last_mod=NEW, days=days)], [stored])
+    assert len(spy.updates) == 1
+    assert bumps == [expected]
+
+
+def test_a_confirmed_import_cancelled_client_side_bumps(monkeypatch, spy, bumps):
+    _run(monkeypatch, [_ev("ical-1", cancelled=True)],
+         [_stored("ical-1", confirmation="")])
+    assert spy.updates[0][1]["bookings_divergence"]["motif"] == "annulé_côté_client"
+    assert bumps == ["general"]
+
+
+@pytest.mark.parametrize("reservations, confirmation", [
+    ([_ev("ical-1", last_mod=NEW)], "à_confirmer"),
+    ([_ev("ical-1", cancelled=True)], "à_confirmer"),
+    ([], "à_confirmer"),        # the absence loop
+])
+def test_a_write_to_a_pending_import_never_bumps(
+        monkeypatch, spy, bumps, reservations, confirmation):
+    """A pending import is listed nowhere in DAV."""
+    _run(monkeypatch, reservations,
+         [_stored("ical-1", confirmation=confirmation, days=3)])
+    assert spy.updates and bumps == []
+
+
+def test_a_refused_write_never_bumps(monkeypatch, bumps):
+    monkeypatch.setattr(h, "update_hearing",
+                        lambda hid, data, *, server_fields=None: (None, ["refus"]))
+    _run(monkeypatch, [_ev("ical-1", last_mod=NEW, days=5)],
+         [_stored("ical-1", confirmation="", last_mod=OLD, days=3)])
+    assert bumps == []
+
+
+def test_a_bump_failure_after_the_write_is_logged_never_raised(
+        monkeypatch, spy, caplog):
+    def _down(name):
+        raise RuntimeError("dav_sync unavailable")
+    monkeypatch.setattr(tb, "bump_ctag", _down)
+    counters = _run(monkeypatch, [_ev("ical-1", last_mod=NEW, days=5)],
+                    [_stored("ical-1", confirmation="", last_mod=OLD, days=3)])
+    assert counters["divergences"] == 1
+    assert any("DAV bump failed" in r.getMessage() for r in caplog.records)
+
+
 # ── Cancelled ─────────────────────────────────────────────────────────────
 
 def test_cancelled_flag_pending_becomes_annule_client(monkeypatch, spy):

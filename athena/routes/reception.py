@@ -1205,6 +1205,12 @@ def rdv_divergence(hid: str, action: str):
     else:
         # ignorer / conserver → dismiss the alert (vu=True), keep the event.
         server["bookings_divergence"] = {**div, "vu": True}
+        # The event is unchanged on the phone, but update_hearing regenerates
+        # its ETAG — and a confirmed rendez-vous is a live DAV member. Without
+        # the bump the phone keeps the old etag, and its next edit of the
+        # event (If-Match on it) answers 412, the server version then winning
+        # over the phone's edit (finitions, sync-2).
+        bump = (hearing.get("confirmation") or "") == ""
 
     _updated, errors = update_hearing(hid, data, server_fields=server)
     if errors:

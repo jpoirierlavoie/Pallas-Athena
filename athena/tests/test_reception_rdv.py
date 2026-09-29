@@ -928,15 +928,25 @@ def test_divergence_appliquer_updates_slot_and_bumps(client, monkeypatch):
     assert bumps == ["general"]
 
 
-def test_divergence_ignorer_marks_vu_without_bump(client, monkeypatch):
-    div = {"motif": "modifié_côté_client", "vu": False}
+@pytest.mark.parametrize("action", ["ignorer", "conserver"])
+def test_divergence_ignorer_marks_vu_and_bumps(client, monkeypatch, action):
+    """Flipped by the finitions (sync-2) — this test used to pin the
+    MISSING bump. Dismissing the alert changes nothing the phone shows, but
+    update_hearing regenerates the etag of a CONFIRMED (DAV-listed)
+    rendez-vous: without the bump the phone keeps the old etag and its next
+    edit of the event, sent with If-Match on it, answers 412."""
+    motif = "modifié_côté_client" if action == "ignorer" else "annulé_côté_client"
+    div = {"motif": motif, "vu": False}
     monkeypatch.setattr(reception, "get_hearing",
-                        lambda i: _seeded(bookings_divergence=div))
+                        lambda i: _seeded(bookings_divergence=div,
+                                          dossier_id="d1"))
     updates = _spy_update(monkeypatch)
     bumps = _spy_bump(monkeypatch)
-    client.post("/reception/rdv/h1/divergence/ignorer")
+    records = _spy_tombstones(monkeypatch)
+    client.post(f"/reception/rdv/h1/divergence/{action}")
     assert updates[0][1]["bookings_divergence"]["vu"] is True
-    assert not bumps
+    assert bumps == ["dossier:d1"]
+    assert records == []  # the event stays live: no tombstone
 
 
 def test_divergence_annuler_tombstones_and_bumps(client, monkeypatch):

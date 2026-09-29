@@ -18,9 +18,11 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, abort, jsonify, request
 
 from config import Config
-# NB: no dav.sync import here on purpose — a Bookings IMPORT never bumps a
-# CTag (it stays invisible in DAV until confirmed). The bump lives in the
-# Réception confirmation route.
+# A Bookings IMPORT never bumps a CTag (it stays invisible in DAV until
+# confirmed — the confirmation's own bump lives in Réception). But a write
+# to an import already CONFIRMED does (finitions, sync-2): see
+# _bump_if_dav_listed.
+from dav.sync import bump_ctag, collection_for
 from models import hearing
 from tz import to_mtl
 from utils import graph_calendrier
@@ -69,6 +71,33 @@ def _type_audience(mot_cle: str, integ: dict) -> str:
         )
         return defaut
     return type_
+
+
+def _bump_if_dav_listed(existing: dict, errors: list) -> None:
+    """Bump the collection of a CONFIRMED import this sync just wrote.
+
+    A confirmed Bookings rendez-vous (``confirmation == ""``) is a live DAV
+    member — of « Général », or of its dossier after a D10 move — and
+    ``models.hearing.update_hearing`` regenerates its etag on every write,
+    the server-owned bookkeeping (``graph_last_modified``,
+    ``bookings_divergence``) included. Without a bump the phone never
+    re-fetches and keeps the OLD etag: the lawyer's next edit of that event
+    on the phone goes out with ``If-Match`` on it, is answered 412, and
+    DavX5's next download lets the server version win — the phone's edit
+    discarded, with no error anywhere. (The rule the program set for
+    contacts — ``routes/parties.kyc_confirm``.) An à_confirmer,
+    annulée_client or refusée import is listed nowhere: no bump. A refused
+    write (*errors*) changed nothing: no bump. A bump failure is logged,
+    never raised — the write is committed, and the next cycle's write, or
+    any other write to that collection, bumps again.
+    """
+    if errors or (existing.get("confirmation") or "") != "":
+        return
+    try:
+        bump_ctag(collection_for(existing.get("dossier_id")))
+    except Exception:
+        log_unexpected("bookings sync: DAV bump failed after a write",
+                       hearing_id=existing.get("id") or "")
 
 
 def _creer(r: dict, counters: dict, integ: dict) -> None:
@@ -150,16 +179,18 @@ def _rapprocher_modif(existing: dict, r: dict, counters: dict) -> None:
             "nouveau_fin": new_end.isoformat() if new_end else "",
             "vu": False,
         }
-        hearing.update_hearing(existing["id"], {}, server_fields={
+        _doc, errors = hearing.update_hearing(existing["id"], {}, server_fields={
             "bookings_divergence": div,
             "graph_last_modified": incoming_mod,
         })
+        _bump_if_dav_listed(existing, errors)
         counters["divergences"] += 1
     else:
-        hearing.update_hearing(
+        _doc, errors = hearing.update_hearing(
             existing["id"], {},
             server_fields={"graph_last_modified": incoming_mod},
         )
+        _bump_if_dav_listed(existing, errors)
 
 
 def _appliquer_annulation(existing: dict, counters: dict) -> None:
@@ -185,9 +216,10 @@ def _appliquer_annulation(existing: dict, counters: dict) -> None:
             "detail": "Le client a annulé le rendez-vous côté Bookings.",
             "vu": False,
         }
-        hearing.update_hearing(
+        _doc, errors = hearing.update_hearing(
             existing["id"], {}, server_fields={"bookings_divergence": div}
         )
+        _bump_if_dav_listed(existing, errors)
         counters["annules"] += 1
 
 
