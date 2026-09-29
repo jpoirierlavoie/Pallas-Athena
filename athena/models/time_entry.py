@@ -187,11 +187,17 @@ def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
     merged["id"] = entry_id
     provenance.stamp_create(merged, now)
 
+    ref = db.collection(COLLECTION).document(entry_id)
     try:
-        db.collection(COLLECTION).document(entry_id).set(merged)
+        ref.set(merged)
     except Exception:
         log_unexpected("time entry write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        # The id is fresh: read it back before answering (robustness-1).
+        outcome, _stored = concurrency.settle_failed_create(ref)
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, entry_id)
 
     return merged, []

@@ -98,6 +98,49 @@ def is_read_unavailable(errors: Optional[Iterable[str]]) -> bool:
     return READ_UNAVAILABLE_ERROR in list(errors or ())
 
 
+# A create whose write RAISED (finitions, robustness-1). A write RPC that
+# fails does not prove the write was not applied — a DeadlineExceeded or an
+# UNAVAILABLE can follow a server-side commit, the answer lost — so the
+# creators that mint a fresh uuid4 no longer answer « Erreur lors de la
+# sauvegarde. Veuillez réessayer. » on the exception alone: they READ THE ID
+# BACK (settle_failed_create). Present → the write landed, and the create
+# proceeds as committed; absent → the plain save error, true now; the read
+# failing too → this constant, which the connector raises with keep_claim
+# (a same-key retry must never write a second record) and the web shows as
+# is. The invoice has its own (models.invoice.CREATE_OUTCOME_UNCERTAIN).
+WRITE_OUTCOME_UNCERTAIN_ERROR = (
+    "L'enregistrement n'a pas pu être confirmé : il a peut-être été fait. "
+    "Vérifiez-le avant de le refaire — ne le recréez pas à l'aveugle."
+)
+
+WRITE_LANDED = "landed"
+WRITE_ABSENT = "absent"
+WRITE_UNKNOWN = "unknown"
+
+
+def is_outcome_uncertain(errors: Optional[Iterable[str]]) -> bool:
+    """True when a model's error list is the uncertain-create answer."""
+    return WRITE_OUTCOME_UNCERTAIN_ERROR in list(errors or ())
+
+
+def settle_failed_create(ref) -> tuple[str, Optional[dict]]:
+    """``(outcome, stored)`` after the write to *ref* RAISED.
+
+    *ref* must name a document id the caller MINTED fresh for this very
+    write (a uuid4): a document found there can then only be this call's —
+    its write landed and only the answer was lost. :data:`WRITE_LANDED`
+    with the stored dict, :data:`WRITE_ABSENT` (nothing was written), or
+    :data:`WRITE_UNKNOWN` when the read-back fails too. Never raises.
+    """
+    try:
+        snap = ref.get()
+    except Exception:
+        return WRITE_UNKNOWN, None
+    if snap.exists:
+        return WRITE_LANDED, snap.to_dict() or {}
+    return WRITE_ABSENT, None
+
+
 class StaleWrite(Exception):
     """The stored etag is not the one the caller read: nothing was written."""
 

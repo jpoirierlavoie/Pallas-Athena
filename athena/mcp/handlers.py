@@ -3798,6 +3798,7 @@ def _create_note_impl(args: dict) -> dict:
         "pinned": False,
     }
     note, errors = note_model.create_note(data)
+    _raise_if_outcome_uncertain(errors, reread="list_notes")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _write_result(note, created=True, dossier=dossier)
@@ -4799,6 +4800,32 @@ def _expected_etag(
     return current
 
 
+def _raise_if_outcome_uncertain(errors: list[str], *, reread: str) -> None:
+    """Raise the model's uncertain-create answer (finitions, robustness-1)
+    as the connector's « outcome uncertain » refusal, KEEPING the
+    idempotency claim.
+
+    The creators that mint a fresh uuid4 read the id back when their write
+    raises (``concurrency.settle_failed_create``); only when that read-back
+    fails too do they answer ``WRITE_OUTCOME_UNCERTAIN_ERROR`` — the record
+    MAY exist. Raised as a plain refusal, ``run_write`` would RELEASE the
+    claim, even under the ``required`` policy, and the same-key retry the
+    protocol prescribes would write a second record under a new uuid4 — up
+    to 60 occurrences for a series, a billable row the next invoice sweeps.
+    With ``keep_claim`` the same-key retry is refused « en cours » /
+    « interrompu » instead. *reread* names the read that tells.
+    """
+    if concurrency.is_outcome_uncertain(errors):
+        raise ToolArgumentError(
+            "Issue INCERTAINE : " + concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR
+            + f" Relisez {reread} AVANT toute nouvelle tentative : si "
+            "l'enregistrement y figure, il est fait — ne le recréez pas. "
+            "Sinon, réessayez avec la MÊME idempotency_key, jamais une "
+            "nouvelle : elle reste réservée à cet appel.",
+            reason="write_outcome_uncertain", keep_claim=True,
+        )
+
+
 def _raise_if_stale(
     errors: list[str], *, tool: str, subject: str,
     reread: Callable[[], Optional[dict]],
@@ -5159,6 +5186,7 @@ def _create_partie_impl(args: dict) -> dict:
     _refuse_legacy_ref_collision("parties", data.get("legacy_ref", ""))
 
     partie, errors = partie_model.create_partie(data)
+    _raise_if_outcome_uncertain(errors, reread="list_parties")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _partie_write_result(partie, verb="created")
@@ -8251,6 +8279,7 @@ def _create_task_impl(args: dict) -> dict:
         }
 
     task, errors = task_model.create_task(data)
+    _raise_if_outcome_uncertain(errors, reread="list_tasks")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
@@ -8453,6 +8482,7 @@ def _hearing_entity(doc: dict) -> dict:
 def _create_hearing_impl(args: dict) -> dict:
     data, dossier = _hearing_create_data(args)
     hearing, errors = hearing_model.create_hearing(data)
+    _raise_if_outcome_uncertain(errors, reread="list_hearings")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     payload = _entity_write_result(
@@ -8512,6 +8542,8 @@ def _create_hearing_series_impl(args: dict) -> dict:
     occurrences, errors = hearing_model.create_hearing_series(
         data, frequency, count=count, until=until,
     )
+    # Before « Rien n'a été créé » below: that sentence is FALSE here.
+    _raise_if_outcome_uncertain(errors, reread="list_hearings")
     if errors:
         # The model's words (utils.recurrence.validate_rule — French, never
         # a truncation: a series past the ceiling is refused whole).
@@ -9411,6 +9443,7 @@ def _create_time_entry_impl(args: dict) -> dict:
         return row
 
     entry, errors = time_entry_model.create_time_entry(data)
+    _raise_if_outcome_uncertain(errors, reread="list_time_entries")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
@@ -9476,6 +9509,7 @@ def _create_expense_impl(args: dict) -> dict:
         return row
 
     expense, errors = expense_model.create_expense(data)
+    _raise_if_outcome_uncertain(errors, reread="list_expenses")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
@@ -11570,6 +11604,7 @@ def _add_protocol_step_impl(args: dict) -> dict:
     make_task = args.get("create_linked_task") is True
     step, errors, report = protocol_service.add_step(
         protocol_id, data, create_linked_task=make_task)
+    _raise_if_outcome_uncertain(errors, reread="list_protocol_steps")
     if errors:
         if _is_inactive_error(errors):
             raise _inactive_protocol_refusal(

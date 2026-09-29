@@ -159,11 +159,17 @@ def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
     merged["id"] = expense_id
     provenance.stamp_create(merged, now)
 
+    ref = db.collection(COLLECTION).document(expense_id)
     try:
-        db.collection(COLLECTION).document(expense_id).set(merged)
+        ref.set(merged)
     except Exception:
         log_unexpected("expense write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        # The id is fresh: read it back before answering (robustness-1).
+        outcome, _stored = concurrency.settle_failed_create(ref)
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, expense_id)
 
     return merged, []

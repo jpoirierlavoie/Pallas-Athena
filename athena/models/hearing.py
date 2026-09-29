@@ -453,7 +453,15 @@ def create_hearing(
         return None, [dav_ids.DAV_ID_TAKEN]
     except Exception:
         log_unexpected("hearing write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        if dav_id is not None:
+            # A phone-chosen name: a document there may be a racing PUT's.
+            return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        # A FRESH id: read it back before answering (robustness-1).
+        outcome, _stored = concurrency.settle_failed_create(ref)
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, hearing_id)
 
     return merged, []
@@ -1362,7 +1370,16 @@ def create_hearing_series(
         batch.commit()
     except Exception:
         log_unexpected("hearing series write failed")
-        return [], ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        # ONE atomic batch of fresh ids: its first occurrence tells for the
+        # whole chain (robustness-1). Up to 60 occurrences synced to the
+        # phone and mirrored to Outlook — never « réessayez » on a batch
+        # that may have landed.
+        outcome, _stored = concurrency.settle_failed_create(
+            db.collection(COLLECTION).document(occurrences[0]["id"]))
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return [], [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return [], ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     for occ in occurrences:
         provenance.note_commit(COLLECTION, occ["id"])
 

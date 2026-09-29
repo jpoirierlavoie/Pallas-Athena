@@ -1353,7 +1353,14 @@ def add_step(
         return None, refusal.messages
     except Exception:
         log_unexpected("protocol write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        # The step id is fresh: read it back before answering
+        # (robustness-1) — the transaction's commit may have landed.
+        outcome, doc = concurrency.settle_failed_create(
+            proto_ref.collection(STEPS_SUBCOLLECTION).document(step_id))
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, protocol_id)
     log_protocol_event("step_added", protocol_id, step_id=step_id)
     return doc, []
