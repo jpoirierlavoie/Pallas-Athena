@@ -623,3 +623,118 @@ def test_a_refresh_with_a_refused_dossier_is_never_stored_for_replay(db, monkeyp
     assert write_support.NO_REPLAY_KEY not in payload
     assert _idempotency_entries(db) == {}
     assert "entity" not in payload        # a contact's batch has no one entity
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. Review of step 3 — the result says what the store and the phone hold
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _reopen_during_the_drain(db, did, *, times: int):
+    """Another writer (the application, another call) flips the dossier's
+    status while this call's DAV markers commit — *times* times at most."""
+    prefix = f"dav_sync/dossier:{did}/"
+    flips: list = []
+
+    def hook(info):
+        if len(flips) >= times:
+            return
+        if any(p.startswith(prefix) for _k, p in info.ops):
+            flips.append(1)
+            cur = db.peek(f"dossiers/{did}")
+            db.external_write(f"dossiers/{did}", {
+                **cur, "status": "actif" if cur["status"] == "fermé" else "fermé",
+                "etag": f"e-rival-{len(flips)}"})
+
+    return db.add_commit_hook(hook)
+
+
+def test_a_status_changed_again_during_the_drain_is_reported_as_stored(db):
+    """The service follows the STORED status when another writer changed it
+    during the drain — the phone is restored. The result used to report the
+    status this call wrote (« fermé ») and « its tasks leave the phone »:
+    both false. It now says what the store and the phone hold."""
+    did = _dossier(db)
+    members = _members(did)
+    _reopen_during_the_drain(db, did, times=1)
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "fermé"})
+
+    assert _stored(db, did)["status"] == "actif"
+    assert _tombstones(db, did).isdisjoint(members)      # phone: restored
+    assert payload["dav"]["direction"] == "restore"
+    assert payload["dav"]["complete"] is True
+    assert payload["status_after"] == "actif"
+    text = " ".join(payload["warnings"])
+    assert "quittent le téléphone" not in text
+    assert "a de nouveau changé pendant l'appel" in text
+    assert "« actif »" in text and "get_dossier" in text
+
+
+def test_a_status_still_moving_never_asks_to_resend_this_call_s_status(db):
+    """Still moving after the service's second look: INCOMPLETE — and
+    « call again with the SAME status » would overwrite the other writer's
+    status. The repair starts with a re-read; nothing is stored for replay."""
+    did = _dossier(db)
+    _members(did)
+    _reopen_during_the_drain(db, did, times=2)
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "fermé",
+                                           "idempotency_key": KEY})
+
+    assert payload["dav"]["complete"] is False
+    text = " ".join(payload["warnings"])
+    assert "avec le MÊME statut" not in text
+    assert "statut RELU" in text and "get_dossier" in text
+    assert _idempotency_entries(db) == {}
+
+
+def test_closing_cites_the_effective_date_the_alerts_announce(db):
+    """A reconnaissance restarts the delay: the alerts announce the
+    EFFECTIVE date (derive_prescription), which the closing warning must
+    cite — never the raw prescription_date it replaced."""
+    did = _dossier(db, droit_action_date=datetime(2024, 1, 15, tzinfo=UTC),
+                   prescription_type="3_ans")
+    db.external_write(f"dossiers/{did}", {
+        **_stored(db, did),
+        "prescription_events": [{
+            "id": "ev1", "type": "interruption_reconnaissance",
+            "date": datetime(2026, 6, 1, tzinfo=UTC), "end_date": None,
+            "reference": "", "document_id": ""}]})
+    stored = _stored(db, did)
+    raw = handlers.date_str(stored["prescription_date"])
+    effective = handlers.date_str(
+        dossier_model.derive_prescription(stored)["date_effective"])
+    assert raw != effective
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "fermé"})
+
+    alert = next(w for w in payload["warnings"]
+                 if "alertes de prescription" in w)
+    assert effective in alert and raw not in alert
+
+
+def test_an_unreadable_dossier_is_never_a_missing_party_dossier(db, monkeypatch):
+    """update_dossier_party read the dossier through the fail-open
+    get_dossier: an outage answered « Dossier introuvable », sending the
+    caller to look for a dossier that exists. Read strictly now, as
+    set_dossier_status reads it."""
+    did = _dossier(db)
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(f"dossiers/{did}" in str(n) for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.update_dossier_party({
+            "action": "update", "dossier_id": did, "partie_id": "p1",
+            "roles": ["intimé"]})
+    assert "pas pu être lu" in str(err.value)
+    assert "introuvable" not in str(err.value)

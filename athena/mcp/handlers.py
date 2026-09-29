@@ -5458,17 +5458,36 @@ def _record_kyc_status_impl(args: dict) -> dict:
             "La vérification est déjà dans cet état : rien n'a été écrit."
         )
     if presumed:
+        # Quoted as the fiche composes it (routes/parties._kyc_view): the
+        # badge « <statut> (présumé) », then « inscrit par Claude le <jour>
+        # — à confirmer » — never a wording the lawyer will not find there.
+        stored = kyc.stored_status(doc, field)
+        inscribed = _as_utc(doc.get(kyc.date_key(field)))
+        day = (format_date_fr(inscribed.astimezone(MTL).date())
+               if isinstance(inscribed, datetime) else "")
+        attribution = (f"inscrit par Claude le {day} — à confirmer" if day
+                       else "inscrit par Claude — à confirmer")
         warnings.append(
             "Inscrite comme PRÉSUMÉE : la fiche l'affiche « "
-            f"{kyc.STATUS_LABELS[status]} (présumé) — inscrit par Claude, à "
-            "confirmer » jusqu'au « Confirmer » du juriste, et le rapport de "
-            "couverture la garde OUVERTE d'ici là. Ce connecteur ne la "
-            "confirme jamais."
+            f"{kyc.STATUS_LABELS.get(stored, stored)} (présumé) », « "
+            f"{attribution} », jusqu'au « Confirmer » du juriste, et le "
+            "rapport de couverture la garde OUVERTE d'ici là. Ce connecteur "
+            "ne la confirme jamais."
         )
     if wrote and status == "conflit_détecté":
         warnings.append(
             "Un CONFLIT D'INTÉRÊTS présumé est inscrit : signalez-le au "
             "juriste sans délai — la fiche le montre en rouge."
+        )
+    if (wrote and status_before == "conflit_détecté"
+            and kyc.stored_status(doc, field) != "conflit_détecté"):
+        # A presumed conflict is an ALARM the lawyer may not have seen yet;
+        # replacing it (with « vérifié » or a withdrawal) must never pass
+        # in silence — under-warning is the side that costs.
+        warnings.append(
+            "Vous remplacez un CONFLIT D'INTÉRÊTS présumé que ce connecteur "
+            "avait inscrit : dites-le au juriste — la fiche ne le montre plus "
+            "en rouge."
         )
     if (wrote and status == kyc.NON_VERIFIE
             and status_before in kyc.DECIDED[field]):
@@ -7552,11 +7571,14 @@ def _closing_warnings(dossier_id: str, doc: dict, dav: Any) -> list[str]:
     derived = dossier_model.derive_prescription(doc)
     if doc.get("prescription_date") and derived["status"] not in (
             "interrompue", "imprescriptible"):
+        # The date the alerts ANNOUNCE is the EFFECTIVE one (a reconnaissance
+        # or a suspension moves it later — derive_prescription, the seam the
+        # alerts read), not the raw prescription_date.
+        cited = derived.get("date_effective") or doc.get("prescription_date")
         warnings.append(
             "Le dossier sort des alertes de prescription (get_agenda, "
             "tableau de bord) : sa date pour agir du "
-            f"{date_str(_as_utc(doc.get('prescription_date')))} ne sera plus "
-            "annoncée."
+            f"{date_str(_as_utc(cited))} ne sera plus annoncée."
         )
     if int(doc.get("trust_balance") or 0):
         warnings.append(
@@ -7661,20 +7683,40 @@ def _set_dossier_status_impl(args: dict) -> dict:
     # ── Committed (or nothing to write): nothing below may refuse. ─────
     doc = transition.doc if transition.doc is not None else existing
     dav = transition.dav
-    now_status = str(doc.get("status") or status)
+    written_status = str(doc.get("status") or status)
+    # The status the phone ENDED on. After its DAV write the service re-reads
+    # the stored status and, when another writer (the application, another
+    # call) changed it meanwhile, applies THAT status's visibility instead
+    # (services/dossier_dav._settle). Reporting the status this call wrote —
+    # and « its tasks leave the phone » — would then contradict both the
+    # store and the phone (review of lot 4b step 3).
+    now_status = str(dav.status or written_status)
+    moved = now_status != written_status
+    moving = dav.error == dossier_dav_service.ERR_STATUS_MOVING
     warnings: list[str] = []
     if not data:
         warnings.append(
-            f"Le dossier est déjà « {now_status} » : rien n'a été écrit ; sa "
-            "visibilité sur le téléphone a été réappliquée (une "
+            f"Le dossier est déjà « {written_status} » : rien n'a été écrit ; "
+            "sa visibilité sur le téléphone a été réappliquée (une "
             "resynchronisation)."
+        )
+    if moved or moving:
+        warnings.append(
+            "Le statut du dossier a de nouveau changé pendant l'appel — dans "
+            "l'application ou par un autre appel — : il est maintenant « "
+            f"{now_status} », et le téléphone suit ce statut-là. Relisez le "
+            "dossier (get_dossier) avant toute nouvelle demande."
         )
     was_active = dossier_dav_service.is_active(old_status)
     is_active = dossier_dav_service.is_active(now_status)
     try:
-        if data and was_active and not is_active:
+        # The transition's own consequences — only while it is still the
+        # one in force; otherwise the warning above says what happened.
+        if moved or moving:
+            pass
+        elif data and was_active and not is_active:
             warnings.extend(_closing_warnings(dossier_id, doc, dav))
-        if data and not was_active and is_active:
+        elif data and not was_active and is_active:
             before = date_str(_as_utc(existing.get("closed_date")))
             if before:
                 warnings.append(
@@ -7685,7 +7727,8 @@ def _set_dossier_status_impl(args: dict) -> dict:
                 "Sur le téléphone, DavX5 doit actualiser sa liste des "
                 "collections — recochez le dossier s'il avait été décoché."
             )
-        if data and now_status == "en_attente" and old_status == "actif":
+        if (data and not (moved or moving) and now_status == "en_attente"
+                and old_status == "actif"):
             warnings.append(
                 "« en_attente » : le dossier reste sur le téléphone et dans "
                 "les alertes de prescription, mais sort des vues filtrées sur "
@@ -7694,7 +7737,18 @@ def _set_dossier_status_impl(args: dict) -> dict:
         warnings.extend(_prescription_moved_warning(existing, transition.doc))
     except Exception:
         log_unexpected("mcp set_dossier_status: warnings failed")
-    if not dav.complete:
+    if not dav.complete and (moved or moving):
+        # « Call again with the SAME status » would overwrite the other
+        # writer's newer status: the repair here starts with a re-read.
+        warnings.append(
+            "La mise à jour du téléphone (DavX5) est INCOMPLÈTE. Relisez "
+            "d'abord le dossier (get_dossier), puis rappelez "
+            "set_dossier_status avec le statut RELU — jamais celui de cet "
+            "appel sans l'accord du juriste : l'appel réapplique la "
+            "visibilité sans rien changer (un résultat incomplet n'est jamais "
+            "conservé)."
+        )
+    elif not dav.complete:
         warnings.append(
             "Le statut est enregistré, mais la mise à jour du téléphone "
             "(DavX5) est INCOMPLÈTE. Rappelez set_dossier_status avec le MÊME "
@@ -7762,9 +7816,10 @@ def _update_dossier_party_impl(args: dict) -> dict:
         raise ToolArgumentError(
             "Rien à modifier : donnez `roles` et/ou `avocat_id`."
         )
-    existing = dossier_model.get_dossier(dossier_id)
-    if existing is None:
-        raise ToolArgumentError(_DOSSIER_NOT_FOUND.format(id=dossier_id))
+    # STRICT, like set_dossier_status: the fail-open get_dossier would read
+    # an outage as « Dossier introuvable » and send the caller hunting for a
+    # dossier that exists (review of lot 4b step 3).
+    existing = _read_dossier_strict(dossier_id)
     expected = _expected_etag(
         args, existing, tool="update_dossier_party", subject=_DOSSIER_SUBJECT,
     )

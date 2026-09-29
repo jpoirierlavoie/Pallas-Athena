@@ -5121,8 +5121,8 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE — INSCRIBES a client's identity verification or "
             "conflict-of-interest check as PRESUMED: stored as Claude's, "
-            "shown on the fiche « … (présumé) — inscrit par Claude, à "
-            "confirmer », and still reported OPEN by get_coverage_report "
+            "shown on the fiche « … (présumé) » — « inscrit par Claude le … "
+            "— à confirmer » —, and still reported OPEN by get_coverage_report "
             "until the lawyer clicks « Confirmer » in the application — this "
             "connector never confirms one. REFUSED on a check the lawyer "
             "decided or confirmed (get_partie: a decided status whose "

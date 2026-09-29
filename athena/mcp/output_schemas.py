@@ -2463,7 +2463,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string", "enum": ["mcp"],
                 "description": "The provenance this tool ALWAYS writes."},
             "presumed": _bool(
-                "true = shown « (présumé) — inscrit par Claude, à confirmer » "
+                "true = shown « … (présumé) », « inscrit par Claude le … — à "
+                "confirmer » on the fiche, "
                 "and still OPEN in the coverage report."),
             "confirmation_required": _bool(
                 "true until the lawyer clicks « Confirmer » in the fiche — "

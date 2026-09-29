@@ -498,3 +498,68 @@ def test_the_contact_edit_tools_still_refuse_compliance_and_mandataires():
         for field in ("identity_verified", "conflict_check", "mandataires",
                       "identity_verified_source"):
             assert field not in props, (name, field)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3. Review of step 3 — the texts quote the fiche, and an alarm never
+#    leaves in silence
+# ══════════════════════════════════════════════════════════════════════
+
+
+with mock.patch("google.cloud.firestore.Client"):
+    from mcp import disclosure  # noqa: E402
+
+
+def _fiche_view(partie: dict) -> dict:
+    """The Conformité view as the ROUTE composes it — the fiche's text."""
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.parties as parties_routes
+    with mock.patch.object(parties_routes, "_compliance_signer",
+                           lambda: "Me Test"):
+        return parties_routes._kyc_view(partie)
+
+
+def test_the_presumed_warning_quotes_the_fiche_as_it_is_composed(db):
+    """The warning promised « Vérifié (présumé) — inscrit par Claude, à
+    confirmer », a line the fiche never shows: it renders the badge and
+    « inscrit par Claude le <jour> — à confirmer ». Quoted as composed."""
+    _contact(db, "p1", "Jean", "Tremblay")
+    payload = handlers.record_kyc_status({
+        "partie_id": "p1", "check": "identity", "status": "vérifié"})
+
+    view = _fiche_view(_stored(db, "p1"))["identite"]
+    assert view["presumed"] is True
+    warning = next(w for w in payload["warnings"] if "PRÉSUMÉE" in w)
+    assert f"« {view['label']} »" in warning
+    assert f"« {view['attribution']} »" in warning
+    for text in (tools.TOOLS["record_kyc_status"]["description"],
+                 next(f for f in disclosure.FAMILIES
+                      if f.key == "contacts").instructions_en):
+        assert "inscrit par Claude, à confirmer" not in text
+        assert "« inscrit par Claude le … — à confirmer »" in text
+
+
+def test_replacing_a_presumed_conflict_is_said_to_the_lawyer(db):
+    """A presumed « conflit détecté » is an alarm the lawyer may not have
+    seen yet: Claude replacing its own inscription — with « vérifié » or a
+    withdrawal — must say so, never pass in silence."""
+    _contact(db, "p1", "Jean", "Tremblay")
+    handlers.record_kyc_status({"partie_id": "p1", "check": "conflict",
+                                "status": "conflit_détecté"})
+
+    for status in ("vérifié", "non_vérifié"):
+        handlers.record_kyc_status({"partie_id": "p1", "check": "conflict",
+                                    "status": "conflit_détecté"})
+        payload = handlers.record_kyc_status({
+            "partie_id": "p1", "check": "conflict", "status": status})
+        assert payload["kyc"]["status_before"] == "conflit_détecté"
+        assert any("remplacez un CONFLIT D'INTÉRÊTS présumé" in w
+                   for w in payload["warnings"]), status
+
+    # …and the same conflict inscribed again is not a replacement.
+    handlers.record_kyc_status({"partie_id": "p1", "check": "conflict",
+                                "status": "conflit_détecté"})
+    again = handlers.record_kyc_status({
+        "partie_id": "p1", "check": "conflict", "status": "conflit_détecté",
+        "notes": "Relu."})
+    assert not any("remplacez" in w for w in again["warnings"])
