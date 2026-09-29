@@ -7549,6 +7549,23 @@ _DOSSIER_NOT_FOUND = (
 # call, and the same call will run once the store answers.
 _DOSSIER_UNREADABLE = "Le dossier n'a pas pu être lu — réessayez."
 _CLOSED_STATUSES = ("fermé", "archivé")
+# How to retry a result marked _no_replay (fixes of lot 4) — TRUE in every
+# case, not only the usual one. Such a result is never stored and its claim
+# is released, so the same key normally re-runs the call; but a release
+# that failed on a store blip leaves the claim PENDING, and the same-key
+# retry is then refused « encore en cours » for the in-flight window and
+# « interrompu » after it (mcp/write_support._refuse_pending) — a promise
+# that « the same key is fine » would strand the caller there. Both tools
+# are safe to re-run under a NEW key after a re-read: asking for the status
+# the dossier has only re-applies its visibility, and a name already
+# refreshed reads « inchangé ». {reread} completes « relisez … ».
+_NO_REPLAY_RETRY = (
+    "Un résultat incomplet n'est jamais conservé : la même idempotency_key "
+    "relance donc normalement l'appel. Si cette reprise est refusée comme "
+    "« encore en cours », attendez, puis réessayez avec la MÊME clé ; si "
+    "elle est refusée comme « interrompu », relisez {reread} avec une "
+    "NOUVELLE clé."
+)
 # set_dossier_status takes no expected_etag (it compare-and-sets against its
 # own read), so its stale refusal names the reads that show the dossier.
 _DOSSIER_READERS = ("get_dossier", "list_dossiers")
@@ -7788,21 +7805,25 @@ def _set_dossier_status_impl(args: dict) -> dict:
         log_unexpected("mcp set_dossier_status: warnings failed")
     if not dav.complete and (moved or moving):
         # « Call again with the SAME status » would overwrite the other
-        # writer's newer status: the repair here starts with a re-read.
+        # writer's newer status: the repair here starts with a re-read, and
+        # is ANOTHER call (other arguments) — hence a new key, which always
+        # runs, where the same key with other arguments could be refused as
+        # a conflict while this call's claim is still held.
         warnings.append(
             "La mise à jour du téléphone (DavX5) est INCOMPLÈTE. Relisez "
             "d'abord le dossier (get_dossier), puis rappelez "
             "set_dossier_status avec le statut RELU — jamais celui de cet "
-            "appel sans l'accord du juriste : l'appel réapplique la "
-            "visibilité sans rien changer (un résultat incomplet n'est jamais "
-            "conservé)."
+            "appel sans l'accord du juriste — et une NOUVELLE "
+            "idempotency_key (c'est un autre appel) : l'appel réapplique la "
+            "visibilité sans rien changer."
         )
     elif not dav.complete:
         warnings.append(
             "Le statut est enregistré, mais la mise à jour du téléphone "
-            "(DavX5) est INCOMPLÈTE. Rappelez set_dossier_status avec le MÊME "
-            "statut : l'appel la refait (la même idempotency_key convient — "
-            "un résultat incomplet n'est jamais conservé)."
+            "(DavX5) est INCOMPLÈTE. Renvoyez le MÊME appel (même statut) : "
+            "il la refait. " + _NO_REPLAY_RETRY.format(
+                reread="le dossier (get_dossier), puis demandez le statut "
+                       "relu")
         )
 
     payload = _dossier_write_result(doc, verb="updated", warnings=warnings)
@@ -8050,9 +8071,11 @@ def _refresh_dossier_party_names(args: dict) -> dict:
     if refused:
         warnings.append(
             f"{refused} dossier(s) refusé(s) (voir reason) — les autres ont "
-            "été traités. Renvoyez l'appel pour réessayer les refusés (la "
-            "même idempotency_key convient : un résultat qui porte des refus "
-            "n'est jamais conservé)."
+            "été traités. Renvoyez le MÊME appel pour réessayer les refusés "
+            "(un dossier déjà rafraîchi se relit « inchangé »). "
+            + _NO_REPLAY_RETRY.format(
+                reread="les dossiers refusés (get_dossier), puis renvoyez "
+                       "l'appel")
         )
     if not rows:
         warnings.append(
@@ -9060,8 +9083,12 @@ _RDV_GRAPH_THEN_LOCAL_FAILED = {
     rendez_vous_service.ANNULATION_OUTLOOK_ECHOUEE: (
         "Outlook n'a pas pu annuler la réunion — le client n'a donc pas été "
         "prévenu — et le refus n'a pas pu être inscrit dans Athéna : rien "
-        "n'a été fait. Réessayez dans un moment ; la même idempotency_key "
-        "convient."
+        "n'a été fait. Réessayez dans un moment avec la même "
+        "idempotency_key ; si cet essai est refusé comme « encore en "
+        "cours », attendez puis réessayez avec la MÊME clé ; s'il est "
+        "refusé comme « interrompu », relisez la demande (list_hearings, "
+        "bookings « pending ») et ne recommencez avec une NOUVELLE clé que "
+        "si elle y figure encore."
     ),
     rendez_vous_service.ANNULATION_OUTLOOK_INCERTAINE: (
         "L'annulation Outlook a échoué de façon inattendue — elle a PEUT-ÊTRE "

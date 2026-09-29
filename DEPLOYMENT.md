@@ -2750,8 +2750,13 @@ Notes:
   `conflit_détecté`). Add: `set_dossier_status`'s discipline (the lawyer's
   confirmation first — closing takes the dossier off his phone and out of
   the prescription alerts; read every warning; `dav.complete: false` → the
-  SAME status again, same key, unless the warnings say the status moved
-  during the call — then re-read first); `record_kyc_status`'s (only on the
+  SAME status again, same key — and if that retry is refused « encore en
+  cours », wait, then the same key again; if « interrompu », re-read the
+  dossier, then the status read under a NEW key — unless the warnings say
+  the status moved during the call: then re-read first, and ask for the
+  status read under a NEW key; a `refresh_names` that refused a dossier
+  is retried the same way — never « the same key is fine » without these
+  two exceptions); `record_kyc_status`'s (only on the
   lawyer's instruction, only for a client, never over his own decision —
   `*_presumed` false on a decided status means « tell him »; a detected
   conflict reported to him AT ONCE; notes are appended, never replaced);

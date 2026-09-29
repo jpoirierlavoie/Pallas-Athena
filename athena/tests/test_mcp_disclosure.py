@@ -251,6 +251,14 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # and a false-claim entry must never refuse a true sentence.
     "nothing can ever be deleted here.",
     "deleted here: a cancelled task or event is kept, with its status.",
+    # Fixes of lot 4: an incomplete set_dossier_status and a refresh_names
+    # that refused a dossier promised « the same idempotency_key is fine »
+    # WITHOUT exception. A release that fails on a store blip leaves the
+    # claim pending, and the same-key retry is then refused « encore en
+    # cours », then « interrompu »: the texts now name those two outcomes
+    # and the way out of each (a re-read, then a NEW key).
+    "the same idempotency_key is fine",
+    "idempotency_key convient",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -1090,6 +1098,13 @@ def test_review_of_the_lot_4b_text_step():
     desc = tools.TOOLS["set_dossier_status"]["description"]
     assert "unless `warnings` say the status moved during the call" in desc
     assert "never resend yours" in desc
+    # Fixes of lot 4: the same-key retry is no longer promised without
+    # exception — the description names both refusals a retry can meet and
+    # the way out of each; INSTRUCTIONS too.
+    for text in (desc, next(f for f in disclosure.FAMILIES
+                            if f.key == "dossiers").instructions_en):
+        assert "normally" in text and "still in flight" in text, text[:60]
+        assert "interrupted" in text and "a NEW key" in text, text[:60]
 
     for true in (
         "A cancelled task or event is kept, with its status.",

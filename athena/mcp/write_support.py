@@ -189,7 +189,15 @@ So a handler whose payload carries :data:`NO_REPLAY_KEY` (``"_no_replay"``,
 truthy) opts that result out of the store: the marker is POPPED from the
 payload the caller receives, nothing is stored, and a claim this call made
 is RELEASED (the ``delete()`` under its own precondition, § 2) — the
-same-key retry then executes afresh, exactly like a first call. Opt-in, and
+same-key retry then executes afresh, exactly like a first call. NORMALLY:
+a release that fails on a store blip leaves the claim ``pending`` (§ 3, the
+safe side), and the same-key retry is then refused « encore en cours »
+(``idempotency_in_flight``) for the in-flight window and « interrompu »
+(``idempotency_interrupted``) after it. The texts that tell a caller to
+retry (``mcp/handlers._NO_REPLAY_RETRY``) say so, and name the way out
+after « interrompu »: re-read, then a NEW key — safe for exactly these
+tools, which a repeat can only repair (fixes of lot 4: they promised
+« the same key is fine » unconditionally). Opt-in, and
 only for tools that are NATURALLY idempotent on a retry: releasing the key
 of a tool whose second execution writes a second record would reopen the
 duplicate the claim exists to prevent. A marker on a partial failure is

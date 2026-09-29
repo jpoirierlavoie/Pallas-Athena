@@ -410,7 +410,7 @@ def test_an_incomplete_drain_is_reported_and_never_stored_for_replay(db):
     assert first["dav"]["complete"] is False
     assert first["idempotent_replay"] is False
     assert write_support.NO_REPLAY_KEY not in first
-    assert any("MÊME statut" in w for w in first["warnings"])
+    assert any("MÊME appel (même statut)" in w for w in first["warnings"])
     assert _idempotency_entries(db) == {}
     assert _tombstones(db, did) == set()
 
@@ -742,6 +742,85 @@ def test_refresh_names_needs_exactly_one_selector(db):
                                        "dossier_id": did, "partie_id": "p1"})
 
 
+def _fail_idempotency_releases(db):
+    """Every DELETE of an idempotency entry fails server-side — the release
+    of a claim, on a store blip. The claim then stays PENDING."""
+    def hook(info):
+        if any(kind == "delete" and path.startswith(
+                f"{write_support.COLLECTION}/") for kind, path in info.ops):
+            raise gexc.ServiceUnavailable("injected release failure")
+
+    return db.add_commit_hook(hook)
+
+
+def _retry_warning(payload) -> str:
+    (text,) = [w for w in payload["warnings"] if "NOUVELLE clé" in w]
+    return text
+
+
+def test_every_way_the_incomplete_drain_s_retry_text_names_leads_to_the_repair(
+        db, monkeypatch):
+    """Fixes of lot 4: the texts promised « the same idempotency_key is
+    fine » without exception. It is not, when the release of this call's
+    claim fails on a store blip: the claim stays pending, and the same-key
+    retry is refused « encore en cours », then « interrompu ». The warning
+    now names all three outcomes and the way out of each — and following it,
+    branch by branch, on the real store, repairs the phone."""
+    did = _dossier(db)
+    members = _members(did)
+    remove_drain_failure = _fail_tombstone_commits(db, did)
+    remove_release_failure = _fail_idempotency_releases(db)
+    args = {"dossier_id": did, "status": "fermé", "idempotency_key": KEY}
+
+    first = handlers.set_dossier_status(dict(args))
+    assert first["dav"]["complete"] is False
+    text = _retry_warning(first)
+    assert "MÊME clé" in text and "« encore en cours »" in text
+    assert "« interrompu »" in text and "get_dossier" in text
+    # The release failed: the claim is still there, pending.
+    (entry,) = _idempotency_entries(db).values()
+    assert entry["status"] == "pending"
+    remove_drain_failure()
+    remove_release_failure()
+
+    # 1. « encore en cours » → wait, then the SAME key.
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.set_dossier_status(dict(args))
+    assert err.value.reason == "idempotency_in_flight"
+    assert "encore en cours" in str(err.value)
+
+    # 2. Past the window: « interrompu » → re-read, then a NEW key.
+    later = write_support._now() + write_support.IN_FLIGHT_WINDOW + (
+        write_support.IN_FLIGHT_WINDOW / 10)
+    monkeypatch.setattr(write_support, "_now", lambda: later)
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.set_dossier_status(dict(args))
+    assert err.value.reason == "idempotency_interrupted"
+    assert "interrompu" in str(err.value)
+
+    reread = handlers.get_dossier({"dossier_id": did})
+    status_read = reread["dossier"]["status"]
+    assert status_read == "fermé"
+    repaired = handlers.set_dossier_status({
+        "dossier_id": did, "status": status_read,
+        "idempotency_key": "cle-statut-0002"})
+    assert repaired["dav"]["complete"] is True
+    assert repaired["outcome"] == "unchanged"
+    assert _tombstones(db, did) == set(members)
+
+
+def test_the_moved_status_repair_names_a_new_key_for_its_other_call(db):
+    """When the status moved during the call, the repair asks for ANOTHER
+    status — other arguments: the same key could then be refused as a
+    conflict while this call's claim is held. The warning says NEW key."""
+    text = handlers._NO_REPLAY_RETRY
+    assert "MÊME clé" in text and "NOUVELLE clé" in text
+    source = pathlib.Path(handlers.__file__).read_text(encoding="utf-8")
+    moved = source.split("if not dav.complete and (moved or moving):")[1]
+    moved = moved.split("elif not dav.complete:")[0]
+    assert "NOUVELLE" in moved and "statut RELU" in moved
+
+
 def test_a_refresh_with_a_refused_dossier_is_never_stored_for_replay(db, monkeypatch):
     """A refused row is repaired by the same call: that result must not be
     replayed to a same-key retry for 24 h."""
@@ -766,6 +845,12 @@ def test_a_refresh_with_a_refused_dossier_is_never_stored_for_replay(db, monkeyp
     assert payload["refused"] == 1 and payload["applied"] == 1
     assert write_support.NO_REPLAY_KEY not in payload
     assert _idempotency_entries(db) == {}
+    # The retry text is true in every case (fixes of lot 4): the same key
+    # normally, « encore en cours » → the same key later, « interrompu » →
+    # a re-read and a NEW key (a name already refreshed reads « inchangé »).
+    text = _retry_warning(payload)
+    assert "MÊME clé" in text and "« encore en cours »" in text
+    assert "« interrompu »" in text and "inchangé" in text
     assert "entity" not in payload        # a contact's batch has no one entity
 
 

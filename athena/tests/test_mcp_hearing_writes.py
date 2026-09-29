@@ -1218,6 +1218,11 @@ def test_outlook_and_local_both_failing_never_reads_as_a_refusal(
     message = str(err)
     assert "Rendez-vous refusé" not in message
     assert "rien n'a été fait" in message and "idempotency_key" in message
+    # Fixes of lot 4: « la même idempotency_key convient » was promised
+    # unconditionally; a release that fails leaves the claim pending, and
+    # the same key is then refused « encore en cours », then « interrompu ».
+    assert "« encore en cours »" in message and "« interrompu »" in message
+    assert "NOUVELLE clé" in message and "pending" in message
     assert _stored(fake, "b1")["confirmation"] == "à_confirmer"
 
 
