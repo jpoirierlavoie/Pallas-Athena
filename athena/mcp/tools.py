@@ -6520,8 +6520,9 @@ TOOLS: dict[str, dict] = {
                 **_register_text_props(
                     "Required, except on a fee payment, where it may ONLY "
                     "be the lawyer or his firm as the firm profile names "
-                    "them (art. 58), and defaults to the firm (the lawyer "
-                    "when the profile names no firm)."
+                    "them (art. 58); omitted, the lawyer on a chèque (a "
+                    "fee cheque is drawn to his order), the firm on a "
+                    "virement."
                 ),
                 "invoice_id": _id(
                     "Fee payment only, required: the invoice it settles "

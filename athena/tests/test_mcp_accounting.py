@@ -503,6 +503,28 @@ def test_d23_the_payee_is_the_lawyer_or_his_firm(fake):
     assert not any("Bénéficiaire inscrit" in w for w in payload["warnings"])
 
 
+def test_d23_a_cheque_s_default_payee_is_the_lawyer(fake):
+    """Régression — art. 58 draws a fee CHEQUE « à l'ordre de l'avocat » and
+    names the société only as the holder of a TRANSFER's account. Omitted,
+    the payee was the firm whatever the method: a cheque inscribed, by
+    nobody's choice, to the firm's order. The default follows the method
+    now — the lawyer on a chèque, the firm on a virement
+    (test_a_fee_payment_writes_its_three_effects_in_one_operation) — and
+    the warning says which. The firm NAMED on a cheque stays accepted
+    (D23: the lawyer's choice)."""
+    _cleared_deposit(fake)
+    payload = _call("record_trust_entry", **_fee(20000, method="chèque"))
+    assert payload["entity"]["counterparty"] == "Me Jason Poirier Lavoie"
+    stored = fake.peek(f"trust_transactions/{payload['entity']['id']}")
+    assert stored["counterparty"] == "Me Jason Poirier Lavoie"
+    assert any("Bénéficiaire inscrit par défaut : « Me Jason Poirier Lavoie »" in w
+               for w in payload["warnings"])
+    named = _call("record_trust_entry", **_fee(
+        20000, method="chèque", counterparty="Poirier Lavoie, avocat"))
+    assert named["entity"]["counterparty"] == "Poirier Lavoie, avocat"
+    assert not any("Bénéficiaire inscrit" in w for w in named["warnings"])
+
+
 def test_d23_a_profile_that_names_no_one_refuses_every_fee_payment(fake):
     _cleared_deposit(fake)
     fake.seed("settings/cabinet", {"nom": "", "organisation": ""})

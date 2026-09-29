@@ -3093,7 +3093,9 @@ Notes:
      never a paper, unsent or provision-imputing invoice for a fee payment
      — nor another client's invoice (D21), nor a payee other than the
      lawyer or his firm as « Paramètres » names them (D23, art. 58; omitted,
-     the firm); an invoice is marked « envoyée » only on the lawyer's word
+     the lawyer on a cheque — art. 58 draws a fee cheque « à l'ordre de
+     l'avocat » —, the firm on a transfer); an invoice is marked « envoyée »
+     only on the lawyer's word
      (D20 — the fee payment trusts that status); and an objet always agrees
      with its sens (D24 — the model refuses otherwise).
 - **Finitions — the adversarial review of lots 0a-5 (branch
@@ -3114,7 +3116,8 @@ Notes:
   « introuvable »; a create whose commit raised and whose read-back failed
   too answers `write_outcome_uncertain`, the key kept; and — the lawyer's
   decisions of 2026-09-29 — `record_trust_entry` refuses a fee payment's
-  `counterparty` other than the lawyer or his firm (D23; omitted, the firm)
+  `counterparty` other than the lawyer or his firm (D23; omitted, the
+  lawyer on a cheque, the firm on a transfer)
   and another client's invoice (D21), its refusal of an unsent invoice
   names the lawyer as the one who attests the sending (D20), and the
   accounting INSTRUCTIONS carry a seventh « never » (`fee_payee`) — all
@@ -3150,7 +3153,11 @@ Notes:
      screen stays the way); choosing « Dépôt du client » sets the sens to
      « Recette » (and « Remise au client » to « Déboursé »); on « Paiement
      d'honoraires » the « Bénéficiaire » becomes a choice between the two
-     names « Paramètres » holds — check them there FIRST: a profile naming
+     names « Paramètres » holds, the LAWYER preselected (the form opens on
+     « chèque », and art. 58 draws a fee cheque « à l'ordre de l'avocat »;
+     the firm stays selectable — tell the lawyer, since only he knows
+     whether his firm is a distinct société, to which art. 58 allows a
+     TRANSFER only) — check the names there FIRST: a profile naming
      neither refuses every fee payment. No real entry is needed to check
      it: an incoherent pair or another client's invoice is refused and
      writes nothing. Then `python -m scripts.verify_trust_integrity`

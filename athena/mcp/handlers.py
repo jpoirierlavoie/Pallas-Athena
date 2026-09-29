@@ -16856,24 +16856,26 @@ def _refuse_foreign_args(args: dict, allowed: set, what: str) -> None:
         )
 
 
-def _fee_payee(given: str) -> tuple[str, Optional[str]]:
+def _fee_payee(given: str, method: str) -> tuple[str, Optional[str]]:
     """The payee of a fee payment (D23, art. 58): the lawyer or his firm, as
     the firm profile names them — the MODEL's list
     (``models/fee_payment.fee_payees``, through the service), repeated here
     so a refusal names the argument. Returns ``(payee, warning)``: omitted,
-    the list's first name (the firm, or the lawyer when the profile names no
-    firm), said in a warning; given, it must name one of them — stored as
-    the profile spells it, never as typed."""
+    the model's default for *method* (``default_fee_payee`` — the LAWYER on
+    a chèque, art. 58 drawing a fee cheque « à l'ordre de l'avocat »; the
+    firm on a virement), said in a warning; given, it must name one of them
+    — stored as the profile spells it, never as typed."""
     payees = comptabilite_service.beneficiaires_honoraires()
     if not payees:
         raise ToolArgumentError(
             "Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le "
-            "cabinet : un paiement d'honoraires, qui ne se fait qu'à l'ordre "
+            "cabinet : un paiement d'honoraires, qui ne se fait qu'au profit "
             "de l'un ou de l'autre (art. 58), ne peut désigner son "
             "bénéficiaire. Rien n'a été inscrit.", reason="accounting_refused")
     if not given:
-        return payees[0], (f"Bénéficiaire inscrit par défaut : « {payees[0]} », "
-                           "tel que le nomme le profil du cabinet.")
+        payee = comptabilite_service.beneficiaire_honoraires_par_defaut(method) or payees[0]
+        return payee, (f"Bénéficiaire inscrit par défaut : « {payee} », "
+                       "tel que le nomme le profil du cabinet.")
     payee = comptabilite_service.beneficiaire_honoraires(given, payees)
     if payee is None:
         raise ToolArgumentError(
@@ -16881,8 +16883,9 @@ def _fee_payee(given: str) -> tuple[str, Optional[str]]:
             + " ou ".join(f"« {name} »" for name in payees)
             + " — l'avocat ou son cabinet, tels que les nomme le profil du "
             "cabinet (art. 58 : chèque à l'ordre de l'avocat, ou virement à "
-            "un compte qui n'est pas en fidéicommis). Omettez-le pour le "
-            "cabinet. Rien n'a été inscrit.", reason="accounting_refused")
+            "un compte qui n'est pas en fidéicommis). Omis, c'est l'avocat "
+            "sur un chèque, le cabinet sur un virement. Rien n'a été inscrit.",
+            reason="accounting_refused")
     return payee, None
 
 
@@ -17127,7 +17130,7 @@ def _record_trust_entry_impl(args: dict) -> dict:
     if fee:
         # D23 (art. 58): the lawyer or his firm, nobody else — the model's
         # rule, repeated to name the argument.
-        counterparty, payee_warning = _fee_payee(counterparty)
+        counterparty, payee_warning = _fee_payee(counterparty, method)
         if payee_warning:
             warnings.append(payee_warning)
     elif not counterparty:

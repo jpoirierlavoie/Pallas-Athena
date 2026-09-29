@@ -148,18 +148,22 @@
     {# D23 (art. 58) — the payee of a fee payment is the lawyer or his firm,
        as the firm profile names them (models/fee_payment.fee_payees): a
        choice between those names, never free text. The model refuses any
-       other value; this select only reflects the rule. #}
+       other value; this select only reflects the rule. Preselected: what
+       was posted, else the model's default for the mode shown
+       (fee_payment.default_fee_payee — the LAWYER on a cheque, art. 58
+       drawing a fee cheque « à l'ordre de l'avocat »). #}
     <div x-show="purpose === 'virement_honoraires'" x-cloak>
       <label class="block text-sm font-medium text-gray-700 mb-1">Bénéficiaire du paiement d'honoraires</label>
       {% if fee_payees %}
+      {% set chosen_payee = entry.counterparty if entry and entry.counterparty in fee_payees else default_fee_payee %}
       <select name="counterparty" :disabled="purpose !== 'virement_honoraires'" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for name in fee_payees %}
-        <option value="{{ name }}" {% if entry and entry.counterparty == name %}selected{% endif %}>{{ name }}</option>
+        <option value="{{ name }}" {% if name == chosen_payee %}selected{% endif %}>{{ name }}</option>
         {% endfor %}
       </select>
-      <p class="text-xs text-gray-500 mt-1">Un paiement d'honoraires ne se fait qu'à l'ordre de l'avocat ou de son cabinet (art. 58), tels que les nomme le profil du cabinet (Paramètres).</p>
+      <p class="text-xs text-gray-500 mt-1">Un paiement d'honoraires ne se fait qu'au profit de l'avocat ou de son cabinet, tels que les nomme le profil du cabinet (Paramètres) — l'art. 58 veut un chèque à l'ordre de l'avocat, ou un virement à un compte ouvert à son nom ou à celui de la société au sein de laquelle il exerce.</p>
       {% else %}
-      <p class="text-xs text-amber-600">Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le cabinet : un paiement d'honoraires, qui ne se fait qu'à l'ordre de l'un ou de l'autre (art. 58), ne peut pas s'inscrire avant qu'il soit complété.</p>
+      <p class="text-xs text-amber-600">Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le cabinet : un paiement d'honoraires, qui ne se fait qu'au profit de l'un ou de l'autre (art. 58), ne peut pas s'inscrire avant qu'il soit complété.</p>
       {% endif %}
     </div>
 

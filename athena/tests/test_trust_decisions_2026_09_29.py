@@ -308,6 +308,36 @@ def test_d23_le_formulaire_offre_les_deux_noms_du_profil(client):
     assert ':disabled="purpose === \'virement_honoraires\'"' in free
 
 
+def _payee_selected(html: str) -> list:
+    i = html.index("Bénéficiaire du paiement d'honoraires")
+    block = html[i:html.index("</select>", i)]
+    return re.findall(r'<option value="([^"]+)" selected>', block)
+
+
+def test_d23_sur_un_cheque_l_avocat_est_prechoisi(fake, client):
+    """Régression — l'art. 58 tire un CHÈQUE d'honoraires « à l'ordre de
+    l'avocat » et ne nomme la société qu'en titulaire du compte d'un
+    virement. Le sélecteur ne préchoisissait rien : le navigateur retenait
+    sa première option, le cabinet, et le formulaire s'ouvre en « chèque ».
+    Il préchoisit désormais le défaut du modèle pour le mode affiché —
+    l'avocat sur un chèque, le cabinet sur un virement —, et un bénéficiaire
+    posté reste celui qu'on réaffiche."""
+    assert _payee_selected(_html(client.get("/fideicommis/nouvelle"))) == [LAWYER]
+
+    # Réaffichages (la facture brouillon est refusée, D20) : sans
+    # bénéficiaire posté, le défaut du mode posté ; posté, celui-là.
+    form = {k: v for k, v in _fee_form(method="virement",
+                                        invoice_number="2026-F042").items()
+            if k != "counterparty"}
+    resp = client.post("/fideicommis/", data=form)
+    assert resp.status_code == 400
+    assert _payee_selected(_html(resp)) == [FIRM]
+    resp = client.post("/fideicommis/", data=_fee_form(
+        method="virement", invoice_number="2026-F042", counterparty=LAWYER))
+    assert resp.status_code == 400
+    assert _payee_selected(_html(resp)) == [LAWYER]
+
+
 def test_d23_un_autre_beneficiaire_est_refuse_au_formulaire(fake, client):
     """Un formulaire forgé qui nomme un autre bénéficiaire : refusé par le
     modèle, rendu en ligne, rien d'écrit."""

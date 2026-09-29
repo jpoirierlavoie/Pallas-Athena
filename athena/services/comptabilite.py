@@ -280,8 +280,16 @@ def beneficiaires_honoraires() -> list[str]:
     """The payees a fee payment may name (D23, art. 58): the firm, then the
     lawyer, as the firm profile names them — the model's own list
     (``models/fee_payment.fee_payees``), for the web form's select and the
-    connector's default and refusal."""
+    connector's refusal."""
     return fee_payment.fee_payees()
+
+
+def beneficiaire_honoraires_par_defaut(method: str) -> Optional[str]:
+    """The payee a fee payment takes when none is named: the lawyer on a
+    cheque (art. 58 — « chèque tiré à l'ordre de l'avocat »), the firm on a
+    transfer (``models/fee_payment.default_fee_payee``) — the connector's
+    default and the web form's first choice."""
+    return fee_payment.default_fee_payee(method)
 
 
 def beneficiaire_honoraires(value, payees: Optional[list[str]] = None) -> Optional[str]:

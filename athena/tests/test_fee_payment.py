@@ -1145,6 +1145,31 @@ def test_d23_sans_cabinet_nomme_l_avocat_reste_le_seul_beneficiaire(fake):
     assert errs == [], errs
 
 
+def test_d23_le_beneficiaire_par_defaut_suit_le_mode(fake):
+    """Régression — l'art. 58 tire un CHÈQUE d'honoraires « à l'ordre de
+    l'avocat » et ne nomme la société qu'en titulaire du compte d'un
+    VIREMENT. Le bénéficiaire par défaut était le cabinet quel que fût le
+    mode : un chèque inscrit, sans que personne l'ait choisi, à l'ordre de la
+    société. Le défaut suit désormais le mode — l'avocat sur un chèque, le
+    cabinet sur un virement —, et le seul nom du profil sert aux deux quand
+    il n'en porte qu'un. Un défaut SEULEMENT : le cabinet nommé reste
+    accepté sur un chèque (D23)."""
+    _seed_profile(fake)
+    assert fee_payment.default_fee_payee("chèque") == "Me Jason Poirier Lavoie"
+    assert fee_payment.default_fee_payee("virement") == "Poirier Lavoie, avocat"
+    result, errs = _pay(amount=10000, method="chèque",
+                        counterparty="Poirier Lavoie, avocat")
+    assert errs == [], errs
+
+    _seed_profile(fake, organisation="")
+    assert fee_payment.default_fee_payee("chèque") == "Me Jason Poirier Lavoie"
+    assert fee_payment.default_fee_payee("virement") == "Me Jason Poirier Lavoie"
+    _seed_profile(fake, nom="")
+    assert fee_payment.default_fee_payee("chèque") == "Poirier Lavoie, avocat"
+    _seed_profile(fake, nom="", organisation="")
+    assert fee_payment.default_fee_payee("chèque") is None
+
+
 def test_le_beneficiaire_des_tests_est_la_semence_du_profil(fake):
     """``FEE_PAYEE`` (tests/_accounting_history.py) est le nom que la suite
     donne à un paiement d'honoraires : l'organisation de la semence, seul

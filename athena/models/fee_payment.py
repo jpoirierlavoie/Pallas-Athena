@@ -58,7 +58,12 @@ composite:
   (``bénéficiaire_honoraires_invalide`` — a blank one too, ahead of the
   register's generic « contrepartie requise »), and the one accepted is stored as
   the profile spells it (:func:`match_fee_payee` folds case, Unicode
-  composition and spacing only).
+  composition and spacing only). When the caller names none, the payee is
+  :func:`default_fee_payee` — the LAWYER on a cheque, since art. 58 draws a
+  fee cheque « à l'ordre de l'avocat » and names the société only as the
+  holder of a transfer's account; the firm on a transfer. The firm named
+  explicitly stays accepted on a cheque: D23 lets the lawyer choose either
+  name, and only he knows whether his firm is a distinct société.
 
 The trust side's rules stay the trust model's: art. 58 (cheque or transfer
 only), art. 59 (cleared funds), the backdating guard, the lock floor, an
@@ -200,16 +205,21 @@ _MESSAGES = {
     ),
     "motif_requis": "Un motif de contre-passation est requis.",
     # D23 (art. 58) — ``{detail}`` is the accepted names, as the firm
-    # profile holds them (never a client's).
+    # profile holds them (never a client's). « Au profit de », never « à
+    # l'ordre de »: art. 58 draws a CHEQUE « à l'ordre de l'avocat » only,
+    # and names the société as the holder of a TRANSFER's account — a text
+    # saying the article allows a cheque to the firm would misquote it.
     "bénéficiaire_honoraires_invalide": (
-        "Un paiement d'honoraires ne se fait qu'à l'ordre de l'avocat ou de "
-        "son cabinet (art. 58, RLRQ c. B-1, r. 5) : le bénéficiaire est "
+        "Un paiement d'honoraires ne se fait qu'au profit de l'avocat ou de "
+        "son cabinet (art. 58, RLRQ c. B-1, r. 5 : chèque à l'ordre de "
+        "l'avocat, ou virement à un compte ouvert à son nom ou à celui de la "
+        "société au sein de laquelle il exerce) : le bénéficiaire est "
         "{detail}, tel que le nomme le profil du cabinet (Paramètres). "
         + _NOTHING_WRITTEN
     ),
     "bénéficiaires_honoraires_inconnus": (
         "Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le "
-        "cabinet : un paiement d'honoraires, qui ne se fait qu'à l'ordre de "
+        "cabinet : un paiement d'honoraires, qui ne se fait qu'au profit de "
         "l'un ou de l'autre (art. 58, RLRQ c. B-1, r. 5), ne peut désigner "
         "son bénéficiaire. Complétez le profil, puis réessayez. "
         + _NOTHING_WRITTEN
@@ -246,13 +256,17 @@ def _payee_key(value) -> str:
 
 
 def fee_payees() -> list[str]:
-    """The payees art. 58 allows for a fee payment: the FIRM, then the
+    """The payees D23 accepts for a fee payment: the FIRM, then the
     LAWYER — ``organisation`` and ``nom`` of the firm profile
     (``utils/cabinet.cabinet_dict``, which fails open to the deploy-time
     seed), a blank one dropped, a name given twice kept once. The firm comes
-    first: it is the default payee (a transfer to the firm's own non-trust
-    account), and the order every surface shows."""
-    cab = cabinet_util.cabinet_dict()
+    first: it is the default payee of a TRANSFER (to the firm's own
+    non-trust account), and the order every surface shows. A CHEQUE's
+    default is the lawyer (:func:`default_fee_payee`)."""
+    return _payees_from(cabinet_util.cabinet_dict())
+
+
+def _payees_from(cab: dict) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for key in ("organisation", "nom"):
@@ -274,6 +288,29 @@ def match_fee_payee(value, payees: Optional[list[str]] = None) -> Optional[str]:
         if _payee_key(name) == wanted:
             return name
     return None
+
+
+def default_fee_payee(method: str) -> Optional[str]:
+    """The payee a fee payment takes when its caller names none — the
+    connector's default, the web form's first choice. On a CHEQUE
+    (``chèque``) the LAWYER: art. 58 draws a fee cheque « à l'ordre de
+    l'avocat » and names the société only as the holder of a transfer's
+    account, so his is the one name the article allows on either method. On
+    a TRANSFER the firm, whose non-trust account receives the fees (the
+    first of :func:`fee_payees`). The lawyer when the profile names no firm,
+    the firm when it names no lawyer; ``None`` when it names nobody. A
+    DEFAULT only: the firm, named explicitly, stays accepted on a cheque
+    (D23 — the lawyer's choice, who alone knows whether his firm is a
+    distinct société)."""
+    cab = cabinet_util.cabinet_dict()
+    payees = _payees_from(cab)
+    if not payees:
+        return None
+    if method == "chèque":
+        lawyer = match_fee_payee(cab.get("nom"), payees)
+        if lawyer:
+            return lawyer
+    return payees[0]
 
 
 def payees_label(payees: list[str]) -> str:

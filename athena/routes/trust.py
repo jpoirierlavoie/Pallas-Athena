@@ -103,18 +103,24 @@ ENTRY_FORM_PURPOSES = tuple(
 )
 
 
-def _entry_form_extras() -> dict:
+def _entry_form_extras(method: str = "") -> dict:
     """What the entry form needs beyond the labels (D23, D24): the purposes
     it offers, the direction each unambiguous purpose implies (the model's
     map, plus the fee payment, always a déboursé) so the form sets the sens
     when the objet is chosen, and the payees a fee payment may name — the
-    lawyer and his firm, as the firm profile names them (art. 58)."""
+    lawyer and his firm, as the firm profile names them (art. 58) — with
+    the one preselected: the model's default for *method*, the mode the
+    form shows (its first, « chèque », when none was posted) — the lawyer
+    on a cheque, since art. 58 draws a fee cheque « à l'ordre de
+    l'avocat »."""
     directions = dict(trust.PURPOSE_DIRECTIONS)
     directions[trust.FEE_PAYMENT_PURPOSE] = "déboursé"
     return {
         "entry_purposes": ENTRY_FORM_PURPOSES,
         "purpose_directions": directions,
         "fee_payees": comptabilite.beneficiaires_honoraires(),
+        "default_fee_payee": comptabilite.beneficiaire_honoraires_par_defaut(
+            method or VALID_METHODS[0]),
     }
 
 
@@ -498,7 +504,7 @@ def entry_create():
             factures=_factures_emises(dossier["id"] if dossier else None),
             admin_accounts=admin_accounts, admin_lisible=admin_lisible,
             admin_account_id=admin_account_id,
-            **_entry_form_extras(),
+            **_entry_form_extras(data.get("method") or ""),
             **_labels(),
         ), 400
     return redirect(url_for("trust.entry_detail", tx_id=entry_id,
