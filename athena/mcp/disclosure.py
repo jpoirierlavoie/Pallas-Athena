@@ -107,6 +107,16 @@ class Never:
     #: A short « jamais … » clause for the checkbox summary, when this
     #: promise belongs there.
     summary_fr: str = ""
+    #: The write checkbox's clause INSTEAD while the accounting box is on
+    #: the same page (the « payment » clause: the write box never records
+    #: one, the accounting box does).
+    summary_fr_comptabilite: str = ""
+    #: A promise about what the ACCOUNTING grant never does (lot 5b): its
+    #: bullet stands in the accounting block of the consent screen — not the
+    #: write block's list — and its sentence in the INSTRUCTIONS of a token
+    #: holding ``athena:comptabilite`` only. Its sweep is global all the
+    #: same: no connector module or reached service may express it.
+    accounting_only: bool = False
 
 
 # ── The write families ──────────────────────────────────────────────────
@@ -574,6 +584,69 @@ FAMILIES: tuple[Family, ...] = (
             "reported to the lawyer at once."
         ),
     ),
+    # Lot 5b — ACCOUNTING, the one family under athena:comptabilite (plan
+    # D1, D2, D14, D16). Its OWN consent box, never implied by athena:write
+    # and never implying it; INSTRUCTIONS carry this paragraph only for a
+    # token holding the scope (build_instructions(accounting=True)).
+    Family(
+        key="accounting",
+        label="ACCOUNTING",
+        scope=SCOPE_COMPTABILITE,
+        tools=(
+            "record_trust_entry", "record_admin_entry", "update_admin_entry",
+            "clear_register_entries", "reverse_register_entry",
+        ),
+        consent_template="mcp/families/_comptabilite.html",
+        checkbox_summary_fr=(
+            "inscrire au fidéicommis des recettes, des déboursés et des "
+            "paiements d'honoraires — chacun inscrit, dans la même "
+            "opération, la recette au compte d'administration et le "
+            "paiement sur la facture —, inscrire au compte "
+            "d'administration des dépenses, d'autres recettes, des "
+            "encaissements de facture (qui inscrivent le paiement sur la "
+            "facture) et des paiements de carte, corriger une écriture "
+            "d'administration tant qu'elle reste modifiable, compenser des "
+            "écritures à la date du relevé bancaire et contre-passer une "
+            "écriture"
+        ),
+        instructions_en=(
+            "(ONLY under the separate `athena:comptabilite` grant, which "
+            "this authorization holds.) Record ONLY movements that happened "
+            "at the bank, dated the day they happened; a register entry is "
+            "NEVER deleted — a mistake is corrected by a reversal, and both "
+            "entries stay in the register for good. `get_admin_ledger` (a "
+            "read) gives the administration accounts, their lock floors and "
+            "entries (with etags); `get_trust_snapshot` gives the trust "
+            "accounts, `list_trust_transactions` the trust entries. "
+            "`record_trust_entry` records a trust recette or déboursé; a "
+            "déboursé draws only on the client's CLEARED funds, never in "
+            "cash (art. 57), and purpose virement_honoraires is a FEE "
+            "PAYMENT: by cheque or transfer only (art. 58), against a Pallas "
+            "Athéna invoice already sent that imputes no provision, it "
+            "records in ONE transaction the trust withdrawal, the recette in "
+            "the operations account (`admin_account_id`, `admin_date`) and "
+            "the payment on the invoice — which may turn it payée. "
+            "`record_admin_entry` records a dépense (category and ventilation "
+            "required), another recette, an encaissement_facture — which "
+            "records the payment on its invoice in the same transaction — or "
+            "a paiement_carte (two linked entries); the kind decides the "
+            "sign. `update_admin_entry` corrects an administration entry "
+            "while it stays editable, against its etag. "
+            "`clear_register_entries` marks up to 50 entries of one account "
+            "compensée at the BANK STATEMENT's date — at trust this makes a "
+            "deposit's funds available for a déboursé, so never clear what "
+            "the statement does not show. `reverse_register_entry` is the "
+            "only correction: a fee payment reverses with its recettes and "
+            "invoice payments, a card-payment leg with its pair. Nothing is "
+            "ever dated on or before an account's last completed "
+            "reconciliation. Every accounting write REQUIRES an "
+            "idempotency_key and refuses when the replay store is "
+            "unreadable; if an outcome is uncertain, re-read "
+            "list_trust_transactions or get_admin_ledger BEFORE any retry, "
+            "and retry only with the SAME key. Confirm each entry with the "
+            "user unless a standing instruction covers it."
+        ),
+    ),
 )
 
 
@@ -589,15 +662,21 @@ TOOL_CODE_MODULES: frozenset[str] = frozenset({
     "mcp/handlers.py", "mcp/coverage.py", "mcp/import_audit.py",
 })
 
-# Identifiers of every trust and administration register writer. Named here
-# rather than by module: the connector READS trust (get_trust_* tools), so
-# importing models.trust is legitimate — calling a writer is not.
-_REGISTER_WRITERS: tuple[str, ...] = (
-    "create_transaction", "update_transaction", "clear_transaction",
-    "clear_transactions_bulk", "reverse_transaction",
-    "create_inter_dossier_transfer", "create_card_payment",
-    "attach_receipt", "create_reconciliation", "complete_reconciliation",
-    "create_account", "update_account",
+# The register writers NO tool may reach, whatever its scope (lot 5b): the
+# reconciliations, the accounts, the inter-dossier transfer and the receipt
+# stay the lawyer's, in the application. Named here rather than by module:
+# the connector reads and — under athena:comptabilite — writes the registers
+# through services/comptabilite, so importing the models is legitimate;
+# calling one of these is not. (Until lot 5b the list also held the entry
+# writers — create/update/clear/reverse, the card payment — and backed a
+# promise that NO tool touched the registers; the ACCOUNTING family reaches
+# those now, and what keeps them away from every other tool is the derived
+# reach test the « trust » promise names.)
+_REGISTER_SETUP_WRITERS: tuple[str, ...] = (
+    "create_reconciliation", "complete_reconciliation",
+    "delete_reconciliation", "create_account", "update_account",
+    "create_inter_dossier_transfer", "attach_receipt",
+    "delete_transaction", "delete_card_payment",
 )
 
 NEVERS: tuple[Never, ...] = (
@@ -638,16 +717,33 @@ NEVERS: tuple[Never, ...] = (
             "une écriture aux registres comptables, avec la case "
             "«&nbsp;Autoriser la comptabilité&nbsp;»"
         ),
-        en="This connector never records a payment.",
+        # Lot 5b made the old sentence true for a token WITHOUT the
+        # accounting grant only: under it, an encaissement or a trust fee
+        # payment records a payment — written by the REGISTER, in the
+        # entry's own transaction. The sentence says both halves, so it is
+        # true for every token.
+        en=(
+            "Without the separate `athena:comptabilite` grant this connector "
+            "never records a payment; under it, a payment exists only as a "
+            "register entry (an administration encaissement, or a trust fee "
+            "payment), which the register itself writes onto the invoice."
+        ),
         # Lot 5a (step 2): the ledger now STAGES the payment itself, through
         # the pure payment_updates — swept too, so a handler cannot build a
         # payment write of its own around the ledger's back. The two retired
         # projection helpers and their deleted module stay listed: a helper
-        # reborn under the same name would be the same trap.
+        # reborn under the same name would be the same trap. Lot 5b's
+        # accounting tools reach a payment ONLY through the registers'
+        # models (services/comptabilite → models/admin_ledger,
+        # models/fee_payment), so the sweep stays global — and green.
         forbidden=("record_payment", "payment_updates", "projeter_paiement",
                    "reduire_paiement"),
         forbidden_modules=("services.encaissements",),
         summary_fr="de paiement",
+        summary_fr_comptabilite=(
+            "de paiement (seule la case «&nbsp;Autoriser la "
+            "comptabilité&nbsp;» en inscrit, par une écriture aux registres)"
+        ),
     ),
     # Lot 3b (BILL) falsified two promises and DELETED them: « it never
     # changes an invoice's status — voiding included » (update_invoice sets
@@ -675,9 +771,17 @@ NEVERS: tuple[Never, ...] = (
             "marquer une facture <strong>payée</strong> — seul un "
             "encaissement inscrit dans l'application le fait"
         ),
+        fr_comptabilite=(
+            "marquer une facture <strong>payée</strong> par un changement de "
+            "statut — seul un paiement inscrit aux registres le fait, dans "
+            "l'application ou avec la case «&nbsp;Autoriser la "
+            "comptabilité&nbsp;»"
+        ),
         en=(
-            "It never marks an invoice payée: only a payment recorded in the "
-            "application does."
+            "It never marks an invoice payée by a status change: only a "
+            "payment recorded as a register entry does — in the application, "
+            "or, under the separate `athena:comptabilite` grant, through the "
+            "ACCOUNTING tools."
         ),
         # A payload promise: update_invoice's status enum has no « payée »,
         # and the model's transitions never offer it (only record_payment's
@@ -721,14 +825,30 @@ NEVERS: tuple[Never, ...] = (
     # promise below (« kyc »).
     Never(
         key="trust",
-        fr="toucher au <strong>fidéicommis</strong>",
-        fr_comptabilite=(
-            "toucher au <strong>fidéicommis</strong> (sauf avec la case "
-            "«&nbsp;Autoriser la comptabilité&nbsp;»)"
+        fr=(
+            "toucher au <strong>fidéicommis</strong> ou au registre "
+            "d'administration"
         ),
-        en="It never touches trust accounting.",
-        forbidden=_REGISTER_WRITERS,
-        forbidden_modules=("models.admin_ledger",),
+        fr_comptabilite=(
+            "toucher au <strong>fidéicommis</strong> ou au registre "
+            "d'administration (sauf avec la case «&nbsp;Autoriser la "
+            "comptabilité&nbsp;»)"
+        ),
+        # Lot 5b: true for a token WITHOUT the accounting grant — and said
+        # so. The register writers the ACCOUNTING family reaches (through
+        # services/comptabilite) left the global sweep; what backs the
+        # promise now is DERIVED: no tool outside ACCOUNTING_TOOLS reaches a
+        # register writer, and every one of those demands the scope. The
+        # writers no tool may EVER reach moved to « register_setup » below.
+        en=(
+            "Without the separate `athena:comptabilite` grant it never "
+            "touches trust accounting — neither the trust register nor the "
+            "administration ledger."
+        ),
+        behavioural_test=(
+            "tests/test_mcp_accounting.py::"
+            "test_only_the_accounting_tools_reach_a_register_writer"
+        ),
     ),
     Never(
         key="kyc",
@@ -963,6 +1083,75 @@ NEVERS: tuple[Never, ...] = (
         ),
         forbidden=("set_active_template", "clear_active_template"),
     ),
+    # ── Lot 5b — what the ACCOUNTING grant itself never does ────────────
+    # Shown in the accounting block of the consent screen and in the
+    # INSTRUCTIONS of a token holding the scope (``accounting_only``); swept
+    # over every connector module and reached service all the same.
+    Never(
+        key="register_setup",
+        fr=(
+            "<strong>supprimer</strong> une écriture, ni "
+            "<strong>compléter</strong>, commencer ou abandonner une "
+            "conciliation, créer ou modifier un compte, <strong>virer des "
+            "fonds</strong> d'un dossier à un autre, ni joindre un reçu — "
+            "vous seul le faites, dans l'application"
+        ),
+        en=(
+            "Even under the accounting grant it never deletes a register "
+            "entry, never starts, completes or abandons a reconciliation, "
+            "never creates or modifies an account, never transfers funds "
+            "between dossiers and never attaches a receipt: only the lawyer "
+            "does, in the application."
+        ),
+        # Every writer of the two registers that no tool reaches — their
+        # deleters named too, beside the « delete » promise's pattern.
+        forbidden=_REGISTER_SETUP_WRITERS,
+        summary_fr=(
+            "de conciliation, de compte ni de virement entre dossiers"
+        ),
+        accounting_only=True,
+    ),
+    Never(
+        key="trust_withdrawal",
+        fr=(
+            "retirer du fidéicommis <strong>en espèces</strong> (art. 57 — "
+            "le remboursement en espèces de l'art. 72 s'inscrit dans "
+            "l'application), ni appuyer un paiement d'honoraires sur une "
+            "<strong>facture papier</strong> ou sur une facture qui impute "
+            "une provision"
+        ),
+        en=(
+            "It never withdraws trust funds in cash (art. 57 — the art. 72 "
+            "cash refund is recorded in the application) and never backs a "
+            "fee payment with a paper invoice or with an invoice that "
+            "imputes a provision."
+        ),
+        # The model refuses a cash withdrawal unless it cites the art. 72
+        # cash receipt, and the external-invoice path unless its caller
+        # turns it on — so no tool may even DECLARE either input.
+        forbidden_inputs=(
+            ("*", "cash_receipt_id"), ("*", "invoice_external_ref"),
+        ),
+        behavioural_test=(
+            "tests/test_mcp_accounting.py::"
+            "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
+        ),
+        summary_fr="de retrait en espèces",
+        accounting_only=True,
+    ),
+    Never(
+        key="account_number",
+        fr=(
+            "afficher un <strong>numéro de compte</strong> bancaire ou de "
+            "transit"
+        ),
+        en="It never shows a bank transit or account number.",
+        behavioural_test=(
+            "tests/test_mcp_accounting.py::"
+            "test_no_accounting_payload_ever_carries_a_transit_or_account_number"
+        ),
+        accounting_only=True,
+    ),
 )
 
 
@@ -985,16 +1174,49 @@ def _never_fr(never: Never, comptabilite_offered: bool) -> Markup:
     return Markup(text)  # nosec B704 — module constant, no user input
 
 
-def write_summary_fr() -> Markup:
-    """The write checkbox's summary: every write family's clause, then the
-    short « jamais » clauses — derived, so it names exactly what is granted."""
-    clauses = [f.checkbox_summary_fr for f in families_for(SCOPE_WRITE)]
+def general_nevers() -> tuple[Never, ...]:
+    """The promises every token is told — the write block's « jamais »
+    list and every INSTRUCTIONS."""
+    return tuple(n for n in NEVERS if not n.accounting_only)
+
+
+def accounting_nevers() -> tuple[Never, ...]:
+    """What the ACCOUNTING grant itself never does — its block's list, and
+    the INSTRUCTIONS of a token holding ``athena:comptabilite``."""
+    return tuple(n for n in NEVERS if n.accounting_only)
+
+
+def _summary(clauses: list[str], nevers: list[str]) -> Markup:
     body = "&nbsp;; ".join(clauses)
     body = body[:1].upper() + body[1:] + "."
-    nevers = [n.summary_fr for n in NEVERS if n.summary_fr]
     if nevers:
         body += " Jamais " + ", jamais ".join(nevers) + "."
     return Markup(body)  # nosec B704 — module constants, no user input
+
+
+def write_summary_fr(*, comptabilite_offered: bool = False) -> Markup:
+    """The write checkbox's summary: every write family's clause, then the
+    short « jamais » clauses — derived, so it names exactly what is granted.
+    While the accounting box is on the same page a clause may say, beside
+    the write box, what only the accounting box does (the payment)."""
+    nevers = [
+        (n.summary_fr_comptabilite if comptabilite_offered
+         and n.summary_fr_comptabilite else n.summary_fr)
+        for n in general_nevers() if n.summary_fr
+    ]
+    return _summary([f.checkbox_summary_fr for f in families_for(SCOPE_WRITE)],
+                    nevers)
+
+
+def comptabilite_summary_fr() -> Markup:
+    """The accounting checkbox's summary, derived the same way: its
+    family's clause, then « jamais » — nothing deleted, and the
+    accounting-only promises that carry a clause."""
+    nevers = [n.summary_fr for n in NEVERS
+              if n.summary_fr and (n.key == "delete" or n.accounting_only)]
+    return _summary(
+        [f.checkbox_summary_fr for f in families_for(SCOPE_COMPTABILITE)],
+        nevers)
 
 
 def consent_context(*, comptabilite_offered: bool) -> dict:
@@ -1003,19 +1225,27 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
     ``write_families`` are included, in order, inside the write block;
     ``nevers`` are the bullets of its « jamais » list — with the accounting
     variant of a bullet while the accounting box is on the same page;
-    ``write_summary`` is the grant checkbox's summary; ``phase_bulk_max``
+    ``write_summary`` is the grant checkbox's summary. The accounting block
+    (rendered only while its box is offered) gets the same three:
+    ``comptabilite_families``, ``comptabilite_nevers`` (the promises the
+    accounting grant keeps) and ``comptabilite_summary``. ``phase_bulk_max``
     is the reclassifiers' batch ceiling and ``series_max`` a series'
-    occurrence ceiling (utils/recurrence), both read from the registry.
+    occurrence ceiling (utils/recurrence), both read from the registry;
+    ``register_clear_max`` is a clearing's batch ceiling.
     """
     from mcp import tools as _tools  # lazy: mcp.tools imports this module
 
     return {
         "phase_bulk_max": _tools.PHASE_BULK_MAX,
         "series_max": _tools._SERIES_MAX,
+        "register_clear_max": _tools.REGISTER_CLEAR_MAX,
         "write_families": families_for(SCOPE_WRITE),
         "comptabilite_families": families_for(SCOPE_COMPTABILITE),
-        "nevers": [_never_fr(n, comptabilite_offered) for n in NEVERS],
-        "write_summary": write_summary_fr(),
+        "nevers": [_never_fr(n, comptabilite_offered) for n in general_nevers()],
+        "comptabilite_nevers": [_never_fr(n, True) for n in accounting_nevers()],
+        "write_summary": write_summary_fr(
+            comptabilite_offered=comptabilite_offered),
+        "comptabilite_summary": comptabilite_summary_fr(),
     }
 
 
@@ -1054,6 +1284,8 @@ def build_instructions(
     registry: Optional[dict] = None,
     accounting_tools: Optional[frozenset] = None,
     phase_bulk_max: Optional[int] = None,
+    *,
+    accounting: bool = False,
 ) -> str:
     """The ``initialize`` instructions, assembled from the registry.
 
@@ -1062,6 +1294,14 @@ def build_instructions(
     twice, and a model told « 29 read » looks for tools that are not there.
     The arguments exist for tests; by default the live registry is read
     (lazily: ``mcp.tools`` imports this module).
+
+    *accounting* — the variant for a token holding ``athena:comptabilite``
+    (plan lot 5b): only it counts and describes the accounting tools (the
+    ACCOUNTING family and ``get_admin_ledger``) and states the promises the
+    accounting grant keeps. Every other token is told only that such tools
+    exist under a separate grant — its text never describes a tool it
+    cannot see. The general promises read the same in both variants: each
+    is worded to be true for every token.
     """
     if registry is None or accounting_tools is None or phase_bulk_max is None:
         from mcp import tools as _tools
@@ -1074,9 +1314,13 @@ def build_instructions(
             _tools.PHASE_BULK_MAX if phase_bulk_max is None else phase_bulk_max
         )
 
-    writes = write_tools()
-    families = [f for f in FAMILIES if f.tools]
-    reads = len([n for n in registry if n not in writes])
+    hidden = frozenset() if accounting else frozenset(accounting_tools)
+    writes = write_tools() - hidden
+    families = [
+        f for f in FAMILIES
+        if f.tools and (accounting or f.scope != SCOPE_COMPTABILITE)
+    ]
+    reads = len([n for n in registry if n not in write_tools() and n not in hidden])
     parts = [
         "Pallas Athena is a single-user Quebec civil litigation practice "
         f"manager. {reads} tools read; {len(writes)} write, in "
@@ -1094,18 +1338,27 @@ def build_instructions(
         "Write tools appear only when the lawyer granted the `athena:write` "
         "scope."
     )
-    if accounting_tools:
+    if accounting:
+        scope += (
+            " The accounting tools appear under the SEPARATE "
+            "`athena:comptabilite` grant, which this authorization holds; "
+            "`athena:write` never stands in for it."
+        )
+    elif accounting_tools:
         scope += (
             " Accounting tools appear only under the SEPARATE "
             "`athena:comptabilite` grant; `athena:write` never stands in "
             "for it."
         )
     parts.append(scope)
-    parts.extend(n.en for n in NEVERS)
+    parts.extend(n.en for n in general_nevers())
+    if accounting:
+        parts.extend(n.en for n in accounting_nevers())
 
     etagged = sorted(
         name for name, spec in registry.items()
         if spec.get("concurrency") in ("optional", "required")
+        and name not in hidden
     )
     parts.append(
         "A write is permanent and may sync to the lawyer's phone — read the "

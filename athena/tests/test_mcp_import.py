@@ -868,7 +868,11 @@ def test_le_refus_nomme_la_vraie_voie_de_retour(billing):
     # lawyer deletes the voided invoice).
     message = str(refused.value)
     assert "update_invoice" in message
-    assert "contre-passez-le d'abord" in message
+    # Rewritten deliberately (lot 5b): the payment's reversal is no longer
+    # the application's alone — the accounting tools reverse it too, under
+    # their separate grant — so the way round names both.
+    assert "contre-passez d'abord son écriture au registre" in message
+    assert "outils comptables" in message
     assert "reste attaché à la facture annulée" in message
     assert "jamais réattribué" not in message
 

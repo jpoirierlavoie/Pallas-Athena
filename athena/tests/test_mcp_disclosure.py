@@ -343,19 +343,41 @@ def test_each_family_names_every_member_and_has_its_partial():
 
 
 def test_instructions_name_every_write_tool_and_derive_their_counts():
+    """Two variants since lot 5b, each counting and naming exactly the tools
+    its token can see: the base one (every token without the accounting
+    grant) leaves the ACCOUNTING family and get_admin_ledger out — a model
+    told of a tool it cannot list looks for it — while the variant served to
+    a token holding athena:comptabilite counts and names them all."""
     text = endpoint.INSTRUCTIONS
     assert text == disclosure.build_instructions()
-    for name in tools.WRITE_TOOLS:
+    visible_writes = tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS
+    for name in visible_writes:
         assert f"`{name}`" in text, name
-    families = [f for f in disclosure.FAMILIES if f.tools]
-    reads = len(tools.TOOLS) - len(tools.WRITE_TOOLS)
+    for name in tools.ACCOUNTING_TOOLS:
+        assert f"`{name}`" not in text, name
+    families = [f for f in disclosure.FAMILIES
+                if f.tools and f.scope != mcp.SCOPE_COMPTABILITE]
+    reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS)
     assert (
-        f"{reads} tools read; {len(tools.WRITE_TOOLS)} write, in "
+        f"{reads} tools read; {len(visible_writes)} write, in "
         f"{len(families)} families ("
         + ", ".join(f.label for f in families) + ")."
     ) in text
     for family in families:
         assert f"{family.label}: " in text
+    assert "ACCOUNTING: " not in text
+
+    full = endpoint.INSTRUCTIONS_COMPTABILITE
+    assert full == disclosure.build_instructions(accounting=True)
+    for name in tools.WRITE_TOOLS | tools.ACCOUNTING_TOOLS:
+        assert f"`{name}`" in full, name
+    every = [f for f in disclosure.FAMILIES if f.tools]
+    assert (
+        f"{len(set(tools.TOOLS) - tools.WRITE_TOOLS)} tools read; "
+        f"{len(tools.WRITE_TOOLS)} write, in {len(every)} families ("
+        + ", ".join(f.label for f in every) + ")."
+    ) in full
+    assert "ACCOUNTING: " in full
 
 
 def test_no_count_is_typed_by_hand():
@@ -385,11 +407,20 @@ def test_the_instructions_follow_the_registry(monkeypatch):
     separate-grant sentence, an etag-accepting tool is named, and the counts
     move with the registry."""
     registry = dict(tools.TOOLS)
+    # REWRITTEN in lot 5b: this read « athena:comptabilite not in base » —
+    # true while the scope was dormant. Two promises now name the scope in
+    # every variant (payment, invoice_paid — each worded true for every
+    # token); what still follows the registry is the SCOPE SENTENCE.
     base = disclosure.build_instructions(registry, frozenset(), 50)
-    assert "athena:comptabilite" not in base
+    assert "Accounting tools appear only" not in base
     with_accounting = disclosure.build_instructions(registry, frozenset({"x"}), 50)
     assert "`athena:comptabilite`" in with_accounting
+    assert "Accounting tools appear only" in with_accounting
     assert "never stands in" in with_accounting
+    holding = disclosure.build_instructions(registry, frozenset({"x"}), 50,
+                                            accounting=True)
+    assert "which this authorization holds" in holding
+    assert "Accounting tools appear only" not in holding
     for name in tools.TOOLS:
         if tools.TOOLS[name].get("concurrency") in ("optional", "required"):
             assert f"`{name}`" in base, name
@@ -408,9 +439,15 @@ def test_the_instructions_carry_the_lot_0a_rules():
     assert "retry with the SAME key — never a new one" in text
     assert "`updated_via`" in text and "`mcp_updated_at`" in text
     assert "the number stays on the voided invoice" in text
-    # The dormant scope is not advertised while no tool carries it.
-    assert not tools.ACCOUNTING_TOOLS
-    assert "athena:comptabilite" not in text
+    # REWRITTEN in lot 5b: the scope was dormant and never advertised. Now a
+    # token without it is told only that accounting tools need a separate
+    # grant — never what they do; the promises the grant keeps reach the
+    # tokens holding it.
+    assert tools.ACCOUNTING_TOOLS
+    assert "Accounting tools appear only under the SEPARATE" in text
+    for never in disclosure.accounting_nevers():
+        assert never.en not in text, never.key
+        assert never.en in endpoint.INSTRUCTIONS_COMPTABILITE, never.key
 
 
 def test_the_checkbox_summary_names_every_write_family():
@@ -418,9 +455,28 @@ def test_the_checkbox_summary_names_every_write_family():
     for family in disclosure.families_for(mcp.SCOPE_WRITE):
         assert family.checkbox_summary_fr.lower() in summary.lower()
     assert summary[0].isupper()
-    for never in disclosure.NEVERS:
+    # The GENERAL promises only (lot 5b): what the accounting grant itself
+    # never does is the accounting box's to say, beside what it grants.
+    for never in disclosure.general_nevers():
         if never.summary_fr:
             assert f"jamais {never.summary_fr}" in summary.lower()
+    for never in disclosure.accounting_nevers():
+        if never.summary_fr:
+            assert f"jamais {never.summary_fr}" not in summary.lower(), never.key
+
+
+def test_the_accounting_checkbox_summary_names_its_family_and_its_nevers():
+    """The accounting box's label is derived like the write box's: the
+    ACCOUNTING family's clause, then the promises the grant keeps."""
+    summary = str(disclosure.comptabilite_summary_fr())
+    families = disclosure.families_for(mcp.SCOPE_COMPTABILITE)
+    assert [f.key for f in families] == ["accounting"]
+    for family in families:
+        assert family.checkbox_summary_fr.lower() in summary.lower()
+    assert summary[0].isupper()
+    for never in disclosure.accounting_nevers():
+        if never.summary_fr:
+            assert f"jamais {never.summary_fr}" in summary.lower(), never.key
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -632,7 +688,11 @@ def test_the_sweep_ignores_strings_and_sees_every_reference_form():
         "mcp/probe_e.py": "getattr(invoice_model, 'record_payment')(i)\n",
         "mcp/probe_f.py": "note_model.delete_note(n)\n",
         "mcp/probe_g.py": "invoice_model.create_invoice(d, [], [], {})\n",
-        "mcp/probe_h.py": "from models import admin_ledger\n",
+        # Rewritten deliberately (lot 5b): models.admin_ledger is no longer
+        # a forbidden import — the accounting tools reach the registers
+        # through services/comptabilite — so the module-import form is
+        # probed on a module that still is.
+        "mcp/probe_h.py": "import utils.courriel\n",
     }
     found = violations(evasive)
     for rel in evasive:
@@ -698,7 +758,11 @@ def test_every_never_is_backed_by_a_mechanism_and_speaks_both_languages():
         ), f"{never.key}: a promise nothing enforces"
         # No trailing punctuation: the template adds « ; » / « . ».
         assert not never.fr.rstrip().endswith((";", ".", "&nbsp;;")), never.key
-        assert never.en in endpoint.INSTRUCTIONS, never.key
+        # Every promise reaches the tokens it binds (lot 5b): a general one
+        # every token, an accounting one the tokens holding the grant.
+        assert never.en in endpoint.INSTRUCTIONS_COMPTABILITE, never.key
+        if not never.accounting_only:
+            assert never.en in endpoint.INSTRUCTIONS, never.key
 
 
 def test_the_registry_is_pure():
@@ -993,7 +1057,12 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
         assert fragment in contacts.instructions_en, fragment
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "trust_identity" not in keys
-    assert keys["trust"].en == "It never touches trust accounting."
+    # Lot 5b narrowed it to the tokens WITHOUT the accounting grant — and
+    # says so, so it stays true for every token.
+    assert keys["trust"].en == (
+        "Without the separate `athena:comptabilite` grant it never touches "
+        "trust accounting — neither the trust register nor the "
+        "administration ledger.")
     kyc_never = keys["kyc"]
     assert "confirm_kyc_status" in kyc_never.forbidden
     assert ("update_kyc_status", "source") in kyc_never.required_keywords

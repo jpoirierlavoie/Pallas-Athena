@@ -1,0 +1,51 @@
+{# Family ACCOUNTING (mcp/disclosure.FAMILIES, key "accounting") — lot 5b,
+   scope athena:comptabilite: record_trust_entry, record_admin_entry,
+   update_admin_entry, clear_register_entries, reverse_register_entry, and
+   the read get_admin_ledger. Rendered inside the accounting block only
+   (consent.html), which renders only while its box is offered. The D14
+   rules are stated HERE, beside the capability they bound — each one is the
+   MODEL's (models/trust, models/admin_ledger, models/fee_payment), so the
+   application refuses exactly what this screen says the connector cannot
+   do. The class strings are the write block's, verbatim. #}
+<p class="mt-3">
+  <strong>Lire</strong> le registre d'administration&nbsp;: les comptes
+  d'opérations et les cartes de crédit, leurs soldes, leur dernière
+  conciliation et leurs écritures.
+</p>
+<p class="mt-2">
+  <strong>Inscrire au fidéicommis</strong> des recettes et des déboursés
+  réellement survenus à la banque, à leur date. Un déboursé ne puise que
+  dans les fonds <strong>compensés</strong> du client. Un
+  <strong>paiement d'honoraires</strong> — par chèque à l'ordre de l'avocat
+  ou virement à un compte hors fidéicommis seulement (art.&nbsp;58) —
+  s'appuie sur une facture de Pallas Athéna <strong>déjà envoyée</strong>,
+  qui n'impute aucune provision, jusqu'à concurrence de son solde&nbsp;; il
+  inscrit <strong>dans la même opération</strong> le retrait au
+  fidéicommis, la recette au compte d'opérations et le
+  <strong>paiement sur la facture</strong>, qui peut alors passer à
+  «&nbsp;payée&nbsp;». Si l'un des trois est refusé, rien n'est inscrit.
+</p>
+<p class="mt-2">
+  <strong>Inscrire au compte d'administration</strong> et à la carte de
+  crédit des dépenses (ventilées TPS/TVQ), d'autres recettes, des
+  <strong>encaissements de facture</strong> — qui inscrivent le paiement sur
+  la facture dans la même opération — et des paiements de carte&nbsp;;
+  <strong>corriger</strong> une écriture d'administration tant qu'elle reste
+  modifiable (en circulation, hors période conciliée, liée à aucune facture
+  ni à aucun paiement d'honoraires), chaque correction étant conservée.
+</p>
+<p class="mt-2">
+  <strong>Compenser</strong> jusqu'à {{ disclosure.register_clear_max }}
+  écritures d'un compte à la <strong>date du relevé bancaire</strong> —
+  au fidéicommis, compenser un dépôt le rend disponible pour un déboursé
+  —, et <strong>contre-passer</strong> une écriture&nbsp;: c'est la seule
+  correction, et l'original comme sa contre-passation restent au registre
+  pour toujours. Un paiement d'honoraires se contre-passe avec sa recette
+  et le paiement porté sur la facture.
+</p>
+<p class="mt-2">
+  Aucune écriture, compensation ni contre-passation n'est datée dans une
+  période déjà <strong>conciliée</strong>, ni dans le futur. Chaque
+  écriture est marquée comme provenant de Claude, et chaque appel exige
+  une clé d'idempotence&nbsp;: un appel répété n'inscrit rien deux fois.
+</p>

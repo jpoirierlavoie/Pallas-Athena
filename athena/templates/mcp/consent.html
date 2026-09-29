@@ -92,31 +92,48 @@
     {% endif %}
 
     {% if params.comptabilite_offered %}
-    {# DORMANT until plan lot 5. Offered only while MCP_WRITE_ENABLED and
+    {# Plan lot 5b. Offered only while MCP_WRITE_ENABLED and
        MCP_COMPTABILITE_ENABLED are both on AND at least one tool carries
-       the athena:comptabilite scope (mcp/oauth._comptabilite_offered) — so
-       in lots 0-4 it never renders. The tool list is DERIVED from the
-       registry's French titles: the box can neither describe a tool that
-       does not exist nor omit one that does. The class strings are the
-       write block's, verbatim (no Tailwind recompile). #}
+       the athena:comptabilite scope (mcp/oauth._comptabilite_offered).
+       ASSEMBLED like the write block: the ACCOUNTING family's partial (what
+       the box grants, with the D14 rules beside it), the registry's French
+       titles of every tool under the scope (the box can neither describe a
+       tool that does not exist nor omit one that does), and the promises
+       the accounting grant keeps (mcp/disclosure.accounting_nevers — each
+       backed by a sweep or a named test). No nested <div>: the block is one
+       element, and the class strings are the write block's, verbatim (no
+       Tailwind recompile). #}
     <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
       <p class="font-medium">Comptabilité (facultatif)</p>
       <p class="mt-1">
-        Une <strong>autorisation distincte</strong> de celle des écritures.
-        Si vous cochez «&nbsp;Autoriser la comptabilité&nbsp;», ce connecteur
-        pourra se servir des outils suivants, qui portent sur les
-        <strong>registres comptables</strong> — fidéicommis et
-        administration&nbsp;:
+        Une <strong>autorisation distincte</strong> de celle des écritures,
+        qui porte sur les <strong>registres comptables</strong> —
+        fidéicommis et administration. Si vous cochez «&nbsp;Autoriser la
+        comptabilité&nbsp;», ce connecteur pourra inscrire, en votre nom,
+        des opérations <strong>réellement survenues à la banque</strong>&nbsp;:
       </p>
-      <ul class="list-disc list-inside mt-2 space-y-1">
+      {% for family in disclosure.comptabilite_families %}
+      {% include family.consent_template %}
+      {% endfor %}
+      <p class="mt-3 font-medium">Outils accordés par cette case&nbsp;:</p>
+      <ul class="list-disc list-inside mt-1 space-y-1">
         {% for title in params.comptabilite_tool_titles %}
         <li>{{ title }}</li>
         {% endfor %}
       </ul>
+      <p class="mt-3 font-medium">Même avec cette case, le connecteur ne peut
+        <strong>jamais</strong>&nbsp;:</p>
+      <ul class="list-disc list-inside mt-1 space-y-1">
+        {% for never in disclosure.comptabilite_nevers %}
+        <li>{{ never }}{% if loop.last %}.{% else %}&nbsp;;{% endif %}</li>
+        {% endfor %}
+      </ul>
       <p class="mt-3">
-        Sans cette case, <strong>aucun</strong> de ces outils n'est
-        accessible, même si vous autorisez les écritures. Et elle ne donne,
-        à elle seule, aucun autre droit d'écriture.
+        Une écriture inscrite par erreur ne s'efface pas&nbsp;: elle se
+        contre-passe, et les deux restent au registre. Sans cette case,
+        <strong>aucun</strong> de ces outils n'est accessible, même si vous
+        autorisez les écritures. Et elle ne donne, à elle seule, aucun autre
+        droit d'écriture.
       </p>
     </div>
     {% endif %}
@@ -161,8 +178,10 @@
         <span class="text-sm text-gray-700">
           <span class="font-medium">Autoriser la comptabilité (fidéicommis et administration)</span>
           <span class="block text-gray-500 mt-1">
-            Se servir des outils comptables énumérés ci-dessus. Indépendante
-            de la case des écritures&nbsp;: l'une ne donne jamais
+            {# Derived: the ACCOUNTING family's clause, then its « jamais »
+               clauses (mcp/disclosure.comptabilite_summary_fr). #}
+            {{ disclosure.comptabilite_summary }} Indépendante de la case
+            des écritures&nbsp;: l'une ne donne jamais
             l'autre.{% if params.comptabilite_requested %} Le client a
             demandé cet accès.{% endif %}
           </span>

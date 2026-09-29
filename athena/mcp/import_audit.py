@@ -254,9 +254,10 @@ def _facture_importee_encore_au_brouillon(ctx: dict) -> Optional[str]:
         f"{len(drafts)} facture(s) reprise(s) encore au brouillon : "
         + ", ".join(drafts)
         + ". Tant qu'elles ne sont pas promues (update_invoice, brouillon → "
-        "envoyée, ou dans l'application), puis l'encaissement saisi au "
+        "envoyée, ou dans l'application), puis l'encaissement inscrit au "
         "registre d'administration à sa date historique — le seul endroit "
-        "d'où un paiement s'inscrit : le connecteur n'en inscrit aucun —, le "
+        "d'où un paiement s'inscrit, dans l'application ou par les outils "
+        "comptables du connecteur sous leur autorisation distincte —, le "
         "« Journal des honoraires » les imprime avec 0 $ reçu et le total en "
         "solde, et le sommaire du dossier lit « payé 0 »."
     )

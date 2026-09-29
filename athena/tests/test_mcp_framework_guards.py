@@ -297,12 +297,27 @@ def _write_scopes() -> set:
 
 
 def test_write_membership_and_write_scope_are_the_same_fact():
+    """REWRITTEN in lot 5b. It read « every tool under a non-read scope is a
+    write » — true until get_admin_ledger, the one READ that carries
+    athena:comptabilite (the administration ledger is not under
+    athena:read). The fact survives in its two exact halves: athena:write
+    is carried by writes and only writes, and every write carries a write
+    scope; and a tool under neither write scope is a read gated by
+    athena:read. The accounting read is the one allowed exception, and
+    (g) below proves it carries no write protocol at all."""
+    write_scoped = {
+        n for n, spec in tools.TOOLS.items() if spec.get("scope") == mcp.SCOPE_WRITE
+    }
+    assert write_scoped <= set(tools.WRITE_TOOLS)
+    assert write_scoped | tools.ACCOUNTING_WRITE_TOOLS == set(tools.WRITE_TOOLS)
     by_scope = {n for n, spec in tools.TOOLS.items() if spec.get("scope") in _write_scopes()}
-    assert by_scope == set(tools.WRITE_TOOLS)
+    assert by_scope - set(tools.WRITE_TOOLS) <= tools.ACCOUNTING_TOOLS
     for name in tools.WRITE_TOOLS:
         assert tools.required_scope(name) != mcp.SCOPE_READ, name
-    for name in set(tools.TOOLS) - tools.WRITE_TOOLS:
+    for name in set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS:
         assert tools.required_scope(name) == mcp.SCOPE_READ, name
+    for name in tools.ACCOUNTING_TOOLS - tools.WRITE_TOOLS:
+        assert tools.required_scope(name) == mcp.SCOPE_COMPTABILITE, name
 
 
 def test_every_declared_scope_is_advertised():
@@ -354,15 +369,22 @@ def test_every_write_tool_declares_its_idempotency_policy():
 # Plan decision D1 + rule 7. The trust and administration registers are
 # append-only — a mistake is corrected by a reversal, never erased — so a
 # money write retried without a key is a SECOND entry that no tool can take
-# back. Every tool under athena:comptabilite must therefore demand an
+# back. Every WRITE under athena:comptabilite must therefore demand an
 # `idempotency_key` (policy `required`, so the store fails CLOSED) and list
-# it in its schema's `required`. It must also be a write, or it would slip
-# past the write gate, the write audit and the master switch.
+# it in its schema's `required`.
 #
-# Vacuous on the real registry until plan lot 5 — which is why the rule
-# lives in ONE pure function, proven below on a planted registry: it is
-# ARMED now, and the first accounting tool meets it the moment it is
-# declared rather than when someone remembers to write this test.
+# Lot 5b gave the scope its first tools — five writes and ONE read,
+# get_admin_ledger (the administration ledger is not under athena:read). A
+# tool under the scope that is NOT in WRITE_TOOLS used to be a violation
+# outright (« it would slip past the write gate »); it is now allowed only
+# as a PROVEN read: it declares no idempotency policy, its schema carries no
+# `idempotency_key`, and no annotation claims it writes. A write that
+# forgot to join WRITE_TOOLS carries the write protocol, and is caught by
+# exactly those three checks. (test_no_read_handler_calls_run_write, above,
+# is the fourth: its handler never opens the write protocol.)
+#
+# The rule lives in ONE pure function, proven below on a planted registry,
+# so each clause is shown to catch what it claims.
 
 
 def accounting_violations(registry: dict, accounting_tools, write_tools) -> list[str]:
@@ -376,8 +398,19 @@ def accounting_violations(registry: dict, accounting_tools, write_tools) -> list
         if not declared:
             continue
         if name not in write_tools:
-            out.append(
-                f"{name}: an accounting tool outside WRITE_TOOLS escapes the write gate")
+            # The accounting READ (lot 5b): allowed only while nothing about
+            # it says « write » — the write protocol is what a write that
+            # escaped WRITE_TOOLS would still be carrying.
+            props = spec["input_schema"].get("properties", {})
+            annotations = spec.get("annotations") or {}
+            if (
+                spec.get("idempotency") is not None
+                or "idempotency_key" in props
+                or annotations.get("readOnlyHint") is False
+            ):
+                out.append(
+                    f"{name}: an accounting tool outside WRITE_TOOLS escapes the write gate")
+            continue
         if spec.get("idempotency") != tools.IDEMPOTENCY_REQUIRED:
             out.append(
                 f"{name}: an accounting tool must declare idempotency 'required'")
@@ -419,7 +452,17 @@ def _planted_accounting(**spec_over) -> dict:
     ({"idempotency": None}, None, "idempotency 'required'"),
     ({"input_schema": {"type": "object", "properties": {}, "required": []}},
      None, "idempotency_key in required"),
+    # A write that forgot WRITE_TOOLS still carries the write protocol.
     ({}, {"write": frozenset()}, "escapes the write gate"),
+    ({"input_schema": {"type": "object", "properties": {"idempotency_key": {}},
+                       "required": []}, "idempotency": None},
+     {"write": frozenset()}, "escapes the write gate"),
+    ({"idempotency": None, "annotations": {"readOnlyHint": False},
+      "input_schema": {"type": "object", "properties": {}}},
+     {"write": frozenset()}, "escapes the write gate"),
+    # …while a genuine accounting READ (get_admin_ledger's shape) is clean.
+    ({"idempotency": None, "input_schema": {"type": "object", "properties": {}}},
+     {"write": frozenset()}, None),
     ({}, {"accounting": frozenset()}, "contradicts its declared scope"),
     ({"scope": mcp.SCOPE_WRITE}, None, "contradicts its declared scope"),
 ])
@@ -505,6 +548,16 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "presumed until the lawyer confirms it, never over his own "
         "attestation, but a compliance record replaced all the same "
         "(lot 4b, D7)"
+    ),
+    "record_trust_entry": (
+        "moves a client's trust balance in a register that is never erased "
+        "— only reversed — and a fee payment also records a payment on the "
+        "invoice, which may flip it to « payée » (lot 5b)"
+    ),
+    "record_admin_entry": (
+        "moves an account's balance in a register a reconciliation must "
+        "then explain, and an encaissement records a payment on the invoice, "
+        "which may flip it to « payée » (lot 5b)"
     ),
 }
 

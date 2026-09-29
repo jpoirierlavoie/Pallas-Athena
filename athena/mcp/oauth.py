@@ -318,10 +318,12 @@ def _comptabilite_offered() -> bool:
     * the accounting switch (``MCP_COMPTABILITE_ENABLED``, default off);
     * at least ONE tool that actually carries ``athena:comptabilite``.
 
-    The third keeps the box off the screen before plan lot 5, whatever the
-    switch says. A box that grants nothing would be a false statement — and
-    a scope minted under it would silently reach the first accounting tool
-    the day it deploys, under a screen that never described it.
+    The third kept the box off the screen until plan lot 5b shipped the
+    first accounting tools, whatever the switch said — and keeps it off
+    should the registry ever carry none again. A box that grants nothing
+    would be a false statement — and a scope minted under it would silently
+    reach the first accounting tool the day it deploys, under a screen that
+    never described it.
     """
     return bool(
         write_enabled() and comptabilite_enabled() and tools.ACCOUNTING_TOOLS

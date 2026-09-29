@@ -13,7 +13,9 @@ from flask import Response, jsonify, request
 
 from mcp import (
     DEFAULT_PROTOCOL_VERSION,
+    SCOPE_COMPTABILITE,
     SUPPORTED_PROTOCOL_VERSIONS,
+    comptabilite_enabled,
     mcp_bp,
 )
 from mcp import disclosure, jsonrpc, tools
@@ -36,6 +38,21 @@ from utils.tracing_setup import span
 # the counts went stale twice and the undo path stated a falsehood (« frees
 # the number »).
 INSTRUCTIONS = disclosure.build_instructions()
+# The variant a token holding athena:comptabilite reads (plan lot 5b): the
+# ACCOUNTING family, its read, and the promises the accounting grant keeps.
+# Every other token — the accounting switch off included — reads
+# INSTRUCTIONS, which describes no tool it cannot see.
+INSTRUCTIONS_COMPTABILITE = disclosure.build_instructions(accounting=True)
+
+
+def instructions_for(scopes) -> str:
+    """The INSTRUCTIONS of a token holding *scopes*: the accounting variant
+    only while the token holds the scope AND the accounting switch is on —
+    the one state in which it can see an accounting tool."""
+    if SCOPE_COMPTABILITE in (scopes or ()) and comptabilite_enabled():
+        return INSTRUCTIONS_COMPTABILITE
+    return INSTRUCTIONS
+
 
 SERVER_INFO = {
     "name": "pallas-athena",
@@ -164,7 +181,7 @@ def _initialize(params: dict) -> dict:
         "protocolVersion": negotiated,
         "capabilities": {"tools": {"listChanged": False}},
         "serverInfo": dict(SERVER_INFO),
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions_for(granted_scopes()),
     }
 
 

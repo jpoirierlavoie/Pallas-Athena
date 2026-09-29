@@ -82,10 +82,10 @@ env_variables:
   # (« Autoriser la comptabilité »). MCP_WRITE_ENABLED is the master above
   # it: when that one is "false", accounting is off whatever this says.
   #
-  # DORMANT UNTIL PLAN LOT 5. No tool carries the scope yet, so the box is
-  # never offered — mcp/oauth.py offers it only while write AND accounting
-  # are on AND at least one tool carries the scope — and "true" here would
-  # change nothing. Leave it "false" until Lot 5 has deployed.
+  # Since plan lot 5b six tools carry the scope (the ACCOUNTING family and
+  # get_admin_ledger). mcp/oauth.py offers the box only while write AND
+  # accounting are on AND at least one tool carries the scope. The lot
+  # SHIPS with "false": arm it only by the order below.
   #
   # SAME DOUBLE DUTY, SAME TRAP. While it is "false" the consent screen
   # shows no accounting box, so a re-consent performed then silently

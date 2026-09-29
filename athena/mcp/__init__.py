@@ -41,8 +41,9 @@ Three kill switches, nested from the widest to the narrowest:
   tools (``mcp.tools.ACCOUNTING_TOOLS``, the ``athena:comptabilite``
   scope) disappear and are refused the same way, and the consent screen
   does not offer their box. Money is fail-closed: a forgotten variable
-  leaves accounting off. No tool carries the scope before plan lot 5, so
-  until then the switch, the scope and the box are dormant.
+  leaves accounting off. Since plan lot 5b six tools carry the scope —
+  the ACCOUNTING family's five writes and the read ``get_admin_ledger`` —
+  so ``true`` offers the box and, to a token granted it, the tools.
 """
 
 from flask import Blueprint, abort, current_app

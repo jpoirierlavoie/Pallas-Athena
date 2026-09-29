@@ -1,11 +1,13 @@
 """A DUMMY accounting tool, registered for the length of ONE test.
 
-The ``athena:comptabilite`` scope ships DORMANT (plan lot 0a): no real tool
-carries it before lot 5, so ``mcp.tools.ACCOUNTING_TOOLS`` is empty and
+The ``athena:comptabilite`` scope shipped DORMANT (plan lot 0a): no real
+tool carried it before lot 5, so ``mcp.tools.ACCOUNTING_TOOLS`` was empty and
 every gate that set feeds — the tools/list filter, the tools/call refusal,
-the write-time token revalidation, the consent box and its grant — would be
-tested VACUOUSLY. A gate that has never seen a member is a gate nobody has
-seen close.
+the write-time token revalidation, the consent box and its grant — would
+have been tested VACUOUSLY. A gate that has never seen a member is a gate
+nobody has seen close. Since lot 5b six real tools carry the scope; the
+dummy stays because it lets a test observe the DISPATCH (a recorder handler)
+without a register behind it.
 
 :func:`register` puts one fake tool under the scope, through
 ``monkeypatch``, exactly the way a lot-5 tool will arrive: a declared

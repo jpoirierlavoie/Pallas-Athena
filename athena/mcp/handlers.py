@@ -162,6 +162,7 @@ from models import time_entry as time_entry_model
 from models import trust as trust_model
 from models import upload_ticket as upload_ticket_model
 from security import TAG_RE, sanitize
+from services import comptabilite as comptabilite_service
 from services import docx_identifiers as identifiers_service
 from services import dossier_dav as dossier_dav_service
 from services import gabarit_champs as gabarit_service
@@ -206,12 +207,15 @@ from utils.note_docx import (
 from utils.validators import format_phone_display
 
 from mcp.tools import (
+    ACCOUNTING_WRITE_TOOLS,
+    ADMIN_LEDGER_WINDOW_DAYS,
     ANALYSE_OPERATIONS_MAX,
     BUDGET_HISTORY_MAX,
     BUDGET_NOTE_MAX_CHARS,
     CONCURRENCY_OPTIONAL,
     CONTENT_MAX_CHARS,
     CONCURRENCY_REQUIRED,
+    COUNTERPARTY_MAX_CHARS,
     DOCUMENT_MOVE_MAX,
     DOCUMENT_TAGS_MAX,
     DOCUMENT_TITLE_MAX_CHARS,
@@ -222,6 +226,10 @@ from mcp.tools import (
     INVOICE_TERMS_MAX_CHARS,
     MARKDOWN_DOCUMENT_MAX_CHARS,
     PHASE_BULK_MAX,
+    REGISTER_CLEAR_MAX,
+    REGISTER_DESCRIPTION_MAX_CHARS,
+    REGISTER_REFERENCE_MAX_CHARS,
+    REVERSAL_REASON_MAX_CHARS,
     TOOLS,
     ToolArgumentError,
     date_str,
@@ -4805,7 +4813,9 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
         "(set_time_entry_phase, set_expense_phase). Pour la libérer : "
         "annulez la facture (update_invoice avec status « annulée », ou "
         "dans l'application), possible tant qu'aucun paiement n'y est "
-        "inscrit — sinon, contre-passez-le d'abord dans l'application ; ses "
+        "inscrit — sinon, contre-passez d'abord son écriture au registre "
+        "(dans l'application, ou par les outils comptables sous leur "
+        "autorisation distincte) ; ses "
         "entrées et déboursés redeviennent alors modifiables, et son "
         "numéro, lui, reste attaché à la facture annulée."
     )
@@ -6282,10 +6292,11 @@ def _import_invoice_impl(args: dict) -> dict:
             "qu'elle n'est pas supprimée dans l'application — ensuite "
             "seulement, il peut être importé de nouveau.",
             "La facture est au BROUILLON. Promouvez-la (update_invoice, "
-            "brouillon → envoyée, ou dans l'application), puis saisissez le "
-            "paiement à sa date historique dans l'application — le "
-            "connecteur n'inscrit aucun paiement —, sinon le « Journal des "
-            "honoraires » l'imprime avec 0 $ reçu.",
+            "brouillon → envoyée, ou dans l'application), puis inscrivez le "
+            "paiement à sa date historique aux registres comptables — dans "
+            "l'application, ou par les outils comptables sous leur "
+            "autorisation distincte ; cet outil n'inscrit aucun paiement —, "
+            "sinon le « Journal des honoraires » l'imprime avec 0 $ reçu.",
         ],
     }
 
@@ -6815,8 +6826,9 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
             message = (
                 "Cette facture est « payée ». Le connecteur ne rouvre pas "
                 "une facture payée : si un encaissement l'a soldée, "
-                "contre-passez-le dans l'application — elle se rouvrira "
-                "d'elle-même."
+                "contre-passez son écriture au registre (dans "
+                "l'application, ou par les outils comptables sous leur "
+                "autorisation distincte) — elle se rouvrira d'elle-même."
             )
         elif current == "annulée":
             message = "Cette facture est annulée : son statut ne change plus."
@@ -6895,8 +6907,9 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
             warnings=["La facture est déjà annulée : rien n'a été écrit."])
     if current == "payée":
         raise ToolArgumentError(
-            "Cette facture est payée : contre-passez d'abord, dans "
-            "l'application, l'encaissement qui l'a soldée. Rien n'a été "
+            "Cette facture est payée : contre-passez d'abord l'écriture "
+            "qui l'a soldée (dans l'application, ou par les outils "
+            "comptables sous leur autorisation distincte). Rien n'a été "
             "annulé.", reason="invoice_refused")
     wanted = _stale_invoice(args, invoice)
     report, errors = invoice_model.void_invoice_report(
@@ -16326,3 +16339,1125 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
         updated, mode="file", changed=["file"], warnings=warnings,
         source_document_id=source_id, file_replaced=True,
         replaced_version=expected_version, leak_scan=leak, scrubbed=scrubbed)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ACCOUNTING — lot 5b, scope athena:comptabilite (plan D1, D2, D14, D16)
+# ════════════════════════════════════════════════════════════════════════
+#
+# Six tools over the two registers, every one through services/comptabilite —
+# the door routes/trust.py and routes/admin_ledger.py use — never a model
+# writer directly (the « trust » promise's reach test pins that no OTHER tool
+# reaches one). The rules stay the MODELS': the lock floor, the Montréal
+# clock, arts. 57/58/59, the provision refusal, the ONE transaction of a fee
+# payment and of an encaissement's payment. What a handler adds is what it
+# always adds: it resolves every id first, strictly (an unreadable register
+# REFUSES — never « absent », never « unlocked »), refuses in French naming
+# the field before the model is reached, and builds each model payload key
+# by key, never from **args.
+#
+# Nothing here is DAV-exposed (neither register, nor an invoice), so no CTag
+# is bumped, and none of these payloads declares ctag_bumped/dav_synced.
+# No payload ever carries an account's transit or number, nor a receipt's
+# storage path (a payment credential, a capability) — tests/
+# test_mcp_accounting sweeps every real payload for them.
+
+_REGISTER_LABELS = {"trust": "fidéicommis", "admin": "administration"}
+# Rows read per administration account for one get_admin_ledger window. A
+# window holding more is REFUSED (narrow it): the model reads ascending, so
+# a cut window would silently lose its NEWEST rows — the very ones listed.
+_ADMIN_WINDOW_ROWS = 2000
+_ACCOUNTING_UNREADABLE = (
+    "Le registre est illisible pour le moment : rien n'a été inscrit. "
+    "Réessayez dans un instant avec la MÊME idempotency_key."
+)
+_ADMIN_SUBJECT = "Cette écriture d'administration a changé"
+_REPLAY_WARNING = (
+    "Rejeu : cette réponse est celle du premier appel fait sous cette "
+    "idempotency_key — rien n'a été inscrit de nouveau. Les états « avant » "
+    "ne sont pas redonnés (status_before : null) et les soldes ont pu bouger "
+    "depuis : relisez le registre (list_trust_transactions, "
+    "get_admin_ledger) et la facture (get_invoice) pour l'état actuel."
+)
+# The lock reasons of models.admin_ledger._entry_lock_reason, and the way
+# out each leaves (update_admin_entry refuses them all).
+_ADMIN_LOCK_ADVICE = {
+    "période_verrouillée": (
+        "elle est datée dans une période déjà conciliée"
+    ),
+    "écriture_verrouillée": (
+        "elle est compensée, annulée ou membre d'une contre-passation"
+    ),
+    "écriture_liée_facture": (
+        "elle est liée à une facture (un encaissement) — sa contre-passation "
+        "réduit d'autant le paiement enregistré sur la facture"
+    ),
+    "écriture_liée_fideicommis": (
+        "c'est la recette d'un paiement d'honoraires du fidéicommis — elle se "
+        "contre-passe avec lui : reverse_register_entry, register « trust », "
+        "sur l'écriture du fidéicommis"
+    ),
+    "paiement_carte_indivisible": (
+        "c'est une jambe d'un paiement de carte — les deux jambes se "
+        "contre-passent ensemble"
+    ),
+}
+
+
+def _register_money(row: dict, key: str, cents: Any) -> None:
+    _money(row, key, cents)
+
+
+def _trust_register_row(e: dict) -> dict:
+    """A trust entry as the accounting tools emit it — never a bank number."""
+    row: dict[str, Any] = {
+        "id": e.get("id", "") or "",
+        "dossier_id": e.get("dossier_id") or "",
+        "account_id": e.get("account_id") or "",
+        "sequence": int(e.get("sequence") or 0),
+        "date": date_str(_as_utc(e.get("date"))),
+        "direction": e.get("direction", "") or "",
+        "purpose": e.get("purpose", "") or "",
+        "method": e.get("method", "") or "",
+        "status": e.get("status", "") or "",
+        "cleared_date": date_str(_as_utc(e.get("cleared_date"))),
+        "counterparty": e.get("counterparty", "") or "",
+        "client_id": e.get("client_id") or "",
+        "client_name": e.get("client_name", "") or "",
+        "file_number": e.get("dossier_file_number", "") or "",
+        "reference": e.get("reference", "") or "",
+        "description": e.get("description", "") or "",
+        "invoice_id": e.get("invoice_id") or "",
+        "reverses_id": e.get("reverses_id") or "",
+        "reversed_by_id": e.get("reversed_by_id") or "",
+        "related_transaction_id": e.get("related_transaction_id") or "",
+        "balance_after_account_cents": int(e.get("balance_after_account") or 0),
+        "balance_after_client_cents": int(e.get("balance_after_client") or 0),
+        "created_via": e.get("created_via", "") or "",
+        "updated_via": e.get("updated_via", "") or "",
+        "cleared_via": e.get("cleared_via", "") or "",
+        "etag": concurrency.etag_of(e),
+    }
+    _register_money(row, "amount", e.get("amount", 0))
+    return row
+
+
+def _admin_register_row(e: dict) -> dict:
+    """An administration entry as the accounting tools emit it — never a
+    bank number, never its receipt's storage path (only whether it has
+    one)."""
+    kind = e.get("kind", "") or ""
+    row: dict[str, Any] = {
+        "id": e.get("id", "") or "",
+        "dossier_id": e.get("dossier_id") or "",
+        "account_id": e.get("account_id") or "",
+        "sequence": int(e.get("sequence") or 0),
+        "date": date_str(_as_utc(e.get("date"))),
+        "kind": kind,
+        "kind_label": comptabilite_service.ADMIN_KIND_LABELS.get(kind, kind),
+        "direction": e.get("direction", "") or "",
+        "status": e.get("status", "") or "",
+        "cleared_date": date_str(_as_utc(e.get("cleared_date"))),
+        "category": e.get("category") or "",
+        "counterparty": e.get("counterparty", "") or "",
+        "description": e.get("description", "") or "",
+        "reference": e.get("reference", "") or "",
+        "supplier_invoice_ref": e.get("supplier_invoice_ref", "") or "",
+        "method": e.get("method", "") or "",
+        "dossier_file_number": e.get("dossier_file_number", "") or "",
+        "invoice_id": e.get("invoice_id") or "",
+        "invoice_number": e.get("invoice_number", "") or "",
+        "trust_transaction_id": e.get("trust_transaction_id") or "",
+        "reverses_id": e.get("reverses_id") or "",
+        "reversed_by_id": e.get("reversed_by_id") or "",
+        "related_transaction_id": e.get("related_transaction_id") or "",
+        "has_receipt": bool(e.get("receipt_storage_path")),
+        "revisions_count": len(e.get("revisions") or []),
+        "created_via": e.get("created_via", "") or "",
+        "updated_via": e.get("updated_via", "") or "",
+        "cleared_via": e.get("cleared_via", "") or "",
+        "etag": concurrency.etag_of(e),
+    }
+    for key, field in (("amount", "amount"), ("net_amount", "net_amount"),
+                       ("gst_amount", "gst_amount"), ("qst_amount", "qst_amount")):
+        _register_money(row, key, e.get(field, 0))
+    return row
+
+
+def _invoice_block(block: Optional[dict]) -> Optional[dict]:
+    """The service's ``invoice_payment_block`` in the connector's money
+    convention — ``None`` when no invoice was touched."""
+    if not block:
+        return None
+    out: dict[str, Any] = {
+        "id": block.get("id") or "",
+        "invoice_number": block.get("invoice_number") or "",
+        "status_before": block.get("status_before"),
+        "status_after": block.get("status_after") or "",
+        "paid_in_full": bool(block.get("paid_in_full")),
+    }
+    _register_money(out, "amount_paid", block.get("amount_paid", 0))
+    _register_money(out, "balance", block.get("balance", 0))
+    return out
+
+
+def _client_balance(balance: Optional[dict]) -> Optional[dict]:
+    if not balance:
+        return None
+    out: dict[str, Any] = {}
+    _register_money(out, "book", balance.get("book", 0))
+    _register_money(out, "cleared", balance.get("cleared", 0))
+    return out
+
+
+def _raise_register_refusal(report: dict) -> None:
+    """A service refusal as the tool's refusal — the models' French text,
+    verbatim (it names the field or the rule, never content). An UNKNOWN
+    outcome keeps the idempotency claim (``keep_claim``): the write may
+    stand, so a same-key retry must be refused until the caller re-reads."""
+    errors = [str(e) for e in (report.get("errors") or []) if str(e).strip()]
+    message = "; ".join(errors) or "Opération refusée : rien n'a été inscrit."
+    if report.get("reason") == comptabilite_service.OUTCOME_UNCERTAIN_REASON:
+        raise ToolArgumentError(
+            message + " Cet appel reste tenu pour EN COURS : relisez le "
+            "registre (list_trust_transactions ou get_admin_ledger) avant "
+            "tout nouvel appel, et ne réessayez qu'avec la MÊME "
+            "idempotency_key — jamais une nouvelle.",
+            reason="accounting_outcome_uncertain", keep_claim=True,
+        )
+    raise ToolArgumentError(message, reason="accounting_refused")
+
+
+def _read_register_entry(register: str, tx_id: str) -> dict:
+    """One entry, read STRICTLY — an unreadable register refuses, an absent
+    entry is named."""
+    if not document_model.is_addressable_id(tx_id):
+        raise ToolArgumentError(
+            f"Écriture introuvable au registre {_REGISTER_LABELS[register]}. "
+            "Prenez son identifiant dans list_trust_transactions (fidéicommis) "
+            "ou get_admin_ledger (administration)."
+        )
+    try:
+        entry = comptabilite_service.lire_ecriture(register, tx_id)
+    except Exception:
+        log_unexpected("mcp accounting: register entry unreadable",
+                       register=register)
+        raise ToolArgumentError(_ACCOUNTING_UNREADABLE,
+                                reason="accounting_refused")
+    if entry is None:
+        raise ToolArgumentError(
+            f"Écriture introuvable au registre {_REGISTER_LABELS[register]} : "
+            f"{tx_id}. Prenez son identifiant dans list_trust_transactions "
+            "(fidéicommis) ou get_admin_ledger (administration)."
+        )
+    return entry
+
+
+def _lock_floor(register: str, account_id: str):
+    try:
+        return comptabilite_service.plancher_conciliation(register, account_id)
+    except Exception:
+        log_unexpected("mcp accounting: lock floor unreadable", register=register)
+        raise ToolArgumentError(_ACCOUNTING_UNREADABLE,
+                                reason="accounting_refused")
+
+
+def _register_text(args: dict, key: str, limit: int) -> str:
+    return _clean_entity_text(str(args.get(key) or ""), key, limit)
+
+
+def _not_future(day: datetime, key: str) -> None:
+    if day.date() > deadlines.today_mtl():
+        raise ToolArgumentError(
+            f"`{key}` est dans le futur : un registre consigne ce qui est "
+            "arrivé, à la date où c'est arrivé (Montréal)."
+        )
+
+
+def _refuse_foreign_args(args: dict, allowed: set, what: str) -> None:
+    """A tool argument that does not apply to this call is REFUSED, never
+    ignored: silently dropping it would answer a question the caller did
+    not ask."""
+    extra = sorted(k for k in args if k not in allowed)
+    if extra:
+        raise ToolArgumentError(
+            ", ".join(f"`{k}`" for k in extra)
+            + f" ne s'applique pas à {what} : retirez-le."
+        )
+
+
+def _firm_payee() -> str:
+    """The payee art. 58 allows for a fee payment: the lawyer or his firm —
+    the firm's name as the profile holds it."""
+    try:
+        cab = cabinet_dict()
+    except Exception:
+        return ""
+    return str(cab.get("organisation") or cab.get("nom") or "").strip()
+
+
+# ── get_admin_ledger (READ, athena:comptabilite) ────────────────────────
+
+
+def _admin_account_row(a: dict) -> dict:
+    """An administration account — its name and institution, NEVER its
+    transit nor its number (the get_trust_snapshot rule)."""
+    row: dict[str, Any] = {
+        "id": a.get("id", "") or "",
+        "name": a.get("name", "") or "",
+        "institution": a.get("institution", "") or "",
+        "account_type": a.get("account_type", "") or "",
+        "status": a.get("status", "") or "",
+        "balance_label": a.get("balance_label", "") or "Solde",
+        "lock_floor": date_str(_as_utc(a.get("lock_floor"))),
+        "last_reconciliation_date": date_str(_as_utc(a.get("last_reconciliation_date"))),
+        "never_reconciled": bool(a.get("never_reconciled")),
+        "reconciliation_overdue": bool(a.get("reconciliation_overdue")),
+    }
+    _register_money(row, "balance", a.get("display_balance", 0))
+    _register_money(row, "ledger_balance", a.get("ledger_balance", 0))
+    return row
+
+
+def _admin_ledger_row(e: dict, lock_reason: Optional[str],
+                      balance_after: Optional[int]) -> dict:
+    row = _admin_register_row(e)
+    row.update(_stamps(e))
+    row["locked"] = lock_reason is not None
+    row["lock_reason"] = lock_reason
+    if balance_after is None:
+        row["balance_after_cents"] = None
+        row["balance_after_display"] = None
+    else:
+        _register_money(row, "balance_after", balance_after)
+    return row
+
+
+def get_admin_ledger(args: dict) -> dict:
+    today = deadlines.today_mtl()
+    date_to = (_parse_iso_date(args["date_to"], "date_to")
+               if args.get("date_to") else today)
+    date_from = (_parse_iso_date(args["date_from"], "date_from")
+                 if args.get("date_from")
+                 else date_to - timedelta(days=ADMIN_LEDGER_WINDOW_DAYS))
+    if date_from > date_to:
+        raise ToolArgumentError("`date_from` est postérieure à `date_to`.")
+    limit = _limit_arg(args, 25)
+    kind = args.get("kind")
+    status = args.get("status")
+    category = args.get("category")
+    filtered = bool(kind or status or category)
+    try:
+        snap = comptabilite_service.instantane_administration()
+    except Exception:
+        log_unexpected("mcp accounting: administration accounts unreadable")
+        raise ToolArgumentError(
+            "Le registre d'administration est illisible pour le moment. "
+            "Réessayez dans un instant.")
+    accounts = list(snap.get("accounts") or [])
+    account_id = (args.get("account_id") or "").strip() or None
+    targets = accounts
+    if account_id:
+        targets = [a for a in accounts if a.get("id") == account_id]
+        if not targets:
+            raise ToolArgumentError(
+                f"Compte d'administration introuvable : {account_id}. Omettez "
+                "`account_id` : `accounts` les liste tous.")
+    df = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+    dt = datetime(date_to.year, date_to.month, date_to.day, tzinfo=timezone.utc)
+    warnings: list[str] = []
+    opening: Optional[int] = None
+    rows: list[tuple] = []
+    for account in targets:
+        aid = account.get("id", "")
+        try:
+            window, cut = comptabilite_service.registre_administration(
+                aid, df, dt, limit=_ADMIN_WINDOW_ROWS)
+        except Exception:
+            log_unexpected("mcp accounting: administration register unreadable")
+            raise ToolArgumentError(
+                "Le registre d'administration est illisible pour le moment. "
+                "Réessayez dans un instant.")
+        if cut:
+            raise ToolArgumentError(
+                f"La fenêtre compte plus de {_ADMIN_WINDOW_ROWS} écritures pour "
+                f"le compte {aid} : resserrez `date_from` / `date_to`.")
+        balances: list = [None] * len(window)
+        if account_id and not filtered:
+            try:
+                opening, _prior = comptabilite_service.solde_reporte_administration(
+                    aid, df)
+                balances = comptabilite_service.soldes_courants(window, opening)
+            except Exception:
+                log_unexpected("mcp accounting: opening balance unreadable")
+                opening = None
+                warnings.append(
+                    "Le solde reporté n'a pas pu être calculé : les soldes "
+                    "courants sont omis (null).")
+        floor = account.get("lock_floor")
+        for entry, balance in zip(window, balances):
+            if kind and entry.get("kind") != kind:
+                continue
+            if status and entry.get("status") != status:
+                continue
+            if category and entry.get("category") != category:
+                continue
+            reason = comptabilite_service.motif_verrou_administration(entry, floor)
+            rows.append((entry, reason, balance))
+    rows.sort(key=lambda t: (
+        _as_utc(t[0].get("date")) or _UTC_MIN, int(t[0].get("sequence") or 0),
+        t[0].get("account_id") or ""), reverse=True)
+    page = rows[:limit]
+    payload: dict[str, Any] = {
+        "accounts": [_admin_account_row(a) for a in accounts],
+        "reconciliation_overdue": bool(snap.get("reconciliation_overdue")),
+        "account_id": account_id,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "transactions": [_admin_ledger_row(e, r, b) for e, r, b in page],
+        "count": len(page),
+        "truncated": len(rows) > limit,
+        "warnings": warnings,
+    }
+    if opening is None:
+        payload["opening_balance_cents"] = None
+        payload["opening_balance_display"] = None
+    else:
+        _register_money(payload, "opening_balance", opening)
+    return payload
+
+
+# ── record_trust_entry (WRITE) ──────────────────────────────────────────
+
+_TRUST_FEE_ARGS = ("invoice_id", "admin_account_id", "admin_date")
+_TRUST_NO_DOSSIER_PURPOSES = ("intérêts", "frais_bancaires")
+_TRUST_ISSUED = ("envoyée", "en_retard")
+
+
+def record_trust_entry(args: dict) -> dict:
+    return run_write("record_trust_entry", args,
+                     lambda: _record_trust_entry_impl(args))
+
+
+def _record_trust_entry_impl(args: dict) -> dict:
+    purpose = args.get("purpose") or ""
+    direction = args.get("direction") or ""
+    method = args.get("method") or ""
+    fee = purpose == "virement_honoraires"
+    tx_date = _write_date(args, "date", required=True)
+    _not_future(tx_date, "date")
+    if not fee:
+        stray = [k for k in _TRUST_FEE_ARGS if k in args]
+        if stray:
+            raise ToolArgumentError(
+                ", ".join(f"`{k}`" for k in stray) + " ne vaut que pour un "
+                "paiement d'honoraires (purpose « virement_honoraires »).")
+    if direction == "déboursé" and method == "comptant":
+        raise ToolArgumentError(
+            "Aucun retrait en espèces du compte général en fidéicommis "
+            "(art. 57, RLRQ c. B-1, r. 5). Le remboursement en espèces de "
+            "l'art. 72 s'inscrit dans l'application, qui exige la recette en "
+            "espèces qu'il rembourse.", reason="accounting_refused")
+    if fee:
+        if direction != "déboursé":
+            raise ToolArgumentError(
+                "Un paiement d'honoraires est un déboursé (`direction` "
+                "« déboursé »).")
+        if method not in ("chèque", "virement"):
+            raise ToolArgumentError(
+                "Un paiement d'honoraires ne se retire du fidéicommis que par "
+                "chèque à l'ordre de l'avocat ou par virement à un compte qui "
+                "n'est pas en fidéicommis (art. 58) : `method` « chèque » ou "
+                "« virement ».", reason="accounting_refused")
+        for key, what in (("invoice_id", "la facture de Pallas Athéna qu'il "
+                                         "acquitte (list_invoices)"),
+                          ("admin_account_id", "le compte d'opérations où les "
+                                               "honoraires sont déposés "
+                                               "(get_admin_ledger)")):
+            if not (args.get(key) or "").strip():
+                raise ToolArgumentError(
+                    f"Un paiement d'honoraires exige `{key}` : {what}.")
+
+    dossier_id = (args.get("dossier_id") or "").strip()
+    client_id = (args.get("client_id") or "").strip()
+    if bool(dossier_id) != bool(client_id):
+        raise ToolArgumentError(
+            "`dossier_id` et `client_id` vont ensemble : le client dont les "
+            "fonds bougent, dans son dossier — ou aucun des deux.")
+    if not dossier_id and purpose not in _TRUST_NO_DOSSIER_PURPOSES:
+        raise ToolArgumentError(
+            "Sans dossier ni client, seuls les intérêts et les frais "
+            "bancaires s'inscrivent : nommez `dossier_id` et `client_id`.")
+    if dossier_id:
+        dossier = _read_dossier_strict(dossier_id)
+        if client_id not in (dossier.get("client_ids") or []):
+            raise ToolArgumentError(
+                "`client_id` n'est pas un client de ce dossier (get_dossier "
+                "liste ses clients).")
+
+    counterparty = _register_text(args, "counterparty", COUNTERPARTY_MAX_CHARS)
+    warnings: list[str] = []
+    if not counterparty:
+        if not fee:
+            raise ToolArgumentError(
+                "`counterparty` est requis : qui a versé la somme, ou qui la "
+                "reçoit (« Somme reçue de / Bénéficiaire »).")
+        counterparty = _firm_payee()
+        if not counterparty:
+            raise ToolArgumentError(
+                "`counterparty` est requis : le profil du cabinet ne porte "
+                "aucun nom à inscrire comme bénéficiaire.")
+        warnings.append(
+            f"Bénéficiaire inscrit : « {counterparty} » (le nom du cabinet).")
+    data: dict[str, Any] = {
+        "account_id": (args.get("account_id") or "").strip(),
+        "direction": direction,
+        "purpose": purpose,
+        "method": method,
+        "amount": int(args["amount_cents"]),
+        "date": tx_date,
+        "counterparty": counterparty,
+        "dossier_id": dossier_id or None,
+        "client_id": client_id or None,
+        "reference": _register_text(args, "reference", REGISTER_REFERENCE_MAX_CHARS),
+        "description": _register_text(
+            args, "description", REGISTER_DESCRIPTION_MAX_CHARS),
+    }
+
+    if fee:
+        invoice_id = args["invoice_id"].strip()
+        admin_date = _write_date(args, "admin_date", required=False)
+        if admin_date is not None:
+            _not_future(admin_date, "admin_date")
+            if admin_date.date() < tx_date.date():
+                raise ToolArgumentError(
+                    "`admin_date` précède `date` : les honoraires n'arrivent "
+                    "pas au compte d'opérations avant d'avoir quitté le "
+                    "fidéicommis.")
+        try:
+            invoice = comptabilite_service.resolve_fee_invoice(
+                dossier_id=dossier_id, invoice_id=invoice_id)
+        except comptabilite_service.ComptabiliteRefus as refusal:
+            raise ToolArgumentError(refusal.message, reason="accounting_refused")
+        if invoice.get("status") not in _TRUST_ISSUED:
+            raise ToolArgumentError(
+                "La facture doit être envoyée (ou en retard) : un paiement "
+                "d'honoraires ne se tire que sur une facturation envoyée "
+                "(art. 56). Promouvez-la d'abord (update_invoice).",
+                reason="accounting_refused")
+        if int(invoice.get("retainer_applied") or 0) > 0:
+            raise ToolArgumentError(
+                "Cette facture impute une provision : son solde dû en est "
+                "déjà net, et un paiement d'honoraires tiré du fidéicommis la "
+                "compterait deux fois. Refaites la facture sans provision.",
+                reason="accounting_refused")
+        if data["amount"] > invoice_model.balance_of(invoice):
+            raise ToolArgumentError(
+                "Le montant dépasse le solde dû de la facture ("
+                f"{format_cents(invoice_model.balance_of(invoice))}).",
+                reason="accounting_refused")
+        data["invoice_id"] = invoice_id
+        report = comptabilite_service.enregistrer_paiement_honoraires(
+            data, admin_account_id=args["admin_account_id"].strip(),
+            admin_date=admin_date, allow_external_ref=False,
+        )
+        if not report["ok"]:
+            _raise_register_refusal(report)
+        entry = report["trust_entry"]
+    else:
+        report = comptabilite_service.enregistrer_ecriture_fideicommis(data)
+        if not report["ok"]:
+            _raise_register_refusal(report)
+        entry = report["entry"]
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    warnings += list(report.get("warnings") or [])
+    if direction == "recette":
+        warnings.append(
+            "La recette est EN CIRCULATION : ses fonds ne serviront à un "
+            "déboursé qu'une fois compensée, à la date du relevé bancaire "
+            "(clear_register_entries).")
+    invoice_block = _invoice_block(report.get("invoice"))
+    if fee and invoice_block:
+        warnings.append(
+            f"Paiement inscrit sur la facture {invoice_block['invoice_number']} "
+            f"(maintenant « {invoice_block['status_after']} », solde "
+            f"{invoice_block['balance_display']}). Rien n'a été envoyé au "
+            "client.")
+    admin_recette = report.get("admin_recette") if fee else None
+    return {
+        "recorded": True,
+        "entity_type": "trust_fee_payment" if fee else "trust_transaction",
+        "entity": _trust_register_row(entry),
+        "client_balance": _client_balance(report.get("client_balance")),
+        "admin_recette": (_admin_register_row(admin_recette)
+                          if admin_recette else None),
+        "invoice": invoice_block,
+        "warnings": warnings,
+    }
+
+
+# ── record_admin_entry (WRITE) ──────────────────────────────────────────
+
+_ADMIN_COMMON_ARGS = {"account_id", "kind", "amount_cents", "date", "method",
+                      "idempotency_key"}
+_ADMIN_KIND_ARGS = {
+    "dépense": {"category", "ventilation", "net_cents", "gst_cents",
+                "qst_cents", "dossier_id", "supplier_invoice_ref",
+                "counterparty", "reference", "description",
+                "already_cleared_date"},
+    "recette_autre": {"dossier_id", "supplier_invoice_ref", "counterparty",
+                      "reference", "description", "already_cleared_date"},
+    "encaissement_facture": {"invoice_id", "counterparty", "reference",
+                             "description", "already_cleared_date"},
+    "paiement_carte": {"card_account_id", "reference", "description"},
+}
+_KIND_WHAT = {
+    "dépense": "une dépense",
+    "recette_autre": "une autre recette",
+    "encaissement_facture": "un encaissement de facture",
+    "paiement_carte": "un paiement de carte",
+}
+
+
+def _ventilation_split(args: dict, amount: int) -> dict:
+    """A dépense's TPS/TVQ split from its declared mode — the model's own
+    fields. The register never guesses: no mode, no split."""
+    mode = args.get("ventilation")
+    triple = [k for k in ("net_cents", "gst_cents", "qst_cents") if k in args]
+    if mode != "détaillée" and triple:
+        raise ToolArgumentError(
+            ", ".join(f"`{k}`" for k in triple) + " ne vont qu'avec "
+            "`ventilation` « détaillée ».")
+    if mode == "ventiler":
+        net, tps, tvq = comptabilite_service.ventiler_montant(amount)
+    elif mode == "sans_taxe":
+        net, tps, tvq = amount, 0, 0
+    elif mode == "détaillée":
+        missing = [k for k in ("net_cents", "gst_cents", "qst_cents")
+                   if k not in args]
+        if missing:
+            raise ToolArgumentError(
+                "`ventilation` « détaillée » exige net_cents, gst_cents et "
+                "qst_cents.")
+        net, tps, tvq = (int(args["net_cents"]), int(args["gst_cents"]),
+                         int(args["qst_cents"]))
+        if net + tps + tvq != amount:
+            raise ToolArgumentError(
+                f"net_cents + gst_cents + qst_cents ({net + tps + tvq}) "
+                f"doivent égaler le montant ({amount}).")
+    else:
+        raise ToolArgumentError(
+            "Une dépense exige `ventilation` : « ventiler » (extraire la "
+            "TPS et la TVQ du montant taxes incluses), « sans_taxe » (aucun "
+            "crédit de taxe réclamé) ou « détaillée » (net_cents, gst_cents, "
+            "qst_cents).")
+    return {"net_amount": net, "gst_amount": tps, "qst_amount": tvq}
+
+
+def _read_invoice_strict(invoice_id: str) -> dict:
+    try:
+        invoice = comptabilite_service.lire_facture(invoice_id)
+    except Exception:
+        log_unexpected("mcp accounting: invoice unreadable")
+        raise ToolArgumentError(_ACCOUNTING_UNREADABLE,
+                                reason="accounting_refused")
+    if invoice is None:
+        raise ToolArgumentError(
+            f"Facture introuvable : {invoice_id} (list_invoices).")
+    return invoice
+
+
+def record_admin_entry(args: dict) -> dict:
+    return run_write("record_admin_entry", args,
+                     lambda: _record_admin_entry_impl(args))
+
+
+def _record_admin_entry_impl(args: dict) -> dict:
+    kind = args.get("kind") or ""
+    _refuse_foreign_args(args, _ADMIN_COMMON_ARGS | _ADMIN_KIND_ARGS[kind],
+                         _KIND_WHAT[kind])
+    amount = int(args["amount_cents"])
+    day = _write_date(args, "date", required=True)
+    _not_future(day, "date")
+    method = args.get("method") or ""
+    account_id = (args.get("account_id") or "").strip()
+    reference = _register_text(args, "reference", REGISTER_REFERENCE_MAX_CHARS)
+    description = _register_text(args, "description",
+                                 REGISTER_DESCRIPTION_MAX_CHARS)
+    warnings: list[str] = []
+
+    if kind == "paiement_carte":
+        card_id = (args.get("card_account_id") or "").strip()
+        if not card_id:
+            raise ToolArgumentError(
+                "Un paiement de carte exige `card_account_id` : la carte "
+                "payée (get_admin_ledger).")
+        report = comptabilite_service.enregistrer_paiement_carte(
+            account_id, card_id, amount, day, method,
+            reference=reference, description=description,
+        )
+        if not report["ok"]:
+            _raise_register_refusal(report)
+        return {
+            "recorded": True,
+            "entity_type": "admin_card_payment",
+            "entity": _admin_register_row(report["entry"]),
+            "card_leg": (_admin_register_row(report["card_leg"])
+                         if report.get("card_leg") else None),
+            "invoice": None,
+            "warnings": [
+                "Deux écritures liées sont inscrites, EN CIRCULATION : le "
+                "déboursé au compte d'opérations et la recette à la carte — "
+                "chacune se compense sur son propre relevé.",
+            ],
+        }
+
+    counterparty = _register_text(args, "counterparty", COUNTERPARTY_MAX_CHARS)
+    if not counterparty:
+        raise ToolArgumentError(
+            "`counterparty` est requis : le payeur ou le fournisseur, comme "
+            "le document bancaire le nomme.")
+    cleared = _write_date(args, "already_cleared_date", required=False)
+    if cleared is not None:
+        _not_future(cleared, "already_cleared_date")
+        if cleared.date() < day.date():
+            raise ToolArgumentError(
+                "`already_cleared_date` précède `date` : une compensation ne "
+                "précède jamais l'opération.")
+    data: dict[str, Any] = {
+        "account_id": account_id,
+        "kind": kind,
+        "amount": amount,
+        "date": day,
+        "method": method,
+        "counterparty": counterparty,
+        "reference": reference,
+        "description": description,
+    }
+    if kind in ("dépense", "recette_autre"):
+        data["supplier_invoice_ref"] = _register_text(
+            args, "supplier_invoice_ref", REGISTER_REFERENCE_MAX_CHARS)
+        dossier_id = (args.get("dossier_id") or "").strip()
+        if dossier_id:
+            _read_dossier_strict(dossier_id)
+            data["dossier_id"] = dossier_id
+    if kind == "dépense":
+        if not args.get("category"):
+            raise ToolArgumentError(
+                "Une dépense exige `category` (get_reference_vocabulary ne "
+                "la liste pas : voyez l'énumération du schéma).")
+        data["category"] = args["category"]
+        data.update(_ventilation_split(args, amount))
+    if kind == "encaissement_facture":
+        invoice_id = (args.get("invoice_id") or "").strip()
+        if not invoice_id:
+            raise ToolArgumentError(
+                "Un encaissement de facture exige `invoice_id` : la facture "
+                "payée (list_invoices).")
+        invoice = _read_invoice_strict(invoice_id)
+        if invoice.get("status") not in _TRUST_ISSUED:
+            raise ToolArgumentError(
+                "La facture doit être envoyée (ou en retard) pour être "
+                "encaissée.", reason="accounting_refused")
+        if amount > invoice_model.balance_of(invoice):
+            raise ToolArgumentError(
+                "Le montant dépasse le solde dû de la facture ("
+                f"{format_cents(invoice_model.balance_of(invoice))}) : un "
+                "trop-perçu s'encaisse au compte en fidéicommis.",
+                reason="accounting_refused")
+        if int(invoice.get("retainer_applied") or 0) > 0:
+            warnings.append(
+                "Cette facture impute une provision : son solde dû en est "
+                "déjà net. N'encaissez ici que ce que le client a versé EN "
+                "PLUS de la provision.")
+        data["invoice_id"] = invoice_id
+
+    report = comptabilite_service.enregistrer_ecriture_administration(
+        data, cleared_date=cleared)
+    if not report["ok"]:
+        _raise_register_refusal(report)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    invoice_block = _invoice_block(report.get("invoice"))
+    if invoice_block:
+        warnings.append(
+            f"Paiement inscrit sur la facture {invoice_block['invoice_number']} "
+            f"(maintenant « {invoice_block['status_after']} », solde "
+            f"{invoice_block['balance_display']}).")
+    if cleared is None:
+        warnings.append(
+            "L'écriture est EN CIRCULATION jusqu'à sa compensation, à la date "
+            "du relevé (clear_register_entries).")
+    return {
+        "recorded": True,
+        "entity_type": "admin_transaction",
+        "entity": _admin_register_row(report["entry"]),
+        "card_leg": None,
+        "invoice": invoice_block,
+        "warnings": warnings + list(report.get("warnings") or []),
+    }
+
+
+# ── update_admin_entry (WRITE, edit) ────────────────────────────────────
+
+_ADMIN_EDIT_KEYS = ("date", "kind", "amount_cents", "method", "category",
+                    "ventilation", "net_cents", "gst_cents", "qst_cents",
+                    "dossier_id", "supplier_invoice_ref", "counterparty",
+                    "reference", "description")
+
+
+def update_admin_entry(args: dict) -> dict:
+    return run_write("update_admin_entry", args,
+                     lambda: _update_admin_entry_impl(args))
+
+
+def _update_admin_entry_impl(args: dict) -> dict:
+    tx_id = str(args.get("tx_id") or "").strip()
+    existing = _read_register_entry("admin", tx_id)
+    wanted = str(args.get("expected_etag") or "")
+    if "expected_etag" not in args:
+        raise ToolArgumentError(
+            "`expected_etag` est requis : l'etag de l'écriture lue par "
+            "get_admin_ledger. Rien n'a été écrit.")
+    if wanted != concurrency.etag_of(existing):
+        raise _stale_refusal("update_admin_entry", _ADMIN_SUBJECT, existing)
+    if not any(k in args for k in _ADMIN_EDIT_KEYS):
+        raise ToolArgumentError(
+            "Aucune modification demandée : nommez au moins un champ à "
+            "corriger.")
+    floor = _lock_floor("admin", existing.get("account_id") or "")
+    lock = comptabilite_service.motif_verrou_administration(existing, floor)
+    if lock:
+        raise ToolArgumentError(
+            "Cette écriture n'est plus modifiable : "
+            + _ADMIN_LOCK_ADVICE.get(lock, "elle est verrouillée")
+            + ". Corrigez-la par reverse_register_entry (register « admin »), "
+            "puis inscrivez l'écriture voulue.", reason="accounting_refused")
+
+    data: dict[str, Any] = {}
+    if "date" in args:
+        day = _write_date(args, "date", required=True)
+        _not_future(day, "date")
+        data["date"] = day
+    if "kind" in args:
+        data["kind"] = args["kind"]
+    if "amount_cents" in args:
+        data["amount"] = int(args["amount_cents"])
+    if "method" in args:
+        data["method"] = args["method"]
+    if "counterparty" in args:
+        value = _register_text(args, "counterparty", COUNTERPARTY_MAX_CHARS)
+        if not value:
+            raise ToolArgumentError("`counterparty` ne peut pas être vide.")
+        data["counterparty"] = value
+    for key, limit in (("reference", REGISTER_REFERENCE_MAX_CHARS),
+                       ("supplier_invoice_ref", REGISTER_REFERENCE_MAX_CHARS),
+                       ("description", REGISTER_DESCRIPTION_MAX_CHARS)):
+        if key in args:
+            data[key] = _register_text(args, key, limit)
+    if "dossier_id" in args:
+        dossier_id = str(args.get("dossier_id") or "").strip()
+        if dossier_id:
+            _read_dossier_strict(dossier_id)
+        data["dossier_id"] = dossier_id or None
+
+    kind_after = data.get("kind", existing.get("kind"))
+    amount_after = data.get("amount", int(existing.get("amount") or 0))
+    if kind_after == "dépense":
+        category = args.get("category") or existing.get("category")
+        if not category:
+            raise ToolArgumentError(
+                "Une dépense exige `category`.")
+        if "category" in args:
+            data["category"] = args["category"]
+        becomes = existing.get("kind") != "dépense"
+        amount_moves = "amount" in data and data["amount"] != existing.get("amount")
+        if "ventilation" in args or any(
+                k in args for k in ("net_cents", "gst_cents", "qst_cents")):
+            data.update(_ventilation_split(args, amount_after))
+        elif becomes or amount_moves:
+            lead = ("Le montant de cette dépense change" if amount_moves
+                    else "Cette écriture devient une dépense")
+            raise ToolArgumentError(
+                lead + " : fournissez sa `ventilation` — « ventiler », "
+                "« sans_taxe » ou « détaillée » (net_cents, gst_cents, "
+                "qst_cents). La ventilation enregistrée ne vaut que pour "
+                "l'écriture telle qu'elle était ; le registre ne devine "
+                "jamais laquelle de ses parts absorbe la correction.")
+    else:
+        stray = [k for k in ("category", "ventilation", "net_cents",
+                             "gst_cents", "qst_cents") if k in args]
+        if stray:
+            raise ToolArgumentError(
+                ", ".join(f"`{k}`" for k in stray) + " ne vaut que pour une "
+                "dépense : une recette ne porte ni catégorie ni ventilation.")
+
+    report = comptabilite_service.modifier_ecriture_administration(
+        tx_id, data, expected_etag=wanted)
+    if not report["ok"]:
+        if report.get("stale"):
+            try:
+                current = comptabilite_service.lire_ecriture("admin", tx_id)
+            except Exception:
+                current = None
+            raise _stale_refusal("update_admin_entry", _ADMIN_SUBJECT, current)
+        _raise_register_refusal(report)
+
+    # ── Committed (or a no-op): nothing below may refuse. ──────────────
+    changed = list(report.get("changed_fields") or [])
+    warnings = [] if changed else [
+        "Toutes les valeurs nommées étaient déjà enregistrées : rien n'a été "
+        "écrit."]
+    return {
+        "updated": True,
+        "outcome": "applied" if changed else "unchanged",
+        "changed_fields": changed,
+        "entity": _admin_register_row(report["entry"]),
+        "warnings": warnings,
+    }
+
+
+# ── clear_register_entries (WRITE, status) ──────────────────────────────
+
+
+def clear_register_entries(args: dict) -> dict:
+    return run_write("clear_register_entries", args,
+                     lambda: _clear_register_entries_impl(args))
+
+
+def _clear_register_entries_impl(args: dict) -> dict:
+    register = args.get("register") or ""
+    ids = [str(i or "").strip() for i in (args.get("tx_ids") or [])]
+    if not ids or len(ids) > REGISTER_CLEAR_MAX:
+        raise ToolArgumentError(
+            f"`tx_ids` : de 1 à {REGISTER_CLEAR_MAX} écritures par appel.")
+    doubles = sorted({i for i in ids if ids.count(i) > 1})
+    if doubles:
+        raise ToolArgumentError(
+            "Une écriture figure plus d'une fois dans `tx_ids` ("
+            + ", ".join(doubles) + ") : rien n'a été compensé. Chaque écriture "
+            "ne se compense qu'une fois.")
+    cleared_date = _write_date(args, "cleared_date", required=True)
+    _not_future(cleared_date, "cleared_date")
+
+    entries = [_read_register_entry(register, i) for i in ids]
+    accounts = {e.get("account_id") for e in entries}
+    if len(accounts) > 1:
+        raise ToolArgumentError(
+            "Les écritures de `tx_ids` appartiennent à plusieurs comptes : "
+            "une compensation porte sur UN compte (un relevé). Rien n'a été "
+            "compensé.")
+    account_id = entries[0].get("account_id") or ""
+    problems = []
+    for tx_id, entry in zip(ids, entries):
+        entry_day = _as_utc(entry.get("date"))
+        if entry.get("status") != "en_circulation":
+            problems.append(f"{tx_id} — « {entry.get('status')} », plus en "
+                            "circulation")
+        elif entry_day is not None and cleared_date.date() < entry_day.date():
+            problems.append(f"{tx_id} — datée du {date_str(entry_day)}, "
+                            "après la date du relevé")
+    if problems:
+        raise ToolArgumentError(
+            "Rien n'a été compensé — écriture(s) refusée(s) : "
+            + " ; ".join(problems) + ".", reason="accounting_refused")
+    floor = _lock_floor(register, account_id)
+    if floor is not None and cleared_date.date() <= _as_utc(floor).date():
+        raise ToolArgumentError(
+            f"`cleared_date` tombe dans une période déjà conciliée "
+            f"(conciliation au {date_str(_as_utc(floor))}) : utilisez la "
+            "date réelle du relevé, postérieure. Rien n'a été compensé.",
+            reason="accounting_refused")
+
+    if register == "trust":
+        report = comptabilite_service.compenser_fideicommis(ids, cleared_date)
+    else:
+        report = comptabilite_service.compenser_administration(ids, cleared_date)
+    if not report["ok"]:
+        failed = report.get("failed") or []
+        if failed:
+            report = {**report, "errors": list(report.get("errors") or []) + [
+                "Écriture(s) en cause : " + ", ".join(failed) + "."]}
+        _raise_register_refusal(report)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    by_id = {e.get("id"): e for e in report.get("entries") or []}
+    rows = []
+    for tx_id in ids:
+        e = by_id.get(tx_id) or {}
+        row: dict[str, Any] = {
+            "id": tx_id,
+            "sequence": int(e.get("sequence") or 0),
+            "date": date_str(_as_utc(e.get("date"))),
+            "direction": e.get("direction", "") or "",
+            "status": e.get("status", "") or "",
+            "cleared_date": date_str(_as_utc(e.get("cleared_date"))),
+            "dossier_id": e.get("dossier_id") or "",
+            "client_id": e.get("client_id") or "",
+        }
+        _register_money(row, "amount", e.get("amount", 0))
+        rows.append(row)
+    released = []
+    for fund in report.get("released_funds") or []:
+        item: dict[str, Any] = {"dossier_id": fund.get("dossier_id") or "",
+                                "client_id": fund.get("client_id") or ""}
+        _register_money(item, "amount", fund.get("amount", 0))
+        released.append(item)
+    return {
+        "cleared": True,
+        "register": register,
+        "account_id": account_id,
+        "cleared_date": date_str(cleared_date),
+        "count": len(rows),
+        "entries": rows,
+        "released_funds": released,
+        "warnings": list(report.get("warnings") or []),
+    }
+
+
+# ── reverse_register_entry (WRITE, correction) ──────────────────────────
+
+
+def reverse_register_entry(args: dict) -> dict:
+    return run_write("reverse_register_entry", args,
+                     lambda: _reverse_register_entry_impl(args))
+
+
+def _reverse_register_entry_impl(args: dict) -> dict:
+    register = args.get("register") or ""
+    tx_id = str(args.get("tx_id") or "").strip()
+    reason = _register_text(args, "reason", REVERSAL_REASON_MAX_CHARS)
+    if not reason:
+        raise ToolArgumentError(
+            "`reason` est requis : le motif s'imprime au registre.")
+    if register == "trust" and "reversal_date" in args:
+        raise ToolArgumentError(
+            "`reversal_date` ne vaut qu'au registre d'administration : une "
+            "contre-passation au fidéicommis est toujours datée du jour.")
+    original = _read_register_entry(register, tx_id)
+    if original.get("reversed_by_id"):
+        raise ToolArgumentError(
+            "Cette écriture a déjà été contre-passée : rien n'a été écrit.",
+            reason="accounting_refused")
+    is_correction = bool(original.get("reverses_id")) or (
+        original.get("purpose") == "correction"
+        or original.get("kind") == "correction")
+    if is_correction:
+        raise ToolArgumentError(
+            "Une écriture de correction ne se contre-passe pas : réinscrivez "
+            "plutôt l'écriture voulue.", reason="accounting_refused")
+    if register == "trust" and original.get("purpose") == "virement_inter_dossiers":
+        # Its reversal moves one client's funds back to another client —
+        # a transfer between dossiers, which the connector never makes
+        # (the « register_setup » promise): the lawyer reverses it in the
+        # application, where the two legs go together.
+        raise ToolArgumentError(
+            "Un virement entre dossiers se contre-passe dans l'application : "
+            "sa contre-passation déplace les fonds d'un client vers un autre, "
+            "ce que le connecteur ne fait jamais. Rien n'a été écrit.",
+            reason="accounting_refused")
+    if register == "admin" and original.get("trust_transaction_id"):
+        raise ToolArgumentError(
+            "Cette recette provient d'un paiement d'honoraires du "
+            "fidéicommis : contre-passez l'écriture du fidéicommis "
+            f"({original['trust_transaction_id']}, register « trust ») — la "
+            "recette et le paiement sur la facture suivent, dans la même "
+            "opération.", reason="accounting_refused")
+    reversal_date = None
+    if register == "admin":
+        reversal_date = _write_date(args, "reversal_date", required=False)
+        if reversal_date is not None:
+            _not_future(reversal_date, "reversal_date")
+            day = _as_utc(original.get("date"))
+            if day is not None and reversal_date.date() < day.date():
+                raise ToolArgumentError(
+                    "`reversal_date` précède la date de l'écriture originale "
+                    f"({date_str(day)}).")
+    status_before = original.get("status") or ""
+
+    if register == "trust":
+        report = comptabilite_service.contrepasser_ecriture_fideicommis(
+            tx_id, reason)
+    else:
+        report = comptabilite_service.contrepasser_ecriture_administration(
+            tx_id, reason, reversal_date=reversal_date)
+    if not report["ok"]:
+        _raise_register_refusal(report)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    row = _trust_register_row if register == "trust" else _admin_register_row
+    reversals = [row(r) for r in (report.get("reversals") or [report["reversal"]])]
+    original_after = report.get("original") or {}
+    payload: dict[str, Any] = {
+        "reversed": True,
+        "register": register,
+        "entity_type": ("trust_transaction" if register == "trust"
+                        else "admin_transaction"),
+        "entity": row(report["reversal"]),
+        "reversals": reversals,
+        "original": {
+            "id": tx_id,
+            "status_before": status_before,
+            "status_after": (original_after.get("status_after")
+                             or ("annulée" if status_before == "en_circulation"
+                                 else status_before)),
+        },
+        "invoices": [b for b in (_invoice_block(i) for i in
+                                 report.get("invoices") or []) if b],
+        "warnings": list(report.get("warnings") or []),
+    }
+    if register == "trust":
+        payload["admin_reversals"] = [
+            {"admin_transaction_id": r.get("admin_transaction_id") or "",
+             "reversal_id": r.get("reversal_id") or ""}
+            for r in report.get("admin_reversals") or []
+        ]
+        cleared_after = report.get("client_cleared_after")
+        if cleared_after is None:
+            payload["client_cleared_after_cents"] = None
+            payload["client_cleared_after_display"] = None
+        else:
+            _register_money(payload, "client_cleared_after", cleared_after)
+    return payload
+
+
+# ── The replay of an accounting write ───────────────────────────────────
+#
+# A same-key retry replays the FIRST call's stored result (run_write). Its
+# « before » states describe the first call's transition, not this one's —
+# this call changed nothing — and the balances in it may have moved since.
+# The stored result stays whole (persist is the identity); the replay drops
+# what it cannot vouch for and says so (plan lot 5b: « a dedup replay emits
+# nullable status_before / invoice_before with a French rejeu warning »).
+
+
+def _accounting_persist(payload: dict) -> dict:
+    return payload
+
+
+def _accounting_replay(stored: dict) -> dict:
+    out = dict(stored)
+    if isinstance(out.get("invoice"), dict):
+        out["invoice"] = {**out["invoice"], "status_before": None}
+    if isinstance(out.get("invoices"), list):
+        out["invoices"] = [
+            {**i, "status_before": None} if isinstance(i, dict) else i
+            for i in out["invoices"]
+        ]
+    if isinstance(out.get("original"), dict):
+        out["original"] = {**out["original"], "status_before": None}
+    if "client_balance" in out:
+        out["client_balance"] = None
+    if "client_cleared_after_cents" in out:
+        out["client_cleared_after_cents"] = None
+        out["client_cleared_after_display"] = None
+    out["warnings"] = [_REPLAY_WARNING] + list(out.get("warnings") or [])
+    return out
+
+
+for _accounting_tool in sorted(ACCOUNTING_WRITE_TOOLS):
+    register_persistence_hooks(
+        _accounting_tool, persist=_accounting_persist,
+        rehydrate=_accounting_replay,
+    )

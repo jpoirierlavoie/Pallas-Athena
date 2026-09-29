@@ -584,6 +584,53 @@ NO_WEB_FORM: dict[str, str] = {
     ),
 }
 
+# {models module: (the route that saves it, the service/model call it hands
+# the version to, the template, the proof test)} — lot 5b. For an entity
+# whose web edit form carries expected_etag and whose stale refusal is
+# proved by ITS OWN module's suite, because the form follows that module's
+# refusal convention (a validation error re-renders at 400, where the
+# FormCase harness above expects 200 — CLAUDE.md, routes/admin_ledger). The
+# administration ledger: update_admin_entry rewrites an entry the lawyer's
+# « Modifier » page edits (D9, lot 5a). Held to it: the route hands the
+# submitted version on, the form carries the field, the proof exists.
+SUITE_FORMS: dict[str, tuple[str, str, str, str]] = {
+    "admin_ledger": (
+        "routes/admin_ledger.py::entry_edit",
+        "modifier_ecriture_administration",
+        "templates/administration/form.html",
+        "tests/test_admin_payment_atomic.py::"
+        "test_une_sauvegarde_perimee_n_ecrit_rien_et_montre_le_bandeau",
+    ),
+}
+
+# {models module: (the mutators the connector reaches on it, why no stale
+# tab can erase what they wrote, the proof test)} — lot 5b. For an
+# APPEND-ONLY register that no web page EDITS: the connector reaches it only
+# through STATE TRANSITIONS (a clearing, a reversal) that the model decides
+# INSIDE its transaction on the stored entry. A web action from a page read
+# before the connector's transition is judged against the entry as it NOW
+# is — refused when it no longer applies (an entry already cleared, already
+# reversed) — so it can never undo the connector's write. Held to it: every
+# rewriting verb the connector reaches on the entity is declared here (a
+# future update_ would need a form), the entry is reached, and the proof —
+# the web's own path, after the connector's transition — exists.
+TRANSITIONS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    "trust": (
+        ("clear_transactions_bulk", "reverse_transaction"),
+        "the trust register is append-only: a clearing and a reversal are "
+        "decided inside the model's transaction on the stored status",
+        "tests/test_mcp_accounting.py::"
+        "test_a_stale_web_transition_never_undoes_the_connectors",
+    ),
+    "fee_payment": (
+        ("reverse_fee_payment",),
+        "a fee payment is reversed whole — trust leg, recettes and invoice "
+        "payment — inside one transaction that re-reads each",
+        "tests/test_mcp_accounting.py::"
+        "test_a_stale_web_reversal_of_a_fee_payment_the_connector_reversed_is_refused",
+    ),
+}
+
 # ``upload``/``ingest``/``copy``/``ensure`` since lot 2A (T8): the
 # generations reach the document creators and the « Projets » ensure —
 # CREATORS (see _CREATOR_VERBS), except the ensure's adoption of a legacy
@@ -735,9 +782,23 @@ def test_the_reach_is_derived_and_not_vacuous():
     assert all(reach.values()), [t for t, r in reach.items() if not r]
 
 
+def _covered() -> set[str]:
+    """Every entity with a protected web form, a declared lot, or no page
+    at all — and the registers the connector reaches only through
+    transitions (lot 5b), when that is ALL it reaches on them."""
+    reach = _handler_reach()
+    transitions = {
+        entity for entity, (verbs, _why, _proof) in TRANSITIONS.items()
+        if {verb for pairs in reach.values() for mod, verb in pairs
+            if mod == entity and not verb.startswith(_CREATOR_VERBS)}
+        <= set(verbs)
+    }
+    return (set(_FORMS) | set(PENDING) | set(INLINE_FORMS) | set(NO_WEB_FORM)
+            | set(VERSIONED_FORMS) | set(SUITE_FORMS) | transitions)
+
+
 def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
-    missing = (_edited_by_edit_tools() - set(_FORMS) - set(PENDING)
-               - set(INLINE_FORMS) - set(NO_WEB_FORM) - set(VERSIONED_FORMS))
+    missing = _edited_by_edit_tools() - _covered()
     assert not missing, (
         f"the connector edits {sorted(missing)} but no web edit form of it "
         "carries expected_etag — a stale browser tab would silently erase "
@@ -747,9 +808,65 @@ def test_every_entity_an_edit_tool_edits_has_its_web_form_or_its_lot():
 
 
 def test_every_record_a_write_tool_rewrites_has_its_web_form_or_its_lot():
-    missing = (_modified_by_any_write() - set(_FORMS) - set(PENDING)
-               - set(INLINE_FORMS) - set(NO_WEB_FORM) - set(VERSIONED_FORMS))
+    missing = _modified_by_any_write() - _covered()
     assert not missing, sorted(missing)
+
+
+def _function_named(route: str) -> ast.FunctionDef:
+    path, _, fn_name = route.partition("::")
+    tree = ast.parse((_ATHENA / path).read_text(encoding="utf-8"))
+    return next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+
+
+def _test_exists(proof: str) -> bool:
+    path, _, name = proof.partition("::")
+    tree = ast.parse((_ATHENA / path).read_text(encoding="utf-8"))
+    return name in {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+
+def test_every_suite_form_is_reached_carries_its_version_and_is_proved():
+    """A SUITE_FORMS entry is a claim, each half checked (lot 5b): a
+    connector write rewrites the entity; the route reads the submitted
+    version (edit_conflict.submitted_etag) and hands it to the save as
+    expected_etag; the form carries the field; the named test proves the
+    stale refusal against the real route and store."""
+    reached = _edited_by_edit_tools() | _modified_by_any_write()
+    for entity, (route, call, template, proof) in SUITE_FORMS.items():
+        assert entity in reached, f"{entity}: no connector write reaches it"
+        assert entity not in _FORMS and entity not in PENDING, entity
+        fn = _function_named(route)
+        names = {n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+                 for n in ast.walk(fn) if isinstance(n, ast.Call)}
+        assert "submitted_etag" in names, route
+        saves = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == call]
+        assert saves and all(any(k.arg == "expected_etag" for k in c.keywords)
+                             for c in saves), route
+        form = (_ATHENA / template).read_text(encoding="utf-8")
+        # The shared macro renders the field (components/_edit_conflict).
+        assert ('name="expected_etag"' in form or (
+            "etag_field(" in form
+            and "components/_edit_conflict.html" in form)), template
+        assert _test_exists(proof), proof
+
+
+def test_every_transition_register_is_reached_and_proved():
+    """A TRANSITIONS entry is a claim, each half checked (lot 5b): the
+    connector reaches the register, EVERY rewriting verb it reaches there is
+    a declared transition (an edit would need a form, and fails here), each
+    declared verb is still reached (no stale entry), and the proof — the
+    web's own path run after the connector's transition — exists."""
+    reach = _handler_reach()
+    for entity, (verbs, why, proof) in TRANSITIONS.items():
+        reached = {verb for pairs in reach.values() for mod, verb in pairs
+                   if mod == entity and not verb.startswith(_CREATOR_VERBS)}
+        assert reached, f"{entity}: no connector write reaches it"
+        assert reached <= set(verbs), (entity, sorted(reached - set(verbs)))
+        assert set(verbs) <= reached, (entity, sorted(set(verbs) - reached))
+        assert why.strip(), entity
+        assert entity not in _FORMS and entity not in PENDING, entity
+        assert _test_exists(proof), proof
 
 
 def test_every_versioned_form_is_reached_carries_its_version_and_is_proved():

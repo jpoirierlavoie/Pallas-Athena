@@ -614,6 +614,47 @@ _STAMPED_THROUGH: dict[tuple[str, str], tuple[str, str]] = {
     ("document", "ingest_blob_as_document"): (
         "document", "_prepare_document_record"),
 }
+# Lot 5b. The register writers services/comptabilite reaches since the
+# accounting tools shipped. Each runs ONE Firestore transaction whose writes
+# are STAGED by shared helpers — the very helpers models/fee_payment composes
+# across the two registers, which is why they are helpers — and notes its
+# commit AFTER that transaction returns: in its own body, or through a
+# shared after-commit helper (the one the fee payment calls for the
+# register it borrows). Neither the stamp nor the commit is in the
+# mutator's own body, so the plain rule could see neither; this table names
+# where each lives, and the rule is held THERE: every helper named is called
+# by the mutator, each stamp helper carries a provenance stamp, each commit
+# helper a note_commit outside any except, and the last commit point (own or
+# through a helper) follows the transaction's invocation.
+_PHASED_MUTATORS: dict[tuple[str, str], dict[str, tuple[tuple[str, str], ...]]] = {
+    ("trust", "create_transaction"): {
+        "stamps": (("trust", "_stage_create"),), "commits": ()},
+    ("trust", "clear_transactions_bulk"): {
+        "stamps": (("trust", "_clear_entries"),), "commits": ()},
+    ("trust", "reverse_transaction"): {
+        "stamps": (("trust", "_stage_reverse"),),
+        "commits": (("trust", "_after_reverse_commit"),)},
+    ("admin_ledger", "create_transaction"): {
+        "stamps": (("admin_ledger", "_stage_create"),),
+        "commits": (("admin_ledger", "_after_create_commit"),)},
+    ("admin_ledger", "clear_transactions_bulk"): {
+        "stamps": (("admin_ledger", "_clear_entries"),), "commits": ()},
+    ("admin_ledger", "reverse_transaction"): {
+        "stamps": (("admin_ledger", "_stage_reverse_legs"),),
+        "commits": (("admin_ledger", "_after_reverse_commit"),)},
+    # The atomic fee payment: the trust leg and the recette staged by each
+    # register's own helper inside ONE transaction, then each register's
+    # commit noted — the trust entry in the body, the recette and the
+    # invoice's payment through the administration's after-commit helper.
+    ("fee_payment", "create_fee_payment"): {
+        "stamps": (("trust", "_stage_create"), ("admin_ledger", "_stage_create")),
+        "commits": (("admin_ledger", "_after_create_commit"),)},
+    ("fee_payment", "reverse_fee_payment"): {
+        "stamps": (("trust", "_stage_reverse"),
+                   ("admin_ledger", "_stage_reverse_legs")),
+        "commits": (("trust", "_after_reverse_commit"),
+                    ("admin_ledger", "_after_reverse_commit"))},
+}
 _STAMP_HELPERS = {"stamp_create", "stamp_update", "update_fields", "create_fields"}
 # ``commit_document``/``commit_fields`` since 2026-09-25 (lot 0a, étape 5):
 # the etag-guarded edits write through ``models.concurrency``, and its call
@@ -793,7 +834,69 @@ def test_the_delegating_mutators_are_reached_and_really_delegate():
             assert delegate in called, f"{module}.{name} no longer calls {delegate}"
 
 
+def _calls_named(fn: ast.AST, name: str) -> list[ast.Call]:
+    """Calls of *name* — bare (a helper of the same module) or qualified
+    (``trust._stage_create``, ``al._after_create_commit``)."""
+    return [n for n in ast.walk(fn) if isinstance(n, ast.Call) and (
+        (isinstance(n.func, ast.Name) and n.func.id == name)
+        or (isinstance(n.func, ast.Attribute) and n.func.attr == name))]
+
+
+def _transaction_invocations(fn: ast.FunctionDef) -> list[int]:
+    """Where *fn* runs its nested ``@firestore.transactional`` body — the
+    commit happens when that call returns, AFTER every line of the body."""
+    nested = {
+        n.name for n in ast.walk(fn)
+        if isinstance(n, ast.FunctionDef) and n is not fn and any(
+            isinstance(d, ast.Attribute) and d.attr == "transactional"
+            for d in n.decorator_list)
+    }
+    return [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name) and c.func.id in nested]
+
+
+def _assert_phased_stamps_and_commit(module: str, name: str) -> None:
+    fn = _function(module, name)
+    phased = _PHASED_MUTATORS[(module, name)]
+    write_points = list(_write_calls(fn)) + _transaction_invocations(fn)
+    for helper_module, helper in phased["stamps"]:
+        calls = _calls_named(fn, helper)
+        assert calls, f"models.{module}.{name} no longer stages through {helper}"
+        builder = _function(helper_module, helper)
+        assert [c for h in _STAMP_HELPERS for c in _calls(builder, h)], (
+            f"models.{helper_module}.{helper} stages a write without a "
+            "provenance stamp")
+        write_points += [c.lineno for c in calls]
+    commit_points = [c.lineno for c in _calls(fn, "note_commit")
+                     if not _in_except_handler(fn, c)]
+    for helper_module, helper in phased["commits"]:
+        calls = [c for c in _calls_named(fn, helper)
+                 if not _in_except_handler(fn, c)]
+        assert calls, f"models.{module}.{name} no longer notes through {helper}"
+        body = _function(helper_module, helper)
+        assert [c for c in _calls(body, "note_commit")
+                if not _in_except_handler(body, c)], (
+            f"models.{helper_module}.{helper} never calls provenance.note_commit")
+        commit_points += [c.lineno for c in calls]
+    assert commit_points, f"models.{module}.{name} never notes its commit"
+    assert write_points and max(commit_points) > max(write_points), (
+        f"models.{module}.{name}: the commit must be noted after the "
+        "transaction returns")
+
+
+def test_the_phased_mutators_are_reached():
+    """Each entry names a mutator the connector really reaches — a stale
+    one would hold a function nobody calls to a rule nobody needs."""
+    reached = reached_mutators()
+    for key in _PHASED_MUTATORS:
+        assert key in reached, f"stale entry: {key}"
+    assert not set(_PHASED_MUTATORS) & set(_DELEGATING_MUTATORS)
+
+
 def _assert_stamps_and_notes_its_commit(module: str, name: str) -> None:
+    if (module, name) in _PHASED_MUTATORS:
+        _assert_phased_stamps_and_commit(module, name)
+        return
     fn = _function(module, name)
     through = _STAMPED_THROUGH.get((module, name))
     if through is not None:

@@ -100,8 +100,8 @@ class Config:
     # Third, narrowest: the accounting tools (scope athena:comptabilite,
     # plan lot 5) and their consent box. Defaults to FALSE — the one MCP
     # switch that does: money is fail-closed, so a variable forgotten in a
-    # yaml leaves accounting OFF rather than on. Dormant until a tool
-    # carries the scope; see the arming comment in app.yaml.
+    # yaml leaves accounting OFF rather than on. Since lot 5b six tools
+    # carry the scope; see the arming order in app.yaml.
     MCP_COMPTABILITE_ENABLED: bool = (
         os.environ.get("MCP_COMPTABILITE_ENABLED", "false").lower() == "true"
     )

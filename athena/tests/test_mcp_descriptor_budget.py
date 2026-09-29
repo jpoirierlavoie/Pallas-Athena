@@ -17,6 +17,10 @@ Baseline measured 2026-09-25 on HEAD 861c6b8: 49 tools, 135 236 bytes in
 total (≈ 34 k tokens), largest `create_partie` at 7 603 bytes; 259 408 bytes
 with outputSchema included.
 
+Measured again 2026-09-29 with lot 5b's six accounting tools: 86 tools,
+250 651 bytes in total (the six weigh 18 505, the largest `record_admin_entry`
+at 4 640).
+
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
 
@@ -79,7 +83,7 @@ def test_the_measure_covers_every_tool_and_excludes_only_the_output_schema(
     """The budget must see the whole advertised surface — a tool hidden by a
     kill switch in this process would escape the ceiling unnoticed. The
     dummy run proves an accounting tool is measured although its switch
-    defaults to off (no real one exists before plan lot 5)."""
+    defaults to off — the six real ones (lot 5b) included."""
     if with_accounting_tool:
         name = _dummy_accounting.register(monkeypatch)
         assert name in _model_visible_bytes()

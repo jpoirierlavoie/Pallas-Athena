@@ -1531,6 +1531,210 @@ def _invoice_write_entity(extra: dict[str, Any]) -> dict:
     return _obj(props, optional=("etag",))
 
 
+# ── Lot 5b — ACCOUNTING fragments ───────────────────────────────────────
+# A register row never carries a transit, an account number or a receipt's
+# storage path (tests/test_mcp_accounting sweeps every real payload for
+# them): the two bank-account fields are a payment credential, the path a
+# capability.
+
+
+def _nullable(schema: dict, description: str = "") -> dict:
+    """*schema* (an object) or null — for a block a payload emits as null
+    when it does not apply (the invoice of a dépense, a client of a bank
+    fee)."""
+    out = {**schema, "type": [schema.get("type", "object"), "null"]}
+    if description:
+        out["description"] = description
+    return out
+
+
+def _nmoney(key: str, description: str = "") -> dict[str, Any]:
+    """The money pair, null when the figure does not exist."""
+    return {
+        f"{key}_cents": _nint(description),
+        f"{key}_display": _nstr(),
+    }
+
+
+def _trust_register_row() -> dict:
+    """A trust register entry AS STORED after an accounting write."""
+    return _obj({
+        "id": _str(),
+        "dossier_id": _str("'' for an entry with no dossier (intérêts, "
+                           "frais bancaires)."),
+        "account_id": _str(),
+        "sequence": _int("Continuous per account, never reused."),
+        "date": _nstr("YYYY-MM-DD (date-only, never shifted)."),
+        "direction": _str("recette or déboursé."),
+        "purpose": _str(),
+        "method": _str(),
+        "status": _str("en_circulation, compensée or annulée."),
+        "cleared_date": _nstr("YYYY-MM-DD; null while not cleared."),
+        **_money("amount"),
+        "counterparty": _str(),
+        "client_id": _str("'' when none."),
+        "client_name": _str(),
+        "file_number": _str(),
+        "reference": _str(),
+        "description": _str(),
+        "invoice_id": _str("The invoice a fee payment settles; '' otherwise."),
+        "reverses_id": _str("On a correction: the entry it reverses; ''."),
+        "reversed_by_id": _str("Its reversal; '' while standing."),
+        "related_transaction_id": _str("A transfer's other leg; ''."),
+        "balance_after_account_cents": _int(
+            "FROZEN running balance of the account (journal view)."),
+        "balance_after_client_cents": _int(
+            "FROZEN running balance of the client (carte-client view)."),
+        "created_via": _str(f"Path that recorded it: {_VIA_VOCABULARY}."),
+        "updated_via": _str("Path of its last write."),
+        "cleared_via": _str("Path that cleared it; '' while not cleared."),
+        **_written_etag(),
+    }, optional=("etag", "created_via", "updated_via"))
+
+
+def _admin_register_props() -> dict[str, Any]:
+    return {
+        "id": _str(),
+        "dossier_id": _str("The linked dossier; '' when none."),
+        "account_id": _str(),
+        "sequence": _int("The insertion order (the audit cursor)."),
+        "date": _nstr("YYYY-MM-DD (date-only, never shifted)."),
+        "kind": _str(),
+        "kind_label": _str(),
+        "direction": _str("recette or déboursé — implied by the kind."),
+        "status": _str("en_circulation, compensée or annulée."),
+        "cleared_date": _nstr("YYYY-MM-DD; null while not cleared."),
+        **_money("amount", "Always positive — direction carries the sign."),
+        **_money("net_amount", "The TPS/TVQ split, as stored."),
+        **_money("gst_amount"),
+        **_money("qst_amount"),
+        "category": _str("A dépense's category; '' otherwise."),
+        "counterparty": _str(),
+        "description": _str(),
+        "reference": _str(),
+        "supplier_invoice_ref": _str(),
+        "method": _str(),
+        "dossier_file_number": _str(),
+        "invoice_id": _str("The invoice an encaissement paid; '' otherwise."),
+        "invoice_number": _str(),
+        "trust_transaction_id": _str(
+            "The trust fee payment this recette mirrors; '' otherwise — such "
+            "an entry reverses only from its trust side."),
+        "reverses_id": _str("On a correction: the entry it reverses; ''."),
+        "reversed_by_id": _str("Its reversal; '' while standing."),
+        "related_transaction_id": _str("A card payment's other leg; ''."),
+        "has_receipt": _bool("A supporting document is attached (in the "
+                             "application only)."),
+        "revisions_count": _int("Corrections kept in its revision trail."),
+        "created_via": _str(f"Path that recorded it: {_VIA_VOCABULARY}."),
+        "updated_via": _str("Path of its last write."),
+        "cleared_via": _str("Path that cleared it; '' while not cleared."),
+    }
+
+
+def _admin_register_row() -> dict:
+    """An administration entry AS STORED after an accounting write."""
+    return _obj({**_admin_register_props(), **_written_etag()},
+                optional=("etag", "created_via", "updated_via"))
+
+
+def _admin_ledger_row() -> dict:
+    """A get_admin_ledger row: the entry, its lock and its running balance."""
+    return _obj({
+        **_admin_register_props(),
+        **_provenance(),
+        "created_at": _nstr("ISO-8601 Montréal."),
+        "updated_at": _nstr("ISO-8601 Montréal."),
+        "locked": _bool(
+            "true = no longer editable (update_admin_entry refuses it): "
+            "correct it by reverse_register_entry."),
+        "lock_reason": _nstr(
+            "Why: période_verrouillée (dated on or before the lock floor), "
+            "écriture_verrouillée (compensée, annulée or part of a "
+            "reversal), écriture_liée_facture, écriture_liée_fideicommis, "
+            "paiement_carte_indivisible; null when editable."),
+        **_nmoney("balance_after", (
+            "Running ledger balance after this entry — null unless ONE "
+            "account was read without a kind/status/category filter.")),
+    }, optional=_PROVENANCE_KEYS)
+
+
+def _invoice_payment_block() -> dict:
+    """What a payment did to an invoice — null when no invoice was touched."""
+    return _nullable(_obj({
+        "id": _str(),
+        "invoice_number": _str(),
+        "status_before": _nstr(
+            "Its status before THIS call; null on a replay "
+            "(idempotent_replay: this call changed nothing — re-read "
+            "get_invoice for its state now)."),
+        "status_after": _str(
+            "Its status after the write (on a replay: after the FIRST call)."),
+        **_money("amount_paid", "The payment recorded on it."),
+        **_money("balance", "amount_due − amount_paid."),
+        "paid_in_full": _bool(),
+    }))
+
+
+def _client_balance_block() -> dict:
+    return _nullable(_obj({
+        **_money("book", "The client's balance in the register."),
+        **_money("cleared", "What a déboursé may draw on (cleared funds)."),
+    }), "The client's trust balances after this write; null without a "
+        "client, and on a replay (re-read get_trust_balance).")
+
+
+def _admin_account_row() -> dict:
+    return _obj({
+        "id": _str(),
+        "name": _str(),
+        "institution": _str(),
+        "account_type": _str("opérations or carte_crédit."),
+        "status": _str("actif or fermé."),
+        "balance_label": _str("« Solde », or « Solde dû » for a card."),
+        **_money("balance", "The figure shown beside balance_label (a "
+                            "card's is what is owed, positive)."),
+        **_money("ledger_balance", "Σ of the entries, in ledger sign."),
+        "lock_floor": _nstr(
+            "YYYY-MM-DD: the last completed reconciliation — no entry, "
+            "clearing or reversal may be dated on or before it; null = "
+            "never reconciled."),
+        "last_reconciliation_date": _nstr("YYYY-MM-DD, or null."),
+        "never_reconciled": _bool(),
+        "reconciliation_overdue": _bool(),
+    }, description="Never includes the transit or account number.")
+
+
+def _reverse_branch(register: str, row: dict, extra: dict[str, Any]) -> dict:
+    return _obj({
+        "reversed": {"type": "boolean", "enum": [True]},
+        "register": {"type": "string", "enum": [register]},
+        "entity_type": _str(
+            "trust_transaction or admin_transaction — the reversal."),
+        "entity": row,
+        "reversals": _arr(row, "Every reversal minted: one, or both legs of "
+                               "a pair (a card payment, a transfer)."),
+        "original": _obj({
+            "id": _str(),
+            "status_before": _nstr(
+                "Its status before THIS call; null on a replay."),
+            "status_after": _str("annulée, or compensée (kept)."),
+        }),
+        "invoices": _arr(_obj({
+            "id": _str(),
+            "invoice_number": _str(),
+            "status_before": _nstr("null on a replay."),
+            "status_after": _str(),
+            **_money("amount_paid"),
+            **_money("balance"),
+            "paid_in_full": _bool(),
+        }), "Each invoice whose recorded payment the reversal reduced."),
+        **extra,
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    })
+
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -4004,4 +4208,110 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                  "changed_fields", "source_document_id", "file_replaced",
                  "replaced_version", "leak_scan", "scrubbed_properties",
                  "name_check", "warnings", "idempotent_replay"]),
+
+    # ── Lot 5b — ACCOUNTING (athena:comptabilite) ─────────────────────────
+    "get_admin_ledger": _obj({
+        "accounts": _arr(_admin_account_row(),
+                         "Every administration account, even filtered."),
+        "reconciliation_overdue": _bool("OR of the per-account flags."),
+        "account_id": _nstr("The account the rows are of; null = every one."),
+        "date_from": _str("YYYY-MM-DD — the window read."),
+        "date_to": _str("YYYY-MM-DD."),
+        "transactions": _arr(_admin_ledger_row(), "Newest first."),
+        "count": _int(),
+        "truncated": _bool(
+            "true = more entries match than `limit`: narrow the window "
+            "(there is no cursor)."),
+        **_nmoney("opening_balance", (
+            "The balance carried into date_from — null unless ONE account "
+            "was read without a filter.")),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+    }),
+
+    "record_trust_entry": _obj({
+        "recorded": {"type": "boolean", "enum": [True]},
+        "entity_type": {"type": "string",
+                        "enum": ["trust_transaction", "trust_fee_payment"]},
+        "entity": _trust_register_row(),
+        "client_balance": _client_balance_block(),
+        "admin_recette": _nullable(
+            _admin_register_row(),
+            "A fee payment's recette in the operations account; null "
+            "otherwise."),
+        "invoice": _invoice_payment_block(),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
+    "record_admin_entry": _obj({
+        "recorded": {"type": "boolean", "enum": [True]},
+        "entity_type": {"type": "string",
+                        "enum": ["admin_transaction", "admin_card_payment"]},
+        "entity": _admin_register_row(),
+        "card_leg": _nullable(
+            _admin_register_row(),
+            "A card payment's card leg (the entity is its bank leg); null "
+            "otherwise."),
+        "invoice": _invoice_payment_block(),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
+    "update_admin_entry": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = every value named was already stored: "
+                "NOTHING was written (no etag moved)."),
+        },
+        "changed_fields": _arr(_str(), "The stored fields that changed."),
+        "entity": _admin_register_row(),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
+    "clear_register_entries": _obj({
+        "cleared": {"type": "boolean", "enum": [True]},
+        "register": {"type": "string", "enum": ["trust", "admin"]},
+        "account_id": _str(),
+        "cleared_date": _str("YYYY-MM-DD — the statement date recorded."),
+        "count": _int(),
+        "entries": _arr(_obj({
+            "id": _str(),
+            "sequence": _int(),
+            "date": _nstr("YYYY-MM-DD."),
+            "direction": _str(),
+            "status": _str("compensée."),
+            "cleared_date": _nstr("YYYY-MM-DD."),
+            **_money("amount"),
+            "dossier_id": _str("'' when none."),
+            "client_id": _str("trust only; '' otherwise."),
+        })),
+        "released_funds": _arr(_obj({
+            "dossier_id": _str(),
+            "client_id": _str(),
+            **_money("amount"),
+        }), "trust only: the cleared deposits each client may now draw on."),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
+    "reverse_register_entry": {
+        "type": "object",
+        "anyOf": [
+            _reverse_branch("trust", _trust_register_row(), {
+                "admin_reversals": _arr(_obj({
+                    "admin_transaction_id": _str(),
+                    "reversal_id": _str(),
+                }), "A fee payment's administration recettes reversed with "
+                    "it, in the same transaction."),
+                **_nmoney("client_cleared_after", (
+                    "The client's cleared balance after the reversal — "
+                    "NEGATIVE is a trust shortfall to cover; null without a "
+                    "client, and on a replay.")),
+            }),
+            _reverse_branch("admin", _admin_register_row(), {}),
+        ],
+    },
 }

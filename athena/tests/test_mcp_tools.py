@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 80  # 31 lectures + 49 ecritures
+    assert len(tools.TOOLS) == 86  # 32 lectures + 54 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -353,6 +353,14 @@ _IDEMPOTENT_WRITES = frozenset({
     # NOT here (lot 4b): update_partie_mandataire — its remove refuses a
     # second identical call (no longer listed) — and record_kyc_status,
     # whose notes APPEND again on an identical call.
+    # Lot 5b. Values already stored write nothing (outcome « unchanged »),
+    # and the CURRENT etag it demands refuses an identical second call
+    # rather than applying it twice. NOT here: the two inscribers (a second
+    # call without its key is a second entry — hence the key they DEMAND),
+    # clear_register_entries and reverse_register_entry (a second identical
+    # call is REFUSED — the entry is already cleared, already reversed —
+    # rather than answered with the first).
+    "update_admin_entry",
 })
 
 
@@ -417,6 +425,12 @@ def test_write_tools_set_is_pinned():
         # Lot 4b — CONTACTS : les mandataires d'un contact, et la
         # verification de conformite INSCRITE comme presumee (D7).
         "update_partie_mandataire", "record_kyc_status",
+        # Lot 5b — COMPTABILITE, sous le scope distinct athena:comptabilite :
+        # inscrire au fideicommis (paiement d'honoraires atomique compris) et
+        # au registre d'administration, corriger une ecriture d'administration
+        # modifiable, compenser a la date du releve, contre-passer.
+        "record_trust_entry", "record_admin_entry", "update_admin_entry",
+        "clear_register_entries", "reverse_register_entry",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -466,6 +480,13 @@ def test_edit_tools_set_is_pinned():
         # compliance check's status replaced (presumed — never over the
         # lawyer's attestation, a replacement all the same).
         "update_partie_mandataire", "record_kyc_status",
+        # Lot 5b — every accounting write changes what a register SAYS: an
+        # inscription moves a balance a reconciliation must then explain (a
+        # fee payment also records a payment and may flip the invoice to
+        # payée), a correction replaces an entry's fields, a clearing
+        # releases funds for a disbursement, a reversal is permanent.
+        "record_trust_entry", "record_admin_entry", "update_admin_entry",
+        "clear_register_entries", "reverse_register_entry",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 
@@ -546,7 +567,9 @@ def test_list_tool_descriptors_filters_by_scope(monkeypatch, with_accounting_too
     def listed(*scopes: str) -> set:
         return {d["name"] for d in tools.list_tool_descriptors(frozenset(scopes))}
 
-    reads = set(tools.TOOLS) - tools.WRITE_TOOLS
+    # The accounting READ (get_admin_ledger, lot 5b) is not a read under
+    # athena:read: it carries the accounting scope for the data it shows.
+    reads = set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS
     writes = tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS
     assert listed("athena:read") == reads
     assert listed("athena:read", "athena:write") == reads | writes
@@ -558,20 +581,30 @@ def test_list_tool_descriptors_filters_by_scope(monkeypatch, with_accounting_too
         assert dummy not in listed("athena:read", "athena:write")
 
 
-def test_the_accounting_tools_are_derived_and_dormant():
+def test_the_accounting_tools_are_derived_and_pinned():
     """ACCOUNTING_TOOLS is the set of tools DECLARING the scope — never a
-    hand list — and every member is a write, so the write protocol, the
-    write audit, the write-time revalidation and the master switch reach it
-    by construction.
+    hand list. REWRITTEN in lot 5b, on purpose and in the same commit as
+    the consent block that describes them: it pinned the set EMPTY while
+    the scope shipped dormant (« no tool may land under it before the model
+    fixes it relies on »), and asserted every member a write.
 
-    EMPTY until plan lot 5, deliberately: the scope, its switch and its
-    consent box ship dormant, and no tool may land under them before the
-    model fixes it relies on. Lot 5 changes this pin ON PURPOSE, in the
-    same commit as the consent screen that describes its tools."""
+    Both halves moved. The set is now pinned by NAME — a sixth accounting
+    tool must not ship unnoticed, since the consent box's text is written
+    for these. And one member is a READ, get_admin_ledger: the
+    administration ledger is not under athena:read, so its reader carries
+    the scope of the data it shows. Every other member is a write, in
+    WRITE_TOOLS, so the write protocol, the write audit, the write-time
+    revalidation and the master switch reach it by construction."""
     derived = {n for n, s in tools.TOOLS.items() if s.get("scope") == "athena:comptabilite"}
     assert tools.ACCOUNTING_TOOLS == derived
-    assert tools.ACCOUNTING_TOOLS <= tools.WRITE_TOOLS
-    assert tools.ACCOUNTING_TOOLS == frozenset()
+    assert tools.ACCOUNTING_TOOLS == frozenset({
+        "get_admin_ledger",
+        "record_trust_entry", "record_admin_entry", "update_admin_entry",
+        "clear_register_entries", "reverse_register_entry",
+    })
+    assert tools.ACCOUNTING_TOOLS - tools.WRITE_TOOLS == {"get_admin_ledger"}
+    assert tools.ACCOUNTING_WRITE_TOOLS == tools.ACCOUNTING_TOOLS & tools.WRITE_TOOLS
+    assert tools.ACCOUNTING_WRITE_TOOLS <= tools.WRITE_TOOLS
 
 
 def test_the_accounting_switch_defaults_to_off():
@@ -608,9 +641,13 @@ def test_the_accounting_switch_hides_an_accounting_tool_even_with_the_scope(monk
     assert tools.unavailable_reason(name) == "MCP_COMPTABILITE_ENABLED"
     shown = {d["name"] for d in tools.list_tool_descriptors(everything)}
     assert name not in shown
-    # Only the accounting subset moves: every other tool stays available.
-    assert shown == set(tools.TOOLS) - {name}
-    for other in set(tools.TOOLS) - {name}:
+    # Only the accounting subset moves — the real one (lot 5b), its read
+    # included, and the dummy: every other tool stays available.
+    assert name in tools.ACCOUNTING_TOOLS
+    assert shown == set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
+    for other in tools.ACCOUNTING_TOOLS:
+        assert tools.unavailable_reason(other) == "MCP_COMPTABILITE_ENABLED", other
+    for other in set(tools.TOOLS) - tools.ACCOUNTING_TOOLS:
         assert tools.unavailable_reason(other) is None, other
 
     monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
@@ -725,7 +762,10 @@ def test_kill_switch_covers_every_write_tool(monkeypatch, with_accounting_tool):
     still stops it."""
     if with_accounting_tool:
         _dummy_accounting.register(monkeypatch)
-        monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+    # The accounting switch ON in both runs: the accounting READ
+    # (get_admin_ledger, lot 5b) answers to that switch alone, and the point
+    # here is that the write master leaves every read standing.
+    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
     monkeypatch.setattr(tools, "write_enabled", lambda: False)
     for name in tools.WRITE_TOOLS:
         assert tools.tool_available(name) is False, name
@@ -4277,13 +4317,18 @@ def test_a_ctag_failure_still_reports_the_write_as_committed(ct, monkeypatch):
     assert any("Ne pas réessayer" in w for w in payload["warnings"])
 
 
-def test_idempotent_writes_are_declared_per_tool():
+def test_idempotent_writes_are_declared_per_tool(monkeypatch):
     """The hint is what a client uses to decide whether a retry is safe:
     every creator appends again, while these write nothing when the state
     they ask for is already the stored one. It was `complete_task` alone
     until the phase reclassifiers shipped, each of which compares the
     stored code first and skips the write — which is exactly what makes a
-    reclassification pass over a year of history safe to re-run."""
+    reclassification pass over a year of history safe to re-run.
+
+    Both switches ON (lot 5b): the accounting switch defaults to OFF, and a
+    descriptor it hides would otherwise leave its hint unchecked."""
+    monkeypatch.setattr(tools, "write_enabled", lambda: True)
+    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
     for name in tools.WRITE_TOOLS:
         expected = name in _IDEMPOTENT_WRITES

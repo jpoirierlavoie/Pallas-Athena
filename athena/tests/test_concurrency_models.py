@@ -57,6 +57,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
     import mcp.write_support as write_support
+    from models import admin_ledger as admin_ledger_model
     from models import concurrency
     from models import doc_template as doc_template_model
     from models import document as document_model
@@ -934,10 +935,12 @@ def _e2e_db(monkeypatch):
     # filing tree through its model. doc_template_model too (lot 2A, T10):
     # update_template reads and writes the template through its model.
     # invoice_model too (lot 3b): update_invoice reads and writes the
-    # invoice through its model.
+    # invoice through its model. admin_ledger_model too (lot 5b):
+    # update_admin_entry reads and edits the administration ledger through
+    # its model (by way of services/comptabilite).
     return install(monkeypatch, *_MODULES, protocol_model, revision_model,
                    hearing_model, folder_model, doc_template_model,
-                   invoice_model, dav_sync, write_support)
+                   invoice_model, admin_ledger_model, dav_sync, write_support)
 
 
 def _closed_task(db):
@@ -1069,6 +1072,23 @@ def _kyc_client(db):
     return pid, {"partie_id": pid, "check": "identity"}
 
 
+def _admin_entry(db):
+    """An editable dépense of the administration ledger — en circulation,
+    no period reconciled, linked to nothing — born through the REAL
+    creator (lot 5b)."""
+    db.seed("admin_accounts/ops1", {
+        "id": "ops1", "name": "Opérations", "status": "actif",
+        "account_type": "opérations", "ledger_balance": 0})
+    entry, errors = admin_ledger_model.create_transaction({
+        "account_id": "ops1", "kind": "dépense", "category": "loyer",
+        "amount": 11498, "method": "virement", "counterparty": "Immeubles X",
+        "date": DT, "net_amount": 10000, "gst_amount": 500,
+        "qst_amount": 998, "description": "Loyer", "reference": "",
+        "supplier_invoice_ref": ""})
+    assert errors == [], errors
+    return entry["id"]
+
+
 # tool → (collection, factory, id key, arguments, (field, stored value))
 _HANDLER_CASES = {
     "update_partie": ("parties", _partie, "partie_id",
@@ -1140,6 +1160,12 @@ _HANDLER_CASES = {
     "record_kyc_status": ("parties", _kyc_client, None,
                           {"status": "vérifié"},
                           ("identity_verified", "vérifié")),
+    # Lot 5b — an administration entry's correction. A money write DEMANDS
+    # its key (plan rule 7), so its case carries one.
+    "update_admin_entry": ("admin_transactions", _admin_entry, "tx_id",
+                           {"description": "Révision",
+                            "idempotency_key": "cle-admin-e2e"},
+                           ("description", "Révision")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -1154,12 +1180,19 @@ _SECOND_ARGS = {
     "record_kyc_status": {"status": "exempté"},
     "edit_analyse": {"operations": [{"bloc": "D", "mode": "append",
                                      "content": "Deuxième version"}]},
+    # Another key: the same key with other arguments is refused as a
+    # different call (write_support's fingerprint).
+    "update_admin_entry": {"description": "Deuxième version",
+                           "idempotency_key": "cle-admin-e2e-bis"},
 }
 
 # Tools that DEMAND expected_etag for the change the case makes (plan rule
 # 3, D8: replacing prose). They cannot « guard their own read » without
 # one — they refuse the call instead, which the own-read test asserts.
-_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous", "update_invoice"}
+_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous", "update_invoice",
+                  # Lot 5b: a register entry is corrected against the
+                  # version the caller READ (get_admin_ledger), or not at all.
+                  "update_admin_entry"}
 
 # A decision is taken ONCE (lot 1b, L7): the chained-edit test cannot make a
 # second, different write — confirming a confirmed request is the honest
@@ -1190,6 +1223,7 @@ _HANDLER_GETTERS = {
     "update_dossier_party": (dossier_model, "get_dossier"),
     "update_partie_mandataire": (partie_model, "get_partie"),
     "record_kyc_status": (partie_model, "get_partie"),
+    "update_admin_entry": (admin_ledger_model, "get_transaction_strict"),
 }
 
 

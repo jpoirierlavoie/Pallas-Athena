@@ -253,8 +253,13 @@ def test_initialize_shape(client):
     assert "never reopens a closed one — that is `reopen_task`" in instructions
     assert "never silently undoes a cancellation" in instructions
     assert "five families" not in instructions
-    families = [f for f in disclosure.FAMILIES if f.tools]
+    # The families THIS token can see (lot 5b): without athena:comptabilite
+    # the ACCOUNTING family is not counted, only named as a separate grant.
+    families = [f for f in disclosure.FAMILIES
+                if f.tools and f.scope != mcp_pkg.SCOPE_COMPTABILITE]
     assert f"in {len(families)} families (" in instructions
+    assert "ACCOUNTING: " not in instructions
+    assert "Accounting tools appear only under the SEPARATE" in instructions
     # The lot 0a write-protocol rules the client model must follow.
     assert "`expected_etag`" in instructions
     assert "do NOT retry" in instructions
@@ -286,7 +291,10 @@ def test_tools_list_hides_write_tools_from_a_read_only_token(client):
     failure brake, so that is an unthrottled refusal loop."""
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools_list = resp.get_json()["result"]["tools"]
-    assert len(tools_list) == len(tools.TOOLS) - len(tools.WRITE_TOOLS)
+    # The accounting READ (lot 5b) carries athena:comptabilite: a read-only
+    # token does not see it either.
+    assert len(tools_list) == len(
+        set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS)
     names = {t["name"] for t in tools_list}
     assert not (names & {"create_note", "append_to_note"})
     for tool in tools_list:
@@ -419,19 +427,21 @@ def test_write_kill_switch_refuses_the_call(monkeypatch):
     # Le coupe-circuit retire TOUTE la famille d'ecriture, et rien
     # d'autre : la surface de lecture reste entiere.
     assert (len(listed.get_json()["result"]["tools"])
-            == len(tools.TOOLS) - len(tools.WRITE_TOOLS))
+            == len(set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS))
     body = _call_write(cl, rid=2).get_json()
     assert body["error"]["code"] == -32602
     assert "MCP_WRITE_ENABLED" in body["error"]["message"]
     bearer.reset_brake_state()
 
 
-# ── The accounting scope (athena:comptabilite) — dormant until lot 5 ─────
+# ── The accounting scope (athena:comptabilite) ───────────────────────────
 #
-# No real tool carries the scope yet, so every gate below is exercised on
-# the DUMMY accounting tool of tests/_dummy_accounting.py, registered the
-# way a lot-5 tool will be (declared scope, WRITE_TOOLS, ACCOUNTING_TOOLS,
-# a handler resolved by name). The gates themselves are the real ones.
+# Every gate below is exercised on the DUMMY accounting tool of
+# tests/_dummy_accounting.py (declared scope, WRITE_TOOLS, ACCOUNTING_TOOLS,
+# a handler resolved by name), so the dispatch is observed without a
+# register; the gates themselves are the real ones. Since lot 5b the six
+# REAL accounting tools sit beside it in every listing, which is why the
+# sets below subtract ACCOUNTING_TOOLS rather than the dummy alone.
 
 _ALL_SCOPES = "athena:read athena:write athena:comptabilite"
 
@@ -508,7 +518,9 @@ def test_the_accounting_switch_hides_and_refuses_even_with_every_scope(
     cl = _client_for(monkeypatch, _ALL_SCOPES, MCP_COMPTABILITE_ENABLED=False)
     listed = _listed(cl)
     assert name not in listed
-    assert listed == set(tools.TOOLS) - {name}
+    # The whole accounting subset — the real six and the dummy — and
+    # nothing else.
+    assert listed == set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
 
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
         body = _call(cl, name, _dummy_accounting.call_args()).get_json()
@@ -551,7 +563,8 @@ def test_an_accounting_grant_reaches_its_tool_and_nothing_else(
         monkeypatch, "athena:read athena:comptabilite",
         MCP_COMPTABILITE_ENABLED=True)
     listed = _listed(cl)
-    assert listed == (set(tools.TOOLS) - tools.WRITE_TOOLS) | {name}
+    assert listed == (set(tools.TOOLS) - tools.WRITE_TOOLS) | tools.ACCOUNTING_TOOLS
+    assert name in listed and "get_admin_ledger" in listed
     body = _call(cl, name, _dummy_accounting.call_args()).get_json()
     assert body["result"]["isError"] is False
     assert calls == [_dummy_accounting.call_args()]
@@ -559,6 +572,33 @@ def test_an_accounting_grant_reaches_its_tool_and_nothing_else(
     resp = _call_write(cl, rid=3)
     assert resp.status_code == 403
     assert 'scope="athena:write"' in resp.headers["WWW-Authenticate"]
+
+
+@pytest.mark.parametrize("scope, switch, accounting_text", [
+    ("athena:read athena:comptabilite", True, True),
+    (_ALL_SCOPES, True, True),
+    # The switch off: the token sees no accounting tool, so it is not told
+    # about them either.
+    (_ALL_SCOPES, False, False),
+    ("athena:read athena:write", True, False),
+    ("athena:read", True, False),
+])
+def test_initialize_describes_the_accounting_tools_only_to_a_token_that_sees_them(
+    monkeypatch, scope, switch, accounting_text
+):
+    """Lot 5b: the INSTRUCTIONS are chosen per token — the accounting
+    variant (the ACCOUNTING family, get_admin_ledger, the promises the grant
+    keeps) exactly when the token holds athena:comptabilite AND the switch
+    is on, the one state in which it can list an accounting tool."""
+    bearer.reset_brake_state()
+    cl = _client_for(monkeypatch, scope, MCP_COMPTABILITE_ENABLED=switch)
+    instructions = _initialize(cl, "2025-06-18")["instructions"]
+    expected = (endpoint.INSTRUCTIONS_COMPTABILITE if accounting_text
+                else endpoint.INSTRUCTIONS)
+    assert instructions == expected
+    assert ("`record_trust_entry`" in instructions) is accounting_text
+    assert ("`get_admin_ledger`" in instructions) is accounting_text
+    bearer.reset_brake_state()
 
 
 def test_revalidation_demands_the_accounting_scope_not_the_write_one(

@@ -3,9 +3,11 @@
 The registry maps tool names to their metadata and handler name (resolved
 lazily against :mod:`mcp.handlers` to avoid a circular import). Every tool
 is read-only (``readOnlyHint``) **except the members of** :data:`WRITE_TOOLS`,
-which require the ``athena:write`` scope — or, for the subset
-:data:`ACCOUNTING_TOOLS`, the separate ``athena:comptabilite`` scope (empty
-until plan lot 5). Every schema sets ``additionalProperties: false``.
+which require the ``athena:write`` scope — or, for the accounting writes,
+the separate ``athena:comptabilite`` scope. :data:`ACCOUNTING_TOOLS` (every
+tool declaring that scope, since plan lot 5b) holds those writes AND the one
+accounting read, ``get_admin_ledger``: a read, but of data ``athena:read``
+does not cover. Every schema sets ``additionalProperties: false``.
 """
 
 import json
@@ -812,6 +814,19 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # notes) — presumed, never over the lawyer's attestation, yet a
     # replacement all the same: under-warning is the wrong side.
     "update_partie_mandataire", "record_kyc_status",
+    # Lot 5b — ACCOUNTING. Every register write is PERMANENT (an entry is
+    # never deleted, only reversed — the pair stays for good) and moves
+    # stored money figures: the account's and the client's balances and —
+    # a fee payment, an encaissement, their reversals — an invoice's
+    # recorded payment and status. update_admin_entry REPLACES an entry's
+    # fields; clear_register_entries REPLACES a status (and, at trust,
+    # releases the client's funds); reverse_register_entry turns an entry
+    # annulée or mints its counter-movement. The two recorders replace no
+    # field of their own, but each writes a balance, and possibly a
+    # payment, that no call takes back: under-warning here is the worst
+    # place.
+    "record_trust_entry", "record_admin_entry", "update_admin_entry",
+    "clear_register_entries", "reverse_register_entry",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -852,8 +867,10 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #   ``pending`` so a same-key retry is refused until the caller re-reads.
 #   Reserved for money, outbound and series tools (plan rule 7): since lot
 #   1b ``create_hearing_series`` (a series) and ``decide_rendez_vous`` (the
-#   outbound one) declare it. Such a tool must also list ``idempotency_key``
-#   in its input schema's ``required`` (pinned by test_mcp_framework_guards).
+#   outbound one) declare it, since lot 3b ``create_invoice`` (a permanent
+#   number), since lot 5b the five accounting writes (a register entry is
+#   never deleted). Such a tool must also list ``idempotency_key`` in its
+#   input schema's ``required`` (pinned by test_mcp_framework_guards).
 IDEMPOTENCY_OPTIONAL = "optional"
 IDEMPOTENCY_REQUIRED = "required"
 IDEMPOTENCY_POLICIES: tuple[str, ...] = (IDEMPOTENCY_OPTIONAL, IDEMPOTENCY_REQUIRED)
@@ -1568,6 +1585,101 @@ def _substitutions_prop(*, expected_required: bool) -> dict:
             "required": (["literal", "placeholder", "expected_occurrences"]
                          if expected_required else ["literal", "placeholder"]),
             "additionalProperties": False,
+        },
+    }
+
+
+# ── Lot 5b — ACCOUNTING (scope athena:comptabilite) ──────────────────────
+# Hand-copied from models.trust / models.admin_ledger (importing a model here
+# would build the Firestore client at load); tests/test_mcp_accounting.py
+# pins each against its source, so none can drift.
+_REGISTERS = ["trust", "admin"]
+_TRUST_DIRECTIONS = ["recette", "déboursé"]
+# models.trust.VALID_PURPOSES minus the two the connector never records:
+# « correction » (a reversal mints it, nothing else may) and
+# « virement_inter_dossiers » (moving one client's funds to another client
+# needs that client's authorization — it stays in the application).
+_TRUST_ENTRY_PURPOSES = [
+    "avance_honoraires", "dépôt_client", "règlement", "virement_honoraires",
+    "remise_client", "déboursé_tiers", "intérêts", "frais_bancaires", "autre",
+]
+_TRUST_METHODS = ["chèque", "virement", "traite", "dépôt_direct", "comptant"]
+# models.admin_ledger: the kinds a create may carry (paiement_carte through
+# its own two-leg writer), the two an edit may move between, and every kind
+# a row may show (correction: minted by a reversal only).
+_ADMIN_ENTRY_KINDS = ["dépense", "recette_autre", "encaissement_facture", "paiement_carte"]
+_ADMIN_EDIT_KINDS = ["dépense", "recette_autre"]
+_ADMIN_KINDS = [
+    "encaissement_facture", "recette_autre", "dépense", "paiement_carte",
+    "correction",
+]
+_ADMIN_METHODS = [
+    "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant",
+    "autre",
+]
+_ADMIN_CATEGORIES = [
+    "loyer", "internet", "téléphone", "abonnements", "équipement",
+    "fournitures", "assurances", "cotisations_professionnelles", "formation",
+    "publicité", "honoraires_professionnels", "huissier", "sténographe",
+    "frais_bancaires", "intérêts", "taxes_permis", "autre",
+]
+_REGISTER_STATUSES = ["en_circulation", "compensée", "annulée"]
+# How a dépense's TPS/TVQ split is given: extracted from the taxes-included
+# amount (models.admin_ledger.extract_taxes_from_gross), no tax credit
+# claimed (net = amount), or the three amounts themselves.
+_VENTILATION_MODES = ["ventiler", "sans_taxe", "détaillée"]
+REGISTER_CLEAR_MAX = 50
+REVERSAL_REASON_MAX_CHARS = 500           # models.fee_payment's motif ceiling
+COUNTERPARTY_MAX_CHARS = 300
+REGISTER_REFERENCE_MAX_CHARS = 200
+REGISTER_DESCRIPTION_MAX_CHARS = 2000     # both models' _sanitize_data cap
+ADMIN_LEDGER_WINDOW_DAYS = 90
+MONEY_MAX_CENTS = 100_000_000_000         # 1 000 000 000 $ — a typo guard
+_ADMIN_ETAG_READERS = ("get_admin_ledger",)
+
+
+def _money_arg(description: str) -> dict:
+    return {"type": "integer", "minimum": 1, "maximum": MONEY_MAX_CENTS,
+            "description": description}
+
+
+def _ventilation_props() -> dict:
+    """A dépense's TPS/TVQ split — shared, fresh per usage, by
+    record_admin_entry and update_admin_entry."""
+    part = {"type": "integer", "minimum": 0, "maximum": MONEY_MAX_CENTS}
+    return {
+        "ventilation": {
+            "type": "string", "enum": _VENTILATION_MODES,
+            "description": (
+                "A dépense's TPS/TVQ split: ventiler (extract both from the "
+                "taxes-included amount), sans_taxe (no tax credit claimed: "
+                "net = amount) or détaillée (net_cents + gst_cents + "
+                "qst_cents, summing exactly to the amount)."
+            ),
+        },
+        "net_cents": {**part, "description": "détaillée only: net amount."},
+        "gst_cents": {**part, "description": "détaillée only: TPS."},
+        "qst_cents": {**part, "description": "détaillée only: TVQ."},
+    }
+
+
+def _register_text_props(counterparty_rule: str = "") -> dict:
+    return {
+        "counterparty": {
+            "type": "string", "maxLength": COUNTERPARTY_MAX_CHARS,
+            "description": (
+                "Who paid, or who is paid (« Somme reçue de / "
+                "Bénéficiaire »), as the bank document names them."
+                + (" " + counterparty_rule if counterparty_rule else "")
+            ),
+        },
+        "reference": {
+            "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
+            "description": "Cheque number or bank reference.",
+        },
+        "description": {
+            "type": "string", "maxLength": REGISTER_DESCRIPTION_MAX_CHARS,
+            "description": "Free text printed with the entry, in French.",
         },
     }
 
@@ -4420,8 +4532,10 @@ TOOLS: dict[str, dict] = {
             "QST against the PDF: the totals are computed over the real "
             "sources, never estimated. "
             "The invoice lands in BROUILLON: promote it with update_invoice; "
-            "a payment is recorded in the application's accounting, never "
-            "here. Billing the sources freezes them: nothing here can modify "
+            "a payment is recorded only as an entry of the accounting "
+            "registers (in the application, or with the accounting tools "
+            "under their separate grant), never by this tool. Billing the "
+            "sources freezes them: nothing here can modify "
             "them afterwards except their litigation phase "
             "(set_time_entry_phase / set_expense_phase) until the invoice is "
             "voided (update_invoice, status annulée, or the application), "
@@ -4609,8 +4723,10 @@ TOOLS: dict[str, dict] = {
             "never reissues one; an IMPORTED number can be imported again "
             "once the lawyer deletes the voided invoice in the application); "
             "REFUSED "
-            "while a payment stands (reverse it in the application). Never "
-            "payée: a payment is recorded in the application's accounting."
+            "while a payment stands (reverse its register entry first — in "
+            "the application, or with the accounting tools under their "
+            "separate grant). Never payée: only a payment recorded in the "
+            "accounting registers pays an invoice."
         ),
         "input_schema": {
             "type": "object",
@@ -6273,6 +6389,381 @@ TOOLS: dict[str, dict] = {
         "concurrency": CONCURRENCY_OPTIONAL,
         "etag_readers": _TEMPLATE_ETAG_READERS,
     },
+    # ── Lot 5b — ACCOUNTING, scope athena:comptabilite ─────────────────
+    # The six tools of plan decision D1, every one through
+    # services/comptabilite — the door the two web registers use. The READ
+    # carries the scope for the data it shows (the administration ledger is
+    # not under athena:read); the five writes demand an idempotency_key
+    # (a register entry is never deleted: a duplicate is for ever).
+    "get_admin_ledger": {
+        "title": "Registre d'administration",
+        "description": (
+            "ACCOUNTING (athena:comptabilite) — READ. The administration "
+            "ledger: every operations account and corporate card — its "
+            "balance, its lock floor (the last completed reconciliation: "
+            "nothing dated on or before it moves) and its reconciliation "
+            "state, never a transit or an account number — and the entries "
+            "of a window (default the last 90 Montréal days), NEWEST first, "
+            "capped at `limit` with `truncated` and no cursor: narrow the "
+            "window to see older ones. Each row carries its `etag` "
+            "(update_admin_entry) and whether it is `locked` and why. A "
+            "running balance is given only for ONE account read without a "
+            "kind, status or category filter."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": _id(
+                    "One administration account (an id from `accounts`). "
+                    "Omit for every account."
+                ),
+                "date_from": _date(
+                    "First day, YYYY-MM-DD (default: 90 days before date_to)."
+                ),
+                "date_to": _date(
+                    "Last day, YYYY-MM-DD (default: today, Montréal)."
+                ),
+                "kind": {"type": "string", "enum": _ADMIN_KINDS,
+                         "description": "Only the entries of this kind."},
+                "status": {"type": "string", "enum": _REGISTER_STATUSES,
+                           "description": "Only the entries in this status."},
+                "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
+                             "description": "Only the dépenses of this category."},
+                "limit": _limit(25),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "get_admin_ledger",
+        "scope": SCOPE_COMPTABILITE,
+    },
+    "record_trust_entry": {
+        "title": "Inscrire une écriture au fidéicommis",
+        "description": (
+            "ACCOUNTING — WRITE to the trust register (RLRQ c. B-1, r. 5). "
+            "Records a movement that HAPPENED at the bank, dated the day it "
+            "happened: never future, never on or before the last completed "
+            "reconciliation, never before the account's last entry. It is "
+            "never deleted — corrected only by reverse_register_entry, both "
+            "entries staying in the register. A déboursé draws ONLY on the "
+            "client's CLEARED funds; no cash withdrawal (art. 57 — the "
+            "art. 72 cash refund is recorded in the application). "
+            "virement_honoraires is a FEE PAYMENT and RECORDS A PAYMENT: in "
+            "ONE transaction it withdraws the fees (chèque or virement only, "
+            "art. 58), records their recette in the operations account "
+            "`admin_account_id` at `admin_date`, and the payment on the "
+            "Pallas Athéna invoice `invoice_id` — issued, of this dossier, "
+            "no provision imputed, up to its balance —, which may turn it "
+            "payée. Any refusal writes NOTHING anywhere. idempotency_key "
+            "REQUIRED; if the outcome is uncertain, re-read "
+            "list_trust_transactions before anything else."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": _id("The trust account (get_trust_snapshot)."),
+                "direction": {
+                    "type": "string", "enum": _TRUST_DIRECTIONS,
+                    "description": "recette (money in) or déboursé (money out).",
+                },
+                "purpose": {
+                    "type": "string", "enum": _TRUST_ENTRY_PURPOSES,
+                    "description": (
+                        "Objet. virement_honoraires = a fee payment (a "
+                        "déboursé); intérêts / frais_bancaires carry no "
+                        "dossier."
+                    ),
+                },
+                "amount_cents": _money_arg("Integer cents, > 0."),
+                "date": _date("Day of the bank movement, YYYY-MM-DD."),
+                "method": {
+                    "type": "string", "enum": _TRUST_METHODS,
+                    "description": "How the money moved.",
+                },
+                "dossier_id": _id(
+                    "The client's dossier. Omitted, with client_id, only for "
+                    "intérêts or frais_bancaires."
+                ),
+                "client_id": _id(
+                    "The client whose funds move — a client of dossier_id "
+                    "(get_dossier)."
+                ),
+                **_register_text_props(
+                    "Required, except on a fee payment, where it defaults to "
+                    "the firm (the payee art. 58 allows)."
+                ),
+                "invoice_id": _id(
+                    "Fee payment only, required: the invoice it settles "
+                    "(list_invoices) — never a paper invoice."
+                ),
+                "admin_account_id": _id(
+                    "Fee payment only, required: the operations account the "
+                    "fees reach (get_admin_ledger)."
+                ),
+                "admin_date": _date(
+                    "Fee payment only: the day the fees reached that "
+                    "account, YYYY-MM-DD — default the trust date; never "
+                    "earlier, never future."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["account_id", "direction", "purpose", "amount_cents",
+                         "date", "method", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "record_trust_entry",
+        "scope": SCOPE_COMPTABILITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "a creation: no stored entry to present a version of — the "
+            "model re-reads the account, the dossier and the invoice inside "
+            "its own transaction, and a concurrent write re-runs it"
+        ),
+    },
+    "record_admin_entry": {
+        "title": "Inscrire une écriture d'administration",
+        "description": (
+            "ACCOUNTING — WRITE to the administration ledger (operations "
+            "account, corporate card). Records what HAPPENED, dated the day "
+            "it happened: never future, never on or before the account's "
+            "last completed reconciliation. The kind decides the sign — "
+            "there is no direction: dépense (a déboursé: `category` and "
+            "`ventilation` required), recette_autre, encaissement_facture — "
+            "RECORDS A PAYMENT on the Pallas Athéna invoice `invoice_id` in "
+            "the SAME transaction, up to its balance, which may turn it "
+            "payée (an operations account only; the dossier is the "
+            "invoice's) —, paiement_carte (pays the card `card_account_id` "
+            "FROM the operations account `account_id`: two linked entries). "
+            "`already_cleared_date` records it born compensée at that "
+            "statement date. Corrected with update_admin_entry while still "
+            "editable, otherwise only by reversal; never deleted here. "
+            "idempotency_key REQUIRED."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": _id(
+                    "The administration account (get_admin_ledger) — for a "
+                    "paiement_carte, the operations account that pays."
+                ),
+                "kind": {
+                    "type": "string", "enum": _ADMIN_ENTRY_KINDS,
+                    "description": "What happened; it decides the sign.",
+                },
+                "amount_cents": _money_arg(
+                    "Integer cents, > 0 — taxes included for a dépense."
+                ),
+                "date": _date("Day it happened, YYYY-MM-DD."),
+                "method": {
+                    "type": "string", "enum": _ADMIN_METHODS,
+                    "description": "How the money moved.",
+                },
+                "category": {
+                    "type": "string", "enum": _ADMIN_CATEGORIES,
+                    "description": "dépense only, required.",
+                },
+                **_ventilation_props(),
+                "invoice_id": _id(
+                    "encaissement_facture only, required: the invoice paid "
+                    "(list_invoices)."
+                ),
+                "card_account_id": _id(
+                    "paiement_carte only, required: the card paid "
+                    "(get_admin_ledger)."
+                ),
+                "dossier_id": _id(
+                    "dépense / recette_autre only: an optional dossier link."
+                ),
+                "supplier_invoice_ref": {
+                    "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
+                    "description": "The supplier's own invoice number.",
+                },
+                **_register_text_props(
+                    "Required, except on a paiement_carte, which takes none "
+                    "(its two accounts name each other)."
+                ),
+                "already_cleared_date": _date(
+                    "The bank statement date, YYYY-MM-DD, when the movement "
+                    "already cleared (not before `date`). Not for a "
+                    "paiement_carte: each leg clears on its own statement."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["account_id", "kind", "amount_cents", "date",
+                         "method", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "record_admin_entry",
+        "scope": SCOPE_COMPTABILITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "a creation: no stored entry to present a version of — the "
+            "model re-reads the account and the invoice inside its own "
+            "transaction, and a concurrent payment re-runs it"
+        ),
+    },
+    "update_admin_entry": {
+        "title": "Corriger une écriture d'administration",
+        # idempotentHint (the update_note precedent): values already stored
+        # write nothing, and every change demands the CURRENT etag — an
+        # identical second call is refused, never applied twice.
+        "annotations": {"idempotentHint": True},
+        "description": (
+            "ACCOUNTING — WRITE. REPLACES the fields you name on ONE "
+            "administration entry, against `expected_etag` "
+            "(get_admin_ledger); a field you omit is left alone, values "
+            "already stored write nothing, and every change is kept in the "
+            "entry's revision trail. Only an EDITABLE entry: en circulation, "
+            "after the last completed reconciliation, linked to no invoice, "
+            "fee payment or card payment, part of no reversal — anything "
+            "else is corrected by reverse_register_entry. `kind` moves only "
+            "between dépense and recette_autre (its sign follows). Changing "
+            "a dépense's amount, or making an entry a dépense, REQUIRES "
+            "`ventilation`. idempotency_key REQUIRED."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tx_id": _id("The entry (get_admin_ledger)."),
+                **_expected_etag_prop(_ADMIN_ETAG_READERS),
+                "date": _date("New date, YYYY-MM-DD."),
+                "kind": {"type": "string", "enum": _ADMIN_EDIT_KINDS,
+                         "description": "New kind; its sign follows."},
+                "amount_cents": _money_arg("New amount, integer cents."),
+                "method": {"type": "string", "enum": _ADMIN_METHODS,
+                           "description": "New method."},
+                "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
+                             "description": "New dépense category."},
+                **_ventilation_props(),
+                "dossier_id": {
+                    "type": "string", "maxLength": 64,
+                    "description": "New dossier link; '' removes it.",
+                },
+                "supplier_invoice_ref": {
+                    "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
+                    "description": "The supplier's own invoice number.",
+                },
+                **_register_text_props(),
+                **_write_protocol_props(),
+            },
+            "required": ["tx_id", "expected_etag", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "update_admin_entry",
+        "scope": SCOPE_COMPTABILITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_REQUIRED,
+        "etag_readers": _ADMIN_ETAG_READERS,
+    },
+    "clear_register_entries": {
+        "title": "Compenser des écritures",
+        "description": (
+            "ACCOUNTING — WRITE. Marks 1 to 50 entries of ONE account "
+            "« compensée » at `cleared_date` — the date the BANK STATEMENT "
+            "shows: on or after each entry's date, never future, after the "
+            "last completed reconciliation. All or nothing: one entry that "
+            "cannot be cleared refuses the call, each named. There is no "
+            "« un-clear ». In the trust register, clearing a deposit makes "
+            "its funds AVAILABLE for a déboursé (`released_funds` says "
+            "which): never clear what the statement does not show. "
+            "idempotency_key REQUIRED."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "register": {
+                    "type": "string", "enum": _REGISTERS,
+                    "description": (
+                        "trust (list_trust_transactions) or admin "
+                        "(get_admin_ledger)."
+                    ),
+                },
+                "tx_ids": {
+                    "type": "array", "minItems": 1,
+                    "maxItems": REGISTER_CLEAR_MAX,
+                    "items": {"type": "string", "maxLength": 64,
+                              "description": "An entry id."},
+                    "description": (
+                        f"1 to {REGISTER_CLEAR_MAX} distinct entries of one "
+                        "account, en circulation."
+                    ),
+                },
+                "cleared_date": _date(
+                    "The bank statement date, YYYY-MM-DD. Required."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["register", "tx_ids", "cleared_date",
+                         "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "clear_register_entries",
+        "scope": SCOPE_COMPTABILITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "a status TARGET decided inside the model's transaction: an "
+            "entry no longer en circulation is refused there, so no stale "
+            "view can clear it twice"
+        ),
+    },
+    "reverse_register_entry": {
+        "title": "Contre-passer une écriture",
+        "description": (
+            "ACCOUNTING — WRITE. The ONLY correction of a register entry: an "
+            "opposite « Correction » entry; the original and its reversal "
+            "stay in the register for good. An entry en circulation and its "
+            "reversal both become annulée; a compensée one stays compensée "
+            "and its reversal enters en circulation (a real movement to "
+            "come). A trust reversal is dated today; an administration one "
+            "may carry `reversal_date`. A fee payment reverses WITH its "
+            "administration recette(s) and the payment on each invoice, in "
+            "ONE transaction; a card-payment leg carries its pair; an "
+            "encaissement reduces its invoice's payment. Refused: a "
+            "correction, an entry already reversed, the administration "
+            "recette of a fee payment (reverse its trust entry), a leg of a "
+            "transfer between dossiers (the application's). A trust "
+            "reversal skips the cleared-funds control: a warning says when "
+            "the client's cleared balance turns negative. idempotency_key "
+            "REQUIRED."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "register": {
+                    "type": "string", "enum": _REGISTERS,
+                    "description": (
+                        "trust (list_trust_transactions) or admin "
+                        "(get_admin_ledger)."
+                    ),
+                },
+                "tx_id": _id("The entry to reverse."),
+                "reason": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": REVERSAL_REASON_MAX_CHARS,
+                    "description": "Why, in French — printed in the register.",
+                },
+                "reversal_date": _date(
+                    "admin only, YYYY-MM-DD: between the original's date and "
+                    "today, after the last completed reconciliation "
+                    "(default today)."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["register", "tx_id", "reason", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "reverse_register_entry",
+        "scope": SCOPE_COMPTABILITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "a reversal decided inside the model's transaction on the stored "
+            "entry: one already reversed is refused there, and its status "
+            "decides the reversal's"
+        ),
+    },
 }
 
 
@@ -6280,17 +6771,19 @@ TOOLS: dict[str, dict] = {
 # entries, behind their OWN scope and their own kill switch. DERIVED from the
 # declared scope, never listed by hand — a tool joins by declaring
 # ``"scope": SCOPE_COMPTABILITE``, which is also what gates it at
-# tools/call. Every member is ALSO a member of WRITE_TOOLS (pinned by
-# tests/test_mcp_framework_guards: a non-read scope IS the write gate), so the
-# write protocol, the write audit, the write-time token revalidation and the
-# master switch MCP_WRITE_ENABLED all reach it by construction.
-#
-# EMPTY until plan lot 5: the scope, the switch and the consent box ship
-# dormant, and nothing lands under them before the model fixes they rely on.
+# tools/call. Since plan lot 5b: five WRITES — each also a member of
+# WRITE_TOOLS (the ACCOUNTING family of mcp/disclosure), so the write
+# protocol, the write audit, the write-time token revalidation and the master
+# switch MCP_WRITE_ENABLED reach it by construction — and ONE read,
+# get_admin_ledger, which carries the scope for the data it shows (the
+# administration ledger is not under athena:read) and, a read, is untouched
+# by the write switch. tests/test_mcp_framework_guards pins that split.
 ACCOUNTING_TOOLS: frozenset[str] = frozenset(
     name for name, spec in TOOLS.items()
     if spec.get("scope") == SCOPE_COMPTABILITE
 )
+# The accounting WRITES alone — the subset the write protocol runs.
+ACCOUNTING_WRITE_TOOLS: frozenset[str] = ACCOUNTING_TOOLS & WRITE_TOOLS
 
 # The kill switches a tool can be off under, by their environment names —
 # what the tools/call refusal says, so the operator reads the variable to

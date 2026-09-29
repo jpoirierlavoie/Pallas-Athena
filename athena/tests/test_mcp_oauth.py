@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+import markupsafe
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +27,8 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp as mcp_pkg
     import mcp.bearer as bearer
     import mcp.store as store
+    import mcp.tools as tools
+    from mcp import disclosure
 
 from tests import _dummy_accounting  # noqa: E402
 
@@ -831,13 +834,13 @@ def test_refresh_rotation_preserves_the_write_grant(client, fake):
     )
 
 
-# ── Accounting grant (athena:comptabilite) — dormant until plan lot 5 ────
+# ── Accounting grant (athena:comptabilite) ───────────────────────────────
 #
 # Its OWN unticked box, offered only while MCP_WRITE_ENABLED and
 # MCP_COMPTABILITE_ENABLED are on AND at least one tool carries the scope.
-# No real tool does before lot 5, so the rendering half is exercised on the
-# DUMMY accounting tool of tests/_dummy_accounting.py; the dormant half on
-# the real registry.
+# Since lot 5b six real tools do; the gates are exercised on the real
+# registry, and — where the dispatch or the title must be observed without a
+# register — on the DUMMY accounting tool of tests/_dummy_accounting.py.
 
 _ACCOUNTING_BLOCK_RE = re.compile(
     r'<div class="[^"]*">\s*<p class="font-medium">Comptabilité \(facultatif\)</p>'
@@ -866,12 +869,14 @@ def _granted(client, fake, client_doc, challenge, *, scope="athena:read", **tick
     return fake.codes[store.sha256_hex(code)]["scope"]
 
 
-def test_the_accounting_box_is_dormant_while_no_tool_carries_the_scope(fake):
-    """The real registry — lots 0 to 4 — with the switch ON: no block, no
-    box, and a forged tick grants nothing. A box that granted nothing would
-    be a false statement, and a scope minted under it would silently reach
-    the first accounting tool the day it deploys."""
-    client = _make_app(MCP_COMPTABILITE_ENABLED=True).test_client()
+def test_the_accounting_box_is_absent_while_its_switch_is_off(fake):
+    """REWRITTEN in lot 5b. It read « dormant while no tool carries the
+    scope » — the real registry had none, so the switch ON rendered nothing.
+    Six tools carry it now, and what keeps the box off is the SWITCH, whose
+    default is "false": no block, no box, and a forged tick grants nothing.
+    A scope minted with the switch off would reach the tools the day it is
+    turned on, under a consent screen that never described them."""
+    client = _make_app(MCP_COMPTABILITE_ENABLED=False).test_client()
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     form, page = _consent_form(client, client_doc, challenge)
@@ -888,6 +893,43 @@ def test_the_accounting_box_is_dormant_while_no_tool_carries_the_scope(fake):
     form["grant_comptabilite"] = "on"          # forged past the missing control
     code = _code_from(client.post("/oauth/authorize", data=form))
     assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:write"
+
+
+def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake):
+    """Lot 5b, the real registry with the switch ON: the block is assembled
+    like the write block — the ACCOUNTING family's partial (with the D14
+    rules beside the capability they bound), the French title of EVERY tool
+    under the scope, and the promises the grant keeps — and its label is
+    the derived summary."""
+    client = _make_app(MCP_COMPTABILITE_ENABLED=True).test_client()
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge)
+    body = page.data.decode("utf-8")
+    block = " ".join(_ACCOUNTING_BLOCK_RE.search(body).group(0).split())
+    for name in sorted(tools.ACCOUNTING_TOOLS):
+        # As Jinja renders it: autoescaped (an apostrophe is &#39;).
+        assert str(markupsafe.escape(tools.TOOLS[name]["title"])) in block, name
+    for fragment in (
+        "réellement survenues à la banque", "art.&nbsp;58",
+        "<strong>dans la même opération</strong>",
+        "fonds <strong>compensés</strong>",
+        "qui n'impute aucune provision",
+        f"Compenser</strong> jusqu'à {tools.REGISTER_CLEAR_MAX}",
+        "date du relevé bancaire",
+        "période déjà <strong>conciliée</strong>",
+        "marquée comme provenant de Claude",
+        "Une écriture inscrite par erreur ne s'efface pas",
+    ):
+        assert fragment in block, fragment
+    for never in disclosure.accounting_nevers():
+        assert " ".join(never.fr.split()) in block, never.key
+    label = " ".join(_ACCOUNTING_LABEL_RE.search(body).group(0).split())
+    assert " ".join(str(disclosure.comptabilite_summary_fr()).split()) in label
+    # The write block's « jamais » list keeps the GENERAL promises only.
+    write_block = body[:body.index("Comptabilité (facultatif)")]
+    for never in disclosure.accounting_nevers():
+        assert never.fr not in write_block, never.key
 
 
 def test_the_accounting_box_renders_unticked_and_lists_its_tools(fake, monkeypatch):
