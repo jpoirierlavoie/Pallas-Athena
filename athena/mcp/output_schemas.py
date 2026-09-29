@@ -1444,9 +1444,18 @@ def _scrubbed_properties() -> dict:
 # ── Lot 3b — BILL fragments ─────────────────────────────────────────────
 
 
+# OPTIONAL in the schema though always emitted (finitions, contracts-4):
+# lot 3b added them to two tools already in production, and a same-key
+# retry within 24 h replays the payload STORED before the deploy — without
+# them. Required there, a strict SDK client would reject that replay, and
+# the model's natural reaction — a retry under a NEW key — writes again.
+_BILLING_MOVE_OPTIONAL = ("moved", "previous_dossier_id")
+
+
 def _billing_move_keys() -> dict[str, Any]:
     """What update_time_entry / update_expense say about a MOVE (lot 3b):
-    always emitted, false/null on an edit that stays in its dossier."""
+    always emitted, false/null on an edit that stays in its dossier — and
+    optional in the schema (:data:`_BILLING_MOVE_OPTIONAL`)."""
     return {
         "moved": _bool(
             "true = this call filed the row under another dossier (its "
@@ -2719,7 +2728,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         **_billing_move_keys(),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
-    }),
+    }, optional=_BILLING_MOVE_OPTIONAL),
 
     "update_expense": _obj({
         "updated": {"type": "boolean", "enum": [True]},
@@ -2739,7 +2748,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         **_billing_move_keys(),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
-    }),
+    }, optional=_BILLING_MOVE_OPTIONAL),
 
     # ── Reclassement de phase (août 2026) ──────────────────────────────
     # The one write family whose entity may come back with
@@ -3956,7 +3965,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         },
         "warnings": _arr(_str(), "French; empty when clean."),
         **_write_protocol_keys(),
-    }),
+    # `reused` and `invoice` came with lot 3 (invoice_note) to a tool lot 2
+    # shipped: OPTIONAL though always emitted — a replay stored before them
+    # lacks them (finitions, contracts-4).
+    }, optional=("reused", "invoice")),
 
     # ── Lot 2A (T9) — FILES: the upload ticket (plan D4) ────────────────
     # `upload_url` is the ONE capability URL any output carries — the
@@ -4179,8 +4191,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         },
         "warnings": _arr(_str(), "French; empty when clean."),
         **_write_protocol_keys(),
+    # `templatized` came with lot 2B to a tool lot 2A shipped: NOT required,
+    # for a replay stored before it (finitions, contracts-4) — the handler
+    # still emits it on every call.
     }, required=["created", "entity_type", "entity", "source_document_id",
-                 "leak_scan", "scrubbed_properties", "templatized",
+                 "leak_scan", "scrubbed_properties",
                  "warnings", "idempotent_replay"]),
     "update_template": _obj({
         "updated": {"type": "boolean", "enum": [True]},
