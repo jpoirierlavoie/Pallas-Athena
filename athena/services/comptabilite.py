@@ -199,9 +199,10 @@ def enregistrer_paiement_honoraires(
     external = (data.get("invoice_external_ref") or "").strip()
     if number or (data.get("invoice_id") and not external):
         try:
+            # Both named → refused as ambiguous, never one silently preferred.
             invoice = resolve_fee_invoice(
                 dossier_id=data.get("dossier_id"),
-                invoice_id=data.get("invoice_id") if not number else None,
+                invoice_id=data.get("invoice_id") or None,
                 invoice_number=number or None,
             )
         except ComptabiliteRefus as refusal:

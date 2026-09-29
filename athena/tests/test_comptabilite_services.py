@@ -441,3 +441,12 @@ def test_le_service_n_atteint_aucune_collection_dav():
     modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     modules |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     assert not any((m or "").startswith("dav") for m in modules), modules
+
+
+def test_une_facture_nommee_deux_fois_est_ambigue_jamais_choisie(fake):
+    """Par son identifiant ET par son numéro : refusé, jamais l'un préféré
+    en silence à l'autre."""
+    report = svc.enregistrer_paiement_honoraires(
+        {**_fee(), "invoice_id": "inv9"}, admin_account_id="ops1")
+    assert not report["ok"] and report["reason"] == "facture_ambiguë"
+    assert fake.peek_collection("admin_transactions") == {}
