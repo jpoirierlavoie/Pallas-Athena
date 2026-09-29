@@ -569,7 +569,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # lot 5a: + re-proof of completed reconciliations,
 │   │   │                           # clearing dates vs closed periods, date order,
 │   │   │                           # lot-0b rules on history (NOTES), per-client
-│   │   │                           # balances + shortfalls. Exit 0 / 1 écart / 2 notes
+│   │   │                           # balances + shortfalls, and (10) every fee
+│   │   │                           # payment ↔ its admin recettes (D-4: Σ standing
+│   │   │                           # == amount; none once reversed; pre-D-4 absence
+│   │   │                           # = NOTE). Exit 0 / 1 écart / 2 notes
 │   │   │                           # (a reconciliation completed before the as-of
 │   │   │                           # rework, 945572a, is a NOTE, never an écart)
 │   │   ├── verify_admin_integrity.py  # Août 2026: recompute + cross-check du registre d'administration

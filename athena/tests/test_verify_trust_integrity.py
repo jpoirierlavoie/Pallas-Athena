@@ -44,7 +44,7 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import trust
+    from models import admin_ledger, trust
     from scripts import verify_trust_integrity as vti
 
 from tests._fake_firestore import install  # noqa: E402
@@ -90,6 +90,11 @@ def fake(monkeypatch):
             "trust_balance": 0, "trust_balance_by_client": {},
             "trust_cleared_by_client": {},
         })
+    # The operations account a fee payment's recette lands in (D-4).
+    f.seed("admin_accounts/ops1", {
+        "id": "ops1", "name": "Opérations", "status": "actif",
+        "account_type": "opérations", "ledger_balance": 0, "etag": "a0",
+    })
     return f
 
 
@@ -235,10 +240,12 @@ def _transfer(fake) -> dict:
 
 def test_un_registre_coherent_passe_sans_ecart_ni_note(fake, monkeypatch, capsys):
     """Le témoin : création, compensation avant la clôture, conciliation,
-    déboursé, virement à deux volets et contre-passation — rien à dire."""
+    déboursé, paiement d'honoraires adossé à sa recette d'administration,
+    virement à deux volets et contre-passation — rien à dire."""
     _september(fake, monkeypatch)
     deb = _create(direction="déboursé", amount=30000, purpose="déboursé_tiers",
                   counterparty="Huissier", date=_d(2026, 9, 10))
+    _fee_payment(fake, amount=20000, date=_d(2026, 9, 10))
     _transfer(fake)
     _, errs = trust.reverse_transaction(deb["id"], "chèque perdu")
     assert errs == []
@@ -444,17 +451,41 @@ def test_un_numero_de_sequence_duplique_est_un_ecart(fake, monkeypatch, capsys):
 # ══════════════════════════════════════════════════════════════════════
 
 
-def _fee_payment(fake, **over) -> dict:
+def _fee_payment(fake, *, recette: bool = True, **over) -> dict:
+    """A fee payment the way the web writes it since D-4: the trust entry,
+    then its administration recette linked by ``trust_transaction_id``
+    (check 10). ``recette=False`` is the fee payment whose recette never
+    came (the fail-open after-commit write)."""
     fake.seed("invoices/inv1", {
         "id": "inv1", "invoice_number": "2026-F001", "dossier_id": "dos1",
         "status": "envoyée", "total": 50000, "amount_due": 50000,
         "amount_paid": 0, "retainer_applied": 0,
     })
-    return _create(**{
+    fee = _create(**{
         "direction": "déboursé", "amount": 30000, "purpose": "virement_honoraires",
         "counterparty": "Me Avocat", "invoice_id": "inv1", "date": _d(2026, 9, 10),
         **over,
     })
+    if recette:
+        _admin_recette(fee)
+    return fee
+
+
+def _admin_recette(fee: dict, **over) -> dict:
+    """The operations-account recette mirroring *fee*, by the real admin
+    model (the link travels as the keyword, as routes/trust sends it)."""
+    data = {
+        "account_id": "ops1",
+        "kind": "encaissement_facture" if fee.get("invoice_id") else "recette_autre",
+        "amount": fee["amount"], "method": "virement", "counterparty": "Fidéicommis",
+        "date": fee["date"], "description": "Paiement d'honoraires du fidéicommis",
+        "invoice_id": fee.get("invoice_id"),
+    }
+    data.update(over)
+    recette, errs = admin_ledger.create_transaction(
+        data, trust_transaction_id=fee["id"])
+    assert errs == [], errs
+    return recette
 
 
 def test_un_paiement_d_honoraires_retire_par_traite_est_une_note_art_58(
@@ -566,11 +597,24 @@ def test_un_seul_volet_d_un_virement_contre_passe_est_une_note(fake, monkeypatch
 
 def test_une_ecriture_annulee_n_est_pas_un_retrait(fake, monkeypatch, capsys):
     """Un chèque annulé n'a jamais quitté le compte : les règles de retrait
-    ne s'y appliquent pas — ni à sa correction, qui copie son mode."""
+    ne s'y appliquent pas — ni à sa correction, qui copie son mode.
+
+    Réécrit à la revue du lot 5a (contrôle 10) : la contre-passation du
+    paiement d'honoraires entraîne, comme la route (``routes/trust.
+    _contrepasser_recette_administration``), celle de sa recette
+    d'administration — sans elle, l'argent revenu au fidéicommis resterait
+    compté au compte d'opérations, ce que le contrôle 10 signale."""
     _september(fake, monkeypatch)
     fee = _fee_payment(fake)
     _, errs = trust.reverse_transaction(fee["id"], "chèque perdu")
     assert errs == []
+    recette = next(
+        r for r in fake.peek_collection("admin_transactions").values()
+        if r.get("trust_transaction_id") == fee["id"])
+    _, errs = admin_ledger.reverse_transaction(
+        recette["id"], "Contre-passation du virement au fidéicommis",
+        allow_linked=True)
+    assert errs == [], errs
     assert fake.peek(_tx(fee["id"]))["status"] == "annulée"
     _set(fake, _tx(fee["id"]), method="traite")
     code, out = _run(capsys)
@@ -627,3 +671,138 @@ def test_les_codes_de_sortie_sont_epingles(fake, monkeypatch, capsys):
     assert _run(capsys)[0] == 2
     _set(fake, "trust_accounts/acc1", book_balance=1)
     assert _run(capsys)[0] == 1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 10 — le lien D-4 : chaque paiement d'honoraires et sa recette
+# d'administration (revue du lot 5a)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _recettes_of(fake, fee_id: str) -> list[dict]:
+    return [r for r in fake.peek_collection("admin_transactions").values()
+            if r.get("trust_transaction_id") == fee_id]
+
+
+def test_un_paiement_d_honoraires_sans_recette_apres_la_regle_d4_est_un_ecart(
+    fake, monkeypatch, capsys
+):
+    """La recette d'administration s'inscrit APRÈS le commit du fidéicommis
+    et échoue ouvert (un bandeau) : l'argent a quitté le fidéicommis, le
+    compte d'opérations ne l'a jamais vu. Le script le disait « ✅ »."""
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake, recette=False)
+    _set(fake, _tx(fee["id"]), created_at=_at(9, 10))
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert (f"(écriture {fee['id']}): paiement d'honoraires de 30000 cents sorti "
+            f"du fidéicommis sans aucune recette d'administration qui l'adosse "
+            f"(D-4)") in out.split("Notes à revoir")[0]
+
+
+def test_un_paiement_d_honoraires_sans_recette_avant_la_regle_d4_est_une_note(
+    fake, monkeypatch, capsys
+):
+    """Avant le 2026-08-17 11 h 23 (commit e719588), le compte
+    d'administration était facultatif : l'absence est de l'historique."""
+    _today(monkeypatch, "2026-08-17T16:00:00+00:00")
+    dep = _create(amount=100000, date=_d(2026, 8, 10))
+    _clear(dep["id"], _d(2026, 8, 11))
+    fee = _fee_payment(fake, recette=False, date=_d(2026, 8, 17))
+    _set(fake, _tx(dep["id"]), created_at=_at(8, 10), updated_at=_at(8, 11))
+    before_d4 = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)  # 11 h HAE
+    _set(fake, _tx(fee["id"]), created_at=before_d4, updated_at=before_d4)
+    code, out = _run(capsys)
+    assert code == 2, out
+    notes = out.split("Notes à revoir", 1)[1]
+    assert f"(écriture {fee['id']}): paiement d'honoraires de 30000 cents" in notes
+    assert "avant la règle D-4 du 2026-08-17" in notes
+
+
+def test_une_recette_qui_ne_couvre_pas_le_paiement_est_un_ecart(
+    fake, monkeypatch, capsys
+):
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake, recette=False)
+    _admin_recette(fee, amount=20000)
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert (f"(écriture {fee['id']}): paiement d'honoraires de 30000 cents, mais "
+            f"les recettes d'administration encore debout qui le portent "
+            f"totalisent 20000 cents") in out
+
+
+def test_un_virement_partage_entre_deux_recettes_passe_mais_une_seule_contre_passee_non(
+    fake, monkeypatch, capsys
+):
+    """La forme de la reprise : un virement qui acquitte deux factures porte
+    deux recettes dont la somme égale le virement au cent près — propre. La
+    cascade de contre-passation de la route ne contre-passe que la PREMIÈRE
+    (``find_by_trust_transaction``) : la seconde reste debout et le compte
+    d'opérations compte l'argent revenu au fidéicommis."""
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake, recette=False)
+    first = _admin_recette(fee, amount=10000)
+    _admin_recette(fee, amount=20000)
+    assert _run(capsys)[0] == 0
+    _, errs = trust.reverse_transaction(fee["id"], "chèque perdu")
+    assert errs == []
+    _, errs = admin_ledger.reverse_transaction(
+        first["id"], "Contre-passation du virement au fidéicommis", allow_linked=True)
+    assert errs == []
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert (f"(écriture {fee['id']}): paiement d'honoraires annulé, mais 20000 "
+            f"cents de recette d'administration liée restent debout") in out
+
+
+def test_un_paiement_contre_passe_dont_la_recette_reste_debout_est_un_ecart(
+    fake, monkeypatch, capsys
+):
+    """La cascade de la route échoue ouverte : la contre-passation du
+    fidéicommis tient, la recette d'administration aussi."""
+    _september(fake, monkeypatch)
+    fee = _fee_payment(fake)
+    _clear(fee["id"], _d(2026, 9, 11))
+    _, errs = trust.reverse_transaction(fee["id"], "honoraires remboursés")
+    assert errs == []
+    assert fake.peek(_tx(fee["id"]))["status"] == "compensée"
+    code, out = _run(capsys)
+    assert code == 1, out
+    [recette] = _recettes_of(fake, fee["id"])
+    assert (f"(écriture {fee['id']}): paiement d'honoraires contre-passé, mais "
+            f"30000 cents de recette d'administration liée restent debout "
+            f"({recette['id']})") in out
+
+
+def test_une_recette_liee_a_une_ecriture_qui_n_est_pas_un_paiement_est_un_ecart(
+    fake, monkeypatch, capsys
+):
+    r1, _, _ = _september(fake, monkeypatch)
+    recette = _admin_recette({"id": r1["id"], "amount": 5000, "date": _d(2026, 9, 10)})
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert (f"recette(s) d'administration {recette['id']} (5000 cents) liée(s) à "
+            f"l'écriture du fidéicommis {r1['id']}, qui n'est pas un paiement "
+            f"d'honoraires du registre") in out
+
+
+def test_un_registre_d_administration_illisible_est_un_ecart(fake, monkeypatch, capsys):
+    """Un contrôle qui ne peut pas lire doit le dire — jamais passer."""
+    _september(fake, monkeypatch)
+    _fee_payment(fake)
+    server = fake._fake_server
+    real = server.run_query
+
+    def failing(request, metadata=None, **kw):
+        if request["parent"].endswith("/documents") and any(
+            s.collection_id == "admin_transactions"
+            for s in request["structured_query"].from_
+        ):
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(server, "run_query", failing)
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert "registre d'administration illisible (RuntimeError)" in out

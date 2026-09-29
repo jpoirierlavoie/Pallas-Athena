@@ -78,6 +78,22 @@ Checks 5-9 (lot 5a, 2026-09-28):
      is a trust shortfall the lawyer must cover: reversing a compensée
      recette bypasses the overdraft control by design, so the register can
      reach one.
+ 10. the D-4 linkage between a trust fee payment and the administration
+     register (lot 5a review). A « paiement d'honoraires » moves money OUT of
+     trust INTO the operations account, so the admin register must hold,
+     linked by ``trust_transaction_id``, standing recettes adding up to
+     exactly its amount while the fee payment stands — and none once it is
+     reversed or annulled. The web writes that recette AFTER the trust commit
+     and fails open (a banner), and the reversal cascade reverses only the
+     FIRST linked recette, so both directions can drift in silence: the
+     operations account then under- or over-states the firm's cash, and the
+     invoice's recorded payment follows it. A fee payment with NO linked
+     recette at all, written before the D-4 rule (commit e719588, 2026-08-17
+     11:23 HAE — the admin account became mandatory; the reprise of the same
+     day back-filled the history), is a NOTE; every other mismatch, and a
+     standing recette linked to an entry that is not a trust fee payment, is
+     an écart. An unreadable admin register is an écart too: a check that
+     cannot read must say so, never pass.
 """
 
 import sys
@@ -87,7 +103,7 @@ from typing import Optional
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import db, trust
+from models import admin_ledger, db, trust
 from models.dossier import get_dossier
 from tz import to_mtl
 from utils.deadlines import today_mtl
@@ -96,6 +112,15 @@ from utils.deadlines import today_mtl
 # « Fidéicommis : conciliation rétroactive (as-of) », 2026-07-29 22:37:43
 # -04:00). A reconciliation completed before it ran the old completion code.
 AS_OF_REWORK_AT = datetime(2026, 7, 30, 2, 37, 43, tzinfo=timezone.utc)
+
+# The instant the D-4 rule was committed (e719588, « un paiement d'honoraires
+# nomme son compte d'administration », 2026-08-17 11:23:44 -04:00): from then
+# on a fee payment could not be written without naming the admin account its
+# recette goes to. One written before it may have none (check 10).
+D4_RULE_AT = datetime(2026, 8, 17, 15, 23, 44, tzinfo=timezone.utc)
+
+# The trust purpose whose money lands in the administration register.
+_FEE_PAYMENT_PURPOSE = "virement_honoraires"
 
 # The purposes an entry can be BORN compensée under (a transfer leg, and the
 # correction of a two-leg transfer): cleared at creation, never by a clear.
@@ -489,6 +514,104 @@ def _check_client_balances(couple_rows: dict, dossier_book: dict, problems: list
             )
 
 
+# ── check 10 ──────────────────────────────────────────────────────────────
+
+
+def _admin_rows_by_trust_link(problems: list) -> Optional[dict]:
+    """Every administration entry carrying a ``trust_transaction_id``, keyed
+    by it — ONE stream of the (small) admin register, read-only. ``None``
+    when the read fails, reported as an écart: the linkage is then unknown,
+    and an unknown linkage must never read as a clean one."""
+    try:
+        snaps = list(db.collection(admin_ledger.TRANSACTIONS_COLLECTION).stream())
+    except Exception as exc:
+        problems.append(
+            f"registre d'administration illisible ({type(exc).__name__}) — le "
+            f"lien entre les paiements d'honoraires et leurs recettes "
+            f"d'administration (D-4) n'a pas pu être vérifié"
+        )
+        return None
+    by_link: dict = defaultdict(list)
+    for snap in snaps:
+        row = snap.to_dict() or {}
+        link = row.get("trust_transaction_id")
+        if link:
+            by_link[link].append({**row, "id": row.get("id") or snap.id})
+    return by_link
+
+
+def _admin_standing(row: dict) -> bool:
+    """An admin recette whose effect still stands: neither annulée nor
+    contre-passée (a compensée recette corrected by contre-passation stays
+    « compensée » with ``reversed_by_id`` set — the ``sum_invoice_receipts``
+    predicate)."""
+    return row.get("status") != "annulée" and not row.get("reversed_by_id")
+
+
+def _check_fee_payment_linkage(
+    fee_payments: list[tuple[str, dict]], by_link: dict,
+    problems: list, notes: list,
+) -> None:
+    fee_ids = {tx.get("id") for _aid, tx in fee_payments}
+    for aid, tx in fee_payments:
+        where = _where(aid, tx)
+        amount = int(tx.get("amount", 0))
+        linked = by_link.get(tx.get("id"), [])
+        standing = [r for r in linked if _admin_standing(r)]
+        standing_total = sum(int(r.get("amount", 0)) for r in standing)
+        fee_standing = tx.get("status") != "annulée" and not tx.get("reversed_by_id")
+
+        if fee_standing:
+            if standing_total == amount:
+                continue
+            if not linked:
+                line = (
+                    f"{where}: paiement d'honoraires de {amount} cents sorti du "
+                    f"fidéicommis sans aucune recette d'administration qui "
+                    f"l'adosse (D-4) — le compte d'opérations ne voit pas cet "
+                    f"argent"
+                )
+                created = _instant(tx.get("created_at"))
+                if created is not None and created >= D4_RULE_AT:
+                    problems.append(line)
+                else:
+                    notes.append(
+                        f"{line}. Inscrit avant la règle D-4 du 2026-08-17 "
+                        f"(commit e719588), quand le compte d'administration "
+                        f"était facultatif ; la reprise des encaissements du "
+                        f"même jour devait l'adosser — à revoir avec l'avocat."
+                    )
+                continue
+            problems.append(
+                f"{where}: paiement d'honoraires de {amount} cents, mais les "
+                f"recettes d'administration encore debout qui le portent "
+                f"totalisent {standing_total} cents (D-4) — le compte "
+                f"d'opérations et le paiement inscrit sur la facture en "
+                f"divergent d'autant"
+            )
+        elif standing_total:
+            ids = ", ".join(str(r.get("id")) for r in standing)
+            problems.append(
+                f"{where}: paiement d'honoraires "
+                f"{'annulé' if tx.get('status') == 'annulée' else 'contre-passé'}"
+                f", mais {standing_total} cents de recette d'administration liée "
+                f"restent debout ({ids}) — l'argent revenu au fidéicommis est "
+                f"encore compté au compte d'opérations"
+            )
+
+    for link in sorted(set(by_link) - fee_ids):
+        standing = [r for r in by_link[link] if _admin_standing(r)]
+        if not standing:
+            continue
+        ids = ", ".join(str(r.get("id")) for r in standing)
+        total = sum(int(r.get("amount", 0)) for r in standing)
+        problems.append(
+            f"recette(s) d'administration {ids} ({total} cents) liée(s) à "
+            f"l'écriture du fidéicommis {link}, qui n'est pas un paiement "
+            f"d'honoraires du registre — un lien que rien n'adosse"
+        )
+
+
 # ── the run ───────────────────────────────────────────────────────────────
 
 
@@ -505,6 +628,7 @@ def collect() -> tuple[list[str], list[str]]:
     couple_rows: dict[tuple, list[dict]] = defaultdict(list)
     dossier_book: dict[str, int] = defaultdict(int)
     invoices: dict = {}
+    fee_payments: list[tuple[str, dict]] = []
 
     for account in accounts:
         aid = account["id"]
@@ -536,6 +660,8 @@ def collect() -> tuple[list[str], list[str]]:
         for t in txs:
             if t.get("dossier_id") and t.get("client_id"):
                 couple_rows[(t["dossier_id"], t["client_id"])].append(t)
+            if t.get("purpose") == _FEE_PAYMENT_PURPOSE:
+                fee_payments.append((aid, t))
 
         try:
             recs = trust.list_reconciliations(aid)
@@ -594,6 +720,11 @@ def collect() -> tuple[list[str], list[str]]:
 
     # 9. Per-client balances from the dossier side, and shortfalls.
     _check_client_balances(couple_rows, dossier_book, problems)
+
+    # 10. Every fee payment's administration recette (D-4), both directions.
+    by_link = _admin_rows_by_trust_link(problems)
+    if by_link is not None:
+        _check_fee_payment_linkage(fee_payments, by_link, problems, notes)
     return problems, notes
 
 
