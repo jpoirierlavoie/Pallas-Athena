@@ -25,7 +25,13 @@ a half-old, half-new read pass for a finding.
 Checks 1-4 (Phase K) recompute the frozen and denormalized balances:
 
   1. ``balance_after_account`` on every row == the running book balance in
-     ``sequence`` order;
+     ``sequence`` order. ONE mismatch is history, not an écart: until lot 5
+     an inter-dossier transfer stored the pair's NET balance on BOTH legs,
+     so its FIRST leg (the déboursé) reads high by exactly the amount. That
+     signature — a transfer's déboursé leg, its recette leg the next
+     sequence, the stored figure the recomputed one plus the amount — is a
+     NOTE (the register is append-only; new transfers store the exact
+     figure). Any other mismatch stays an écart;
   2. the account's ``book_balance`` / ``bank_balance`` == Σ deltas;
   3. per (dossier, client) couple found in the register:
      ``balance_after_client`` and the dossier's two maps == Σ deltas;
@@ -90,11 +96,13 @@ Checks 5-10 (lot 5a, 2026-09-28):
      trust INTO the operations account, so the admin register must hold,
      linked by ``trust_transaction_id``, standing recettes adding up to
      exactly its amount while the fee payment stands — and none once it is
-     reversed or annulled. The web writes that recette AFTER the trust commit
-     and fails open (a banner), and the reversal cascade reverses only the
-     FIRST linked recette, so both directions can drift in silence: the
-     operations account then under- or over-states the firm's cash, and the
-     invoice's recorded payment follows it. A fee payment with NO linked
+     reversed or annulled. Until lot 5a the web wrote that recette AFTER the
+     trust commit and failed open (a banner), and the reversal cascade
+     reversed only the FIRST linked recette, so history can have drifted in
+     both directions in silence: the operations account then under- or
+     over-states the firm's cash, and the invoice's recorded payment follows
+     it (since lot 5a both are ONE transaction, models/fee_payment, so new
+     entries cannot drift this way). A fee payment with NO linked
      recette at all is a NOTE when it was written before the D-4 rule
      (commit e719588, 2026-08-17 11:23 HAE — the admin account became
      mandatory; the reprise of the same day back-filled the history), or
@@ -195,6 +203,28 @@ def _where(aid: str, tx: dict) -> str:
 def _born_cleared(tx: dict) -> bool:
     """Transfer legs and their pair reversals are created compensée."""
     return bool(tx.get("related_transaction_id")) and tx.get("purpose") in _BORN_CLEARED_PURPOSES
+
+
+def _legacy_transfer_leg(tx: dict, stored: int, expected: int, by_sequence: dict) -> bool:
+    """The one check-1 mismatch that is history: the FIRST leg of a two-leg
+    inter-dossier transfer written before lot 5, which stored the pair's net
+    balance — high by exactly its amount — where the running balance after a
+    déboursé is lower. Recognized by its whole signature, never by a figure
+    alone: a transfer déboursé, linked to a recette leg of the same transfer
+    that is the NEXT sequence (both legs are written together), and a
+    difference of exactly the amount. Anything else is an écart."""
+    if tx.get("purpose") != trust.TRANSFER_PURPOSE or tx.get("direction") != "déboursé":
+        return False
+    pair_id = tx.get("related_transaction_id")
+    if not pair_id:
+        return False
+    pair = by_sequence.get((tx.get("sequence") or 0) + 1)
+    if (not pair or pair.get("id") != pair_id
+            or pair.get("purpose") != trust.TRANSFER_PURPOSE
+            or pair.get("direction") != "recette"
+            or pair.get("related_transaction_id") != tx.get("id")):
+        return False
+    return stored - expected == int(tx.get("amount", 0) or 0)
 
 
 # ── check 5 ───────────────────────────────────────────────────────────────
@@ -779,13 +809,26 @@ def collect() -> tuple[list[str], list[str]]:
 
         # 1. Running account balance (balance_after_account) per row.
         running = trust.recompute_running_balances(txs, "journal")
+        by_sequence = {tx.get("sequence"): tx for tx in txs}
         for tx, expected in zip(txs, running):
             stored = int(tx.get("balance_after_account", 0))
-            if stored != expected:
-                problems.append(
-                    f"compte {aid} seq {tx.get('sequence')}: "
-                    f"balance_after_account stocké {stored} ≠ recalculé {expected}"
+            if stored == expected:
+                continue
+            if _legacy_transfer_leg(tx, stored, expected, by_sequence):
+                notes.append(
+                    f"{_where(aid, tx)}: premier volet d'un virement "
+                    f"inter-dossiers inscrit avant le lot 5 — son solde "
+                    f"courant figé ({stored}) est celui de la paire ({expected} "
+                    f"+ {int(tx.get('amount', 0))}) ; le registre étant en "
+                    f"ajout seul, il le garde (le journal PDF l'imprime tel "
+                    f"quel ; les soldes du compte, du dossier et du client sont "
+                    f"justes)"
                 )
+                continue
+            problems.append(
+                f"compte {aid} seq {tx.get('sequence')}: "
+                f"balance_after_account stocké {stored} ≠ recalculé {expected}"
+            )
 
         # 2. Denormalized account book + bank totals.
         book = _sum(txs, "book")

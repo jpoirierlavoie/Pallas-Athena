@@ -1627,17 +1627,21 @@ Notes:
   reconciliation completed before the as-of rework (commit 945572a,
   2026-07-29 22:37 HAE), which ran under the old « tickable = en circulation
   now » code and may fail a re-proof it was never held to. Read each note with
-  the lawyer; nothing is repaired automatically. One écart is known and is
-  not a balance error: an inter-dossier transfer's FIRST leg reports
-  `balance_after_account stocké X ≠ recalculé X−montant` (check 1, since
-  Phase K) — the transfer stores the pair's net balance on both legs where
-  the running balance after the debit leg is lower by the amount. The account,
+  the lawyer; nothing is repaired automatically. One note is known and is
+  not a balance error: an inter-dossier transfer written BEFORE lot 5 has a
+  FIRST leg whose frozen running balance is high by exactly the amount
+  (check 1, reported as a note since the lot-5 completeness review, an écart
+  before) — the model stored the pair's net balance on both legs where the
+  running balance after the debit leg is lower by the amount. The account,
   dossier and client balances are right, and so is every reconciliation (it
   reads the SECOND leg's figure); what is wrong is the frozen running balance
   of that one leg, which the art. 38 journal PDF prints in its « Solde »
   column (and which trips the PDF's carried-forward cross-check when that leg
   opens a period). The register is append-only, so the historical legs keep
-  it; the model fix for new transfers belongs to lot 5a step 7.
+  it; a transfer made since lot 5 stores the exact figure on both legs, and
+  check 1 recognizes the old defect only by its whole signature (a
+  transfer's debit leg, its recette leg the next sequence, a difference of
+  exactly the amount) — any other mismatch stays an écart.
 - **The fee payment is ONE transaction (lot 5a, step 3):** « Paiement
   d'honoraires » on the trust entry form now writes the trust withdrawal, its
   recette in the operations account and the invoice's payment in ONE

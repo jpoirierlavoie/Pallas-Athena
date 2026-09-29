@@ -2139,6 +2139,15 @@ def create_inter_dossier_transfer(
         from_cleared_after = int(from_cleared.get(from_client_id, 0)) - amount
         to_book_after = int(to_book.get(to_client_id, 0)) + amount
         to_cleared_after = int(to_cleared.get(to_client_id, 0)) + amount
+        # EXACT running balances, as the register reads them in sequence
+        # order (the art. 38 journal prints this figure in its « Solde »
+        # column): the déboursé leg lowers the book by the amount, the
+        # recette leg brings it back. Until lot 5 both legs stored the
+        # pair's NET balance, so the first leg's frozen figure was high by
+        # the amount — verify_trust_integrity check 1 flagged every
+        # transfer since Phase K, and those historical legs (append-only)
+        # keep it: the script reads that exact signature as a NOTE.
+        book_before = int(account.get("book_balance", 0))
 
         leg_a = _build_transaction_doc(
             tx_id=leg_a_id, account_id=account_id, sequence=seq_a, date=today,
@@ -2146,7 +2155,7 @@ def create_inter_dossier_transfer(
             method=method, counterparty=_client_name(to_dossier, to_client_id),
             dossier=from_dossier, dossier_id=from_dossier_id, client_id=from_client_id,
             reference=reference, description=description, invoice_id=None,
-            balance_after_account=int(account.get("book_balance", 0)),  # net 0
+            balance_after_account=book_before - amount,
             balance_after_client=from_book_after, now=now,
             status="compensée", cleared_date=today, related_transaction_id=leg_b_id,
         )
@@ -2156,7 +2165,7 @@ def create_inter_dossier_transfer(
             method=method, counterparty=_client_name(from_dossier, from_client_id),
             dossier=to_dossier, dossier_id=to_dossier_id, client_id=to_client_id,
             reference=reference, description=description, invoice_id=None,
-            balance_after_account=int(account.get("book_balance", 0)),  # net 0
+            balance_after_account=book_before,  # the pair nets to zero
             balance_after_client=to_book_after, now=now,
             status="compensée", cleared_date=today, related_transaction_id=leg_a_id,
         )

@@ -212,25 +212,29 @@ def _late_clear(fake, monkeypatch, tx_id: str, day: datetime, at: datetime) -> N
 
 
 def _transfer(fake) -> dict:
-    """A two-leg transfer dos1/c1 → dos2/c2 by the real model — with ONE
-    correction to what it stores.
+    """A two-leg transfer dos1/c1 → dos2/c2 by the real model, as stored.
 
-    ``create_inter_dossier_transfer`` writes the account's NET balance
-    (unchanged by the pair) as ``balance_after_account`` on BOTH legs, where
-    the running balance after the déboursé leg is ``book − amount``; the
-    pair's own reversal (``_stage_pair_reversal``) writes the exact running
-    balance. Check 1 — unchanged since Phase K — therefore flags every
-    transfer's first leg. That model inconsistency predates this lot and is
-    reported, not fixed, here (no behaviour change in this step): the tests
-    of checks 5-9 store the exact figure so they speak about their own check.
-    """
+    REWRITTEN in the lot-5 completeness review. Until then
+    ``create_inter_dossier_transfer`` wrote the account's NET balance as
+    ``balance_after_account`` on BOTH legs (the running balance after the
+    déboursé leg is ``book − amount``), so this helper CORRECTED the first
+    leg for checks 5-10 to speak about their own check. The model stores
+    the exact figure now, and the correction would make the leg wrong: the
+    helper writes nothing of its own any more. The historical shape is
+    :func:`_legacy_transfer`."""
     leg, errs = trust.create_inter_dossier_transfer(
         "acc1", "dos1", "c1", "dos2", "c2", 20000, "instruction", "virement", ""
     )
     assert errs == [], errs
-    stored = fake.peek(_tx(leg["id"]))
-    _set(fake, _tx(leg["id"]),
-         balance_after_account=stored["balance_after_account"] - leg["amount"])
+    return leg
+
+
+def _legacy_transfer(fake) -> dict:
+    """The same transfer as the model wrote it before lot 5: the pair's NET
+    balance on its FIRST leg too — high by the amount."""
+    leg = _transfer(fake)
+    pair = fake.peek(_tx(leg["related_transaction_id"]))
+    _set(fake, _tx(leg["id"]), balance_after_account=pair["balance_after_account"])
     return leg
 
 
@@ -623,6 +627,79 @@ def test_un_virement_inter_dossiers_a_un_seul_volet_est_une_note(
     assert (f"(écriture {single['id']}): virement inter-dossiers à un seul volet "
             f"(Déboursé de 10000 cents)") in out
     assert f"(écriture {pair_leg['id']}): virement inter-dossiers" not in out
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 1 — le solde courant d'un virement inter-dossiers (revue de complétude
+#     du lot 5)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_un_virement_neuf_inscrit_le_solde_courant_exact_de_ses_deux_volets(
+    fake, monkeypatch, capsys
+):
+    """Régression — le modèle inscrivait le solde NET de la paire sur ses
+    deux volets : le premier (le déboursé) lisait le montant de trop, le
+    journal de l'art. 38 l'imprimait dans sa colonne « Solde », et le
+    contrôle 1 le signalait en ÉCART depuis la phase K. Le déboursé baisse
+    désormais le solde du montant, la recette le rétablit."""
+    _september(fake, monkeypatch)
+    book = fake.peek("trust_accounts/acc1")["book_balance"]
+    leg = _transfer(fake)
+    stored = fake.peek(_tx(leg["id"]))
+    pair = fake.peek(_tx(leg["related_transaction_id"]))
+    assert stored["balance_after_account"] == book - leg["amount"]
+    assert pair["balance_after_account"] == book
+    assert fake.peek("trust_accounts/acc1")["book_balance"] == book
+    txs = sorted(fake.peek_collection("trust_transactions").values(),
+                 key=lambda t: t["sequence"])
+    assert [t["balance_after_account"] for t in txs] == \
+        trust.recompute_running_balances(txs, "journal")
+    code, out = _run(capsys)
+    assert code == 0, out
+    assert "balance_after_account" not in out
+
+
+def test_le_premier_volet_d_un_ancien_virement_est_une_note_pas_un_ecart(
+    fake, monkeypatch, capsys
+):
+    """L'historique : un virement inscrit avant le lot 5 garde son solde
+    figé faux (le registre est en ajout seul). Sa signature exacte — le
+    déboursé d'un virement, la recette liée au numéro suivant, l'écart égal
+    au montant — est une NOTE, qui nomme l'écriture ; plus un écart
+    connu qu'il fallait « expliquer » à chaque passage."""
+    _september(fake, monkeypatch)
+    leg = _legacy_transfer(fake)
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"(écriture {leg['id']}): premier volet d'un virement "
+            f"inter-dossiers inscrit avant le lot 5") in out
+    assert "balance_after_account stocké" not in out
+
+
+@pytest.mark.parametrize("damage", ["autre_montant", "pas_un_virement", "volet_recette"])
+def test_tout_autre_solde_courant_faux_reste_un_ecart(fake, monkeypatch, capsys, damage):
+    """La note ne couvre QUE la signature de l'ancien défaut : un écart d'un
+    autre montant, sur une écriture qui n'est pas un virement, ou sur le
+    volet recette, reste un écart."""
+    _september(fake, monkeypatch)
+    leg = _transfer(fake)
+    stored = fake.peek(_tx(leg["id"]))
+    if damage == "autre_montant":
+        target, figure = leg["id"], stored["balance_after_account"] + 1
+    elif damage == "volet_recette":
+        pair = fake.peek(_tx(leg["related_transaction_id"]))
+        target, figure = pair["id"], pair["balance_after_account"] + leg["amount"]
+    else:
+        deb = _create(direction="déboursé", amount=20000, purpose="déboursé_tiers",
+                      counterparty="Huissier", date=_d(2026, 9, 20))
+        target = deb["id"]
+        figure = fake.peek(_tx(deb["id"]))["balance_after_account"] + 20000
+    _set(fake, _tx(target), balance_after_account=figure)
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert "balance_after_account stocké" in out
+    assert "premier volet d'un virement" not in out
 
 
 def test_une_ecriture_annulee_n_est_pas_un_retrait(fake, monkeypatch, capsys):
