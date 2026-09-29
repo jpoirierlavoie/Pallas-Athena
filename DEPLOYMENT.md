@@ -1282,7 +1282,16 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   the token you already hold **silently**. So for such a release:
   `python -m scripts.revoke_mcp_tokens` and remove the connector in
   claude.ai BEFORE pushing, deploy, then re-add it and tick the boxes under
-  the new text. Keep `MCP_WRITE_ENABLED` at `"true"` for that re-consent —
+  the new text. **That manual revoke → deploy → re-consent sequence is the
+  ONLY control that keeps a token granted before the MCP write-expansion
+  program (lots 0a to 5) from reaching its new write tools**: there is no
+  code gate — no version stamped on a token, no check at `tools/call` that
+  a grant predates the tool it calls — by the lawyer's decision D19
+  (2026-09-29). Skip it, and every new `athena:write` tool is live for the
+  token in force the moment the deploy lands. (The accounting tools are
+  the exception by construction: they need `athena:comptabilite`, a scope
+  no token held before lot 5b.) §15 « Déploiement unique (D22) », step 5,
+  is where this release runs it. Keep `MCP_WRITE_ENABLED` at `"true"` for that re-consent —
   consenting while it is `"false"` offers no box and yields a read-only
   grant, without a word. This is the single-deploy form of the arm/disarm
   procedure in the `MCP_WRITE_ENABLED` comment of `app.yaml` (§4.1's
@@ -1330,8 +1339,11 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   start, complete or abandon a reconciliation, create or modify an
   account, transfer funds between dossiers (or reverse one leg of such a
   transfer), withdraw trust funds in cash, back a fee payment with a
-  paper invoice, an invoice not yet sent or one that imputes a provision,
-  show a bank number. Arming it is its own train: §15 « Lot 5 ».
+  paper invoice, an invoice not yet sent, one that imputes a provision or
+  another client's invoice (D21), make a fee payment to anyone but you or
+  your firm as « Paramètres » names you (D23), show a bank number. Arming
+  it is its own train: §15 « Lot 5 », run as step 16 of « Déploiement
+  unique (D22) ».
 - **Run no MCP write during a deploy window — and none after a rollback
   past the idempotency claim** (plan lot 0a: `mcp/write_support.py` with its
   `pending` status). Since that release a write CLAIMS its `idempotency_key`
@@ -1465,6 +1477,184 @@ Notes:
   that does not know the `pending`/`partial` states and will execute a
   same-key retry again — see the last bullet of §11 before writing through
   the connector on the older version.
+- **Déploiement unique (D22) — the whole MCP write-expansion program in ONE
+  release (branch `mcp-ecriture-finitions`: lots 0a to 5 and the finitions,
+  none of them deployed yet).** The lawyer's decision D22 (2026-09-29): the
+  final branch is pushed ONCE, under ONE consent train, and the accounting
+  switch is flipped LATER, on its own, after a supervised pilot. The per-lot
+  bullets below keep their detail and their recipes; each step here names
+  the one it runs. Where they differ — each lot's own « push the lot as ONE
+  deploy », its own revocation and its own re-consent — **this order
+  wins**: the revocations collapse into step 5, the pushes into step 6, the
+  re-consents into step 7. What the release ships: **80** tools under the
+  write grant (31 read, 49 write) and six accounting tools hidden behind
+  `MCP_COMPTABILITE_ENABLED: "false"`; one TTL `fieldOverride`
+  (`mcp_upload_tickets.expire_at`) and no composite index; no dependency;
+  no `cron.yaml` or `firestore.rules` change; no DavX5 account re-add.
+  Already done, nothing to redo (plan « Ops », 2026-09-29): the claude.ai
+  organisation allows code-execution egress to `storage.googleapis.com`
+  (« Lot 2A », step 7), and the canonical bucket's `staging/` 7-day rule was
+  verified on 2026-09-28 (« Lot 2A », step 3). Left as they are, by the
+  lawyer's decision: the two fee payments written before the D-4 rule
+  (trust sequences 28 and 42, 1 000,00 $) — `verify_trust_integrity`
+  reports them as NOTES, never repaired. Deferred by the lawyer, not a
+  blocker: the lot 2B pilot on one real letter (« Lot 2B », step 4) — until
+  it has run, do not rely on `create_template` with `substitutions` for a
+  gabarit the practice will send from.
+
+  **Before the push** — read-only first, then the two prerequisites that
+  must precede the code:
+  1. *Measure, read-only*, the day of the push (the environment of the T3
+     recipe below: ADC, inline variables, never `ENV=production`). Each was
+     clean on 2026-09-28/29; the registers have moved since, so run them
+     again:
+     - `python -m scripts.verify_trust_integrity` — exit `0`, or `2` with
+       every note read with the lawyer (the two pre-D-4 fee payments above
+       among them; the notes of check 8 describe history — « Finitions »,
+       item 5);
+     - `python -m scripts.verify_admin_integrity` — exit `0`; check 8
+       (`amount_paid` == Σ receipts, over EVERY invoice carrying a payment)
+       and check 9 (a kind stored against its direction) above all
+       (« Administration direction (lot 0b) », « Lot 3 » step 2, « Lot 5 »
+       step 0);
+     - the lot 4 measurement (« Lot 4 », step 1: a contact on both sides of
+       a dossier, a representation the forward rule refuses) — no output is
+       the expected answer;
+     - the storage-identity listing (« Storage identity (lot 0a) »:
+       `users/unknown/`, `staging/unknown/`) — « matched no objects »;
+     - « Paramètres → Profil du cabinet » carries both tax numbers
+       (« Lot 3 », step 1) and the lawyer's and the firm's names (D23: a
+       profile naming neither refuses every fee payment — « Finitions »,
+       item 5).
+     Any écart: stop, and decide it with the lawyer before going further.
+  2. *The index file*, from the repo root of THIS branch:
+     `firebase deploy --only firestore:indexes --project $PROJECT`, then the
+     read-only TTL listing until it reads `ACTIVE` (« Lot 2A », step 1).
+     Garbage collection only — first so it is never forgotten.
+  3. *The designation of the active gabarits, against production, from a
+     checkout of THIS branch* — the script ships with the change it
+     prepares, so `main` does not have it until the push:
+     `python -m scripts.designer_gabarits_actifs` (simulation), `--apply`,
+     then the simulation again — every kind « déjà désigné », no « [!] »
+     line (the recipe: « Active gabarits (lot 2A, step T3) »). The old code
+     ignores the field, so this opens no outage; pushing FIRST would — every
+     note d'honoraires and note print refuses until it runs. From here to
+     the push, **nobody edits or uploads a note-d'honoraires or note-print
+     template** (the old code still picks by recency, and the new one will
+     print the designated one); re-run the simulation right before step 6.
+  4. *Merge `main` into the branch.* `main` carries one commit the branch
+     lacks, `f69663e` — the same change as the branch's first commit
+     `861c6b8` (the same parent `21012c0`, identical trees), so the merge
+     brings no content and cannot conflict. Run the suite on the merge
+     result (`python -m pytest tests/ -q -p no:cacheprovider`, from
+     `athena/`) BEFORE step 5: Cloud Build runs it again as the gate, but a
+     red build after the revocation leaves the connector down.
+  5. *Revoke and disconnect — BEFORE the push*:
+     `python -m scripts.revoke_mcp_tokens`, and remove the connector in
+     claude.ai. **This step is the ONLY control that keeps a token granted
+     before the program from reaching its new write tools** — there is no
+     code gate (the lawyer's decision D19, 2026-09-29; §11): skipped, every
+     tool of lots 1b to 4 is live for the token in force the moment the
+     deploy lands, under a consent screen that never described it. Pause
+     any scheduled Claude job for the deploy window (§11, last bullet).
+     `MCP_WRITE_ENABLED` stays `"true"`.
+
+  **The push:**
+  6. *ONE push of the merged branch to `main`*, `app.yaml` reading
+     `MCP_ENABLED: "true"`, `MCP_WRITE_ENABLED: "true"` and
+     `MCP_COMPTABILITE_ENABLED: "false"` (the branch ships that way — check
+     it). Cloud Build runs the suite as the gate. Never lot by lot: each
+     push would put new tools under the text consented to before it.
+  7. *Re-add the connector and READ the new screen before ticking
+     « Autoriser les écritures »*: the blocks each lot's train lists
+     (« Lot 1b » step 3, « Lot 2A » step 6, « Lot 2B » step 3, « Lot 3 »
+     step 6, « Lot 4 » step 5). The accounting box is NOT offered — its
+     switch is off — and that is expected. Re-consenting while
+     `MCP_WRITE_ENABLED` is `"false"` would yield a read-only grant without
+     a word.
+  8. *Verify `tools/list`*: **80** tools (31 read, 49 write), no accounting
+     tool, `decide_rendez_vous` alone carrying `openWorldHint: true`; and
+     the `initialize` text opens on the SAFETY CORE (« Pallas Athena is a
+     single-user … SAFETY CORE — read it before ANY write. NEVER, whatever
+     the tool: … »), 8 000 bytes at most. The deploy gate pins both, and
+     the descriptor budget (`tests/test_mcp_descriptor_budget.py`: about
+     257 KB of its 280 KB cap).
+
+  **After the push** — checks that write nothing, or only on test data:
+  9. *DavX5, on the wire then on the device* (Change Impact item 2 — it
+     fails silently): on a TEST dossier, the lot 4 curl checks (« Lot 4 »,
+     step 6: `root` — 207, as many dossier collections as actif +
+     en_attente dossiers —, the Depth:0 PROPFIND — 207 —, and the `report`
+     counts); a PROPFIND Depth:1 on one active dossier collection and on
+     `/dav/addressbook/` (« Finitions », item 1); and the wire checks of lot
+     0a/0b — a task moved between two dossiers (« DAV relocation »), a
+     contact and a task created by PUT (« Contacts created on the phone »,
+     « Tasks, hearings… » item 1). Delete the test data afterwards.
+  10. *A phone edit*: « Finitions » item 3 (a line typed after the metadata
+      block of an event and of a task survives, and no block is
+      re-imported), and « Tasks, hearings… » item 3 (a « Reportée »
+      hearing moved on the phone stays « Reportée »).
+  11. *The Outlook mirror*: « Lot 1b », C1, on a scratch event — a
+      reschedule through `update_hearing` moves its Outlook copy within
+      10 minutes (`outlook_mirror: "follows"`), a cancellation removes it.
+  12. *Word opens every generated document WITHOUT repair* (Change Impact
+      item 3 — no test sees Word's prompt): the « Lot 2A » step 9 list,
+      the note d'honoraires of « Lot 3 » step 3 (the web) and step 7e (the
+      connector), and a document drawn from a template version restored on
+      its page (« Active gabarits »).
+  13. *The upload ticket, once*, on a SCRATCH dossier (« Lot 2A », step 8):
+      one PDF through `begin_upload` → PUT → `finalize_upload`, and one
+      deliberately wrong `md5_base64` that files nothing — note which of the
+      two refusals happened.
+  14. *No invoice number burned*: read `counters/invoices-{year}` before
+      and after the « Lot 3 » step 7 smoke test (`preview_invoice`, the
+      same-status `update_invoice` no-op, `get_budget` → an unchanged
+      `create_budget_version`) — never `create_invoice`; the counter must
+      read exactly what it read.
+  15. *Tell the lawyer* what changed on the web (each lot's « Changements
+      web à annoncer » in CLAUDE.md's Phase History; « Finitions », items
+      4-6), and that the next REAL fee payment is the pilot of the one-
+      transaction fee payment (« The fee payment is ONE transaction », its
+      last paragraph — never a test at trust). The other per-lot device
+      checks (lot 0b items 2-5, lot 1a L2-L4, lot 1b A-D) stay available:
+      run first the ones he relies on. Watch the first week: the
+      finitions' `unexpected` messages and the first void (« Invoice void
+      (lot 0b) »). Update BOTH copies of the claude.ai skill `pallas-athena`
+      the same day, with the lists of « Lot 1b », « Lot 2A », « Lot 2B »,
+      « Lot 3 », « Lot 4 » and « Finitions » at once — every count reads 80
+      (31 + 49); the accounting disciplines (« Lot 5 », step 9) wait for
+      step 17.
+
+  **Later — the accounting switch, its own train, once the release has run
+  clean:**
+  16. First both integrity scripts again, ON the deployed version, before
+      anything is armed (« Lot 5 », step 2 — the connector will write into
+      these registers, and an écart there first could not later be told
+      from its own). Then `MCP_COMPTABILITE_ENABLED: "true"` in `app.yaml`,
+      and deploy (« Lot 5 », step 3). Nothing changes for the token in
+      force: it lacks the scope, and sees neither the tools nor the box's
+      text.
+  17. Revoke and re-consent, ticking « Autoriser les écritures » AND
+      « Autoriser la comptabilité » after reading its block (« Lot 5 »,
+      step 4); verify **86** tools (32 read, 54 write) and the other token
+      shapes (« Lot 5 », step 5). Then the skill's accounting lists
+      (« Lot 5 », step 9).
+  18. The supervised pilot on a TEST administration account — never the
+      trust register, never the real operations account (« Lot 5 »,
+      step 6) —, then both integrity scripts again (« Lot 5 », step 7).
+      Only then may the first real bank movement be recorded through the
+      connector.
+
+  **Emergency switches** — each an `app.yaml` value read at startup, so a
+  deploy: `MCP_COMPTABILITE_ENABLED: "false"` stops the six accounting
+  tools only; `MCP_WRITE_ENABLED: "false"` stops every write, accounting
+  included, the reads staying; `MCP_ENABLED: "false"` answers 404 on every
+  `/mcp` and `/oauth/*` route. Faster, and without a deploy:
+  `python -m scripts.revoke_mcp_tokens` — a write is refused at once (it
+  re-reads its token, bypassing the cache), a read within the 5-minute
+  success cache. A rollback: « Rollback » above — past lot 0a an older
+  version executes a same-key retry again (§11, last bullet), past T3 it
+  picks templates by recency again (« Active gabarits », last paragraph).
 - **Storage identity (lot 0a, 2026-09-25):** every Storage path is now built
   under a uid that `utils/storage_identity.py` has validated, and nothing can
   write under `users/unknown/` or `staging/unknown/` any more — the routes used
