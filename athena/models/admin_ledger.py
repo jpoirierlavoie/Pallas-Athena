@@ -533,6 +533,13 @@ _ABORT_MESSAGES = {
         "compensation : rien n'a été compensé. Chaque écriture ne se "
         "compense qu'une fois."
     ),
+    # Review of lot 5, step 5 (concurrency lens): a Firestore EXCEPTION in
+    # the clearing used to fall through to « compensation_invalide » — « déjà
+    # compensée ou annulée, date … antérieure, ou future » — a validation
+    # verdict about an entry nothing had judged (a read error, or a commit
+    # whose answer was lost). The trust register's twin has said « Erreur
+    # lors de la compensation » since 2026-07; the two now agree.
+    "compensation_erreur": "Erreur lors de la compensation. Veuillez réessayer.",
     "comptes_incompatibles": (
         "Un paiement de carte va d'un compte d'opérations vers une carte de crédit."
     ),
@@ -1751,10 +1758,17 @@ def _clear_entries(
 
     try:
         _txn(transaction)
-    except _TxnAbort:
+    except _TxnAbort as abort:
+        # The abort's own reason when the body did not name one (a missing
+        # account read as « déjà compensée … » until the review of lot 5,
+        # step 5).
+        _reason_out.setdefault("reason", abort.reason)
         return [], outcome["failed"] or list(tx_ids)
     except Exception as exc:
         logger.error("admin clear entries failed: %s", type(exc).__name__)
+        # Never a validation verdict: nothing judged the entries (see
+        # « compensation_erreur »).
+        _reason_out["reason"] = "compensation_erreur"
         return [], list(tx_ids)
     return outcome["cleared"], []
 

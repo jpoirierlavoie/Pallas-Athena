@@ -859,7 +859,7 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #
 # * ``optional`` — an ``idempotency_key`` is accepted, not demanded. The
 #   store fails OPEN: a Firestore blip on the claim must not block a
-#   legitimate first write. Every write tool but the two below is
+#   legitimate first write. Every write tool but the eight below is
 #   ``optional``.
 # * ``required`` — the key is demanded (a call without one is refused), and
 #   the store fails CLOSED: an unreadable claim refuses the call rather than

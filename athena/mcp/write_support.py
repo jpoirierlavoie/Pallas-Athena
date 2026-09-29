@@ -110,18 +110,24 @@ A release is a ``delete()`` under the ``last_update_time`` the claim's own
 The policy is read from the registry — ``mcp.tools.idempotency_policy``,
 the tool's ``"idempotency"`` spec key — never passed by the handler.
 
-* ``optional`` (every write tool but the three ``required`` ones below):
+* ``optional`` (every write tool but the eight ``required`` ones below):
   the store fails OPEN. A Firestore blip on
   the claim must not block a legitimate first write; the call runs
   unclaimed, and afterwards a best-effort ``create()`` stores its result so
   a later retry can still replay (``op="record"``). The uncovered window —
   store down, retry — merely degrades to the pre-claim behaviour.
 * ``required`` (``create_hearing_series`` and ``decide_rendez_vous`` since
-  lot 1b — a series, and the one outbound effect —, and ``create_invoice``
-  since lot 3b — a permanent number): the key is demanded
-  (``idempotency_required``) and the store fails CLOSED
-  (``idempotency_store_unavailable``): nothing executes when the claim
-  cannot be established.
+  lot 1b — a series, and the one outbound effect —, ``create_invoice``
+  since lot 3b — a permanent number —, and since lot 5b the five
+  accounting writes, ``record_trust_entry``, ``record_admin_entry``,
+  ``update_admin_entry``, ``clear_register_entries`` and
+  ``reverse_register_entry`` — a register entry is never deleted, so a
+  duplicate is taken back only by a reversal that stays in the register
+  for good): the key is demanded (``idempotency_required``) and the store
+  fails CLOSED (``idempotency_store_unavailable``): nothing executes when
+  the claim cannot be established. (Review of lot 5, step 5: this list
+  still named three tools after lot 5b; ``tests/test_mcp_accounting.py``
+  now derives it from the registry.)
 
 Failing open is only tenable if the failure is SEEN: each one is logged as
 ``mcp_idempotency_store_failure`` (tool, op, exception class — never the

@@ -233,6 +233,30 @@ def test_the_accounting_writes_demand_their_key_and_their_scope():
     assert "idempotency" not in tools.TOOLS["get_admin_ledger"]
 
 
+def test_the_write_protocol_names_every_required_tool():
+    """Review of lot 5, step 5 (concurrency lens): the protocol's own text
+    (mcp/write_support.py, § 3 « Failure posture ») listed the tools whose
+    claim fails CLOSED as three — create_hearing_series, decide_rendez_vous,
+    create_invoice — after lot 5b had made the five accounting writes
+    ``required`` too, and mcp/tools.py said « every write tool but the two
+    below ». DERIVED from the registry, so the next ``required`` tool cannot
+    ship with the protocol's description of it stale."""
+    required = sorted(n for n, s in tools.TOOLS.items()
+                      if s.get("idempotency") == tools.IDEMPOTENCY_REQUIRED)
+    assert set(tools.ACCOUNTING_WRITE_TOOLS) <= set(required)
+    posture = write_support.__doc__.split("3. Failure posture", 1)[1].split(
+        "4. What is stored", 1)[0]
+    for name in required:
+        assert f"``{name}``" in posture, name
+    words = {3: "three", 8: "eight"}
+    assert f"every write tool but the {words.get(len(required), len(required))} " \
+           f"``required`` ones below" in " ".join(posture.split())
+    source = (_ATHENA / "mcp" / "tools.py").read_text(encoding="utf-8")
+    comment = " ".join(source.split("IDEMPOTENCY_OPTIONAL =", 1)[0][-2000:].split())
+    assert f"Every write tool but the {words.get(len(required), len(required))} " \
+           "below is # ``optional``" in comment
+
+
 def test_the_reason_ceiling_is_the_models():
     """fee_payment.reverse_fee_payment sanitizes the motif at 500 — a
     longer one would be cut in silence."""
@@ -910,6 +934,128 @@ def test_an_uncertain_outcome_keeps_the_claim_and_never_writes_twice(fake, monke
     retry = _refused("record_trust_entry", **args)
     assert retry.reason in ("idempotency_in_flight", "idempotency_interrupted")
     assert len(_entries(fake, "trust_transactions")) == 1
+
+
+@pytest.mark.parametrize("lost", ["deadline", "aborted_rerun"])
+@pytest.mark.parametrize("case", [
+    "trust_reversal", "admin_reversal", "trust_clear", "admin_clear",
+    "admin_correction",
+])
+def test_a_lost_answer_never_applies_a_reversal_a_clearing_or_a_correction_twice(
+    fake, monkeypatch, case, lost,
+):
+    """Review of lot 5, step 5 (concurrency lens). OBSERVABILITY.md says
+    what the connector answers when a NON-create accounting write commits
+    and its answer is lost: it cannot tell — only the creates (and the fee
+    payment both ways) detect their own landed commit and keep the claim
+    (``accounting_outcome_uncertain``). A reversal, a clearing or an
+    administration correction then reads as a REFUSAL — the model's
+    « Erreur lors de … » (``deadline``: the answer lost outright), or, when
+    the SDK re-runs the transaction over the landed commit (``aborted_rerun``:
+    the commit RPC retried and answered Aborted), its own guard — and the
+    claim is RELEASED. That is only tenable because none of the three can
+    apply twice: each re-checks, inside its transaction, the state it moves
+    the entry FROM. Pinned here on the real store, through the real
+    handlers: the write landed once, the answer was a refusal (never
+    CommittedWriteError, never a « rien n'a été inscrit » claimed of a
+    create), and the SAME-key retry is refused with nothing written again."""
+    from google.api_core import exceptions as gexc
+
+    if case in ("trust_reversal", "trust_clear"):
+        target = _call("record_trust_entry", **_deposit())["entity"]
+    else:
+        target = _call("record_admin_entry", **_depense())["entity"]
+    collections = ("trust_transactions", "admin_transactions", "trust_accounts",
+                   "admin_accounts", "dossiers", "invoices")
+    tool, args, marker = {
+        "trust_reversal": ("reverse_register_entry",
+                           {"register": "trust", "tx_id": target["id"],
+                            "reason": "Doublon"}, "/trust_transactions/"),
+        "admin_reversal": ("reverse_register_entry",
+                           {"register": "admin", "tx_id": target["id"],
+                            "reason": "Doublon"}, "/admin_transactions/"),
+        "trust_clear": ("clear_register_entries",
+                        {"register": "trust", "tx_ids": [target["id"]],
+                         "cleared_date": "2026-09-03"}, "/trust_transactions/"),
+        "admin_clear": ("clear_register_entries",
+                        {"register": "admin", "tx_ids": [target["id"]],
+                         "cleared_date": "2026-09-06"}, "/admin_transactions/"),
+        "admin_correction": ("update_admin_entry",
+                             {"tx_id": target["id"], "expected_etag": target["etag"],
+                              "description": "Loyer de septembre"},
+                             "/admin_transactions/"),
+    }[case]
+    args = {**args, "idempotency_key": f"cle-reponse-perdue-{case}-{lost}"}
+    exc = (gexc.DeadlineExceeded("answer lost") if lost == "deadline"
+           else gexc.Aborted("commit retried after a lost answer"))
+    before = {c: _entries(fake, c) for c in collections}
+
+    _land_then(fake, monkeypatch, exc, marker)
+    first = _refused(tool, **args)
+    assert first.keep_claim is False
+    assert first.reason in ("accounting_refused", "stale_etag"), first.reason
+    landed = {c: _entries(fake, c) for c in collections}
+    assert landed != before                                     # it DID land, once
+    stored = landed["trust_transactions" if case.startswith("trust")
+                    else "admin_transactions"][target["id"]]
+    if case.endswith("reversal"):
+        assert stored["reversed_by_id"]
+        rows = landed["trust_transactions" if case.startswith("trust")
+                      else "admin_transactions"]
+        assert sum(1 for r in rows.values() if r.get("reverses_id")) == 1
+    elif case.endswith("clear"):
+        assert stored["status"] == "compensée"
+    else:
+        assert stored["description"] == "Loyer de septembre"
+
+    retry = _refused(tool, **args)
+    assert retry.reason in ("accounting_refused", "stale_etag"), retry.reason
+    assert {c: _entries(fake, c) for c in collections} == landed
+
+
+def test_an_administration_clearing_that_errors_never_reads_as_a_verdict(
+    fake, monkeypatch,
+):
+    """Review of lot 5, step 5 (concurrency lens). A Firestore exception in
+    the administration clearing fell through to the VALIDATION refusal —
+    « écriture déjà compensée ou annulée, date de compensation antérieure à
+    l'écriture, ou future » — about an entry nothing had judged: the caller
+    was sent to fix a date that was right. It now says what the trust twin
+    says, « Erreur lors de la compensation », and nothing was written."""
+    from google.api_core import exceptions as gexc
+
+    made = _call("record_admin_entry", **_depense())["entity"]
+    server = fake._fake_server
+    real_commit = server.commit
+
+    def _unavailable(request, metadata=None, **kwargs):
+        # Only the register's commit fails — BEFORE anything applies (the
+        # idempotency claim, another collection, commits normally).
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if any("/admin_transactions/" in server._write_name(w) for w in writes):
+            raise gexc.InternalServerError("store down")
+        return real_commit(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "commit", _unavailable)
+    before = _entries(fake, "admin_transactions")
+    refusal = _refused("clear_register_entries", register="admin",
+                       tx_ids=[made["id"]], cleared_date="2026-09-06")
+    assert "Erreur lors de la compensation" in str(refusal)
+    assert "déjà compensée ou annulée" not in str(refusal)
+    assert _entries(fake, "admin_transactions") == before
+    report = svc.compenser_administration([made["id"]], _d(2026, 9, 6))
+    assert report["reason"] == "compensation_erreur"
+    assert report["errors"] == [al._ABORT_MESSAGES["compensation_erreur"]]
+
+
+def test_an_administration_clearing_names_a_missing_account(fake):
+    """The same fall-through named « déjà compensée … » for an entry whose
+    account no longer exists — the abort's own reason is kept now."""
+    made = _call("record_admin_entry", **_depense())["entity"]
+    fake.external_delete("admin_accounts/ops1")
+    report = svc.compenser_administration([made["id"]], _d(2026, 9, 6))
+    assert report["ok"] is False and report["reason"] == "compte_introuvable"
+    assert report["errors"] == [al._ABORT_MESSAGES["compte_introuvable"]]
 
 
 
