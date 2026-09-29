@@ -152,6 +152,25 @@ def test_la_contre_passation_d_un_encaissement_ne_reduit_rien(web, monkeypatch):
     assert resp.location.endswith("/administration/rev1")
 
 
+def test_la_route_d_administration_ecrit_par_le_service_commun():
+    """Lot 5a, étape 3 — les écritures du registre passent par
+    ``services/comptabilite``, le chemin que le connecteur partagera au lot
+    5b : la route n'appelle plus directement les écrivains du modèle (la
+    suppression, le reçu et les conciliations restent les siens — aucun
+    outil ne les atteindra)."""
+    import ast
+
+    source = open(os.path.join(_ATHENA, "routes", "admin_ledger.py"), encoding="utf-8").read()
+    writers = {"create_transaction", "update_transaction", "reverse_transaction",
+               "clear_transaction", "clear_transactions_bulk", "create_card_payment"}
+    reached = {
+        node.attr for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute) and node.attr in writers
+        and isinstance(node.value, ast.Name) and node.value.id == "al"
+    }
+    assert reached == set(), reached
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Receipt endpoints — guards
 # ═══════════════════════════════════════════════════════════════════════════

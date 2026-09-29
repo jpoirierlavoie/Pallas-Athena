@@ -10,7 +10,10 @@ the model's own transaction (``models/admin_ledger.create_transaction``
 stages ``invoice.payment_updates``; a reversal reduces it the same way), so
 this module projects nothing any more: there is no « entry saved, payment
 failed » state left to show a banner for. The edit form carries the etag of
-the version it shows (``routes/edit_conflict``, D9).
+the version it shows (``routes/edit_conflict``, D9). Every write goes
+through ``services/comptabilite`` (lot 5a, step 3) — the ONE orchestration
+the connector will share — and « déjà compensée » is a single create, born
+compensée, never create-then-clear.
 
 All @login_required, French UI, standard POST+redirect with inline error
 boxes + HTTP 400. The receipt API endpoints exchange small JSON control
@@ -56,6 +59,7 @@ from models.admin_ledger import (
     direction_labels_for,
 )
 from models.audit_event import record_deletion
+from services import comptabilite
 from models.document import _sniff_header, build_attachment_disposition, sign_blob_url
 from models.dossier import get_dossier
 from security import safe_internal_redirect
@@ -305,28 +309,20 @@ def entry_new():
 @login_required
 def entry_create():
     data = _entry_form_data()
-    entry, errors = al.create_transaction(data)
-    if errors:
+    # « Déjà compensée » — born compensée at the entry's own date, in the
+    # SAME commit (lot 5a): the old create-then-clear could half-fail and
+    # leave the entry « en circulation » under a banner. An encaissement's
+    # payment is written on its invoice in that commit too, or the whole
+    # entry is refused.
+    cleared_date = data.get("date") if request.form.get("deja_compensee") == "1" else None
+    report = comptabilite.enregistrer_ecriture_administration(
+        data, cleared_date=cleared_date,
+    )
+    if report["errors"]:
         return render_template(
-            "administration/form.html", **_form_context(data, errors),
+            "administration/form.html", **_form_context(data, report["errors"]),
         ), 400
-
-    # « Déjà compensée » — the ROUTE composes create-then-clear; the model
-    # keeps its create-always-en_circulation purity.
-    params = {}
-    if request.form.get("deja_compensee") == "1":
-        _, clear_errors = al.clear_transaction(entry["id"], entry.get("date"))
-        if clear_errors:
-            # The lawyer asserted the entry already figures on the statement;
-            # recording the opposite silently would surface only at the next
-            # reconciliation — banner, like every other partial failure here.
-            log_unexpected("admin: auto-clear after create failed", exc_info=False)
-            params["avertissement"] = "compensation"
-
-    # No projection here any more (lot 5a): an encaissement's payment was
-    # written on its invoice in the entry's own commit, or the entry was
-    # refused with it — the « facture » banner has no state left to report.
-    return redirect(url_for("admin_ledger.entry_detail", tx_id=entry["id"], **params))
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=report["entry"]["id"]))
 
 
 @admin_bp.route("/<tx_id>")
@@ -385,7 +381,9 @@ def entry_edit(tx_id: str):
     data = _entry_form_data()
     data.pop("account_id", None)  # immutable on edit
     data.pop("invoice_id", None)  # linkage is create-only
-    updated, errors = al.update_transaction(tx_id, data, expected_etag=expected)
+    errors = comptabilite.modifier_ecriture_administration(
+        tx_id, data, expected_etag=expected,
+    )["errors"]
     if not errors:
         return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
 
@@ -495,7 +493,7 @@ def entry_clear(tx_id: str):
     cleared_date = _parse_date(request.form.get("cleared_date", "")) or datetime(
         d.year, d.month, d.day, tzinfo=timezone.utc
     )
-    _, errors = al.clear_transaction(tx_id, cleared_date)
+    errors = comptabilite.compenser_administration([tx_id], cleared_date)["errors"]
     params = {"avertissement": "compensation"} if errors else {}
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), ""
@@ -524,15 +522,17 @@ def entry_reverse(tx_id: str):
         return render_template("errors/404.html"), 404
     reason = request.form.get("reason", "").strip()
     reversal_date = _parse_date(request.form.get("reversal_date", ""))
-    reversal, errors = al.reverse_transaction(tx_id, reason, reversal_date=reversal_date)
-    if errors:
+    report = comptabilite.contrepasser_ecriture_administration(
+        tx_id, reason, reversal_date=reversal_date,
+    )
+    if report["errors"]:
         return render_template(
-            "administration/reverse_confirm.html", entry=original, errors=errors,
-            **_labels(),
+            "administration/reverse_confirm.html", entry=original,
+            errors=report["errors"], **_labels(),
         ), 400
     # An encaissement's payment was reduced on its invoice in the reversal's
     # own commit (lot 5a) — or the reversal was refused with it.
-    return redirect(url_for("admin_ledger.entry_detail", tx_id=reversal["id"]))
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=report["reversal"]["id"]))
 
 
 # ── Card payment (two legs) ────────────────────────────────────────────────
@@ -550,7 +550,7 @@ def card_payment():
             errors=[], form={}, **_labels(),
         )
     f = request.form
-    leg, errors = al.create_card_payment(
+    report = comptabilite.enregistrer_paiement_carte(
         bank_account_id=f.get("bank_account_id", "").strip(),
         card_account_id=f.get("card_account_id", "").strip(),
         amount=_parse_cents(f.get("amount", "")) or 0,
@@ -559,12 +559,12 @@ def card_payment():
         reference=f.get("reference", "").strip(),
         description=f.get("description", "").strip(),
     )
-    if errors:
+    if report["errors"]:
         return render_template(
             "administration/card_payment_form.html", banks=banks, cards=cards,
-            errors=errors, form=f.to_dict(), **_labels(),
+            errors=report["errors"], form=f.to_dict(), **_labels(),
         ), 400
-    return redirect(url_for("admin_ledger.entry_detail", tx_id=leg["id"]))
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=report["entry"]["id"]))
 
 
 # ── Receipts (pièce justificative) — direct-to-GCS ─────────────────────────

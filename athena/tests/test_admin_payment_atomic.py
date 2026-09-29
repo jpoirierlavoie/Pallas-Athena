@@ -614,6 +614,33 @@ def _form(**over) -> dict:
     return f
 
 
+def test_deja_compensee_au_formulaire_est_une_seule_creation(client, fake):
+    """Régression (lot 5a, étape 3) — la route composait création PUIS
+    compensation, deux commits : la seconde pouvait échouer et laisser
+    l'écriture « en circulation » sous une bannière, alors que l'avocat
+    avait affirmé qu'elle figurait au relevé. C'est maintenant UNE création,
+    née compensée à sa date, par le service commun."""
+    fake.reset_logs()
+    resp = client.post("/administration/", data={
+        **_form(), "account_id": "ops1", "deja_compensee": "1"})
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert "avertissement" not in resp.location
+    (entry,) = _entries(fake).values()
+    assert entry["status"] == "compensée"
+    assert entry["cleared_date"] == _d(2026, 9, 10)
+    assert len(_commit_touching(fake, f"admin_transactions/{entry['id']}")) == 1
+
+
+def test_une_compensation_refusee_a_la_creation_refuse_la_creation(client, fake):
+    """Une date de l'écriture dans le futur de Montréal : la création
+    entière est refusée, rien n'est écrit (plus d'écriture debout « en
+    circulation » avec sa compensation manquée)."""
+    resp = client.post("/administration/", data={
+        **_form(date="2026-09-21"), "account_id": "ops1", "deja_compensee": "1"})
+    assert resp.status_code == 400
+    assert _entries(fake) == {}
+
+
 def _open(client, fake) -> tuple[str, str]:
     entry, errs = al.create_transaction(_depense())
     assert errs == [], errs
