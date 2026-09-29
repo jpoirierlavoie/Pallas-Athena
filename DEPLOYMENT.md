@@ -3312,9 +3312,10 @@ Notes:
      never a paper, unsent or provision-imputing invoice for a fee payment
      — nor another client's invoice, nor one naming no client in a
      dossier of several (D21), nor a payee other than the
-     lawyer or his firm as « Paramètres » names them (D23, art. 58; omitted,
-     the lawyer on a cheque — art. 58 draws a fee cheque « à l'ordre de
-     l'avocat » —, the firm on a transfer); an invoice is marked « envoyée »
+     lawyer or his firm as « Paramètres » names them (D23, art. 58 — either
+     name for either method; omitted, the lawyer on a cheque — art. 58
+     draws a fee cheque « à l'ordre de l'avocat » —, the firm on a
+     transfer); an invoice is marked « envoyée »
      only on the lawyer's word
      (D20 — the fee payment trusts that status); and an objet always agrees
      with its sens (D24 — the model refuses otherwise).
@@ -3402,12 +3403,13 @@ Notes:
      d'honoraires » the « Bénéficiaire » becomes a choice between the two
      names « Paramètres » holds, the LAWYER preselected (the form opens on
      « chèque », and art. 58 draws a fee cheque « à l'ordre de l'avocat »;
-     the firm stays selectable — tell the lawyer, since only he knows
-     whether his firm is a distinct société, to which art. 58 allows a
-     TRANSFER only) — check the names there FIRST: a profile naming
-     neither refuses every fee payment. No real entry is needed to check
-     it: an incoherent pair or another client's invoice is refused and
-     writes nothing. Then `python -m scripts.verify_trust_integrity`
+     the firm stays selectable on either method — the rule the lawyer
+     settled on 2026-09-29 (D23, clarified the same day): EITHER name is
+     accepted for EITHER method, cheque or transfer, the lawyer's name
+     being only the DEFAULT on a cheque) — check the names there FIRST: a
+     profile naming neither refuses every fee payment. No real entry is
+     needed to check it: an incoherent pair or another client's invoice is
+     refused and writes nothing. Then `python -m scripts.verify_trust_integrity`
      (read-only): check 8's new NOTES (a single transfer leg, an incoherent
      objet/sens, a fee payment for another client's invoice, a payee
      outside the profile) describe what the register already holds — read

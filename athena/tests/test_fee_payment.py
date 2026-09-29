@@ -1277,6 +1277,24 @@ def test_d23_sans_cabinet_nomme_l_avocat_reste_le_seul_beneficiaire(fake):
     assert errs == [], errs
 
 
+@pytest.mark.parametrize("method", ["chèque", "virement"])
+@pytest.mark.parametrize("payee", ["Me Jason Poirier Lavoie",
+                                   "Poirier Lavoie, avocat"])
+def test_d23_l_un_ou_l_autre_nom_pour_l_un_ou_l_autre_mode(fake, method, payee):
+    """La règle TRANCHÉE par l'avocat le 2026-09-29 (D23, précisée le même
+    jour), épinglée pour qu'aucune lecture plus stricte ne revienne en
+    silence : l'un ou l'autre nom du profil est accepté pour l'un ou l'autre
+    mode — il a écarté « chèque : l'avocat seulement » ; son nom n'est que
+    le DÉFAUT sur un chèque. (Épingle d'un comportement inchangé : les
+    textes qui disaient la question ouverte sont ceux qui ont changé.)"""
+    _seed_profile(fake)
+    result, errs = _pay(amount=10000, method=method, counterparty=payee)
+    assert errs == [], (method, payee, errs)
+    stored = fake.peek(f"trust_transactions/{result['trust_entry']['id']}")
+    assert stored["counterparty"] == payee
+    assert stored["method"] == method
+
+
 def test_d23_le_beneficiaire_par_defaut_suit_le_mode(fake):
     """Régression — l'art. 58 tire un CHÈQUE d'honoraires « à l'ordre de
     l'avocat » et ne nomme la société qu'en titulaire du compte d'un

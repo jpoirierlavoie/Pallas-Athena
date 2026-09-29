@@ -596,7 +596,8 @@ def test_d23_a_cheque_s_default_payee_is_the_lawyer(fake):
     now — the lawyer on a chèque, the firm on a virement
     (test_a_fee_payment_writes_its_three_effects_in_one_operation) — and
     the warning says which. The firm NAMED on a cheque stays accepted
-    (D23: the lawyer's choice)."""
+    (D23, settled by the lawyer on 2026-09-29: either name for either
+    method, his own only the default on a cheque)."""
     _cleared_deposit(fake)
     payload = _call("record_trust_entry", **_fee(20000, method="chèque"))
     assert payload["entity"]["counterparty"] == "Me Jason Poirier Lavoie"

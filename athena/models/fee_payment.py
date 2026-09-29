@@ -66,9 +66,12 @@ composite:
   form's preselection take :func:`default_fee_payee` — the LAWYER on a
   cheque, since art. 58 draws a fee cheque « à l'ordre de l'avocat » and
   names the société only as the holder of a transfer's account; the firm
-  on a transfer. The firm named explicitly stays accepted on a cheque: D23
-  lets the lawyer choose either name, and only he knows whether his firm is
-  a distinct société.
+  on a transfer. The firm named explicitly stays accepted on a cheque,
+  and the lawyer on a transfer: the rule the lawyer settled on 2026-09-29
+  (D23, clarified the same day) accepts EITHER name for EITHER method — he
+  declined the stricter « cheque: the lawyer only » reading; his name is
+  merely the DEFAULT on a cheque. No text may say the code enforces
+  « cheque to the lawyer only ».
 
 The trust side's rules stay the trust model's: art. 58 (cheque or transfer
 only), art. 59 (cleared funds), the backdating guard, the lock floor, an
@@ -332,9 +335,9 @@ def default_fee_payee(method: str) -> Optional[str]:
     a TRANSFER the firm, whose non-trust account receives the fees (the
     first of :func:`fee_payees`). The lawyer when the profile names no firm,
     the firm when it names no lawyer; ``None`` when it names nobody. A
-    DEFAULT only: the firm, named explicitly, stays accepted on a cheque
-    (D23 — the lawyer's choice, who alone knows whether his firm is a
-    distinct société)."""
+    DEFAULT only: either name, named explicitly, stays accepted for either
+    method (D23, settled by the lawyer on 2026-09-29 — he declined the
+    stricter « cheque: the lawyer only » reading)."""
     cab = cabinet_util.cabinet_dict()
     payees = _payees_from(cab)
     if not payees:

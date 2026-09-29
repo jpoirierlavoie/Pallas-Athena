@@ -4,8 +4,8 @@
 D15 laissait Claude poser une catégorie PRÉSUMÉE sur tout document non
 analysé, y compris par-dessus une catégorie que le juriste venait de choisir
 dans le formulaire ou de confirmer (« Confirmer la catégorie ») : l'outil
-avertissait, sans refuser. D18 (le défaut recommandé par l'avocat, réversible
-sur demande) : REFUSÉ quand la catégorie stockée est celle du juriste ;
+avertissait, sans refuser. D18 (confirmée par l'avocat le 2026-09-28) :
+REFUSÉ quand la catégorie stockée est celle du juriste ;
 permis sur une catégorie vide, restée à sa valeur par défaut, ou elle-même
 présumée.
 
