@@ -1580,6 +1580,27 @@ Notes:
   (`trust_transactions(account_id ASC, sequence ASC)` for the art. 72 receipt
   lookup, `trust_reconciliations(account_id ASC, period_end DESC)` for the
   lock floor) — nothing to deploy.
+- **Trust register, checks 5-9 (lot 5a):** the same **read-only** script now
+  also re-proves every completed reconciliation at its period end (5), checks
+  every clearing date — never before its entry, never in the future, never
+  inside a period already closed when the clear was made (6) —, checks that
+  dates never go backwards in sequence order (7), lists the entries the lot 0b
+  rules would refuse today (8), and reads every dossier's stored per-client
+  balances, so a balance no entry backs and a client in shortfall both show
+  (9). Run it in production, BEFORE the model steps of lot 5 deploy. Its exit
+  code says what it found: `0` clean, `1` at least one **écart** (a figure or
+  an invariant the register no longer stands on — fix or explain each before
+  going further), `2` **notes** only. A note is history the register keeps
+  (it is append-only): an entry written before a rule existed, or a
+  reconciliation completed before the as-of rework (commit 945572a,
+  2026-07-29 22:37 HAE), which ran under the old « tickable = en circulation
+  now » code and may fail a re-proof it was never held to. Read each note with
+  the lawyer; nothing is repaired automatically. One écart is known and not
+  data damage: an inter-dossier transfer's FIRST leg reports
+  `balance_after_account stocké X ≠ recalculé X−montant` (check 1, since
+  Phase K) — the transfer stores the pair's net balance on both legs where
+  the running balance after the debit leg is lower by the amount; the account
+  and client balances are right. The model fix belongs to a later step.
 - **Invoice void (lot 0b, B1):** voiding now reads, inside ONE transaction,
   the `trust_transactions`, `admin_transactions`, `timeentries` and
   `expenses` rows whose `invoice_id` names the invoice — single-field

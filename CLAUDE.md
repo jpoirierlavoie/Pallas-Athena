@@ -565,7 +565,13 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # special kind = the recency winner production prints
 │   │   │                           # today (--dry-run default, --apply; idempotent). Run
 │   │   │                           # against production BEFORE the T3 deploy (DEPLOYMENT.md §15)
-│   │   ├── verify_trust_integrity.py  # Phase K: recompute + cross-check the trust register (read-only)
+│   │   ├── verify_trust_integrity.py  # Phase K: recompute + cross-check the trust register (read-only);
+│   │   │                           # lot 5a: + re-proof of completed reconciliations,
+│   │   │                           # clearing dates vs closed periods, date order,
+│   │   │                           # lot-0b rules on history (NOTES), per-client
+│   │   │                           # balances + shortfalls. Exit 0 / 1 écart / 2 notes
+│   │   │                           # (a reconciliation completed before the as-of
+│   │   │                           # rework, 945572a, is a NOTE, never an écart)
 │   │   ├── verify_admin_integrity.py  # Août 2026: recompute + cross-check du registre d'administration
 │   │   │                           # (Σ deltas, ventilation, paires, re-preuve des conciliations,
 │   │   │                           # et — lot 0b — le sens de chaque type simple contre _KIND_DIRECTION)
