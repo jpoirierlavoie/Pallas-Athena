@@ -508,6 +508,39 @@ FAMILIES: tuple[Family, ...] = (
             "document of its kind."
         ),
     ),
+    Family(
+        key="dossiers",
+        label="DOSSIERS",
+        scope=SCOPE_WRITE,
+        tools=("set_dossier_status", "update_dossier_party"),
+        consent_template="mcp/families/_dossiers.html",
+        checkbox_summary_fr=(
+            "changer le statut d'un dossier — le fermer ou l'archiver retire "
+            "ses tâches, notes et événements du téléphone, le rouvrir les y "
+            "remet —, corriger les rôles ou l'avocat d'une partie au dossier, "
+            "en détacher une (le contact reste) et rafraîchir les noms que le "
+            "dossier garde de ses parties"
+        ),
+        instructions_en=(
+            "`set_dossier_status` sets a dossier's status as the application "
+            "does: fermé / archivé DRAINS its DavX5 collection (its tasks, "
+            "notes and events leave the phone, staying in the application) "
+            "and takes it out of the prescription alerts; actif / en_attente "
+            "restores it, and reopening erases the closing date. The status "
+            "it already has writes nothing and re-applies the phone's view — "
+            "when `dav.complete` comes back false, call it again with the "
+            "SAME status (the same idempotency_key is fine: an incomplete "
+            "result is never stored). `update_dossier_party` edits ONE party "
+            "link: action update replaces its roles or its lawyer (the "
+            "dossier-level role the gabarits cite is re-derived); remove "
+            "DETACHES it — the contact stays, the detach is journaled — "
+            "refused for the last client, a served party, or a client who "
+            "ever had trust funds on the dossier; refresh_names re-snapshots "
+            "party names from the current contacts (invoices and generated "
+            "documents keep theirs). Adding a party is `update_dossier`'s "
+            "(CORRECT)."
+        ),
+    ),
 )
 
 
@@ -541,14 +574,21 @@ NEVERS: tuple[Never, ...] = (
         # request): the promise is about Athéna's records, which a
         # cancellation keeps — the Outlook side of a cancelled event or of a
         # refused request is disclosed by its family, beside the capability.
+        # Lot 4b: detaching a party from a dossier erases an array ENTRY —
+        # a LINK, never a record: the contact stays, and the model journals
+        # the detach in audit_events (dossier_party), which list_deletions
+        # reads. Said beside the promise it narrows.
         fr=(
             "<strong>supprimer</strong> quoi que ce soit dans Athéna — "
             "annuler une tâche ou un événement les conserve, avec leur "
-            "statut"
+            "statut&nbsp;; détacher une partie d'un dossier retire un lien, "
+            "le contact reste"
         ),
         en=(
             "NOTHING in Athéna can EVER be DELETED here: a cancelled task or "
-            "event is kept, with its status."
+            "event is kept, with its status; detaching a party from a "
+            "dossier removes a LINK — the contact stays, and the detach is "
+            "journaled (list_deletions)."
         ),
         forbidden=(r"delete_\w+", r"record_deletion"),
         # The protocol layer deletes its own bookkeeping (an expired OAuth
@@ -628,25 +668,13 @@ NEVERS: tuple[Never, ...] = (
             "test_every_connector_invoice_creation_requires_all_sources"
         ),
     ),
-    Never(
-        key="dossier_status",
-        fr=(
-            "changer le statut d'un dossier — fermer un dossier doit vider "
-            "sa collection DavX5, ce que seule l'application fait"
-        ),
-        en=(
-            "A dossier's status is set at CREATION and can never be changed "
-            "here: closing one requires a DavX5 drain only the application "
-            "performs."
-        ),
-        forbidden_inputs=(
-            ("update_dossier", "status"), ("complete_dossier", "status"),
-        ),
-        behavioural_test=(
-            "tests/test_mcp_import.py::"
-            "test_update_dossier_refuse_un_changement_de_statut_en_donnant_la_raison"
-        ),
-    ),
+    # Lot 4b DELETED « a dossier's status is set at CREATION and can never be
+    # changed here »: set_dossier_status changes it, through the same drain
+    # service (services/dossier_dav) the application's form uses. What stays
+    # true — update_dossier and complete_dossier never write a status, so no
+    # status reaches the model without its drain — is pinned by
+    # tests/test_mcp_import.py (the tripwire) and tests/test_mcp_dossier_
+    # writes.py.
     Never(
         key="trust_identity",
         fr=(

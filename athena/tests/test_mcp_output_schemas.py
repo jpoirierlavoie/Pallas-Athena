@@ -2783,3 +2783,120 @@ def test_update_template_conforms_in_both_modes_and_on_no_ops(monkeypatch):
     _conforms("update_template", identical)
     assert identical["file_replaced"] is False
     assert identical["replaced_version"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 4b — DOSSIERS : the status and the party links, on the shared fake
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _links_world(monkeypatch):
+    import sys
+
+    from tests._fake_firestore import install
+
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.") or n in ("dav.sync",
+                                                    "mcp.write_support"))
+               and getattr(m, "db", None) is not None]
+    fake = install(monkeypatch, *modules)
+    doc, errors = handlers.dossier_model.create_dossier({
+        "file_number": "2026-001", "title": "Tremblay c. Roy",
+        "opened_date": datetime(2025, 3, 1, tzinfo=UTC),
+        "clients": [
+            {"id": "p1", "name": "Jean Tremblay", "roles": ["demandeur"],
+             "avocat_id": "", "avocat_name": ""},
+            {"id": "p2", "name": "Marie Tremblay", "roles": ["demandeur"],
+             "avocat_id": "", "avocat_name": ""}],
+        "opposing_parties": [
+            {"id": "p3", "name": "Paul Roy", "roles": ["défendeur"],
+             "avocat_id": "", "avocat_name": ""}],
+    })
+    assert errors == [], errors
+    task, errors = handlers.task_model.create_task(
+        {"title": "Préparer", "dossier_id": doc["id"]})
+    assert errors == [], errors
+    return fake, doc["id"]
+
+
+def test_set_dossier_status_conforms_on_drain_resync_restore_and_incomplete(
+        monkeypatch):
+    fake, did = _links_world(monkeypatch)
+    closed = handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    _conforms("set_dossier_status", closed)
+    assert closed["dav"]["direction"] == "drain" and closed["outcome"] == "applied"
+
+    resync = handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    _conforms("set_dossier_status", resync)
+    assert resync["outcome"] == "unchanged"
+
+    reopened = handlers.set_dossier_status({"dossier_id": did,
+                                            "status": "actif"})
+    _conforms("set_dossier_status", reopened)
+    assert reopened["dav"]["direction"] == "restore"
+
+    prefix = f"dav_sync/dossier:{did}/tombstones/"
+
+    def hook(info):
+        if any(p.startswith(prefix) for _k, p in info.ops):
+            from google.api_core import exceptions as gexc
+            raise gexc.ServiceUnavailable("injected")
+
+    fake.add_commit_hook(hook)
+    incomplete = handlers.set_dossier_status({"dossier_id": did,
+                                              "status": "archivé"})
+    _conforms("set_dossier_status", incomplete)
+    assert incomplete["dav"]["complete"] is False
+
+
+def test_update_dossier_party_conforms_on_every_action_and_outcome(monkeypatch):
+    fake, did = _links_world(monkeypatch)
+    fake.seed("parties/p1", {
+        **handlers.partie_model._default_doc(), "id": "p1",
+        "type": "individual", "contact_role": "client",
+        "first_name": "Jean-Marc", "last_name": "Tremblay", "etag": "e-p1",
+        "created_at": DT, "updated_at": DT})
+
+    updated = handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p2",
+        "roles": ["intervenant"]})
+    _conforms("update_dossier_party", updated)
+    assert updated["outcome"] == "applied"
+
+    unchanged = handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p2",
+        "roles": ["intervenant"]})
+    _conforms("update_dossier_party", unchanged)
+    assert unchanged["outcome"] == "unchanged"
+
+    removed = handlers.update_dossier_party({
+        "action": "remove", "dossier_id": did, "partie_id": "p2"})
+    _conforms("update_dossier_party", removed)
+    assert removed["party"]["journaled"] is True
+
+    refreshed = handlers.update_dossier_party({
+        "action": "refresh_names", "dossier_id": did})
+    _conforms("update_dossier_party", refreshed)
+    assert refreshed["outcome"] == "applied" and "entity" in refreshed
+
+    by_contact = handlers.update_dossier_party({
+        "action": "refresh_names", "partie_id": "p1"})
+    _conforms("update_dossier_party", by_contact)
+    assert by_contact["outcome"] == "unchanged" and "entity" not in by_contact
+
+    real = handlers.dossier_model.get_dossier
+
+    def racing(doc_id):
+        doc = real(doc_id)
+        fake.external_write(f"dossiers/{did}", {**fake.peek(f"dossiers/{did}"),
+                                                "etag": "e-rival"})
+        return doc
+
+    fake.seed("parties/p1", {**fake.peek("parties/p1"),
+                             "first_name": "Jean-Marc-André"})
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", racing)
+    partial = handlers.update_dossier_party({
+        "action": "refresh_names", "partie_id": "p1"})
+    _conforms("update_dossier_party", partial)
+    assert partial["outcome"] == "partial"
+    assert partial["dossiers"][0]["reason"]

@@ -1,0 +1,625 @@
+"""Le connecteur tient les dossiers — lot 4b (famille DOSSIERS, plan D6).
+
+Deux outils, chacun au-dessus des règles du MODÈLE que le lot 4a a posées :
+
+* ``set_dossier_status`` passe par ``services/dossier_dav.run_status_
+  transition`` — la porte du formulaire web — avec ``reconcile_always`` :
+  la purge DavX5 à la fermeture, le rétablissement à la réouverture,
+  FERMÉE avant l'écriture (des membres illisibles refusent, rien n'est
+  écrit), et rejouable : redemander le statut stocké est la réparation.
+  Une purge incomplète n'est jamais conservée pour rejeu (``_no_replay``) ;
+* ``update_dossier_party`` passe par les aides à une entrée de
+  ``models/dossier`` (``update_dossier_party``, ``remove_dossier_party``,
+  ``refresh_party_names``) : rôles et avocat d'UNE partie, détachement
+  d'UN lien (refusé pour le dernier client, une partie signifiée, un client
+  qui a eu du fidéicommis au dossier), rafraîchissement des noms.
+
+Tout passe par le vrai client Firestore au-dessus du faux serveur partagé
+(``tests/_fake_firestore.py``) — modèles, service, ``dav.sync`` et le
+magasin d'idempotence compris — et l'on relit ce qui est STOCKÉ.
+"""
+
+import logging
+import os
+import pathlib
+import sys
+from datetime import datetime, timezone
+from unittest import mock
+
+import pytest
+from google.api_core import exceptions as gexc
+
+_ATHENA = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ATHENA))
+
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
+
+with mock.patch("google.cloud.firestore.Client"):
+    import dav.sync as dav_sync
+    import mcp.handlers as handlers
+    import mcp.tools as tools
+    import mcp.write_support as write_support
+    from models import dossier as dossier_model
+    from models import hearing as hearing_model
+    from models import note as note_model
+    from models import partie as partie_model
+    from models import task as task_model
+    from services import dossier_dav
+    from utils import deadlines
+
+from tests._fake_firestore import install  # noqa: E402
+
+UTC = timezone.utc
+DT = datetime(2026, 10, 15, 14, 0, tzinfo=UTC)
+KEY = "cle-statut-0001"
+
+
+@pytest.fixture
+def db(monkeypatch):
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.")
+                   or n in ("dav.sync", "mcp.write_support"))
+               and getattr(m, "db", None) is not None]
+    return install(monkeypatch, *modules)
+
+
+def _contact(db, pid, first, last, **over):
+    doc = {**partie_model._default_doc(), "id": pid, "type": "individual",
+           "contact_role": "client", "first_name": first, "last_name": last,
+           "etag": f"e-{pid}", "created_at": DT, "updated_at": DT}
+    doc.update(over)
+    db.seed(f"parties/{pid}", doc)
+
+
+def _entry(pid, name, roles=("demandeur",), avocat_id="", avocat_name=""):
+    return {"id": pid, "name": name, "roles": list(roles),
+            "avocat_id": avocat_id, "avocat_name": avocat_name}
+
+
+JEAN = _entry("p1", "Jean Tremblay")
+MARIE = _entry("p2", "Marie Tremblay")
+ROY = _entry("p3", "Paul Roy", roles=("défendeur",))
+
+
+def _dossier(db, clients=(JEAN,), opposing=(ROY,), **over) -> str:
+    data = {"file_number": "2026-001", "title": "Tremblay c. Lavoie",
+            "clients": [dict(c) for c in clients],
+            "opposing_parties": [dict(o) for o in opposing]}
+    data.update(over)
+    doc, errors = dossier_model.create_dossier(data)
+    assert errors == [], errors
+    return doc["id"]
+
+
+def _members(did) -> set:
+    task, e1 = task_model.create_task({"title": "Préparer", "dossier_id": did})
+    note, e2 = note_model.create_note({
+        "title": "Recherche", "content": "Premier jet.",
+        "category": "recherche", "dossier_id": did})
+    hearing, e3 = hearing_model.create_hearing({
+        "title": "Audience", "start_datetime": DT, "dossier_id": did})
+    assert e1 == e2 == e3 == []
+    return {task["id"], note["id"], hearing["id"]}
+
+
+def _stored(db, did):
+    return db.peek(f"dossiers/{did}")
+
+
+def _tombstones(db, did) -> set:
+    return set(db.peek_collection(f"dav_sync/dossier:{did}/tombstones"))
+
+
+def _ctag(db, did):
+    return (db.peek(f"dav_sync/dossier:{did}") or {}).get("ctag")
+
+
+def _fail_queries_on(monkeypatch, db, collection: str):
+    server = db._fake_server
+    real = server.run_query
+
+    def failing(request, metadata=None, **kwargs):
+        sq = request["structured_query"]._pb
+        if any(f.collection_id == collection for f in sq.from_):
+            raise gexc.ServiceUnavailable("injected query failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "run_query", failing)
+
+
+def _fail_tombstone_commits(db, did):
+    """Every commit touching this dossier's tombstones fails server-side —
+    the status write (a `dossiers/…` commit) is untouched."""
+    prefix = f"dav_sync/dossier:{did}/tombstones/"
+
+    def hook(info):
+        if any(path.startswith(prefix) for _kind, path in info.ops):
+            raise gexc.ServiceUnavailable("injected tombstone failure")
+
+    return db.add_commit_hook(hook)
+
+
+def _idempotency_entries(db) -> dict:
+    return db.peek_collection(write_support.COLLECTION)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 1. set_dossier_status — the drain and the restore, as the web does them
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_closing_drains_the_phone_and_says_what_it_did(db):
+    did = _dossier(db)
+    members = _members(did)
+    before = _ctag(db, did)
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "fermé"})
+
+    stored = _stored(db, did)
+    assert stored["status"] == "fermé"
+    assert stored["updated_via"] == "mcp"
+    today = deadlines.today_mtl()
+    assert stored["closed_date"].date() == today           # date-only stamp
+    assert _tombstones(db, did) == members
+    assert _ctag(db, did) != before
+    assert payload["outcome"] == "applied"
+    assert payload["status_before"] == "actif"
+    assert payload["status_after"] == "fermé"
+    assert payload["closed_date"] == today.isoformat()
+    assert payload["closed_date_before"] is None
+    assert payload["dav"] == {"direction": "drain", "resources": 3,
+                              "ctag_bumped": True, "complete": True}
+    assert payload["entity"]["etag"] == stored["etag"]
+    assert any("quittent le téléphone" in w for w in payload["warnings"])
+
+
+def test_reopening_restores_the_phone_and_names_the_erased_closing_date(db):
+    did = _dossier(db, opened_date=datetime(2025, 3, 1, tzinfo=UTC))
+    members = _members(did)
+    handlers.set_dossier_status({"dossier_id": did, "status": "fermé",
+                                 "closed_date": "2026-01-15"})
+    assert _tombstones(db, did) == members
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "actif"})
+
+    stored = _stored(db, did)
+    assert stored["status"] == "actif" and stored["closed_date"] is None
+    assert _tombstones(db, did) == set()
+    assert payload["dav"]["direction"] == "restore"
+    assert payload["dav"]["complete"] is True
+    assert payload["closed_date_before"] == "2026-01-15"
+    assert payload["closed_date"] is None
+    assert any("2026-01-15" in w and "effacée" in w for w in payload["warnings"])
+    assert any("actualiser sa liste des collections" in w
+               for w in payload["warnings"])
+
+
+def test_the_same_status_writes_nothing_and_resyncs_the_phone(db):
+    """Asking again for the stored status IS the repair: no model write
+    (the dossier's etag does not move), the visibility re-applied."""
+    did = _dossier(db, status="fermé")
+    members = _members(did)
+    etag = _stored(db, did)["etag"]
+    before = _ctag(db, did)
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "fermé"})
+
+    assert _stored(db, did)["etag"] == etag
+    assert _tombstones(db, did) == members          # re-tombstoned
+    assert _ctag(db, did) != before
+    assert payload["outcome"] == "unchanged"
+    assert payload["dav"]["direction"] == "drain"
+    assert any("rien n'a été écrit" in w for w in payload["warnings"])
+
+
+def test_a_supplied_closing_date_is_kept_and_a_new_one_corrects_it(db):
+    did = _dossier(db, opened_date=datetime(2025, 3, 1, tzinfo=UTC))
+    handlers.set_dossier_status({"dossier_id": did, "status": "fermé",
+                                 "closed_date": "2026-02-10"})
+    assert _stored(db, did)["closed_date"] == datetime(2026, 2, 10, tzinfo=UTC)
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "archivé",
+                                           "closed_date": "2026-02-12"})
+    assert _stored(db, did)["status"] == "archivé"
+    assert _stored(db, did)["closed_date"] == datetime(2026, 2, 12, tzinfo=UTC)
+    assert payload["closed_date_before"] == "2026-02-10"
+
+
+@pytest.mark.parametrize("args, fragment", [
+    ({"status": "actif", "closed_date": "2026-01-01"}, "n'accompagne que"),
+    ({"status": "fermé", "closed_date": "2999-01-01"}, "futur"),
+    ({"status": "fermé", "closed_date": "2024-12-31"}, "précède"),
+    ({"status": "fermé", "closed_date": "2026-13-01"}, "YYYY-MM-DD"),
+])
+def test_closing_date_guards_refuse_before_anything_is_written(db, args, fragment):
+    did = _dossier(db, opened_date=datetime(2025, 3, 1, tzinfo=UTC))
+    before = _stored(db, did)
+    with pytest.raises(tools.ToolArgumentError, match=fragment):
+        handlers.set_dossier_status({"dossier_id": did, **args})
+    assert _stored(db, did) == before
+    assert _tombstones(db, did) == set()
+
+
+def test_an_unknown_dossier_is_refused_by_name(db):
+    with pytest.raises(tools.ToolArgumentError, match="list_dossiers"):
+        handlers.set_dossier_status({"dossier_id": "nope", "status": "fermé"})
+
+
+def test_an_unreadable_dossier_is_never_read_as_unknown(db, monkeypatch):
+    did = _dossier(db)
+
+    def boom(_id):
+        raise gexc.ServiceUnavailable("down")
+
+    monkeypatch.setattr(dossier_model, "get_dossier_strict", boom)
+    with pytest.raises(tools.ToolArgumentError, match="pas pu être lu"):
+        handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    assert db.peek(f"dossiers/{did}")["status"] == "actif"
+
+
+def test_unreadable_members_refuse_the_close_and_write_nothing(db, monkeypatch):
+    """Fail-closed BEFORE the commit: a close whose tasks cannot be read
+    would strand them on the phone — refused, the status untouched."""
+    did = _dossier(db)
+    _members(did)
+    before = _stored(db, did)
+    _fail_queries_on(monkeypatch, db, "tasks")
+    db.reset_logs()
+
+    with pytest.raises(tools.ToolArgumentError, match="Rien n'a été modifié"):
+        handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+
+    assert _stored(db, did) == before
+    assert db.commits == []
+
+
+def test_an_incomplete_drain_is_reported_and_never_stored_for_replay(db):
+    """The status IS written; the phone is not. The result says so, and it
+    is kept OUT of mcp_idempotency — the same-key retry re-runs the drain
+    instead of replaying the stale answer."""
+    did = _dossier(db)
+    members = _members(did)
+    remove_hook = _fail_tombstone_commits(db, did)
+
+    first = handlers.set_dossier_status({"dossier_id": did, "status": "fermé",
+                                         "idempotency_key": KEY})
+
+    assert _stored(db, did)["status"] == "fermé"
+    assert first["dav"]["complete"] is False
+    assert first["idempotent_replay"] is False
+    assert write_support.NO_REPLAY_KEY not in first
+    assert any("MÊME statut" in w for w in first["warnings"])
+    assert _idempotency_entries(db) == {}
+    assert _tombstones(db, did) == set()
+
+    remove_hook()
+    second = handlers.set_dossier_status({"dossier_id": did,
+                                          "status": "fermé",
+                                          "idempotency_key": KEY})
+    assert second["idempotent_replay"] is False    # executed, not replayed
+    assert second["outcome"] == "unchanged"
+    assert second["dav"]["complete"] is True
+    assert _tombstones(db, did) == members
+    # The repair's own result is final: stored, then replayed.
+    third = handlers.set_dossier_status({"dossier_id": did,
+                                         "status": "fermé",
+                                         "idempotency_key": KEY})
+    assert third["idempotent_replay"] is True
+
+
+def test_a_write_between_the_read_and_the_commit_is_refused_stale(db, monkeypatch):
+    did = _dossier(db)
+    real = dossier_model.get_dossier_strict
+
+    def racing(dossier_id):
+        doc = real(dossier_id)
+        db.external_write(f"dossiers/{did}", {**db.peek(f"dossiers/{did}"),
+                                              "etag": "e-rival"})
+        return doc
+
+    monkeypatch.setattr(dossier_model, "get_dossier_strict", racing)
+    with pytest.raises(tools.ToolArgumentError,
+                       match="Ce dossier a été modifié") as err:
+        handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    assert err.value.reason == "stale_etag"
+    assert "get_dossier" in str(err.value)
+    assert db.peek(f"dossiers/{did}")["status"] == "actif"
+
+
+def test_closing_names_the_prescription_trust_and_protocol_effects(db, monkeypatch):
+    did = _dossier(db, droit_action_date=datetime(2025, 1, 15, tzinfo=UTC),
+                   prescription_type="3_ans")
+    db.external_write(f"dossiers/{did}", {**_stored(db, did),
+                                          "trust_balance": 12500})
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
+                        lambda _d: {"id": "p", "status": "actif"})
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "archivé"})
+
+    text = " ".join(payload["warnings"])
+    assert "alertes de prescription" in text
+    assert "fidéicommis" in text
+    assert "protocole reste « actif »" in text
+
+
+def test_a_moved_prescription_date_is_said(db):
+    """Every save re-derives the « date pour agir »: a stored value the
+    recourse fields no longer yield moves on a status change — said."""
+    did = _dossier(db, droit_action_date=datetime(2025, 1, 15, tzinfo=UTC),
+                   prescription_type="3_ans")
+    db.external_write(f"dossiers/{did}", {
+        **_stored(db, did),
+        "prescription_date": datetime(2030, 1, 1, tzinfo=UTC)})
+
+    payload = handlers.set_dossier_status({"dossier_id": did,
+                                           "status": "en_attente"})
+
+    assert any("recalculée" in w and "2030-01-01" in w
+               for w in payload["warnings"])
+    assert any("rapport de couverture" in w for w in payload["warnings"])
+
+
+def test_the_status_change_is_logged_as_the_connector_s(db, caplog):
+    did = _dossier(db)
+    with caplog.at_level(logging.INFO, logger="pallas.dossier"):
+        handlers.set_dossier_status({"dossier_id": did, "status": "fermé"})
+    events = [r.json_fields for r in caplog.records
+              if getattr(r, "json_fields", {}).get("event")
+              == "dossier_status_changed"]
+    assert len(events) == 1
+    assert events[0]["via"] == "mcp"
+    assert events[0]["status_to"] == "fermé"
+
+
+def test_update_dossier_still_refuses_a_status_and_names_the_tool(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="set_dossier_status"):
+        handlers.update_dossier({"dossier_id": did, "status": "fermé"})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 2. update_dossier_party — one link at a time
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_update_replaces_one_party_s_roles_and_leaves_every_other_entry(db):
+    did = _dossier(db, clients=(JEAN, MARIE))
+    before = _stored(db, did)
+
+    payload = handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p2",
+        "roles": ["intervenant"]})
+
+    stored = _stored(db, did)
+    assert stored["clients"][0] == before["clients"][0]
+    assert stored["opposing_parties"] == before["opposing_parties"]
+    assert stored["clients"][1]["roles"] == ["intervenant"]
+    assert stored["clients"][1]["name"] == "Marie Tremblay"
+    assert payload["outcome"] == "applied"
+    assert payload["party"]["roles_before"] == ["demandeur"]
+    assert payload["party"]["roles_after"] == ["intervenant"]
+    assert payload["entity"]["etag"] == stored["etag"]
+
+
+def test_update_sets_a_lawyer_by_contact_id_and_snapshots_his_name(db):
+    _contact(db, "av1", "Anne", "Roy", prefix="Me",
+             contact_role="avocat_adverse")
+    did = _dossier(db)
+    payload = handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p3",
+        "avocat_id": "av1"})
+    entry = _stored(db, did)["opposing_parties"][0]
+    assert entry["avocat_id"] == "av1" and entry["avocat_name"] == "Me Anne Roy"
+    assert payload["party"]["avocat_name_after"] == "Me Anne Roy"
+
+    handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p3",
+        "avocat_id": ""})
+    entry = _stored(db, did)["opposing_parties"][0]
+    assert entry["avocat_id"] == "" and entry["avocat_name"] == ""
+
+
+def test_an_unknown_lawyer_is_refused_naming_where_to_find_one(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="list_parties"):
+        handlers.update_dossier_party({
+            "action": "update", "dossier_id": did, "partie_id": "p3",
+            "avocat_id": "ghost"})
+
+
+def test_the_roles_already_stored_write_nothing(db):
+    did = _dossier(db)
+    db.reset_logs()
+    payload = handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p1",
+        "roles": ["demandeur"]})
+    assert db.commits == []
+    assert payload["outcome"] == "unchanged"
+    assert any("déjà ainsi" in w for w in payload["warnings"])
+
+
+def test_a_duplicate_role_is_refused_by_the_model_s_words(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="deux fois"):
+        handlers.update_dossier_party({
+            "action": "update", "dossier_id": did, "partie_id": "p1",
+            "roles": ["demandeur", "demandeur"]})
+
+
+def test_the_derived_dossier_role_change_is_said(db):
+    did = _dossier(db)
+    payload = handlers.update_dossier_party({
+        "action": "update", "dossier_id": did, "partie_id": "p1",
+        "roles": ["intimé"]})
+    assert payload["role_before"] == "demandeur"
+    assert payload["role_after"] == "intimé"
+    assert any("{{dossier.role}}" in w for w in payload["warnings"])
+
+
+def test_a_party_not_on_the_dossier_is_refused_pointing_to_update_dossier(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="add_clients"):
+        handlers.update_dossier_party({
+            "action": "update", "dossier_id": did, "partie_id": "p9",
+            "roles": []})
+
+
+@pytest.mark.parametrize("args, stray", [
+    ({"action": "remove", "roles": ["demandeur"]}, "roles"),
+    ({"action": "remove", "avocat_id": ""}, "avocat_id"),
+    ({"action": "refresh_names", "side": "clients"}, "side"),
+    ({"action": "refresh_names", "expected_etag": "x"}, "expected_etag"),
+])
+def test_an_argument_the_action_does_not_take_is_refused_by_name(db, args, stray):
+    did = _dossier(db)
+    before = _stored(db, did)
+    with pytest.raises(tools.ToolArgumentError, match=f"`{stray}`"):
+        handlers.update_dossier_party({"dossier_id": did, "partie_id": "p1",
+                                       **args})
+    assert _stored(db, did) == before
+
+
+def test_update_needs_something_to_change(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="Rien à modifier"):
+        handlers.update_dossier_party({"action": "update", "dossier_id": did,
+                                       "partie_id": "p1"})
+
+
+def test_a_stale_expected_etag_is_refused_and_writes_nothing(db):
+    did = _dossier(db)
+    before = _stored(db, did)
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.update_dossier_party({
+            "action": "update", "dossier_id": did, "partie_id": "p1",
+            "roles": ["intimé"], "expected_etag": "e-old"})
+    assert err.value.reason == "stale_etag"
+    assert _stored(db, did) == before
+
+
+def test_remove_detaches_the_link_and_journals_it(db):
+    did = _dossier(db)
+    payload = handlers.update_dossier_party({
+        "action": "remove", "dossier_id": did, "partie_id": "p3"})
+
+    stored = _stored(db, did)
+    assert stored["opposing_parties"] == []
+    assert stored["opposing_party_ids"] == []
+    assert payload["outcome"] == "applied"
+    assert payload["party"]["journaled"] is True
+    rows = list(db.peek_collection("audit_events").values())
+    assert [(r["entity_type"], r["entity_id"], r["dossier_id"]) for r in rows] == [
+        ("dossier_party", "p3", did)]
+    assert any("le contact lui-même reste" in w for w in payload["warnings"])
+
+
+def test_remove_refuses_the_last_client(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="seul client"):
+        handlers.update_dossier_party({"action": "remove", "dossier_id": did,
+                                       "partie_id": "p1"})
+
+
+def test_remove_refuses_a_served_party(db):
+    did = _dossier(db)
+    db.external_write(f"dossiers/{did}", {
+        **_stored(db, did),
+        "significations": [{"id": "s1", "partie_id": "p3",
+                             "date": DT, "mode": "huissier",
+                             "huissier_id": "", "pv_document_id": "",
+                             "superseded_by": "", "confirmee": True}]})
+    with pytest.raises(tools.ToolArgumentError, match="signification"):
+        handlers.update_dossier_party({"action": "remove", "dossier_id": did,
+                                       "partie_id": "p3"})
+
+
+def test_remove_refuses_a_client_who_had_trust_funds_on_the_dossier(db):
+    did = _dossier(db, clients=(JEAN, MARIE))
+    db.external_write(f"dossiers/{did}", {
+        **_stored(db, did), "trust_balance_by_client": {"p2": 0}})
+    with pytest.raises(tools.ToolArgumentError, match="fidéicommis"):
+        handlers.update_dossier_party({"action": "remove", "dossier_id": did,
+                                       "partie_id": "p2"})
+    assert [c["id"] for c in _stored(db, did)["clients"]] == ["p1", "p2"]
+
+
+def test_removing_the_first_client_says_the_default_recipient_moves(db):
+    did = _dossier(db, clients=(JEAN, MARIE))
+    payload = handlers.update_dossier_party({
+        "action": "remove", "dossier_id": did, "partie_id": "p1"})
+    assert payload["party"]["was_first_client"] is True
+    assert any("PREMIER client" in w for w in payload["warnings"])
+
+
+def test_refresh_names_by_dossier_reports_each_change_and_is_idempotent(db):
+    _contact(db, "p1", "Jean-Marc", "Tremblay")
+    did = _dossier(db)
+
+    payload = handlers.update_dossier_party({"action": "refresh_names",
+                                            "dossier_id": did})
+
+    (row,) = payload["dossiers"]
+    assert payload["outcome"] == "applied" and payload["applied"] == 1
+    assert row["changes"] == [{"partie_id": "p1", "side": "clients",
+                               "field": "name", "before": "Jean Tremblay",
+                               "after": "Jean-Marc Tremblay"}]
+    assert row["missing_partie_ids"] == ["p3"]
+    assert row["etag"] == _stored(db, did)["etag"]
+    assert payload["entity"]["etag"] == _stored(db, did)["etag"]
+    assert _stored(db, did)["clients"][0]["name"] == "Jean-Marc Tremblay"
+
+    again = handlers.update_dossier_party({"action": "refresh_names",
+                                          "dossier_id": did})
+    assert again["outcome"] == "unchanged"
+
+
+def test_refresh_names_of_a_contact_cited_nowhere_says_so(db):
+    _contact(db, "p8", "Luc", "Seul")
+    payload = handlers.update_dossier_party({"action": "refresh_names",
+                                            "partie_id": "p8"})
+    assert payload["dossiers"] == [] and payload["outcome"] == "unchanged"
+    assert any("aucun dossier" in w for w in payload["warnings"])
+
+
+def test_refresh_names_needs_exactly_one_selector(db):
+    did = _dossier(db)
+    with pytest.raises(tools.ToolArgumentError, match="exactement un"):
+        handlers.update_dossier_party({"action": "refresh_names"})
+    with pytest.raises(tools.ToolArgumentError, match="exactement un"):
+        handlers.update_dossier_party({"action": "refresh_names",
+                                       "dossier_id": did, "partie_id": "p1"})
+
+
+def test_a_refresh_with_a_refused_dossier_is_never_stored_for_replay(db, monkeypatch):
+    """A refused row is repaired by the same call: that result must not be
+    replayed to a same-key retry for 24 h."""
+    _contact(db, "p1", "Jean-Marc", "Tremblay")
+    d1 = _dossier(db)
+    _dossier(db, file_number="2026-002")
+    real = dossier_model.get_dossier
+
+    def racing(doc_id):
+        doc = real(doc_id)
+        if doc_id == d1:
+            db.external_write(f"dossiers/{d1}", {**db.peek(f"dossiers/{d1}"),
+                                                 "etag": "e-rival"})
+        return doc
+
+    monkeypatch.setattr(dossier_model, "get_dossier", racing)
+    payload = handlers.update_dossier_party({
+        "action": "refresh_names", "partie_id": "p1",
+        "idempotency_key": "cle-rafraichir-01"})
+
+    assert payload["outcome"] == "partial"
+    assert payload["refused"] == 1 and payload["applied"] == 1
+    assert write_support.NO_REPLAY_KEY not in payload
+    assert _idempotency_entries(db) == {}
+    assert "entity" not in payload        # a contact's batch has no one entity

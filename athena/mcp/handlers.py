@@ -126,7 +126,9 @@ from dav.sync import (
     remove_tombstone,
 )
 from mcp import coverage, import_audit
-from mcp.write_support import register_persistence_hooks, run_write
+from mcp.write_support import (
+    NO_REPLAY_KEY, register_persistence_hooks, run_write,
+)
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import budget as budget_model
@@ -148,6 +150,7 @@ from models import trust as trust_model
 from models import upload_ticket as upload_ticket_model
 from security import TAG_RE, sanitize
 from services import docx_identifiers as identifiers_service
+from services import dossier_dav as dossier_dav_service
 from services import gabarit_champs as gabarit_service
 from services import gabarits as gabarit_writer
 from services import note_honoraires as note_honoraires_service
@@ -4557,6 +4560,22 @@ def _forum_warnings(before: dict, after: dict) -> list[str]:
     return warnings
 
 
+def _dossier_entity(doc: dict) -> dict:
+    """A dossier write's entity snapshot — shared by every dossier writer
+    (lot 4b's refresh of a dossier's names reports it alone)."""
+    return {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("id", ""),
+        "file_number": doc.get("file_number", ""),
+        "label": doc.get("title", ""),
+        "status": doc.get("status", ""),
+        "legacy_ref": doc.get("legacy_ref", ""),
+        # The etag the model just wrote: the next update_dossier presents
+        # it.
+        "etag": concurrency.etag_of(doc),
+    }
+
+
 def _dossier_write_result(
     doc: dict, *, verb: str, warnings: list[str]
 ) -> dict:
@@ -4572,17 +4591,7 @@ def _dossier_write_result(
     payload: dict[str, Any] = {
         verb: True,
         "entity_type": "dossier",
-        "entity": {
-            "id": doc.get("id", ""),
-            "dossier_id": doc.get("id", ""),
-            "file_number": doc.get("file_number", ""),
-            "label": doc.get("title", ""),
-            "status": doc.get("status", ""),
-            "legacy_ref": doc.get("legacy_ref", ""),
-            # The etag the model just wrote: the next update_dossier
-            # presents it.
-            "etag": concurrency.etag_of(doc),
-        },
+        "entity": _dossier_entity(doc),
         "prescription_date": date_str(_as_utc(doc.get("prescription_date"))),
         "prescription_status": derived["status"],
         "warnings": list(warnings),
@@ -6994,15 +7003,15 @@ def _update_dossier_impl(args: dict) -> dict:
 
     # Tripwire. `status` is not declared, so additionalProperties: false
     # already rejects it — this carries the REASON, so a future schema slip
-    # becomes a French refusal instead of a silent DavX5 desync.
+    # becomes a French refusal instead of a silent DavX5 desync: the model
+    # never runs the drain (services/dossier_dav does), so a status written
+    # here would leave the dossier's tasks, notes and hearings on the phone.
     if "status" in args:
         raise ToolArgumentError(
-            "Le statut d'un dossier ne se change pas par le connecteur : la "
-            "fermeture exige la purge DavX5 du service "
-            "(services/dossier_dav), que les modèles n'appellent "
-            "jamais. Un dossier fermé ici laisserait ses tâches, "
-            "ses notes et ses audiences sur le téléphone pour toujours. "
-            "Fixez le statut à la création, ou fermez-le dans l'application."
+            "Le statut d'un dossier ne se change pas par update_dossier : "
+            "utilisez set_dossier_status, qui vide ou rétablit sa collection "
+            "DavX5 comme l'application. Un statut écrit ici laisserait ses "
+            "tâches, ses notes et ses audiences sur le téléphone."
         )
 
     existing = dossier_model.get_dossier(dossier_id)
@@ -7099,6 +7108,508 @@ def _update_dossier_impl(args: dict) -> dict:
     return _dossier_write_result(
         dossier, verb="updated", warnings=warnings
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 4b — DOSSIERS: the status (DavX5 drain / restore) and the party links
+# ══════════════════════════════════════════════════════════════════════
+#
+# Both tools write the dossier through the MODEL's rules — the drain service
+# (services/dossier_dav, the web route's own door) and the one-entry link
+# helpers of models/dossier (lot 4a), whose guards meet the web form's. The
+# handlers resolve, repeat the guards a caller can trip as named French
+# refusals, and REPORT: a dossier is not a DAV collection, but its status
+# decides whether its collection is on the phone, which is why
+# set_dossier_status reports its own `dav` block (and never the
+# ctag_bumped/dav_synced pair of a DAV-exposed record).
+
+_DOSSIER_SUBJECT = "Ce dossier a été modifié"
+_DOSSIER_NOT_FOUND = (
+    "Dossier introuvable : {id}. Utilisez list_dossiers ou get_dossier pour "
+    "obtenir un dossier_id valide."
+)
+_DOSSIER_UNREADABLE = (
+    "Le dossier n'a pas pu être lu : rien n'a été modifié. Réessayez dans un "
+    "instant."
+)
+_CLOSED_STATUSES = ("fermé", "archivé")
+# set_dossier_status takes no expected_etag (it compare-and-sets against its
+# own read), so its stale refusal names the reads that show the dossier.
+_DOSSIER_READERS = ("get_dossier", "list_dossiers")
+
+
+def _read_dossier_strict(dossier_id: str) -> dict:
+    """The dossier, read STRICTLY — an outage is never « introuvable »."""
+    try:
+        dossier = dossier_model.get_dossier_strict(dossier_id)
+    except Exception:
+        log_unexpected("mcp dossier write: dossier unreadable")
+        raise ToolArgumentError(_DOSSIER_UNREADABLE)
+    if dossier is None:
+        raise ToolArgumentError(_DOSSIER_NOT_FOUND.format(id=dossier_id))
+    return dossier
+
+
+def _prescription_moved_warning(before: dict, after: Optional[dict]) -> list[str]:
+    """Every dossier save re-derives the « date pour agir » from the recourse
+    fields (models/dossier._apply_prescription_deadline): even a status or a
+    link edit can MOVE it. Said, never left silent."""
+    if after is None:
+        return []
+    old = date_str(_as_utc(before.get("prescription_date")))
+    new = date_str(_as_utc(after.get("prescription_date")))
+    if old == new:
+        return []
+    return [
+        "La « date pour agir » du dossier a été recalculée à "
+        f"l'enregistrement : {old or 'aucune'} → {new or 'aucune'}. "
+        "Vérifiez-la."
+    ]
+
+
+def _dav_block(dav: Any) -> dict:
+    return {
+        "direction": dav.direction,
+        "resources": int(dav.resources),
+        "ctag_bumped": bool(dav.ctag_bumped),
+        "complete": bool(dav.complete),
+    }
+
+
+def _closing_warnings(dossier_id: str, doc: dict, dav: Any) -> list[str]:
+    """What closing (fermé / archivé, from an active status) changes beyond
+    the status itself — each read FAIL-OPEN: the status is committed, and a
+    warning that cannot be computed is omitted, never guessed."""
+    warnings: list[str] = []
+    if dav.resources:
+        warnings.append(
+            f"Ses {dav.resources} tâche(s), note(s) et audience(s) quittent le "
+            "téléphone (DavX5) ; elles restent dans l'application — et les "
+            "tâches et audiences, à son agenda."
+        )
+    derived = dossier_model.derive_prescription(doc)
+    if doc.get("prescription_date") and derived["status"] not in (
+            "interrompue", "imprescriptible"):
+        warnings.append(
+            "Le dossier sort des alertes de prescription (get_agenda, "
+            "tableau de bord) : sa date pour agir du "
+            f"{date_str(_as_utc(doc.get('prescription_date')))} ne sera plus "
+            "annoncée."
+        )
+    if int(doc.get("trust_balance") or 0):
+        warnings.append(
+            "Le dossier détient encore "
+            f"{format_cents(int(doc.get('trust_balance') or 0))} en "
+            "fidéicommis : ces sommes restent au registre."
+        )
+    try:
+        protocol = protocol_model.get_protocol_for_dossier(dossier_id)
+    except Exception:
+        protocol = None
+    if protocol and protocol.get("status") == "actif":
+        warnings.append(
+            "Son protocole reste « actif » : ses étapes continuent de paraître "
+            "à l'agenda (get_agenda). Suspendez-le ou complétez-le "
+            "(update_protocol) si c'est voulu."
+        )
+    try:
+        unbilled = (len(time_entry_model.get_unbilled_time_entries(dossier_id))
+                    + len(expense_model.get_unbilled_expenses(dossier_id)))
+    except Exception:
+        unbilled = 0
+    if unbilled:
+        warnings.append(
+            f"{unbilled} entrée(s) de temps ou déboursé(s) non facturé(s) "
+            "restent au dossier."
+        )
+    return warnings
+
+
+def set_dossier_status(args: dict) -> dict:
+    return run_write(
+        "set_dossier_status", args, lambda: _set_dossier_status_impl(args)
+    )
+
+
+def _set_dossier_status_impl(args: dict) -> dict:
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    if not dossier_id:
+        raise ToolArgumentError("`dossier_id` est requis.")
+    status = str(args.get("status") or "")
+    if status not in dossier_model.VALID_STATUSES:
+        raise ToolArgumentError(
+            "`status` : actif, en_attente, fermé ou archivé."
+        )
+    existing = _read_dossier_strict(dossier_id)
+    old_status = str(existing.get("status") or "")
+
+    closed_arg = str(args.get("closed_date") or "").strip()
+    closed: Optional[datetime] = None
+    if closed_arg:
+        if status not in _CLOSED_STATUSES:
+            raise ToolArgumentError(
+                "`closed_date` n'accompagne que le statut « fermé » ou "
+                "« archivé » : un dossier ouvert n'a pas de date de "
+                "fermeture."
+            )
+        closed = _write_date(args, "closed_date", required=False)
+        if closed.date() > deadlines.today_mtl():
+            raise ToolArgumentError(
+                "`closed_date` est dans le futur : un dossier se ferme au "
+                "plus tard aujourd'hui (Montréal)."
+            )
+        opened = _as_utc(existing.get("opened_date"))
+        if isinstance(opened, datetime) and closed.date() < opened.date():
+            raise ToolArgumentError(
+                "`closed_date` précède la date d'ouverture du dossier "
+                f"({date_str(opened)})."
+            )
+
+    data: dict[str, Any] = {}
+    if status != old_status:
+        data["status"] = status
+    if closed is not None and closed != _as_utc(existing.get("closed_date")):
+        data["status"] = status
+        data["closed_date"] = closed
+    etag = concurrency.etag_of(existing)
+    commit = (
+        (lambda: dossier_model.update_dossier(
+            dossier_id, data, expected_etag=etag))
+        if data else None
+    )
+    transition = dossier_dav_service.run_status_transition(
+        dossier_id, old_status, status, commit, reconcile_always=True,
+    )
+    if transition.errors:
+        _raise_if_stale(
+            transition.errors, tool="set_dossier_status",
+            subject=_DOSSIER_SUBJECT,
+            reread=lambda: dossier_model.get_dossier(dossier_id),
+            readers=_DOSSIER_READERS,
+        )
+        if transition.errors == [dossier_dav_service.MEMBERS_UNREADABLE_ERROR]:
+            raise ToolArgumentError(
+                "Les tâches, les notes et les audiences du dossier n'ont pas "
+                "pu être lues : le fermer ou le rouvrir maintenant laisserait "
+                "le téléphone faux. Rien n'a été modifié — réessayez dans un "
+                "instant."
+            )
+        raise ToolArgumentError("; ".join(transition.errors))
+
+    # ── Committed (or nothing to write): nothing below may refuse. ─────
+    doc = transition.doc if transition.doc is not None else existing
+    dav = transition.dav
+    now_status = str(doc.get("status") or status)
+    warnings: list[str] = []
+    if not data:
+        warnings.append(
+            f"Le dossier est déjà « {now_status} » : rien n'a été écrit ; sa "
+            "visibilité sur le téléphone a été réappliquée (une "
+            "resynchronisation)."
+        )
+    was_active = dossier_dav_service.is_active(old_status)
+    is_active = dossier_dav_service.is_active(now_status)
+    try:
+        if data and was_active and not is_active:
+            warnings.extend(_closing_warnings(dossier_id, doc, dav))
+        if data and not was_active and is_active:
+            before = date_str(_as_utc(existing.get("closed_date")))
+            if before:
+                warnings.append(
+                    f"Sa date de fermeture ({before}) est effacée, et sa "
+                    "rétention avec elle."
+                )
+            warnings.append(
+                "Sur le téléphone, DavX5 doit actualiser sa liste des "
+                "collections — recochez le dossier s'il avait été décoché."
+            )
+        if data and now_status == "en_attente" and old_status == "actif":
+            warnings.append(
+                "« en_attente » : le dossier reste sur le téléphone et dans "
+                "les alertes de prescription, mais sort des vues filtrées sur "
+                "« actif » — le rapport de couverture par défaut notamment."
+            )
+        warnings.extend(_prescription_moved_warning(existing, transition.doc))
+    except Exception:
+        log_unexpected("mcp set_dossier_status: warnings failed")
+    if not dav.complete:
+        warnings.append(
+            "Le statut est enregistré, mais la mise à jour du téléphone "
+            "(DavX5) est INCOMPLÈTE. Rappelez set_dossier_status avec le MÊME "
+            "statut : l'appel la refait (la même idempotency_key convient — "
+            "un résultat incomplet n'est jamais conservé)."
+        )
+
+    payload = _dossier_write_result(doc, verb="updated", warnings=warnings)
+    payload.update({
+        "outcome": "applied" if data else "unchanged",
+        "status_before": old_status,
+        "status_after": now_status,
+        "closed_date": date_str(_as_utc(doc.get("closed_date"))),
+        "closed_date_before": date_str(_as_utc(existing.get("closed_date"))),
+        "dav": _dav_block(dav),
+    })
+    if not dav.complete:
+        payload[NO_REPLAY_KEY] = True
+    return payload
+
+
+# ── update_dossier_party (WRITE — LINKS) ─────────────────────────────────
+
+_PARTY_ACTIONS = ("update", "remove", "refresh_names")
+# The arguments each action accepts — anything else a caller sends is
+# refused by name, never ignored (a `roles` on a remove would otherwise be
+# silently dropped while the caller believed it applied).
+_PARTY_ACTION_ARGS = {
+    "update": ("dossier_id", "partie_id", "side", "roles", "avocat_id",
+               "expected_etag"),
+    "remove": ("dossier_id", "partie_id", "side", "expected_etag"),
+    "refresh_names": ("dossier_id", "partie_id"),
+}
+_PARTY_ARGS = ("dossier_id", "partie_id", "side", "roles", "avocat_id",
+               "expected_etag")
+
+
+def update_dossier_party(args: dict) -> dict:
+    return run_write(
+        "update_dossier_party", args, lambda: _update_dossier_party_impl(args)
+    )
+
+
+def _update_dossier_party_impl(args: dict) -> dict:
+    action = args.get("action")
+    if action not in _PARTY_ACTIONS:
+        raise ToolArgumentError("`action` : update, remove ou refresh_names.")
+    stray = [k for k in _PARTY_ARGS
+             if k in args and k not in _PARTY_ACTION_ARGS[action]]
+    if stray:
+        raise ToolArgumentError(
+            f"`action` « {action} » n'accepte pas "
+            + ", ".join(f"`{k}`" for k in stray) + "."
+        )
+    if action == "refresh_names":
+        return _refresh_dossier_party_names(args)
+
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    partie_id = str(args.get("partie_id") or "").strip()
+    if not dossier_id or not partie_id:
+        raise ToolArgumentError(
+            f"`action` « {action} » exige `dossier_id` et `partie_id`."
+        )
+    if action == "update" and "roles" not in args and "avocat_id" not in args:
+        raise ToolArgumentError(
+            "Rien à modifier : donnez `roles` et/ou `avocat_id`."
+        )
+    existing = dossier_model.get_dossier(dossier_id)
+    if existing is None:
+        raise ToolArgumentError(_DOSSIER_NOT_FOUND.format(id=dossier_id))
+    expected = _expected_etag(
+        args, existing, tool="update_dossier_party", subject=_DOSSIER_SUBJECT,
+    )
+    side = args.get("side")
+
+    if action == "update":
+        avocat_id = args.get("avocat_id")
+        if avocat_id is not None:
+            avocat_id = str(avocat_id).strip()
+            # Named here, where the model would only say « Avocat
+            # introuvable » without the way to find a valid id.
+            if avocat_id and partie_model.get_partie(avocat_id) is None:
+                raise ToolArgumentError(
+                    f"Avocat introuvable : {avocat_id}. Utilisez list_parties "
+                    "pour obtenir l'id d'un contact existant."
+                )
+        doc, errors, report = dossier_model.update_dossier_party(
+            dossier_id, partie_id, side=side,
+            roles=args.get("roles") if "roles" in args else None,
+            avocat_id=avocat_id, expected_etag=expected,
+        )
+    else:
+        doc, errors, report = dossier_model.remove_dossier_party(
+            dossier_id, partie_id, side=side, expected_etag=expected,
+        )
+    _raise_if_stale(
+        errors, tool="update_dossier_party", subject=_DOSSIER_SUBJECT,
+        reread=lambda: dossier_model.get_dossier(dossier_id),
+    )
+    if errors:
+        message = "; ".join(errors)
+        if errors == [dossier_model.PARTY_NOT_ON_DOSSIER]:
+            message += (
+                " Pour l'y ajouter : update_dossier, avec add_clients ou "
+                "add_opposing_parties."
+            )
+        raise ToolArgumentError(message)
+
+    # ── Committed (or nothing to write): nothing below may refuse. ─────
+    changed = bool(report.get("changed"))
+    warnings: list[str] = []
+    try:
+        warnings.extend(_party_link_warnings(
+            action, existing, doc, report, partie_id))
+    except Exception:
+        log_unexpected("mcp update_dossier_party: warnings failed")
+    payload = _dossier_write_result(doc, verb="updated", warnings=warnings)
+    party: dict[str, Any] = {
+        "partie_id": partie_id,
+        "side": str(report.get("side") or ""),
+        "name": str(report.get("name") or ""),
+    }
+    if action == "update":
+        party.update({
+            "roles_before": list(report.get("roles_before") or []),
+            "roles_after": list(report.get("roles_after") or []),
+            "avocat_id_before": str(report.get("avocat_id_before") or ""),
+            "avocat_id_after": str(report.get("avocat_id_after") or ""),
+            "avocat_name_after": str(report.get("avocat_name_after") or ""),
+        })
+    else:
+        party.update({
+            "was_first_client": bool(report.get("was_first_client")),
+            "journaled": bool(report.get("journaled")),
+        })
+    payload.update({
+        "action": action,
+        "outcome": "applied" if changed else "unchanged",
+        "party": party,
+        "role_before": str(report.get("role_before") or ""),
+        "role_after": str(report.get("role_after") or ""),
+    })
+    return payload
+
+
+def _party_link_warnings(
+    action: str, before: dict, after: dict, report: dict, partie_id: str,
+) -> list[str]:
+    """What a link write changed beyond the entry — computed after the
+    commit, each read fail-open (the caller wraps the whole)."""
+    if not report.get("changed"):
+        return ["Cette partie est déjà ainsi au dossier : rien n'a été écrit."]
+    warnings: list[str] = []
+    role_before = str(report.get("role_before") or "")
+    role_after = str(report.get("role_after") or "")
+    if role_before != role_after:
+        warnings.append(
+            "Le rôle dérivé du dossier (cité par les gabarits : "
+            "{{dossier.role}}, les intitulés) passe de "
+            f"« {role_before or 'aucun'} » à « {role_after or 'aucun'} »."
+        )
+    if action == "update":
+        live = partie_model.get_partie(partie_id)
+        if live is not None and partie_model.display_name(live).strip() != str(
+                report.get("name") or "").strip():
+            warnings.append(
+                "Le nom enregistré au dossier pour cette partie diffère de sa "
+                "fiche actuelle : rafraîchissez-le (action refresh_names) si "
+                "les procédures doivent citer le nom actuel."
+            )
+    else:
+        warnings.append(
+            "Le LIEN est retiré ; le contact lui-même reste, inchangé. "
+            + ("Le retrait est inscrit au journal des suppressions "
+               "(list_deletions, dossier_party)."
+               if report.get("journaled") else
+               "Le retrait n'a pas pu être inscrit au journal des "
+               "suppressions.")
+        )
+        if report.get("was_first_client"):
+            warnings.append(
+                "C'était le PREMIER client : les prochaines factures de ce "
+                "dossier s'adresseront par défaut au nouveau premier client ; "
+                "les factures déjà émises gardent leur destinataire."
+            )
+    warnings.extend(_prescription_moved_warning(before, after))
+    return warnings
+
+
+def _refresh_dossier_party_names(args: dict) -> dict:
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    partie_id = str(args.get("partie_id") or "").strip()
+    if bool(dossier_id) == bool(partie_id):
+        raise ToolArgumentError(
+            "`action` « refresh_names » : donnez `dossier_id` (un dossier) OU "
+            "`partie_id` (tous les dossiers de ce contact) — exactement un "
+            "des deux."
+        )
+    rows, errors = dossier_model.refresh_party_names(
+        dossier_id=dossier_id or None, partie_id=partie_id or None,
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    # ── Committed per row (or refused per row): nothing below may refuse.
+    applied = sum(1 for r in rows if r["outcome"] == "applied")
+    refused = sum(1 for r in rows if r["outcome"] == "refused")
+    unchanged = len(rows) - applied - refused
+    out_rows = [{
+        "dossier_id": r["dossier_id"],
+        "file_number": r["file_number"],
+        "outcome": r["outcome"],
+        "reason": r["reason"] or None,
+        "etag": str(r.get("dossier_etag") or ""),
+        "changes": [dict(c) for c in r["changes"]],
+        "missing_partie_ids": list(r["missing_partie_ids"]),
+        "prescription_date_moved": bool(r.get("prescription_date_moved")),
+    } for r in rows]
+    warnings: list[str] = []
+    if applied:
+        warnings.append(
+            "Seuls les dossiers sont réécrits : les factures, les écritures "
+            "au fidéicommis et les documents déjà produits gardent le nom "
+            "qu'ils portaient."
+        )
+    if any(r["prescription_date_moved"] for r in out_rows):
+        warnings.append(
+            "La « date pour agir » d'au moins un dossier a été recalculée à "
+            "l'enregistrement (prescription_date_moved) : vérifiez-la."
+        )
+    if any(r["missing_partie_ids"] for r in out_rows):
+        warnings.append(
+            "Des contacts cités n'existent plus : leur nom enregistré est "
+            "conservé tel quel (missing_partie_ids)."
+        )
+    if refused:
+        warnings.append(
+            f"{refused} dossier(s) refusé(s) (voir reason) — les autres ont "
+            "été traités. Renvoyez l'appel pour réessayer les refusés (la "
+            "même idempotency_key convient : un résultat qui porte des refus "
+            "n'est jamais conservé)."
+        )
+    if not rows:
+        warnings.append(
+            "Ce contact n'est cité dans aucun dossier : rien n'a été écrit."
+        )
+    elif not applied and not refused:
+        warnings.append("Tous les noms étaient à jour : rien n'a été écrit.")
+    payload: dict[str, Any] = {
+        "updated": True,
+        "action": "refresh_names",
+        "outcome": ("partial" if refused
+                    else "applied" if applied else "unchanged"),
+        "entity_type": "dossier",
+        "dossiers": out_rows,
+        "applied": applied,
+        "unchanged": unchanged,
+        "refused": refused,
+        "warnings": warnings,
+    }
+    if dossier_id:
+        # The one dossier's entity (its etag AS STORED now) — best-effort:
+        # get_dossier fails open, and the rows carry each etag anyway.
+        stored = dossier_model.get_dossier(dossier_id)
+        if stored is not None:
+            payload["entity"] = _dossier_entity(stored)
+    try:
+        log_dossier_event(
+            "dossier_party_names_refreshed", dossier_id,
+            via="mcp", by_contact=bool(partie_id), dossiers=len(rows),
+            applied=applied, unchanged=unchanged, refused=refused,
+        )
+    except Exception:
+        log_unexpected("mcp refresh_names logging failed")
+    if refused:
+        payload[NO_REPLAY_KEY] = True
+    return payload
 
 
 # ── 23. create_task (WRITE) ─────────────────────────────────────────────

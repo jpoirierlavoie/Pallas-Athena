@@ -1039,6 +1039,18 @@ def _draft_invoice(db):
     return "inv1"
 
 
+def _dossier_party(db):
+    """A real dossier, the tool addressed by the dossier AND one of its
+    parties (and an action): the factory returns (row id, the argument
+    dict) — the link lives in the dossier's own document."""
+    did = _dossier(db)
+    return did, {"action": "update", "dossier_id": did, "partie_id": "p1"}
+
+
+def _roles_of_first_client(roles: list):
+    return lambda clients: clients[0]["roles"] == roles
+
+
 # tool → (collection, factory, id key, arguments, (field, stored value))
 _HANDLER_CASES = {
     "update_partie": ("parties", _partie, "partie_id",
@@ -1096,6 +1108,11 @@ _HANDLER_CASES = {
     # tests/test_mcp_billing_writes.py's).
     "update_invoice": ("invoices", _draft_invoice, "invoice_id",
                        {"notes": "Corrigées"}, ("notes", "Corrigées")),
+    # Lot 4b — one party link of a dossier (the status tool takes no etag:
+    # it guards its own read, tests/test_mcp_dossier_writes.py).
+    "update_dossier_party": ("dossiers", _dossier_party, None,
+                             {"roles": ["intimé"]},
+                             ("clients", _roles_of_first_client(["intimé"]))),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -1105,6 +1122,7 @@ _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
 # only go back to à_faire; a théorie edit is an operation list.
 _SECOND_ARGS = {
     "reopen_task": {"status": "à_faire"},
+    "update_dossier_party": {"roles": ["intervenant"]},
     "edit_analyse": {"operations": [{"bloc": "D", "mode": "append",
                                      "content": "Deuxième version"}]},
 }
@@ -1140,6 +1158,7 @@ _HANDLER_GETTERS = {
     "manage_folder": (folder_model, "list_dossier_folders"),
     "update_template": (doc_template_model, "get_template"),
     "update_invoice": (invoice_model, "get_invoice"),
+    "update_dossier_party": (dossier_model, "get_dossier"),
 }
 
 

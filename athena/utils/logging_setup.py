@@ -536,6 +536,10 @@ DossierEvent = Literal[
     "dossier_status_changed",
     "dossier_dav_visibility_incomplete",
     "dossier_dav_resynced",
+    # Lot 4b : le connecteur a rafraîchi les noms de parties qu'un ou
+    # plusieurs dossiers gardent (update_dossier_party, refresh_names) — un
+    # lot, donc des COMPTES : `mcp_write` n'a pas d'entité unique à nommer.
+    "dossier_party_names_refreshed",
 ]
 # Séries récurrentes d'audiences. Un seul clic y crée ou détruit jusqu'à 60
 # documents, frappe autant de pierres tombales et pousse autant de VEVENT vers

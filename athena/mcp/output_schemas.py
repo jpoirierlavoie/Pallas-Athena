@@ -186,24 +186,35 @@ def _model_summary(description: str) -> dict:
 
 # ── Shared row schemas ──────────────────────────────────────────────────
 
-def _dossier_write_result(verb: str) -> dict:
-    """The success payload of a dossier write.
+def _dossier_entity() -> dict:
+    """A dossier write's entity snapshot (``handlers._dossier_entity``)."""
+    return _obj({
+        "id": _str(),
+        "dossier_id": _str("Same value as id — the audit log reads this."),
+        "file_number": _str(),
+        "label": _str("The dossier title."),
+        "status": _str(),
+        "legacy_ref": _str("'' when not imported."),
+        **_written_etag(),
+    }, optional=("etag",))
+
+
+def _dossier_write_result(
+    verb: str, extra: Optional[dict[str, Any]] = None,
+    optional: tuple[str, ...] = (),
+) -> dict:
+    """The success payload of a dossier write — plus *extra* keys (lot 4b's
+    status and link tools), *optional* naming those not always emitted.
 
     NO ctag_bumped / dav_synced: dossiers are not a DAV collection, and this
     module's rule is never to declare a sync key a write cannot honour.
+    set_dossier_status reports what its status did to the phone in its own
+    ``dav`` block instead.
     """
     return _obj({
         verb: {"type": "boolean", "enum": [True]},
         "entity_type": _str("Always « dossier »."),
-        "entity": _obj({
-            "id": _str(),
-            "dossier_id": _str("Same value as id — the audit log reads this."),
-            "file_number": _str(),
-            "label": _str("The dossier title."),
-            "status": _str(),
-            "legacy_ref": _str("'' when not imported."),
-            **_written_etag(),
-        }, optional=("etag",)),
+        "entity": _dossier_entity(),
         "prescription_date": _nstr(
             "The « date pour agir » AFTER the model recomputed it — it is "
             "derived from droit_action_date + the confirmed delay, never "
@@ -219,7 +230,57 @@ def _dossier_write_result(verb: str) -> dict:
             "created closed and therefore never advertised to DavX5."
         )),
         **_write_protocol_keys(),
-    })
+        **(extra or {}),
+    }, optional=optional)
+
+
+def _party_link() -> dict:
+    """``update_dossier_party``'s party block — update or remove."""
+    return _obj({
+        "partie_id": _str("The party's contact id."),
+        "side": _str("clients | opposing_parties — the side it is (or was) on."),
+        "name": _str("The party's name snapshot on the dossier."),
+        "roles_before": _arr(_str(), "update: the roles before."),
+        "roles_after": _arr(_str(), "update: the roles as stored now."),
+        "avocat_id_before": _str("update: the lawyer's contact id before; ''."),
+        "avocat_id_after": _str("update: the lawyer's contact id now; ''."),
+        "avocat_name_after": _str("update: the lawyer's name snapshot now."),
+        "was_first_client": _bool(
+            "remove: it was the FIRST client — the default invoice "
+            "recipient moves to the next one."),
+        "journaled": _bool(
+            "remove: the detach is in the deletion journal (list_deletions, "
+            "dossier_party)."),
+    }, required=["partie_id", "side", "name"])
+
+
+def _party_refresh_row() -> dict:
+    """One dossier of ``update_dossier_party``'s refresh_names."""
+    return _obj({
+        "dossier_id": _str(),
+        "file_number": _str(),
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged", "refused"],
+            "description": (
+                "« unchanged » = every name was current, nothing written; "
+                "« refused » = this dossier's save was refused (reason) — the "
+                "others went on."),
+        },
+        "reason": _nstr("French, on « refused »; null otherwise."),
+        "etag": _str("The dossier's etag as stored after this row."),
+        "changes": _arr(_obj({
+            "partie_id": _str(),
+            "side": _str(),
+            "field": {"type": "string", "enum": ["name", "avocat_name"]},
+            "before": _str(),
+            "after": _str(),
+        })),
+        "missing_partie_ids": _arr(_str(), (
+            "Contacts cited that no longer exist: their stored name is "
+            "kept.")),
+        "prescription_date_moved": _bool(
+            "The save re-derived a different « date pour agir »."),
+    }, optional=("etag",))
 
 
 def _partie_write_result(verb: str) -> dict:
@@ -2545,6 +2606,66 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "create_dossier": _dossier_write_result("created"),
     "update_dossier": _dossier_write_result("updated"),
+    # ── Lot 4b — DOSSIERS ────────────────────────────────────────────────
+    "set_dossier_status": _dossier_write_result("updated", extra={
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = the dossier already had this status and "
+                "closing date: NOTHING was written; its phone visibility was "
+                "re-applied (a resync)."),
+        },
+        "status_before": _str("The stored status before this call."),
+        "status_after": _str("The status as stored now."),
+        "closed_date": _nstr("YYYY-MM-DD as stored now; null when open."),
+        "closed_date_before": _nstr(
+            "YYYY-MM-DD before this call — what a reopening erased."),
+        "dav": _obj({
+            "direction": {
+                "type": "string", "enum": ["drain", "restore", "none"],
+                "description": (
+                    "drain = the collection was taken off the phone (closed "
+                    "or archived); restore = put back (open)."),
+            },
+            "resources": _int(
+                "How many tasks, notes and events the DavX5 write covered."),
+            "ctag_bumped": _bool(
+                "The collection's sync trigger fired with the last marker."),
+            "complete": _bool(
+                "false = the status IS written but the phone is not in step: "
+                "call again with the SAME status."),
+        }, description=(
+            "What the status did to the phone's DavX5 collection of the "
+            "dossier.")),
+    }),
+    "update_dossier_party": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "action": {
+            "type": "string", "enum": ["update", "remove", "refresh_names"],
+        },
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged", "partial"],
+            "description": (
+                "« unchanged » = nothing was written; « partial » "
+                "(refresh_names) = at least one dossier was refused — the "
+                "others were processed."),
+        },
+        "entity_type": _str("Always « dossier »."),
+        "entity": _dossier_entity(),
+        "party": _party_link(),
+        "role_before": _str("The dossier-level derived role before."),
+        "role_after": _str("…and as stored now (the gabarits cite it)."),
+        "prescription_date": _nstr(
+            "update / remove: the « date pour agir » as stored now."),
+        "prescription_status": _str("update / remove."),
+        "dossiers": _arr(_party_refresh_row(), "refresh_names: one row per dossier."),
+        "applied": _int("refresh_names: dossiers written."),
+        "unchanged": _int("refresh_names: dossiers already current."),
+        "refused": _int("refresh_names: dossiers whose save was refused."),
+        "warnings": _arr(_str(), "French; every side effect named."),
+        **_write_protocol_keys(),
+    }, required=["updated", "action", "outcome", "entity_type", "warnings",
+                 "idempotent_replay"]),
 
     "get_import_audit": _found_or_not(
         _obj({

@@ -213,6 +213,17 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "faute d'historique, une catégorie que vous aviez",
     "a document older than the marker — reads",
     "ou document antérieur à ce suivi",
+    # Lot 4b (DOSSIERS): set_dossier_status changes a dossier's status
+    # through the same drain service the application's form uses — the
+    # « dossier_status » promise was DELETED, and each phrasing of it that
+    # stood on a surface is false now.
+    "is set at creation and can never be changed here",
+    "a davx5 drain only the application performs",
+    "ce que seule l'application fait",
+    "it can never be changed afterwards through this connector",
+    "is deliberately not accepted: closing a dossier",
+    "fixez le statut à la création",
+    "ne se change pas par le connecteur",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -881,3 +892,39 @@ def test_the_lot_3b_texts_say_what_billing_does():
         files.instructions_en)
     assert "counts as his unless its category is « autre »" in (
         desc["update_document"])
+
+
+
+def test_the_lot_4b_texts_say_what_the_dossier_tools_do():
+    """Lot 4b (DOSSIERS). The family says the consequences the lawyer
+    consents to — closing DRAINS the phone and leaves the prescription
+    alerts; the repair of an incomplete drain is the SAME status again; a
+    detached party is a LINK removed, never the contact, refused for the
+    last client, a served party and a client with trust history — and the
+    promise it falsified is gone, while « nothing can be deleted » names
+    the detach it narrows."""
+    dossiers = next(f for f in disclosure.FAMILIES if f.key == "dossiers")
+    assert dossiers.tools == ("set_dossier_status", "update_dossier_party")
+    for fragment in ("DRAINS its DavX5 collection", "prescription alerts",
+                     "SAME status", "the contact stays",
+                     "ever had trust funds", "a served party",
+                     "`update_dossier`'s (CORRECT)"):
+        assert fragment in dossiers.instructions_en, fragment
+    keys = {n.key: n for n in disclosure.NEVERS}
+    assert "dossier_status" not in keys
+    assert "detaching a party from a dossier removes a LINK" in keys["delete"].en
+    assert "le contact reste" in keys["delete"].fr
+    text = endpoint.INSTRUCTIONS
+    assert "DOSSIERS: " in text
+    assert "can never be changed here" not in text
+    partial = (_TEMPLATES / "mcp" / "families" / "_dossiers.html").read_text(
+        encoding="utf-8")
+    flat = " ".join(partial.split())
+    assert "jamais le contact" in flat
+    assert "pour le dernier client, pour une partie signifiée" in flat
+    desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
+    assert "set_dossier_status" in desc["update_dossier"]
+    assert "update_dossier_party" in desc["update_dossier"]
+    assert "set_dossier_status" in (
+        tools.TOOLS["create_dossier"]["input_schema"]["properties"]["status"]
+        ["description"])

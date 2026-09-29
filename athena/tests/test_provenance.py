@@ -523,10 +523,15 @@ def test_the_sweep_is_not_vacuous():
 # refusal, and the retry saved a second document.
 # ``open`` since lot 2A (T9): begin_upload opens its ticket through
 # models/upload_ticket.open_ticket.
+# ``remove``/``refresh`` since lot 4b: update_dossier_party detaches a party
+# (models/dossier.remove_dossier_party) and re-snapshots names
+# (refresh_party_names), update_partie_mandataire detaches a representation
+# (models/partie.remove_partie_mandataire) — writes the verb list could not
+# see, so a delegate losing its note_commit would have gone unnoticed.
 _MUTATOR_VERB = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
     r"delete|toggle|complete|attach|link|add|unlink|ensure|upload|ingest|"
-    r"copy|open)_"
+    r"copy|open|remove|refresh)_"
 )
 # Lot 1 completeness review: lot 1b's handlers reach models THROUGH the
 # service modules the web routes also use (``services/protocoles.py``,
@@ -565,6 +570,13 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     # helpers share — the body stamps, writes and notes the commit.
     ("dossier", "update_dossier"): (("dossier", "_update_dossier"),),
     ("partie", "update_partie"): (("partie", "_update_partie"),),
+    # Lot 4b: the one-entry link helpers the connector reaches — each
+    # rebuilds the array and saves it through the shared body (directly, or
+    # through a private helper of the same module: _refresh_one per dossier,
+    # _save_mandataires for a contact's representations).
+    ("dossier", "update_dossier_party"): (("dossier", "_update_dossier"),),
+    ("dossier", "remove_dossier_party"): (("dossier", "_update_dossier"),),
+    ("dossier", "refresh_party_names"): (("dossier", "_update_dossier"),),
 }
 # Lot 2A (T9). Names the verb regex catches that are NOT tool writes, each
 # with its reason — and each held to the OPPOSITE rule, so an exemption
@@ -737,14 +749,39 @@ def test_the_sweep_follows_the_service_doors_the_handlers_use():
         via_services)
 
 
+def _called_names(fn: ast.AST) -> set[str]:
+    return {n.func.id if isinstance(n.func, ast.Name) else n.func.attr
+            for n in ast.walk(fn) if isinstance(n, ast.Call)
+            and isinstance(n.func, (ast.Name, ast.Attribute))}
+
+
+def _reachable_calls(module: str, name: str) -> set[str]:
+    """What *name* calls — and, transitively, what the PRIVATE helpers of
+    its own module it calls do (lot 4b: ``refresh_party_names`` saves
+    through ``_refresh_one``, the mandataire helpers through
+    ``_save_mandataires``). A public function is never followed: it would
+    be its own mutator, held to the rule by its own entry."""
+    tree = ast.parse((MODELS / f"{module}.py").read_text(encoding="utf-8"))
+    defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    seen: set[str] = set()
+    stack = [name]
+    called: set[str] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen or current not in defs:
+            continue
+        seen.add(current)
+        names = _called_names(defs[current])
+        called |= names
+        stack.extend(n for n in names if n.startswith("_") and n in defs)
+    return called
+
+
 def test_the_delegating_mutators_are_reached_and_really_delegate():
     reached = reached_mutators()
     for (module, name), delegates in _DELEGATING_MUTATORS.items():
         assert (module, name) in reached, f"stale entry: {module}.{name}"
-        fn = _function(module, name)
-        called = {n.func.id if isinstance(n.func, ast.Name) else n.func.attr
-                  for n in ast.walk(fn) if isinstance(n, ast.Call)
-                  and isinstance(n.func, (ast.Name, ast.Attribute))}
+        called = _reachable_calls(module, name)
         for _, delegate in delegates:
             assert delegate in called, f"{module}.{name} no longer calls {delegate}"
 

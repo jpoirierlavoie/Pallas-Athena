@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 76  # 31 lectures + 45 ecritures
+    assert len(tools.TOOLS) == 78  # 31 lectures + 47 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -344,6 +344,12 @@ _IDEMPOTENT_WRITES = frozenset({
     # second call without its key is a second invoice (hence the key it
     # DEMANDS).
     "update_invoice", "create_budget_version",
+    # Lot 4b. The status already stored writes nothing and re-applies the
+    # phone's view (set_dossier_status — asking again IS its repair). NOT
+    # here: update_dossier_party — its remove refuses a second identical
+    # call (the party is no longer on the dossier) rather than answering it
+    # (the manage_folder rule: one tool carries one hint).
+    "set_dossier_status",
 })
 
 
@@ -401,6 +407,10 @@ def test_write_tools_set_is_pinned():
         # toujours), corriger un brouillon, promouvoir ou annuler une
         # facture, enregistrer une nouvelle version du budget.
         "create_invoice", "update_invoice", "create_budget_version",
+        # Lot 4b — DOSSIERS : changer le statut d'un dossier (purge ou
+        # retour DavX5, comme l'application), tenir les liens de parties
+        # (roles, avocat, detachement, noms).
+        "set_dossier_status", "update_dossier_party",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -442,6 +452,10 @@ def test_edit_tools_set_is_pinned():
         # (its void releases the sources); create_budget_version supersedes
         # the reference budget.
         "create_invoice", "update_invoice", "create_budget_version",
+        # Lot 4b — the status REPLACES the stored one (and the phone's view
+        # of the dossier); a party link's roles/lawyer are replaced, or the
+        # link detached, or a name snapshot rewritten.
+        "set_dossier_status", "update_dossier_party",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 

@@ -799,6 +799,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # reference budget, whose « Estimation » is a client document (every
     # earlier version kept).
     "create_invoice", "update_invoice", "create_budget_version",
+    # Lot 4b — DOSSIERS. set_dossier_status REPLACES the stored status — and
+    # with it the phone's view of the dossier (its DavX5 collection drained
+    # or restored) and its place in the prescription alerts.
+    # update_dossier_party REPLACES a party's roles or lawyer, DETACHES a
+    # party (a link — the contact stays) or rewrites name snapshots.
+    "set_dossier_status", "update_dossier_party",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -4761,8 +4767,8 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "enum": _DOSSIER_STATUSES,
                     "description": (
                         "Defaults to « actif ». A historical file usually "
-                        "arrives « fermé » or « archivé »; it can NEVER be "
-                        "changed afterwards through this connector."
+                        "arrives « fermé » or « archivé ». Change it later "
+                        "with set_dossier_status."
                     ),
                 },
                 "opened_date": _date("Opening date, YYYY-MM-DD."),
@@ -4789,14 +4795,14 @@ TOOLS: dict[str, dict] = {
             "untouched. Use complete_dossier instead when you only want to "
             "FILL fields that are still empty: it refuses to overwrite, which "
             "is the safer tool for an unattended job. "
-            "`status` is deliberately NOT accepted: closing a dossier must "
-            "drain its DavX5 collection, which only the application does — "
-            "one closed here would leave its tasks, notes and hearings on the "
-            "phone for ever. `file_number` is not accepted either (every "
-            "invoice froze a snapshot of it), nor is `closed_date`. "
+            "`status` and `closed_date` are set_dossier_status's (it drains "
+            "or restores the phone's DavX5 collection); `file_number` is not "
+            "accepted (every invoice froze a snapshot of it). "
             "Party arrays are APPEND-only via add_clients / "
-            "add_opposing_parties: passing a whole array would silently drop "
-            "the parties you left out."
+            "add_opposing_parties (a contact already on either side is "
+            "refused): passing a whole array would silently drop the parties "
+            "you left out. A party's roles or lawyer, its detachment and its "
+            "name snapshot are update_dossier_party's."
         ),
         "input_schema": {
             "type": "object",
@@ -4833,6 +4839,123 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "update_dossier",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _DOSSIER_ETAG_READERS,
+    },
+    "set_dossier_status": {
+        "title": "Changer le statut d'un dossier",
+        "description": (
+            "WRITE — sets a dossier's status exactly as the application does, "
+            "the phone included: fermé / archivé DRAINS its DavX5 collection "
+            "(its tasks, notes and events leave the phone; they stay in the "
+            "application), actif / en_attente RESTORES it. Asking for the "
+            "status it already has writes nothing and re-applies that "
+            "visibility: the REPAIR when `dav.complete` came back false — call "
+            "again with the SAME status (the same idempotency_key is fine: an "
+            "incomplete result is never stored). Refused, nothing written, "
+            "when the dossier's tasks, notes and events cannot be read. "
+            "Closing takes the dossier out of the prescription alerts "
+            "(get_agenda, dashboard); reopening erases its closed_date. Every "
+            "side effect is named in `warnings` — read them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier (UUIDv4), from list_dossiers / get_dossier."
+                ),
+                "status": {
+                    "type": "string", "enum": _DOSSIER_STATUSES,
+                    "description": "The status to set.",
+                },
+                "closed_date": _date(
+                    "fermé / archivé only: the closing date, YYYY-MM-DD — "
+                    "never in the future (Montréal), never before the opening "
+                    "date. Omitted: today on a close, kept on a dossier "
+                    "already closed."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "status"],
+            "additionalProperties": False,
+        },
+        "handler": "set_dossier_status",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "a status is a TARGET, never a value rebuilt from a read — asking "
+            "again for the one stored is the tool's repair — and the write "
+            "compare-and-sets against the tool's own read"
+        ),
+        "annotations": {"idempotentHint": True},
+    },
+    "update_dossier_party": {
+        "title": "Tenir les parties d'un dossier",
+        "description": (
+            "WRITE — one party LINK of a dossier. action \"update\": "
+            "REPLACES the party's `roles` (the full list; [] clears them) "
+            "and/or its lawyer (`avocat_id`; \"\" removes him); every other "
+            "entry is written back as stored, and the dossier-level role the "
+            "gabarits cite is re-derived. \"remove\": DETACHES the party — "
+            "the contact itself is never deleted, the detach is journaled "
+            "(list_deletions, dossier_party) — REFUSED for the last client, "
+            "for a party a signification names, and for a client who has EVER "
+            "had trust funds on the dossier. To ADD a party: update_dossier "
+            "(add_clients / add_opposing_parties). \"refresh_names\": "
+            "re-snapshots party and lawyer names from the current contacts — "
+            "ONE dossier (dossier_id) or every dossier of ONE contact "
+            "(partie_id, at most 50) — reporting each change; invoices, trust "
+            "entries and generated documents keep the name they were issued "
+            "with."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["update", "remove", "refresh_names"],
+                    "description": "What to do.",
+                },
+                "dossier_id": _id(
+                    "update / remove: the dossier. refresh_names: ONE dossier "
+                    "— or give partie_id instead."
+                ),
+                "partie_id": _id(
+                    "update / remove: the party's contact id (get_dossier "
+                    "lists them). refresh_names: every dossier citing this "
+                    "contact, as a party or a party's lawyer."
+                ),
+                "side": {
+                    "type": "string", "enum": ["clients", "opposing_parties"],
+                    "description": (
+                        "update / remove: needed only when a legacy dossier "
+                        "lists the contact on BOTH sides."
+                    ),
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": _PARTY_ROLES},
+                    "maxItems": len(_PARTY_ROLES),
+                    "description": (
+                        "update: the party's procedural roles — a FULL "
+                        "replacement, no duplicate."
+                    ),
+                },
+                "avocat_id": _id(
+                    "update: the party's lawyer, a contact id (list_parties) "
+                    "— or \"\" to remove him. His name is snapshotted here."
+                ),
+                **_expected_etag_only_for(
+                    _DOSSIER_ETAG_READERS, "update / remove"),
+                **_write_protocol_props(),
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "handler": "update_dossier_party",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_OPTIONAL,

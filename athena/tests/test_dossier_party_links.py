@@ -617,6 +617,23 @@ def test_refresh_resnapshots_names_and_is_idempotent(db):
     assert db.commits == []
 
 
+def test_each_refresh_row_carries_the_dossier_s_etag_as_stored(db):
+    """Lot 4b: the connector hands each row's etag back, so its next edit of
+    that dossier needs no re-read — the WRITTEN one on « applied », the
+    stored one otherwise (never the pre-write etag of an applied row)."""
+    _contact(db, "p1", "Jean-Marc", "Tremblay")
+    did = _dossier(db, [JEAN])
+    before = _stored(db, did)["etag"]
+
+    (row,), _ = dossier_model.refresh_party_names(dossier_id=did)
+    assert row["outcome"] == "applied"
+    assert row["dossier_etag"] == _stored(db, did)["etag"] != before
+
+    (row,), _ = dossier_model.refresh_party_names(dossier_id=did)
+    assert row["outcome"] == "unchanged"
+    assert row["dossier_etag"] == _stored(db, did)["etag"]
+
+
 def test_refresh_never_blanks_a_missing_contact(db):
     _contact(db, "p1", "Jean", "Tremblay")
     did = _dossier(db, [JEAN], opposing=[ROY])  # p3 has no fiche

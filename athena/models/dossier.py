@@ -1976,6 +1976,12 @@ def _refresh_one(
         "changes": [],
         "missing_partie_ids": [],
         "prescription_date_moved": False,
+        # The dossier's etag AS STORED after this row — the one read here on
+        # « unchanged » / « refused », the one written on « applied » — so a
+        # caller's next edit of that dossier needs no re-read. Named
+        # `dossier_etag`, never `etag`: this row is a REPORT, not a record
+        # (tests/test_provenance's sweep reads an « etag » key as a write).
+        "dossier_etag": concurrency.etag_of(dossier),
     }
     missing: list[str] = []
     changes: list[dict] = []
@@ -2023,6 +2029,7 @@ def _refresh_one(
         return row
     row["outcome"] = "applied"
     row["changes"] = changes
+    row["dossier_etag"] = concurrency.etag_of(saved)
     row["prescription_date_moved"] = _prescription_moved(dossier, saved)
     return row
 
@@ -2045,7 +2052,8 @@ def refresh_party_names(
     change, before and after), ``unchanged`` (no write), or ``refused`` (the
     save was refused, its reason given; the other dossiers go on). A contact
     that no longer exists keeps its snapshot and is reported in
-    ``missing_partie_ids``. Per contact, ONLY that contact's snapshots
+    ``missing_partie_ids``. Each row carries the dossier's etag as stored
+    after it (``dossier_etag``). Per contact, ONLY that contact's snapshots
     move — never another party's name on the same dossier. Only dossiers
     are written: an invoice, a trust entry or an already-generated document
     keeps the name it was issued with. Each save is compare-and-set against
