@@ -575,6 +575,21 @@ def get_partie(partie_id: str) -> Optional[dict]:
     return None
 
 
+def get_partie_strict(partie_id: str) -> Optional[dict]:
+    """The contact, ``None`` when it does not exist — and RAISES on a read
+    error, unlike :func:`get_partie`, which swallows it into ``None``.
+
+    For a caller whose ``None`` means something — the connector's contact
+    writes of lot 4b, whose « Contact introuvable » would otherwise answer an
+    outage and send the caller hunting for (or re-creating) a contact that
+    exists. Same shape as ``get_partie`` (mandataires migrated); the
+    ``dossier.get_dossier_strict`` precedent."""
+    doc = db.collection(COLLECTION).document(partie_id).get()
+    if not doc.exists:
+        return None
+    return _migrate_mandataires(doc.to_dict() or {})
+
+
 def list_parties(
     type_filter: Optional[str] = None,
     role_filter: Optional[str] = None,

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
+from google.api_core import exceptions as gexc
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ATHENA))
@@ -563,3 +564,66 @@ def test_replacing_a_presumed_conflict_is_said_to_the_lawyer(db):
         "partie_id": "p1", "check": "conflict", "status": "conflit_détecté",
         "notes": "Relu."})
     assert not any("remplacez" in w for w in again["warnings"])
+
+
+@pytest.mark.parametrize("call", [
+    lambda: handlers.record_kyc_status({
+        "partie_id": "p1", "check": "identity", "status": "vérifié"}),
+    lambda: handlers.update_partie_mandataire({
+        "action": "remove", "partie_id": "p1",
+        "mandataire_partie_id": "m1"}),
+], ids=["record_kyc_status", "update_partie_mandataire"])
+def test_an_unreadable_contact_is_never_answered_introuvable(
+        db, represented, monkeypatch, call):
+    """Both tools read the contact through the fail-open get_partie: an
+    outage answered « Contact introuvable … Utilisez list_parties », sending
+    the caller hunting for — or re-creating — a contact that exists. Read
+    strictly now; nothing is written either way."""
+    before = _stored(db, "p1")
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(str(n).endswith("parties/p1") for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    with pytest.raises(tools.ToolArgumentError) as err:
+        call()
+    assert "pas pu être lu" in str(err.value)
+    assert "introuvable" not in str(err.value)
+    monkeypatch.setattr(server, "batch_get_documents", real)
+    assert _stored(db, "p1") == before
+
+
+def test_an_unreadable_named_contact_is_never_answered_introuvable(
+        db, represented, monkeypatch):
+    """The contact a link NAMES — a mandataire to add, a party's lawyer —
+    was checked through get_partie too: an outage answered « introuvable »."""
+    doc, errors = dossier_model.create_dossier({
+        "file_number": "2026-001", "title": "Tremblay c. Roy",
+        "clients": [{"id": "p1", "name": "Jean Tremblay",
+                     "roles": ["demandeur"]}]})
+    assert errors == []
+    server = db._fake_server
+    real = server.batch_get_documents
+
+    def failing(request, metadata=None, **kwargs):
+        if any(str(n).endswith("parties/m2") for n in request["documents"]):
+            raise gexc.ServiceUnavailable("injected read failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", failing)
+    for call in (
+        lambda: handlers.update_partie_mandataire({
+            "action": "add", "partie_id": "p1",
+            "mandataire_partie_id": "m2", "kind": "mandataire"}),
+        lambda: handlers.update_dossier_party({
+            "action": "update", "dossier_id": doc["id"], "partie_id": "p1",
+            "avocat_id": "m2"}),
+    ):
+        with pytest.raises(tools.ToolArgumentError) as err:
+            call()
+        assert "pas pu être lu" in str(err.value)
+        assert "introuvable" not in str(err.value)

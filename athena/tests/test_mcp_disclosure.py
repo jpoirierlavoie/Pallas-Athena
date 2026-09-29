@@ -232,6 +232,10 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "not writable here and never will be",
     "mandataires are not writable",
     "never verifies an identity or a conflict",
+    # Review of lot 4b step 3: the phone never writes a dossier record
+    # (DavX5 syncs its tasks, notes and events — separate documents),
+    # so a phone edit can never be what refuses a dossier write.
+    "au fidéicommis ou sur votre téléphone",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before

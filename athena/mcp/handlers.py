@@ -5172,13 +5172,35 @@ _PARTIE_NOT_FOUND = (
     "Contact introuvable : {id}. Utilisez list_parties pour obtenir un "
     "partie_id valide."
 )
+_PARTIE_UNREADABLE = (
+    "Le contact n'a pas pu être lu : rien n'a été modifié. Réessayez dans un "
+    "instant."
+)
 
 
 def _read_partie_for_write(partie_id: str) -> dict:
-    existing = partie_model.get_partie(partie_id)
+    """The contact, read STRICTLY — an outage is never « introuvable » (the
+    fail-open get_partie would send the caller hunting for, or re-creating,
+    a contact that exists; review of lot 4b step 3)."""
+    try:
+        existing = partie_model.get_partie_strict(partie_id)
+    except Exception:
+        log_unexpected("mcp contact write: contact unreadable")
+        raise ToolArgumentError(_PARTIE_UNREADABLE)
     if existing is None:
         raise ToolArgumentError(_PARTIE_NOT_FOUND.format(id=partie_id))
     return existing
+
+
+def _other_partie_exists(partie_id: str) -> bool:
+    """Whether the contact a link NAMES (a mandataire, a party's lawyer)
+    exists — read strictly, so an outage refuses as unreadable instead of
+    « introuvable »."""
+    try:
+        return partie_model.get_partie_strict(partie_id) is not None
+    except Exception:
+        log_unexpected("mcp link write: named contact unreadable")
+        raise ToolArgumentError(_PARTIE_UNREADABLE)
 
 
 # ── update_partie_mandataire (WRITE — LINKS) ─────────────────────────────
@@ -5240,7 +5262,7 @@ def _update_partie_mandataire_impl(args: dict) -> dict:
     if action == "add":
         # Named here, where the model would say only « Mandataire
         # introuvable » without the way to find a valid id.
-        if partie_model.get_partie(mandataire_id) is None:
+        if not _other_partie_exists(mandataire_id):
             raise ToolArgumentError(
                 f"Mandataire introuvable : {mandataire_id}. Utilisez "
                 "list_parties pour obtenir l'id d'un contact existant."
@@ -7831,7 +7853,7 @@ def _update_dossier_party_impl(args: dict) -> dict:
             avocat_id = str(avocat_id).strip()
             # Named here, where the model would only say « Avocat
             # introuvable » without the way to find a valid id.
-            if avocat_id and partie_model.get_partie(avocat_id) is None:
+            if avocat_id and not _other_partie_exists(avocat_id):
                 raise ToolArgumentError(
                     f"Avocat introuvable : {avocat_id}. Utilisez list_parties "
                     "pour obtenir l'id d'un contact existant."
