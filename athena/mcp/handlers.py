@@ -710,8 +710,12 @@ def get_agenda(args: dict) -> dict:
     # Tasks and steps carry DATE-ONLY deadlines (midnight UTC): bounded by
     # the instant `cutoff`, the evening band (20:00-24:00 Montréal, already
     # the next UTC day) let in a deadline of window_to + 1. They are bounded
-    # by window_to's own midnight UTC, so the three lists agree with the
-    # window the payload reports.
+    # by the LAST instant of window_to's UTC calendar day — the day their
+    # rows report (date_str) —, so the three lists agree with the window the
+    # payload reports. Not its midnight: a task a jtx client gave a TIME
+    # (vtodo_to_task keeps a DATE-TIME DUE as is) is due later that same
+    # day, and a bound at midnight dropped it from the day it is listed
+    # under (review of the finitions).
     window_to = cutoff.astimezone(MTL).date()
     raw_hearings = [
         h
@@ -726,8 +730,11 @@ def get_agenda(args: dict) -> dict:
         if h.get("status") != "annulée"
         and (hearing_model.occurrence_day(h) or today) <= window_to
     ]
-    deadline_bound = datetime.combine(window_to, datetime.min.time(),
-                                      tzinfo=timezone.utc)
+    deadline_bound = (
+        datetime.combine(window_to + timedelta(days=1), datetime.min.time(),
+                         tzinfo=timezone.utc)
+        - timedelta(microseconds=1)
+    )
     raw_tasks = task_model.list_urgent_tasks(deadline_bound, limit=50)
     raw_steps = protocol_model.list_urgent_steps(deadline_bound, limit=50)
 

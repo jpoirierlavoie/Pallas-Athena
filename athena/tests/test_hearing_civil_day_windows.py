@@ -272,11 +272,46 @@ def test_get_agenda_bounds_tasks_and_steps_by_the_window_s_last_day(
     _freeze_now(monkeypatch, handlers, _mtl(2026, 10, 15, hour))
     payload = handlers.get_agenda({"days_ahead": 1})
     assert payload["window"]["to"] == "2026-10-16"
-    bound = datetime(2026, 10, 16, tzinfo=UTC)
+    bound = seen["tasks"]
     assert seen == {"tasks": bound, "steps": bound}
-    # A deadline of `to` is inside; one of the day after is not.
+    # A deadline of `to` is inside — at its midnight UTC, and LATER that
+    # UTC day too: a jtx client can give a task a time (review of the
+    # finitions — a bound at midnight dropped a 14:00 UTC deadline from the
+    # day its row reports). One of the day after is not.
     assert datetime(2026, 10, 16, tzinfo=UTC) <= bound
+    assert datetime(2026, 10, 16, 14, tzinfo=UTC) <= bound
+    assert datetime(2026, 10, 16, 23, 59, 59, tzinfo=UTC) <= bound
     assert datetime(2026, 10, 17, tzinfo=UTC) > bound
+
+
+def test_get_agenda_lists_a_timed_task_due_later_on_its_last_day(
+        fake, monkeypatch):
+    """Review of the finitions (sync-5): the task bound is the END of `to`'s
+    UTC day, through the real list_urgent_tasks query — a task due at
+    14:00 UTC on `to` (a DATE-TIME DUE from a jtx client) is listed under
+    it; one due at midnight UTC the day after is not."""
+    install(monkeypatch, handlers.task_model, fake=fake)
+    real_urgent_tasks = handlers.task_model.list_urgent_tasks
+    for tid, due in (("timed-on-to", datetime(2026, 10, 16, 14, tzinfo=UTC)),
+                     ("next-day", datetime(2026, 10, 17, tzinfo=UTC))):
+        fake.seed(f"tasks/{tid}", {
+            "id": tid, "title": "Tâche", "status": "à_faire",
+            "priority": "normale", "category": "autre", "dossier_id": None,
+            "due_date": due,
+        })
+    _agenda_stubs(monkeypatch, TODAY)
+    monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
+                        real_urgent_tasks)
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
+                        lambda a, b, limit=100: [])
+    monkeypatch.setattr(handlers.protocol_model, "list_urgent_steps",
+                        lambda cutoff, limit=50: [])
+    _freeze_now(monkeypatch, handlers, _mtl(2026, 10, 15, 7))
+    payload = handlers.get_agenda({"days_ahead": 1})
+    assert payload["window"]["to"] == "2026-10-16"
+    ids = {t["id"] for t in payload["urgent_tasks"]}
+    assert "timed-on-to" in ids
+    assert "next-day" not in ids
 
 
 def test_get_agenda_across_the_fall_back(monkeypatch):
