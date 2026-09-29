@@ -367,7 +367,9 @@ def test_the_key_s_description_says_what_its_policy_does():
     key as « Recommended on every unattended/scheduled write » — the
     optional policy's text — beside a schema that demands it. DERIVED from
     the declaration both ways: a required key says REQUIRED and never
-    « Recommended », an optional one keeps the recommendation."""
+    « Recommended », an optional one keeps the recommendation — worded
+    « Pass one on every write » since the finitions (contracts-7), the
+    INSTRUCTIONS rule, never the weaker « unattended/scheduled » one."""
     required = {n for n, s in tools.TOOLS.items()
                 if s.get("idempotency") == tools.IDEMPOTENCY_REQUIRED}
     assert len(required) == 8, sorted(required)
@@ -381,7 +383,8 @@ def test_the_key_s_description_says_what_its_policy_does():
             assert text == tools.REQUIRED_KEY_DESCRIPTION, name
             assert "REQUIRED" in text and "Recommended" not in text, name
         else:
-            assert "Recommended on every unattended/scheduled write" in text, name
+            assert "Pass one on every write" in text, name
+            assert "unattended/scheduled" not in text, name
             assert "REQUIRED" not in text, name
 
 

@@ -273,7 +273,9 @@ def test_initialize_shape(client):
     # deleted » carries the precision that keeps it true.
     assert "DOSSIERS: " in instructions and "CONTACTS: " in instructions
     assert "fermé / archivé DRAINS its DavX5 collection" in instructions
-    assert "call it again with the SAME status" in instructions
+    # Reworded by the finitions (contracts-8): the repair is the first of
+    # three ordered retry cases.
+    assert "the SAME status under the SAME idempotency_key" in instructions
     assert "counts as NOT done" in instructions
     assert "removes a LINK — the contact stays" in instructions
     assert "It never CONFIRMS an identity or conflict-of-interest check" in (

@@ -274,6 +274,11 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "paiements d'honoraires — chacun inscrit",
     "chaque correction étant conservée",
     "every change is kept in the entry's revision trail",
+    # Finitions: set_dossier_status sets a closed dossier's closed_date
+    # (lot 4b) — IMP-05 said only the creation could (truth-1); create_note
+    # has an idempotency_key (contracts-7).
+    "ne fixe la date de fermeture qu'à la création",
+    "there is no de-duplication and a retry creates a second note",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -1142,7 +1147,9 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     dossiers = next(f for f in disclosure.FAMILIES if f.key == "dossiers")
     assert ("between actif and en_attente nothing changes on the phone"
             in dossiers.instructions_en)
-    assert ("unless its warnings say the status moved during the call"
+    # Reworded by the finitions (contracts-8): the moved-status case is one
+    # of the three retry cases, no longer an « unless » tacked on.
+    assert ("warnings saying the status moved during the call"
             in dossiers.instructions_en)
     contacts = next(f for f in disclosure.FAMILIES if f.key == "contacts")
     assert "it counts as NOT done" in contacts.instructions_en
@@ -1196,8 +1203,12 @@ def test_review_of_the_lot_4b_text_step():
       its subject now, and still catches the claim it was written for.
     """
     desc = tools.TOOLS["set_dossier_status"]["description"]
-    assert "unless `warnings` say the status moved during the call" in desc
+    # Reworded by the finitions (contracts-8): three cases, stated once, in
+    # order — the duplicated « unless » clause prescribed the very action it
+    # was meant to be the exception to.
+    assert "`warnings` say the status moved" in desc
     assert "never resend yours" in desc
+    assert desc.count("unless") <= 1, desc
     # Fixes of lot 4: the same-key retry is no longer promised without
     # exception — the description names both refusals a retry can meet and
     # the way out of each; INSTRUCTIONS too.

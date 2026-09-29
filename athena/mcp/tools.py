@@ -544,8 +544,9 @@ def _write_protocol_props() -> dict:
                 "Caller-chosen key identifying THIS write. Retrying with "
                 "the same key returns the first call's stored result "
                 "instead of writing twice (kept 24 h); the same key with "
-                "different arguments is refused. Recommended on every "
-                "unattended/scheduled write."
+                "different arguments is refused. Pass one on every write: "
+                "without it, a retry after an answer you did not receive "
+                "writes again."
             ),
         },
     }
@@ -2960,9 +2961,9 @@ TOOLS: dict[str, dict] = {
             "in French. The note syncs to the lawyer's phone; this "
             "connector can later edit it (update_note), never delete it. "
             "Confirm with the user before calling, and never call it on a "
-            "dossier you have not read with get_dossier first. If the call "
-            "appears to fail, check list_notes before retrying — there is no "
-            "de-duplication and a retry creates a second note. Raw HTML tags "
+            "dossier you have not read with get_dossier first. Without an "
+            "idempotency_key a retry creates a second note — pass one, or "
+            "check list_notes before retrying. Raw HTML tags "
             "are rejected (Markdown autolinks like <https://…> are converted "
             "automatically); write plain Markdown. Defaults to category "
             "'recherche'. Every note opens with a dated « Note rédigée par "
@@ -5001,16 +5002,17 @@ TOOLS: dict[str, dict] = {
             "the phone included: fermé / archivé DRAINS its DavX5 collection "
             "(its tasks, notes and events leave the phone; they stay in the "
             "application), actif / en_attente RESTORES it. Asking for the "
-            "status it already has writes nothing and re-applies that "
-            "visibility: the REPAIR when `dav.complete` came back false — call "
-            "again with the SAME status. An incomplete result is never stored, "
-            "so the same idempotency_key normally runs it afresh; if that "
-            "retry is refused as still in flight, wait, then retry with the "
-            "same key; if refused as interrupted, re-read the dossier "
-            "(get_dossier) and ask for the status you read under a NEW key — "
-            "unless `warnings` say the status moved during the call: re-read "
-            "it first, never resend yours; ask for the status you read, under "
-            "a NEW key (it is another call). Refused, nothing written, "
+            "status it already has writes nothing — unless you give a "
+            "different closed_date, which is written — and re-applies that "
+            "visibility. Retrying, three cases, in order: (1) `dav.complete` "
+            "came back false → the SAME status under the SAME idempotency_key "
+            "(an incomplete result is never stored, so it normally runs "
+            "afresh); (2) "
+            "refused as still in flight → wait, then the same key; (3) "
+            "refused as interrupted, or `warnings` say the status moved "
+            "during the call → re-read the dossier (get_dossier) and ask for "
+            "the status you READ, under a NEW key — never resend yours. "
+            "Refused, nothing written, "
             "when the dossier's tasks, notes and events cannot be read. "
             "Closing takes the dossier out of the prescription alerts "
             "(get_agenda, dashboard); reopening erases its closed_date. Every "
@@ -6812,8 +6814,9 @@ TOOLS: dict[str, dict] = {
 
 
 # The key's description is DERIVED from the tool's declared policy (lot-5
-# completeness review): _write_protocol_props() says « Recommended on every
-# unattended/scheduled write », which is the optional policy's truth — on
+# completeness review): _write_protocol_props() says « Pass one on every
+# write » (the finitions aligned it with INSTRUCTIONS — contracts-7), the
+# optional policy's truth — on
 # the eight ``required`` tools it sat beside a ``required`` list naming the
 # key and a description saying « idempotency_key REQUIRED », and a model
 # reads a property description as a fact about the code. One text per

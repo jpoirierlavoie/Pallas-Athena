@@ -208,8 +208,8 @@ def _dossier_ferme_sans_date_de_fermeture(ctx: dict) -> Optional[str]:
     return (
         "Le dossier est fermé sans date de fermeture. La rétention (fermeture "
         "+ 7 ans) ne peut pas se calculer, et les gabarits citent un champ "
-        "vide. Renseignez-la dans l'application : le connecteur ne fixe la "
-        "date de fermeture qu'à la CRÉATION du dossier."
+        "vide. Renseignez-la par set_dossier_status (le même statut, avec "
+        "`closed_date`) ou dans l'application."
     )
 
 
