@@ -645,8 +645,13 @@ def entry_reverse(tx_id: str):
         # The fee transfer may have auto-created its admin recette (décision
         # 2026-08-13) — reverse it too, and reduce the invoice's recorded
         # payment. Best-effort: the trust reversal is already committed.
+        # Its OWN banner, never the creation's (lot 5a review): the creation
+        # banner tells the lawyer to enter the missing recette by hand,
+        # while here a recette STANDS that the administration register
+        # refuses to reverse on its own (écriture_liée_fideicommis) — the
+        # creation's instruction is one he could not follow.
         if not _contrepasser_recette_administration(tx_id, reason):
-            params["avertissement"] = "administration"
+            params["avertissement"] = "administration_contrepassation"
     return redirect(url_for("trust.entry_detail", tx_id=reversal["id"], **params))
 
 

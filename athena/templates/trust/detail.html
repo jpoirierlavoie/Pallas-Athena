@@ -19,11 +19,29 @@
   </div>
   {% endif %}
 
+  {# Deux bandeaux, deux situations (revue du lot 5a). À la CRÉATION, la
+     recette n'existe pas — depuis le lot 5a elle et le paiement de sa
+     facture échouent ENSEMBLE, il n'y a plus de recette debout à
+     « corriger » — : on l'inscrit à la main. À la CONTRE-PASSATION, une
+     recette RESTE debout, et le registre d'administration refuse de
+     contre-passer seul une recette liée au fidéicommis : lui dire de la
+     corriger là-bas serait une consigne impossible. #}
   {% if request.args.get('avertissement') == 'administration' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     Le virement est inscrit au fidéicommis, mais la recette au compte
-    d'administration n'a pas pu suivre — inscrivez-la (ou corrigez-la)
-    manuellement au <a href="{{ url_for('admin_ledger.journal') }}" class="underline">registre d'administration</a>.
+    d'administration n'a pas pu suivre — inscrivez-la manuellement au
+    <a href="{{ url_for('admin_ledger.journal') }}" class="underline">registre d'administration</a>.
+  </div>
+  {% elif request.args.get('avertissement') == 'administration_contrepassation' %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    La contre-passation est inscrite au fidéicommis, mais les recettes
+    d'administration que ce paiement d'honoraires avait créées n'ont pas
+    toutes pu être contre-passées : ce qui reste debout est encore compté au
+    compte d'opérations — et, pour un encaissement, encore inscrit comme payé
+    sur la facture. Une recette liée au fidéicommis ne se contre-passe pas
+    depuis le <a href="{{ url_for('admin_ledger.journal') }}" class="underline">registre d'administration</a> :
+    faites vérifier les registres (contrôle d'intégrité du fidéicommis) avant
+    toute autre écriture sur cette facture.
   </div>
   {% endif %}
 

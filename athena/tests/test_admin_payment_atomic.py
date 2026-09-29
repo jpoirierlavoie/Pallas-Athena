@@ -703,10 +703,22 @@ def test_une_recette_refusee_ne_laisse_ni_recette_ni_paiement(
     monkeypatch.setattr(invoice_model, "payment_updates", _refuse)
     resp = client.post("/fideicommis/", data=_fee_form())
     assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
-    assert "avertissement=administration" in resp.location
+    assert _avertissement(resp.location) == "administration"
     assert _fee_entry(fake)["amount"] == 50000         # the trust side committed
     assert _entries(fake) == {}                         # no half recette
     assert fake.peek("invoices/inv1")["amount_paid"] == 0
+    # Revue du lot 5a — le bandeau disait « inscrivez-la (ou corrigez-la) » :
+    # il n'existe plus de recette debout à corriger (elle et son paiement
+    # échouent ensemble), il n'y a qu'à l'inscrire.
+    page = client.get(resp.location).get_data(as_text=True)
+    assert "la recette au compte" in page and "inscrivez-la manuellement" in page
+    assert "corrigez-la" not in page
+
+
+def _avertissement(location: str) -> str:
+    from urllib.parse import parse_qs, urlsplit
+
+    return parse_qs(urlsplit(location).query).get("avertissement", [""])[0]
 
 
 def _fee_with_recettes(fake, shares) -> dict:
@@ -775,14 +787,75 @@ def test_une_lecture_ratee_du_lien_est_une_banniere(client, fake, monkeypatch):
     resp = client.post(f"/fideicommis/{fee['id']}/contrepasser",
                        data={"reason": "chèque perdu"})
     assert resp.status_code == 302
-    assert "avertissement=administration" in resp.location
     (recette,) = [t for t in _entries(fake).values()
                   if t.get("trust_transaction_id") == fee["id"]]
     assert not recette.get("reversed_by_id")       # it did not follow…
     assert fake.peek("invoices/inv1")["amount_paid"] == 50000   # …and it says so
+    # Revue du lot 5a — régression : la contre-passation empruntait le
+    # bandeau de la CRÉATION (« inscrivez-la (ou corrigez-la) manuellement au
+    # registre d'administration »), une consigne impossible — ce registre
+    # refuse de contre-passer seul une recette liée au fidéicommis
+    # (écriture_liée_fideicommis). Le bandeau propre dit ce qui reste debout.
+    assert _avertissement(resp.location) == "administration_contrepassation"
+    monkeypatch.setattr(CollectionReference, "where", real_where)
+    page = client.get(resp.location).get_data(as_text=True)
+    assert "La contre-passation est inscrite au fidéicommis" in page
+    assert "ne se contre-passe pas" in page
+    assert "inscrivez-la" not in page and "corrigez-la" not in page
+    _, errs = al.reverse_transaction(recette["id"], "à la main")
+    assert errs == [al._ABORT_MESSAGES["écriture_liée_fideicommis"]]  # the reason
 
 
-# ══════════════════════════════════════════════════════════════════════
+def _run_trust_integrity(fake, monkeypatch, capsys) -> tuple[int, str]:
+    from scripts import verify_trust_integrity as vti
+
+    install(monkeypatch, vti, fake=fake)
+    code = vti.main()
+    return code, capsys.readouterr().out
+
+
+def test_les_deux_controles_d_integrite_suivent_le_cycle_du_paiement_d_honoraires(
+    client, fake, monkeypatch, capsys
+):
+    """Revue du lot 5a — les deux scripts de contrôle restent d'accord avec
+    les modèles sur le cycle entier que cette étape a rendu atomique côté
+    administration : paiement d'honoraires (recette + paiement de facture en
+    un commit), puis sa contre-passation (chaque recette contre-passée, sa
+    facture réduite dans le même commit). Et quand la cascade ne suit PAS,
+    le contrôle du fidéicommis nomme la recette restée debout — le bandeau
+    de la contre-passation y renvoie l'avocat, il faut donc qu'il la voie."""
+    _seed_trust(fake)
+    resp = client.post("/fideicommis/", data=_fee_form())
+    assert resp.status_code == 302 and "avertissement" not in resp.location
+    fee = _fee_entry(fake)
+    assert _run_trust_integrity(fake, monkeypatch, capsys)[0] == 0
+    assert _run_integrity(fake, monkeypatch, capsys)[0] == 0
+
+    resp = client.post(f"/fideicommis/{fee['id']}/contrepasser",
+                       data={"reason": "chèque perdu"})
+    assert resp.status_code == 302 and "avertissement" not in resp.location
+    assert fake.peek("invoices/inv1")["amount_paid"] == 0
+    assert _run_trust_integrity(fake, monkeypatch, capsys)[0] == 0
+    assert _run_integrity(fake, monkeypatch, capsys)[0] == 0
+
+    # A second fee payment (dated after the reversal — the trust register
+    # refuses backdating) whose reversal cascade is REFUSED by the model.
+    resp = client.post("/fideicommis/", data=_fee_form(amount="200,00",
+                                                       date="2026-09-20"))
+    assert resp.status_code == 302 and "avertissement" not in resp.location
+    (second,) = [t for t in fake.peek_collection("trust_transactions").values()
+                 if t.get("purpose") == "virement_honoraires"
+                 and not t.get("reversed_by_id")]
+    monkeypatch.setattr(al, "reverse_transaction",
+                        lambda *a, **k: (None, ["Contre-passation refusée."]))
+    resp = client.post(f"/fideicommis/{second['id']}/contrepasser",
+                       data={"reason": "erreur"})
+    assert _avertissement(resp.location) == "administration_contrepassation"
+    code, out = _run_trust_integrity(fake, monkeypatch, capsys)
+    assert code == 1, out
+    assert f"(écriture {second['id']}): paiement d'honoraires annulé" in out
+    assert "restent debout" in out
+    assert "encore compté au compte d'opérations" in out
 # 6. La reprise historique ne projette plus — jamais deux fois
 # ══════════════════════════════════════════════════════════════════════
 
