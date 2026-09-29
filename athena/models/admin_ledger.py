@@ -373,43 +373,6 @@ def _abort_message(abort: "_TxnAbort", fallback: str) -> str:
     return abort.message or _ABORT_MESSAGES.get(abort.reason, fallback)
 
 
-class _OwnCommitLanded(Exception):
-    """A RE-RUN of a create body found the entry THIS call minted (review of
-    lot 5a, step 3 — trust's ``_OwnCommitLanded``, mirrored, never shared).
-
-    The id is minted before the transaction, known to no other writer: an
-    earlier attempt of this very call COMMITTED, its answer lost, and the
-    ``transactional`` decorator re-ran the body over what landed. Unchecked,
-    the re-run ``set()`` the same entry again under the next sequence and
-    added its amount a SECOND time to the ledger balance — and, on an
-    encaissement, to the invoice's ``amount_paid`` (current + delta, read
-    after the first delta had landed) — then reported success. Raised by
-    the FIRST read of the body."""
-
-
-# A create whose transaction RAISED after a commit was attempted, or whose
-# re-run found its own landed entry: the outcome is UNKNOWN, never « nothing
-# was written » (see ``models/trust.CREATE_OUTCOME_UNCERTAIN``).
-CREATE_OUTCOME_UNCERTAIN = (
-    "L'inscription au registre d'administration a échoué d'une façon qui ne "
-    "permet pas de savoir si elle a été enregistrée : vérifiez le journal du "
-    "compte avant de réessayer."
-)
-OUTCOME_UNCERTAIN_REASON = "issue_incertaine"
-
-
-def _uncertain_create(
-    report_out: Optional[dict], message: str, **fields,
-) -> tuple[None, list[str]]:
-    """The create's answer when its outcome is unknown — logged (ids only,
-    no traceback), never a refusal line."""
-    log_unexpected(message, exc_info=False,
-                   **{k: v for k, v in fields.items() if v})
-    if report_out is not None:
-        report_out["reason"] = OUTCOME_UNCERTAIN_REASON
-    return None, [CREATE_OUTCOME_UNCERTAIN]
-
-
 # Machine-stable abort reason → French user message.
 _ABORT_MESSAGES = {
     "compte_introuvable": "Compte d'administration introuvable.",
@@ -985,12 +948,7 @@ def _read_create(
 
     ``dossier`` / ``invoice`` — the SAME documents already read in *txn* by
     a composite's other half (the trust leg of a fee payment reads both):
-    passed in, they are not read a second time.
-
-    The FIRST read is the entry this call minted: found, an earlier attempt
-    landed (:class:`_OwnCommitLanded`), and no guard may judge its state."""
-    if ctx["tx_ref"].get(transaction=txn).exists:
-        raise _OwnCommitLanded(ctx["tx_id"])
+    passed in, they are not read a second time."""
     acc_snap = ctx["account_ref"].get(transaction=txn)
     if not acc_snap.exists:
         raise _TxnAbort("compte_introuvable")
@@ -1228,23 +1186,15 @@ def create_transaction(
     now = datetime.now(timezone.utc)
     transaction = db.transaction()
     result: dict = {}
-    # Sticky across attempts: once a body staged its writes, a commit was
-    # attempted, and a later raise no longer proves nothing landed.
-    attempted: dict = {"commit": False}
 
     @firestore.transactional
     def _create(txn) -> None:
         reads = _read_create(txn, ctx)
         result.update(_stage_create(txn, ctx, reads, now))
-        attempted["commit"] = True
 
     try:
         with span("admin.transaction", direction=ctx["direction"], kind=ctx["kind"]):
             _create(transaction)
-    except _OwnCommitLanded:
-        return _uncertain_create(_report_out, "admin create_transaction: an "
-                                 "earlier attempt of the transaction landed",
-                                 account_id=account_id)
     except _TxnAbort as abort:
         log_admin_ledger_event(
             "admin_transaction_refused", "refused",
@@ -1254,11 +1204,6 @@ def create_transaction(
             _report_out["reason"] = abort.reason
         return None, [_abort_message(abort, "Opération refusée.")]
     except Exception as exc:
-        if attempted["commit"]:
-            return _uncertain_create(_report_out, "admin create_transaction: "
-                                     "transaction failed after a commit attempt",
-                                     account_id=account_id,
-                                     error_type=type(exc).__name__)
         logger.error(
             "admin create_transaction failed for account %s: %s",
             sanitize_log_value(account_id), type(exc).__name__,
@@ -2113,18 +2058,11 @@ def create_card_payment(
     now = datetime.now(timezone.utc)
     leg_a_id = str(uuid.uuid4())
     leg_b_id = str(uuid.uuid4())
-    leg_a_ref = db.collection(TRANSACTIONS_COLLECTION).document(leg_a_id)
     transaction = db.transaction()
     result: dict = {}
-    attempted: dict = {"commit": False}
 
     @firestore.transactional
     def _pay(txn) -> None:
-        # FIRST read: the leg THIS call minted — an earlier attempt that
-        # landed with its answer lost (see _OwnCommitLanded). Re-run over it,
-        # the body moved both accounts' ledger balances a second time.
-        if leg_a_ref.get(transaction=txn).exists:
-            raise _OwnCommitLanded(leg_a_id)
         infos = {}
         for aid in (bank_account_id, card_account_id):
             aref = db.collection(ACCOUNTS_COLLECTION).document(aid)
@@ -2174,7 +2112,7 @@ def create_card_payment(
             related_transaction_id=leg_a_id,
         )
 
-        txn.set(leg_a_ref, leg_a)
+        txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_a_id), leg_a)
         txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_b_id), leg_b)
         for aid, leg in ((bank_account_id, leg_a), (card_account_id, leg_b)):
             info = infos[aid]
@@ -2185,24 +2123,14 @@ def create_card_payment(
                 **provenance.update_fields(now),
             })
         result["legs"] = [leg_a, leg_b]
-        attempted["commit"] = True
 
     try:
         with span("admin.transaction", direction="transfer", kind="paiement_carte"):
             _pay(transaction)
-    except _OwnCommitLanded:
-        return _uncertain_create(report, "admin card payment: an earlier attempt "
-                                 "of the transaction landed",
-                                 account_id=bank_account_id)
     except _TxnAbort as abort:
         report["reason"] = abort.reason
         return None, [_ABORT_MESSAGES.get(abort.reason, "Paiement refusé.")]
     except Exception as exc:
-        if attempted["commit"]:
-            return _uncertain_create(report, "admin card payment: transaction "
-                                     "failed after a commit attempt",
-                                     account_id=bank_account_id,
-                                     error_type=type(exc).__name__)
         logger.error("admin card payment failed: %s", type(exc).__name__)
         report["reason"] = "erreur"
         return None, ["Erreur lors du paiement. Veuillez réessayer."]

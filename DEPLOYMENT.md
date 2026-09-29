@@ -1669,19 +1669,7 @@ Notes:
      reversed), and a client's cleared balance gone negative after a
      reversal (a shortfall the firm must cover). And a deposit date refused
      because the operations account is reconciled THROUGH TODAY now says to
-     retry tomorrow, instead of asking for a later date the form refuses;
-  7. a save whose OUTCOME IS UNKNOWN — the commit's answer lost (a timeout,
-     or the commit retried after it landed) — now says so: « … a échoué
-     d'une façon qui ne permet pas de savoir si elle a été inscrite :
-     vérifiez le journal … avant de réessayer » (fee payment and its
-     reversal, trust entry, inter-dossier transfer, administration entry,
-     card payment). The fee payment used to answer « Rien n'a été inscrit.
-     Veuillez réessayer » over a withdrawal that HAD landed — the retry
-     withdrew the fees a second time — and a retried commit re-ran the body
-     over its own landed writes, applying the amount TWICE to the balances
-     and the invoice under a success (review of step 3). Rare by
-     construction; each occurrence logs an `unexpected` line (see
-     OBSERVABILITY.md) and is worth a look at the journal.
+     retry tomorrow, instead of asking for a later date the form refuses.
   **Pilot on REAL movements only** — the registers cannot be cleaned up, and
   there is no preproduction: the next real fee payment on an issued invoice,
   then check the trust entry, the operations account's encaissement (dated
