@@ -28,6 +28,19 @@
      exister : un refus d'un côté est un refus de tout, affiché au
      formulaire. #}
 
+  {# Ce qui reste à dire après une écriture RÉUSSIE (revue du lot 5a) :
+     ?avertissement= porte des CODES, jamais un texte ni un nom — la route
+     les traduit par comptabilite.WARNING_MESSAGES et ignore un code
+     inconnu (un ancien lien « avertissement=administration » n'affiche
+     plus rien). Une facture d'un autre client que celui dont les fonds
+     sortent, un paiement d'honoraires contre-passé au fidéicommis seul, un
+     solde compensé devenu négatif : autant de faits que la route jetait. #}
+  {% for avertissement in avertissements or [] %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    {{ avertissement }}
+  </div>
+  {% endfor %}
+
   <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-3 text-sm">
     <div class="grid grid-cols-2 gap-3">
       <div><p class="text-xs text-gray-500">Date</p><p class="text-gray-900">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '—' }}</p></div>

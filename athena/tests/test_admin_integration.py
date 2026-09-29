@@ -688,3 +688,59 @@ def test_une_date_de_depot_illisible_est_refusee_avant_toute_ecriture(
     resp = web_trust.post("/fideicommis/", data=_form_virement(admin_date="31/02/2026"))
     assert resp.status_code == 400
     assert "date du dépôt au compte d'administration est invalide" in resp.get_data(as_text=True)
+
+
+def test_un_avertissement_du_paiement_voyage_jusqu_a_la_fiche(web_trust, monkeypatch):
+    """Revue du lot 5a — le service AVERTIT quand la facture est adressée à
+    un autre client du dossier que celui dont les fonds sortent ; la route
+    jetait l'avertissement, si bien qu'au web la vérification n'existait
+    pas. Le CODE voyage sur la redirection (jamais un texte, jamais un nom)."""
+    _bouchonner_rendu(monkeypatch)
+    monkeypatch.setattr(
+        rt.comptabilite, "enregistrer_paiement_honoraires",
+        lambda data, **kw: {"ok": True, "errors": [], "reason": None,
+                            "warnings": ["La facture est adressée à Jean Tremblay…"],
+                            "warning_codes": ["facture_autre_client"],
+                            "trust_entry": {"id": "t1"}, "admin_recette": {"id": "a1"},
+                            "invoice": None, "client_balance": None},
+    )
+    resp = web_trust.post("/fideicommis/", data=_form_virement())
+    assert resp.status_code == 302
+    location = resp.headers["Location"]
+    assert "/fideicommis/t1?" in location
+    assert "avertissement=facture_autre_client" in location
+    assert "Tremblay" not in location
+
+
+def test_un_avertissement_de_contre_passation_voyage_jusqu_a_la_fiche(web_trust, monkeypatch):
+    """Un paiement d'honoraires contre-passé au fidéicommis SEUL (aucune
+    recette liée) ou un solde compensé devenu négatif — un manque à combler :
+    la route redirigeait sans rien en dire."""
+    monkeypatch.setattr(
+        rt.comptabilite, "contrepasser_ecriture_fideicommis",
+        lambda tx_id, reason: {"ok": True, "errors": [], "reason": None,
+                               "warnings": ["…"],
+                               "warning_codes": ["sans_recette_liee", "solde_compense_negatif"],
+                               "reversal": {"id": "r1"}},
+    )
+    resp = web_trust.post("/fideicommis/t1/contrepasser", data={"reason": "erreur"})
+    assert resp.status_code == 302
+    assert "/fideicommis/r1?" in resp.headers["Location"]
+    assert "avertissement=sans_recette_liee,solde_compense_negatif" in resp.headers["Location"]
+
+
+def test_la_fiche_dit_les_avertissements_connus_et_tait_les_autres(web_trust, monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(rt, "render_template",
+                        lambda tpl, **ctx: captured.update(tpl=tpl, **ctx) or "ok")
+    monkeypatch.setattr(rt.trust, "get_transaction", lambda tx_id: {"id": tx_id, "account_id": "acc1"})
+    monkeypatch.setattr(rt.trust, "get_account", lambda aid: {"id": aid})
+    resp = web_trust.get("/fideicommis/t1?avertissement=facture_autre_client,forge,"
+                         "<script>,facture_autre_client")
+    assert resp.status_code == 200
+    assert captured["tpl"] == "trust/detail.html"
+    assert captured["avertissements"] == [
+        rt.comptabilite.WARNING_MESSAGES["facture_autre_client"]]
+    captured.clear()
+    web_trust.get("/fideicommis/t1")
+    assert captured["avertissements"] == []

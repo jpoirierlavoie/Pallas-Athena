@@ -169,3 +169,27 @@ def test_echange_htmx_reemet_header_et_export(web_rendu, monkeypatch):
     assert 'hx-swap-oob="true"' in html
     assert html.count('id="trust-export"') == 1
     assert "Solde aux livres" in html   # les cartes voyagent avec l'échange
+
+
+def test_la_fiche_affiche_l_avertissement_d_un_paiement(web_rendu, monkeypatch):
+    """Rendu réel de trust/detail.html : un code connu devient son texte
+    français dans un bandeau ambre (classes déjà compilées) ; un code
+    inconnu — un ancien lien « avertissement=administration » — n'affiche
+    rien, et l'URL n'est jamais recopiée dans la page."""
+    entry = {
+        "id": "t1", "account_id": "ta1", "sequence": 7, "status": "en_circulation",
+        "date": datetime(2026, 9, 10, tzinfo=timezone.utc), "direction": "déboursé",
+        "amount": 60000, "method": "chèque", "purpose": "virement_honoraires",
+        "counterparty": "Me Avocat", "client_name": "Marie Roy",
+        "dossier_id": None, "client_id": None,
+        "balance_after_account": 140000, "balance_after_client": 140000,
+        "reference": "1042", "description": "", "invoice_external_ref": "P-1",
+    }
+    monkeypatch.setattr(rt.trust, "get_transaction", lambda tx_id: dict(entry) if tx_id == "t1" else None)
+    monkeypatch.setattr(rt.trust, "get_account", lambda aid: dict(_ACC))
+    html = web_rendu.get(
+        "/fideicommis/t1?avertissement=facture_autre_client,administration"
+    ).get_data(as_text=True)
+    assert rt.comptabilite.WARNING_MESSAGES["facture_autre_client"] in html.replace("&#39;", "'")
+    assert "bg-amber-50 border border-amber-200" in html
+    assert "administration," not in html and "avertissement=" not in html

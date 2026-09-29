@@ -140,6 +140,17 @@ _MESSAGES = {
         "dépôt (champ « Date du dépôt au compte d'administration »), "
         "postérieure à la conciliation. " + _NOTHING_WRITTEN
     ),
+    # The floor covers TODAY: no permitted deposit date is left today (after
+    # the floor is tomorrow, and a future date is refused) — telling the
+    # lawyer to pick a later date would send him to a date the form refuses
+    # (the trust register's « période_verrouillée_jour »).
+    "date_administration_verrouillée_jour": (
+        "Une conciliation complétée du compte d'administration couvre déjà la "
+        "date d'aujourd'hui (conciliation au {detail}) : la recette de ce "
+        "paiement d'honoraires ne peut s'inscrire aujourd'hui à aucune date "
+        "permise. Réessayez demain, avec la date réelle du dépôt (champ "
+        "« Date du dépôt au compte d'administration »). " + _NOTHING_WRITTEN
+    ),
     "pas_un_paiement_honoraires": (
         "Cette écriture n'est pas un paiement d'honoraires."
     ),
@@ -322,6 +333,9 @@ def create_fee_payment(
             raise _FeeAbort("compte_administration_fermé")
         floor = a_reads["lock_floor"]
         if floor is not None and deposit_date.date() <= floor.date():
+            if floor.date() >= today_mtl():
+                raise _FeeAbort("date_administration_verrouillée_jour",
+                                detail=floor.strftime("%Y-%m-%d"))
             raise _FeeAbort("date_administration_verrouillée",
                             detail=deposit_date.strftime("%Y-%m-%d"))
         # 3. The trust leg: guards (art. 59 cleared funds, backdating, the
@@ -438,12 +452,16 @@ def reverse_fee_payment(
     link refuses — never « nothing to reverse » — and a recette written
     meanwhile re-runs the commit. A legacy fee payment with no linked
     recette (written before the administration register) reverses at trust
-    alone, and the result says so (``admin_reversals == []``).
+    alone, and the result says so (``admin_reversals == []``,
+    ``linked_recettes == 0``).
 
     ``result``: ``{"trust_reversal", "trust_reversals",
     "original_status_after", "admin_reversals": [{"admin_transaction_id",
-    "reversal_id"}], "invoices": [(invoice_id, before, after)],
-    "client_cleared_after"}``.
+    "reversal_id"}], "linked_recettes", "invoices": [(invoice_id, before,
+    after)], "client_cleared_after"}`` — ``linked_recettes`` counts EVERY
+    row linked to the fee payment, already-reversed ones included, so an
+    empty ``admin_reversals`` can be told apart: nothing was ever linked
+    (0), or everything linked was already reversed (> 0).
     """
     # Sanitized like every stored text (tags stripped, bounded): the motif is
     # printed in both registers.
@@ -491,7 +509,10 @@ def reverse_fee_payment(
             al._stage_reverse_legs(txn, a_ctx, admin_reason, today, now)
             if a_ctx is not None else {"reversals": [], "legs": [], "invoices": []}
         )
-        result.update(trust=t_result, admin=a_result)
+        # Every linked row, standing or not: « none was ever linked » (a
+        # legacy fee payment) and « all were already reversed » are two
+        # different facts, and the caller must not word one as the other.
+        result.update(trust=t_result, admin=a_result, linked=len(rows))
 
     try:
         with span("trust.transaction", direction="reversal", purpose=TRUST_PURPOSE,
@@ -543,6 +564,7 @@ def reverse_fee_payment(
         "trust_reversals": list(t_result["reversals"]),
         "original_status_after": t_result.get("original_status_after"),
         "admin_reversals": admin_reversals,
+        "linked_recettes": result["linked"],
         "invoices": [
             (iid, before, {**before, **updates})
             for iid, before, updates in a_result["invoices"]

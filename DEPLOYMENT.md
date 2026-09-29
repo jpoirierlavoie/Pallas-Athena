@@ -1659,7 +1659,17 @@ Notes:
      under a banner);
   5. a bulk clear listing the same entry twice is refused (it cleared it
      twice and doubled the client's cleared balance — latent: no web form
-     posts a bulk clear today).
+     posts a bulk clear today);
+  6. the entry's page now SAYS, in an amber banner, what a successful fee
+     payment or reversal still needs the lawyer to read (the route used to
+     drop it): an invoice addressed to ANOTHER client of the dossier than
+     the one whose funds leave trust (check that this client authorised
+     it), a fee payment reversed at trust alone (no linked recette — with
+     what to do about a recette typed by hand — or recettes already
+     reversed), and a client's cleared balance gone negative after a
+     reversal (a shortfall the firm must cover). And a deposit date refused
+     because the operations account is reconciled THROUGH TODAY now says to
+     retry tomorrow, instead of asking for a later date the form refuses.
   **Pilot on REAL movements only** — the registers cannot be cleaned up, and
   there is no preproduction: the next real fee payment on an issued invoice,
   then check the trust entry, the operations account's encaissement (dated

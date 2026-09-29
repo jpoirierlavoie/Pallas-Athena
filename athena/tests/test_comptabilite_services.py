@@ -450,3 +450,65 @@ def test_une_facture_nommee_deux_fois_est_ambigue_jamais_choisie(fake):
         {**_fee(), "invoice_id": "inv9"}, admin_account_id="ops1")
     assert not report["ok"] and report["reason"] == "facture_ambiguë"
     assert fake.peek_collection("admin_transactions") == {}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Les avertissements — dits vrais, et portés jusqu'à la page (revue du
+#    lot 5a)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_des_recettes_deja_contre_passees_ne_se_disent_pas_absentes(fake):
+    """Régression (revue du lot 5a) — un paiement d'honoraires dont la
+    recette liée avait déjà été contre-passée (par l'ancienne cascade de la
+    route) se contre-passe au fidéicommis seul. Le rapport disait « Aucune
+    recette au compte d'administration n'était liée (inscription antérieure
+    au registre d'administration) » : faux — une recette était liée, le
+    compte d'opérations avait bien vu l'argent, et c'est sa contre-passation
+    qui l'avait retiré. Deux faits, deux phrases."""
+    paid = svc.enregistrer_paiement_honoraires(_fee(), admin_account_id="ops1")
+    assert paid["ok"], paid
+    _, errs = al.reverse_transaction(paid["admin_recette"]["id"], "historique",
+                                     allow_linked=True)
+    assert errs == []
+    report = svc.contrepasser_ecriture_fideicommis(paid["trust_entry"]["id"], "erreur")
+    assert report["ok"], report
+    assert report["admin_reversals"] == []
+    assert report["warning_codes"] == ["recettes_deja_contre_passees"]
+    assert report["warnings"] == [svc.WARNING_MESSAGES["recettes_deja_contre_passees"]]
+    assert not any("Aucune recette" in w for w in report["warnings"])
+
+
+def test_un_paiement_sans_recette_liee_le_dit_et_dit_quoi_faire(fake):
+    from tests._accounting_history import legacy_fee_entry
+
+    fee = legacy_fee_entry({**_fee(), "invoice_id": "inv1"})
+    report = svc.contrepasser_ecriture_fideicommis(fee["id"], "erreur")
+    assert report["ok"], report
+    assert report["warning_codes"] == ["sans_recette_liee"]
+    assert "contre-passez-la au registre d'administration" in report["warnings"][0]
+
+
+def test_la_facture_d_un_autre_client_nomme_les_deux_clients(fake):
+    """La revue demandait de refuser le cas, ou d'avertir EN NOMMANT les
+    deux clients : l'avertissement du rapport les nomme (l'avocat, ou
+    Claude au lot 5b, le lit) ; le code l'accompagne pour que la page web le
+    dise sans qu'un nom voyage dans une URL."""
+    doc = fake.peek("invoices/inv1")
+    doc.update(client_name="Jean Tremblay")
+    fake.external_write("invoices/inv1", doc)
+    deposit = svc.enregistrer_ecriture_fideicommis(
+        _deposit(client_id="c2", amount=100000, date=_d(2026, 9, 3)))
+    svc.compenser_fideicommis([deposit["entry"]["id"]], _d(2026, 9, 3))
+    report = svc.enregistrer_paiement_honoraires(_fee(client_id="c2"),
+                                                 admin_account_id="ops1")
+    assert report["ok"], report
+    assert report["warning_codes"] == ["facture_autre_client"]
+    # The page the web lands on can say it (an unknown code shows nothing).
+    assert set(report["warning_codes"]) <= set(svc.WARNING_MESSAGES)
+    (warning,) = report["warnings"]
+    assert "Jean Tremblay" in warning and "C2" in warning
+    # Same client: no warning, no code.
+    same = svc.enregistrer_paiement_honoraires(_fee(amount=10000), admin_account_id="ops1")
+    assert same["ok"] and same["warning_codes"] == [] and same["warnings"] == []
+

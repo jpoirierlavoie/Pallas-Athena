@@ -49,10 +49,46 @@ class ComptabiliteRefus(Exception):
         self.message = message
 
 
+#: The warnings a successful write can carry — machine code → French text.
+#: The report's ``warnings`` are the sentences (the client-mismatch one names
+#: both clients); ``warning_codes`` are the codes, so a web route can carry
+#: them across its POST → redirect and the page they land on can SAY them
+#: (``routes/trust.entry_detail``). A warning the web dropped was a warning
+#: the lawyer never read — the client-mismatch check was, on the web, no
+#: check at all (lot 5a review). These generic texts are what a page shows:
+#: a URL never carries a client's name.
+WARNING_MESSAGES = {
+    "facture_autre_client": (
+        "La facture est adressée à un autre client du dossier que celui dont "
+        "les fonds quittent le fidéicommis : vérifiez que ce client a "
+        "autorisé ce paiement."
+    ),
+    "sans_recette_liee": (
+        "Aucune recette au compte d'administration n'était liée à ce "
+        "paiement d'honoraires (inscription antérieure au registre "
+        "d'administration) : seule l'écriture au fidéicommis est "
+        "contre-passée. Si une recette a été inscrite à la main pour ce "
+        "paiement, contre-passez-la au registre d'administration."
+    ),
+    "recettes_deja_contre_passees": (
+        "Les recettes au compte d'administration liées à ce paiement "
+        "d'honoraires étaient déjà contre-passées : seule l'écriture au "
+        "fidéicommis est contre-passée."
+    ),
+    "solde_compense_negatif": (
+        "Le solde compensé de ce client devient négatif : les fonds "
+        "contre-passés avaient déjà été déboursés. C'est un manque au "
+        "fidéicommis que le cabinet doit combler."
+    ),
+    "fonds_liberes": "Ces dépôts sont maintenant disponibles pour un déboursé.",
+}
+
+
 def _report(ok: bool, *, errors=(), reason: Optional[str] = None,
-            warnings=(), **fields) -> dict:
+            warnings=(), warning_codes=(), **fields) -> dict:
     return {"ok": ok, "errors": list(errors), "reason": reason,
-            "warnings": list(warnings), **fields}
+            "warnings": list(warnings), "warning_codes": list(warning_codes),
+            **fields}
 
 
 def _refused(errors, reason, **fields) -> dict:
@@ -194,7 +230,7 @@ def enregistrer_paiement_honoraires(
     addressed to another client of the dossier than the one whose funds
     leave trust (the client may have authorised it; the lawyer checks)."""
     data = dict(data or {})
-    warnings: list[str] = []
+    invoice = None
     number = (data.pop("invoice_number", "") or "").strip()
     external = (data.get("invoice_external_ref") or "").strip()
     if number or (data.get("invoice_id") and not external):
@@ -208,13 +244,10 @@ def enregistrer_paiement_honoraires(
         except ComptabiliteRefus as refusal:
             return _refused([refusal.message], refusal.reason, **_empty_fee())
         data["invoice_id"] = invoice["id"]
-        invoice_client = invoice.get("client_id")
-        if invoice_client and data.get("client_id") and invoice_client != data["client_id"]:
-            warnings.append(
-                "La facture est adressée à un autre client du dossier que celui "
-                "dont les fonds quittent le fidéicommis : vérifiez que ce client "
-                "a autorisé ce paiement."
-            )
+    invoice_client = (invoice or {}).get("client_id")
+    other_client = bool(
+        invoice_client and data.get("client_id") and invoice_client != data["client_id"]
+    )
     report: dict = {}
     result, errors = fee_payment.create_fee_payment(
         data, admin_account_id=admin_account_id, admin_date=admin_date,
@@ -223,8 +256,21 @@ def enregistrer_paiement_honoraires(
     if errors:
         return _refused(errors, report.get("reason"), side=report.get("side"),
                         **_empty_fee())
+    warnings: list[str] = []
+    codes: list[str] = []
+    if other_client:
+        # Named here — the report goes to the lawyer (or Claude); a URL gets
+        # the generic WARNING_MESSAGES text.
+        payer = result["trust_entry"].get("client_name") or "le client débité"
+        billed = invoice.get("client_name") or "un autre client"
+        warnings.append(
+            f"La facture est adressée à {billed}, alors que les fonds quittent "
+            f"le fidéicommis au nom de {payer} (un autre client du dossier) : "
+            f"vérifiez que ce client a autorisé ce paiement."
+        )
+        codes.append("facture_autre_client")
     return _report(
-        True, warnings=warnings,
+        True, warnings=warnings, warning_codes=codes,
         trust_entry=result["trust_entry"],
         admin_recette=result["admin_recette"],
         invoice=invoice_payment_block(result["invoice_before"], result["invoice_after"]),
@@ -257,7 +303,7 @@ def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
         return _refused([trust._ABORT_MESSAGES["écriture_introuvable"]],
                         "écriture_introuvable", **_empty_reversal())
 
-    warnings: list[str] = []
+    codes: list[str] = []
     if original.get("purpose") == trust.FEE_PAYMENT_PURPOSE:
         report: dict = {}
         result, errors = fee_payment.reverse_fee_payment(tx_id, reason, _report_out=report)
@@ -265,15 +311,16 @@ def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
             return _refused(errors, report.get("reason"), side=report.get("side"),
                             **_empty_reversal())
         if not result["admin_reversals"]:
-            warnings.append(
-                "Aucune recette au compte d'administration n'était liée à ce "
-                "paiement d'honoraires (inscription antérieure au registre "
-                "d'administration) : seule l'écriture au fidéicommis est "
-                "contre-passée."
-            )
+            # Two different facts (lot 5a review): nothing was ever linked (a
+            # legacy fee payment), or every linked recette was already
+            # reversed. Worded as the first, the second told the lawyer the
+            # operations account had never seen the money.
+            codes.append("recettes_deja_contre_passees" if result.get("linked_recettes")
+                         else "sans_recette_liee")
         cleared_after = result["client_cleared_after"]
+        codes += _negative_cleared(cleared_after)
         return _report(
-            True, warnings=warnings + _negative_cleared(cleared_after),
+            True, warnings=[WARNING_MESSAGES[c] for c in codes], warning_codes=codes,
             reversal=result["trust_reversal"],
             reversals=result["trust_reversals"],
             original={"id": tx_id, "status_after": result["original_status_after"]},
@@ -288,8 +335,9 @@ def contrepasser_ecriture_fideicommis(tx_id: str, reason: str) -> dict:
     if errors:
         return _refused(errors, report.get("reason"), **_empty_reversal())
     cleared_after = report.get("client_cleared_after")
+    codes = _negative_cleared(cleared_after)
     return _report(
-        True, warnings=_negative_cleared(cleared_after),
+        True, warnings=[WARNING_MESSAGES[c] for c in codes], warning_codes=codes,
         reversal=reversal, reversals=report.get("reversals", [reversal]),
         original={"id": tx_id, "status_after": report.get("original_status_after")},
         admin_reversals=[], invoices=[], client_cleared_after=cleared_after,
@@ -305,13 +353,10 @@ def _negative_cleared(cleared_after: Optional[int]) -> list[str]:
     """A reversal bypasses the overdraft control (spec §4.3): reversing a
     cleared deposit whose funds were already disbursed drives the client's
     cleared balance NEGATIVE — a shortfall the lawyer must cover. Said,
-    never refused (the reversal is the correction the register needs)."""
+    never refused (the reversal is the correction the register needs).
+    Returns the warning CODE (``WARNING_MESSAGES`` holds its text)."""
     if cleared_after is not None and cleared_after < 0:
-        return [
-            "Le solde compensé de ce client devient négatif : les fonds "
-            "contre-passés avaient déjà été déboursés. C'est un manque au "
-            "fidéicommis que le cabinet doit combler."
-        ]
+        return ["solde_compense_negatif"]
     return []
 
 
@@ -339,11 +384,10 @@ def compenser_fideicommis(tx_ids: list, cleared_date) -> dict:
         if e.get("direction") == "recette" and e.get("dossier_id") and e.get("client_id"):
             key = (e["dossier_id"], e["client_id"])
             released[key] = released.get(key, 0) + int(e.get("amount", 0))
-    warnings = []
-    if released:
-        warnings.append("Ces dépôts sont maintenant disponibles pour un déboursé.")
+    codes = ["fonds_liberes"] if released else []
     return _report(
-        True, warnings=warnings, entries=cleared,
+        True, warnings=[WARNING_MESSAGES[c] for c in codes], warning_codes=codes,
+        entries=cleared,
         released_funds=[{"dossier_id": d, "client_id": c, "amount": a}
                         for (d, c), a in released.items()],
     )

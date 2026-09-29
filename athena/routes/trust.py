@@ -434,6 +434,7 @@ def entry_create():
             "La date du dépôt au compte d'administration est invalide."
         ]
     entry_id = None
+    warning_codes: list = []
     if not errors:
         payload = {k: v for k, v in data.items()
                    if k not in ("cash_receipt_sequence", "admin_date", "admin_date_raw")}
@@ -455,6 +456,7 @@ def entry_create():
             entry = report["entry"]
         errors = report["errors"]
         entry_id = entry["id"] if entry else None
+        warning_codes = report.get("warning_codes") or []
     if errors:
         accounts = trust.list_accounts(status="actif")
         dossier = get_dossier(data["dossier_id"]) if data.get("dossier_id") else None
@@ -467,7 +469,30 @@ def entry_create():
             admin_account_id=admin_account_id,
             **_labels(),
         ), 400
-    return redirect(url_for("trust.entry_detail", tx_id=entry_id))
+    return redirect(url_for("trust.entry_detail", tx_id=entry_id,
+                            **_warning_param(warning_codes)))
+
+
+def _warning_param(codes: list) -> dict:
+    """The service's warning CODES across the POST → redirect, for the
+    detail page to say (lot 5a review — a warning the route dropped was one
+    the lawyer never read: on the web, the check that a fee payment draws on
+    the invoiced client's own funds was no check at all). Codes only: the
+    texts are ``comptabilite.WARNING_MESSAGES``, and a URL never carries a
+    client's name."""
+    known = [c for c in codes if c in comptabilite.WARNING_MESSAGES]
+    return {"avertissement": ",".join(known)} if known else {}
+
+
+def _warnings_from_args() -> list[str]:
+    """The texts of the KNOWN warning codes on ``?avertissement=`` — an
+    unknown or forged code shows nothing (the page never echoes the URL)."""
+    texts: list[str] = []
+    for code in request.args.get("avertissement", "").split(",")[:5]:
+        text = comptabilite.WARNING_MESSAGES.get(code.strip())
+        if text and text not in texts:
+            texts.append(text)
+    return texts
 
 
 @trust_bp.route("/<tx_id>")
@@ -485,7 +510,8 @@ def entry_detail(tx_id: str):
     )
     return render_template(
         "trust/detail.html", entry=entry, account=account, reversal=reversal,
-        reverses=reverses, other_leg=other_leg, **_labels(),
+        reverses=reverses, other_leg=other_leg,
+        avertissements=_warnings_from_args(), **_labels(),
     )
 
 
@@ -566,7 +592,12 @@ def entry_reverse(tx_id: str):
         if not entry:
             return render_template("errors/404.html"), 404
         return _render_reverse_confirm(entry, report["errors"]), 400
-    return redirect(url_for("trust.entry_detail", tx_id=report["reversal"]["id"]))
+    # A reversal that succeeded can still carry something the lawyer must
+    # read: a fee payment reversed at trust alone (no linked recette, or
+    # recettes already reversed), a client's cleared balance gone negative
+    # — a shortfall the firm must cover. Said on the page it lands on.
+    return redirect(url_for("trust.entry_detail", tx_id=report["reversal"]["id"],
+                            **_warning_param(report.get("warning_codes") or [])))
 
 
 # ── Inter-dossier transfer ─────────────────────────────────────────────────

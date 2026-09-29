@@ -716,3 +716,53 @@ def test_une_recette_liee_ne_se_contre_passe_toujours_pas_seule(fake):
     result, _ = _pay()
     _, errs = al.reverse_transaction(result["admin_recette"]["id"], "seule")
     assert errs == [al._ABORT_MESSAGES["écriture_liée_fideicommis"]]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Revue du lot 5a — ce que les refus et les résultats disent
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_une_conciliation_couvrant_aujourd_hui_ne_renvoie_pas_a_une_date_impossible(fake):
+    """Régression (revue du lot 5a) — la période d'administration conciliée
+    JUSQU'À AUJOURD'HUI. Le refus disait d'indiquer une date de dépôt
+    « postérieure à la conciliation » : demain, que la garde du futur
+    refuse — une consigne que le formulaire ne permet pas de suivre. Il dit
+    maintenant de réessayer demain (le « période_verrouillée_jour » du
+    fidéicommis). Une période close AVANT aujourd'hui garde la consigne de
+    la date réelle, postérieure."""
+    _complete_admin_rec(fake, "ops1", _d(2026, 9, 20))      # the frozen today
+    before = _snapshot(fake)
+    report: dict = {}
+    result, errs = fee_payment.create_fee_payment(
+        _entry(), admin_account_id="ops1", _report_out=report)
+    assert result is None
+    assert report == {"reason": "date_administration_verrouillée_jour",
+                      "side": "administration"}
+    assert errs == [fee_payment._message("date_administration_verrouillée_jour", "2026-09-20")]
+    assert "Réessayez demain" in errs[0] and "postérieure à la conciliation" not in errs[0]
+    assert _snapshot(fake) == before
+    # …and with a later deposit date typed, it is the same honest refusal.
+    _, errs = _pay(admin_date=_d(2026, 9, 20))
+    assert "Réessayez demain" in errs[0]
+    assert _snapshot(fake) == before
+
+
+def test_la_contre_passation_compte_toutes_les_recettes_liees(fake):
+    """``admin_reversals`` vide recouvre DEUX faits : aucune recette ne fut
+    jamais liée (un paiement historique), ou toutes étaient déjà
+    contre-passées. ``linked_recettes`` les distingue."""
+    fee = _split_fee(fake, [("inv1", 30000), ("inv2", 20000)])
+    for row in [t for t in fake.peek_collection("admin_transactions").values()
+                if t.get("trust_transaction_id") == fee["id"]]:
+        _, errs = al.reverse_transaction(row["id"], "historique", allow_linked=True)
+        assert errs == []
+    result, errs = fee_payment.reverse_fee_payment(fee["id"], "x")
+    assert errs == [], errs
+    assert result["admin_reversals"] == [] and result["linked_recettes"] == 2
+
+    # Dated today: the register refuses to backdate behind the reversal.
+    legacy = legacy_fee_entry(_entry(amount=30000, date=_d(2026, 9, 20)))
+    result, errs = fee_payment.reverse_fee_payment(legacy["id"], "x")
+    assert errs == [], errs
+    assert result["admin_reversals"] == [] and result["linked_recettes"] == 0
