@@ -410,6 +410,8 @@ Messages of the finitions (2026-09-29, sync-3), the PER-RESOURCE DAV reads made 
 
 Messages of the finitions (2026-09-29, sync-4), the web deletes: « task delete: read failed » / « note delete: read failed » / « hearing delete: read failed » (the id — `delete_*` now reads STRICTLY and reports the document it deleted (`deleted_out`), the web routes tombstoning ITS collection; a failed read refuses the delete with `READ_UNAVAILABLE_ERROR`, nothing deleted, where the route's old fail-open pre-read could tombstone « Général » for a dossier's record). **IDs only.**
 
+Message of the finitions (2026-09-29, sync-6 / robustness-3), the connector's primary-record reads: « mcp write: record unreadable » (no id — `mcp/handlers._read_for_write`: a write's own record could not be read — `update_partie`, the party or lawyer a `create_dossier` / `update_dossier` names, `append_to_note`, `complete_task`, `update_invoice`, `record_document_analysis`, `update_time_entry`, `update_expense`; refused « … n'a pas pu être lu — réessayez », nothing written, logged under `mcp_write_refused` reason **`read_unavailable`**). The lot-4b contact reads (« mcp contact write: contact unreadable », « mcp link write: named contact unreadable ») carry that reason too since the finitions — they logged `argument_refused` before, which hid an outage from the stop-the-batch signal. Until the finitions these writes read fail-open and answered « … introuvable » — with the instruction to look for, or create, another record — about one that exists. **IDs only** (none here).
+
 ## Adding a new event type
 
 1. Extend the relevant `Literal` in `utils/logging_setup.py` (or add a new helper for a new domain).

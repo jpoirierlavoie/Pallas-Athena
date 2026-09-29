@@ -3813,7 +3813,8 @@ def append_to_note(args: dict) -> dict:
 
 def _append_to_note_impl(args: dict) -> dict:
     note_id = (args.get("note_id") or "").strip()
-    existing = note_model.get_note(note_id)
+    existing = _read_for_write(note_model.get_note_strict, note_id,
+                               unreadable=_NOTE_UNREADABLE)
     if existing is None:
         raise ToolArgumentError(
             f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
@@ -4518,7 +4519,8 @@ def _resolve_party_entries(raw: Any, label: str) -> list[dict]:
                 f"La partie {pid} figure deux fois dans `{label}`."
             )
         seen.add(pid)
-        partie = partie_model.get_partie(pid)
+        partie = _read_for_write(partie_model.get_partie_strict, pid,
+                                 unreadable=_PARTIE_UNREADABLE)
         if partie is None:
             raise ToolArgumentError(
                 f"Contact introuvable : {pid} ({label}[{index}]). Créez-le "
@@ -4541,7 +4543,8 @@ def _resolve_party_entries(raw: Any, label: str) -> list[dict]:
                 raise ToolArgumentError(
                     "Une partie ne peut pas être son propre avocat."
                 )
-            avocat = partie_model.get_partie(avocat_id)
+            avocat = _read_for_write(partie_model.get_partie_strict, avocat_id,
+                                     unreadable=_PARTIE_UNREADABLE)
             if avocat is None:
                 raise ToolArgumentError(
                     f"Avocat introuvable : {avocat_id} ({label}[{index}])."
@@ -5174,9 +5177,9 @@ def _update_partie_impl(args: dict) -> dict:
     partie_id = (args.get("partie_id") or "").strip()
     if not partie_id:
         raise ToolArgumentError("`partie_id` est requis.")
-    # Pré-lecture dans le gestionnaire pour que la branche sèche refuse un id
-    # inconnu à l'identique de l'appel réel.
-    existing = partie_model.get_partie(partie_id)
+    # STRICT (finitions, sync-6): an outage is never « Contact introuvable ».
+    existing = _read_for_write(partie_model.get_partie_strict, partie_id,
+                               unreadable=_PARTIE_UNREADABLE)
     if existing is None:
         raise ToolArgumentError(
             f"Contact introuvable : {partie_id}. Utilisez list_parties ou "
@@ -5231,6 +5234,12 @@ _PARTIE_NOT_FOUND = (
     "Contact introuvable : {id}. Utilisez list_parties pour obtenir un "
     "partie_id valide."
 )
+_NOTE_UNREADABLE = (
+    "La note n'a pas pu être lue — réessayez. Rien n'a été écrit."
+)
+_TASK_UNREADABLE = (
+    "La tâche n'a pas pu être lue — réessayez. Aucune tâche n'a été modifiée."
+)
 _PARTIE_UNREADABLE = (
     "Le contact n'a pas pu être lu : rien n'a été modifié. Réessayez dans un "
     "instant."
@@ -5245,7 +5254,7 @@ def _read_partie_for_write(partie_id: str) -> dict:
         existing = partie_model.get_partie_strict(partie_id)
     except Exception:
         log_unexpected("mcp contact write: contact unreadable")
-        raise ToolArgumentError(_PARTIE_UNREADABLE)
+        raise ToolArgumentError(_PARTIE_UNREADABLE, reason="read_unavailable")
     if existing is None:
         raise ToolArgumentError(_PARTIE_NOT_FOUND.format(id=partie_id))
     return existing
@@ -5259,7 +5268,7 @@ def _other_partie_exists(partie_id: str) -> bool:
         return partie_model.get_partie_strict(partie_id) is not None
     except Exception:
         log_unexpected("mcp link write: named contact unreadable")
-        raise ToolArgumentError(_PARTIE_UNREADABLE)
+        raise ToolArgumentError(_PARTIE_UNREADABLE, reason="read_unavailable")
 
 
 # ── update_partie_mandataire (WRITE — LINKS) ─────────────────────────────
@@ -5627,7 +5636,11 @@ def _billing_edit(
     row_id = (args.get(id_key) or "").strip()
     if not row_id:
         raise ToolArgumentError(f"`{id_key}` est requis.")
-    existing = getter(row_id)
+    existing = _read_for_write(
+        getter, row_id,
+        unreadable=(f"{kind} n'a pas pu être "
+                    f"{'lue' if kind.startswith('Cette') else 'lu'} — "
+                    "réessayez. Rien n'a été écrit."))
     if existing is None:
         raise ToolArgumentError(f"{kind} introuvable : {row_id}.")
     stored_dossier = str(existing.get("dossier_id") or "")
@@ -5826,7 +5839,7 @@ def update_time_entry(args: dict) -> dict:
             args,
             id_key="time_entry_id", kind="Cette entrée de temps",
             entity_type="time_entry",
-            getter=time_entry_model.get_time_entry,
+            getter=time_entry_model.get_time_entry_strict,
             updater=time_entry_model.update_time_entry,
             mover=time_entry_model.move_time_entry,
             text_fields=_TIME_ENTRY_TEXT,
@@ -5845,7 +5858,7 @@ def update_expense(args: dict) -> dict:
             args,
             id_key="expense_id", kind="Ce déboursé",
             entity_type="expense",
-            getter=expense_model.get_expense,
+            getter=expense_model.get_expense_strict,
             updater=expense_model.update_expense,
             mover=expense_model.move_expense,
             text_fields=_EXPENSE_TEXT,
@@ -6782,7 +6795,10 @@ def _update_invoice_impl(args: dict) -> dict:
     invoice_id = str(args.get("invoice_id") or "").strip()
     if not document_model.is_addressable_id(invoice_id):
         raise ToolArgumentError(_INVOICE_NOT_FOUND)
-    invoice = invoice_model.get_invoice(invoice_id)
+    invoice = _read_for_write(
+        invoice_model.get_invoice_strict, invoice_id,
+        unreadable="La facture n'a pas pu être lue — réessayez. Rien n'a "
+                   "été écrit.")
     if invoice is None:
         raise ToolArgumentError(_INVOICE_NOT_FOUND)
     if "expected_etag" not in args:
@@ -7615,6 +7631,27 @@ _NO_REPLAY_RETRY = (
 # set_dossier_status takes no expected_etag (it compare-and-sets against its
 # own read), so its stale refusal names the reads that show the dossier.
 _DOSSIER_READERS = ("get_dossier", "list_dossiers")
+
+
+def _read_for_write(reader: Callable[[str], Optional[dict]], record_id: str,
+                    *, unreadable: str) -> Optional[dict]:
+    """The record a write names, read STRICTLY (finitions, sync-6 /
+    robustness-3): ``None`` only when the store SAID it is absent; a read
+    that FAILED refuses *unreadable* under reason ``read_unavailable``, after
+    an ERROR line carrying the traceback.
+
+    The fail-open getters these writes used swallowed a blip into ``None``
+    and answered « … introuvable » — with the instruction to go look for
+    another id (« Utilisez list_notes », « Créez-le avec create_partie ») —
+    about a record that EXISTS: the path to a duplicate note, task or
+    contact (which a contact write bumps into the phone's address book).
+    Logged under ``argument_refused``, the outage was also invisible to the
+    stop-the-batch signal. *reader* is a model's ``*_strict`` getter."""
+    try:
+        return reader(record_id)
+    except Exception:
+        log_unexpected("mcp write: record unreadable")
+        raise ToolArgumentError(unreadable, reason="read_unavailable")
 
 
 def _read_dossier_strict(dossier_id: str, *, advice: str = "") -> dict:
@@ -9879,7 +9916,8 @@ def _complete_task_impl(args: dict) -> dict:
             + ". Reopening a task to « à_faire » is reopen_task."
         )
 
-    task = task_model.get_task(task_id)
+    task = _read_for_write(task_model.get_task_strict, task_id,
+                           unreadable=_TASK_UNREADABLE)
     if not task:
         raise ToolArgumentError(
             f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
@@ -12225,7 +12263,10 @@ def record_document_analysis(args: dict) -> dict:
 
 def _record_document_analysis_impl(args: dict) -> dict:
     document_id = (args.get("document_id") or "").strip()
-    existing = document_model.get_document(document_id)
+    existing = _read_for_write(
+        document_model.get_document_strict, document_id,
+        unreadable="Le document n'a pas pu être lu — réessayez. Rien n'a "
+                   "été écrit.")
     if existing is None:
         raise ToolArgumentError(
             f"Document introuvable : {document_id}. L'identifiant provient "

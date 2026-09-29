@@ -197,12 +197,22 @@ def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def get_time_entry_strict(entry_id: str) -> Optional[dict]:
+    """One time entry — a read failure PROPAGATES; ``None`` only when the
+    store answered « no such document ». For a caller that WRITES on the
+    answer (the connector's ``update_time_entry``, finitions robustness-3),
+    whose « introuvable » on a blip would send it hunting for — or
+    re-creating — an entry that exists."""
+    doc = db.collection(COLLECTION).document(entry_id).get()
+    if doc.exists:
+        return doc.to_dict()
+    return None
+
+
 def get_time_entry(entry_id: str) -> Optional[dict]:
-    """Fetch a single time entry by ID."""
+    """Fetch a single time entry by ID (fail-open: ``None`` on a read error)."""
     try:
-        doc = db.collection(COLLECTION).document(entry_id).get()
-        if doc.exists:
-            return doc.to_dict()
+        return get_time_entry_strict(entry_id)
     except Exception as exc:
         logger.warning("get_time_entry failed for %s: %s", sanitize_log_value(entry_id), exc)
     return None

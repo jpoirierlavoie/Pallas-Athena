@@ -169,12 +169,19 @@ def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def get_expense_strict(expense_id: str) -> Optional[dict]:
+    """One expense — a read failure PROPAGATES; ``None`` only when the store
+    answered « no such document » (see ``time_entry.get_time_entry_strict``)."""
+    doc = db.collection(COLLECTION).document(expense_id).get()
+    if doc.exists:
+        return doc.to_dict()
+    return None
+
+
 def get_expense(expense_id: str) -> Optional[dict]:
-    """Fetch a single expense by ID."""
+    """Fetch a single expense by ID (fail-open: ``None`` on a read error)."""
     try:
-        doc = db.collection(COLLECTION).document(expense_id).get()
-        if doc.exists:
-            return doc.to_dict()
+        return get_expense_strict(expense_id)
     except Exception as exc:
         logger.warning("get_expense failed for %s: %s", sanitize_log_value(expense_id), exc)
     return None

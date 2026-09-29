@@ -1431,9 +1431,12 @@ def test_rows_carry_timestamps_and_updated_since_filters(monkeypatch):
 
 def test_get_note_found_and_not_found(monkeypatch):
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
+    monkeypatch.setattr(handlers.note_model, "get_note_strict", lambda i: None)
     assert handlers.get_note({"note_id": "n9"})["found"] is False
 
     monkeypatch.setattr(handlers.note_model, "get_note",
+                        lambda i: {"id": "n1", "content": "# Markdown brut"})
+    monkeypatch.setattr(handlers.note_model, "get_note_strict",
                         lambda i: {"id": "n1", "content": "# Markdown brut"})
     payload = handlers.get_note({"note_id": "n1"})
     assert payload["note"]["content"] == "# Markdown brut"
@@ -1525,6 +1528,7 @@ def test_get_partie_card_with_dossier_relations(monkeypatch):
               "phone_cell": "+15145551234", "identity_verified": "vérifié",
               "identity_verified_date": datetime(2026, 6, 1, 12, 0, tzinfo=UTC)}
     monkeypatch.setattr(handlers.partie_model, "get_partie", lambda i: partie)
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict", lambda i: partie)
     monkeypatch.setattr(handlers.dossier_model, "list_dossiers_for_partie",
                         lambda i: [{"id": "d1", "file_number": "2026-001",
                                     "title": "T c. L", "status": "actif",
@@ -2031,6 +2035,10 @@ def test_append_to_note_bumps_the_dossier_ctag(monkeypatch, bumps):
         handlers.note_model, "get_note",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Déjà là"},
     )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Déjà là"},
+    )
     _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
     monkeypatch.setattr(
         handlers.note_model, "update_note",
@@ -2129,6 +2137,11 @@ def test_append_only_ever_updates_content(monkeypatch, bumps):
     seen = {}
     monkeypatch.setattr(
         handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "A",
+                   "etag": "e-lu"},
+    )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "A",
                    "etag": "e-lu"},
     )
@@ -2592,6 +2605,13 @@ def test_append_refuses_rather_than_truncating(monkeypatch, bumps):
             "content": "x" * (note_model.CONTENT_MAX_LENGTH - 10),
         },
     )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
+        lambda i: {
+            "id": "n1", "dossier_id": "d1",
+            "content": "x" * (note_model.CONTENT_MAX_LENGTH - 10),
+        },
+    )
     _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
 
     def _must_not_run(_nid, _data):
@@ -2621,6 +2641,10 @@ def test_append_refuses_when_the_JOIN_would_eat_existing_content(
 
     monkeypatch.setattr(
         handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": existing},
+    )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": existing},
     )
     _stub_dossier_reads(monkeypatch, lambda i: _wdossier())
@@ -2663,6 +2687,10 @@ def test_append_does_not_claim_a_closed_dossier_when_the_lookup_merely_failed(
         handlers.note_model, "get_note",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "A"},
     )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "A"},
+    )
     _stub_dossier_reads(monkeypatch, lambda i: None)
     monkeypatch.setattr(
         handlers.note_model, "update_note",
@@ -2692,6 +2720,7 @@ def test_closed_dossier_still_reports_the_ctag_bump_as_having_happened(
 
 def test_append_refuses_an_unknown_note(monkeypatch, bumps):
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
+    monkeypatch.setattr(handlers.note_model, "get_note_strict", lambda i: None)
     with pytest.raises(tools.ToolArgumentError, match="Note introuvable"):
         handlers.append_to_note({"note_id": "nope", "content": "C"})
     assert bumps["bump"] == []
@@ -2702,6 +2731,11 @@ def test_append_refuses_the_analyse_note(monkeypatch, bumps):
     readable through list_notes/get_note, never writable."""
     monkeypatch.setattr(
         handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Analyse",
+                   "is_analyse": True},
+    )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Analyse",
                    "is_analyse": True},
     )
@@ -2752,6 +2786,10 @@ def test_writes_carry_a_dated_provenance_stamp(monkeypatch, bumps, created):
     seen = {}
     monkeypatch.setattr(
         handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"},
+    )
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"},
     )
 
@@ -4132,6 +4170,8 @@ def ct(monkeypatch, bumps):
         return {**state["task"], **data}, []
 
     monkeypatch.setattr(handlers.task_model, "get_task",
+                        lambda i: dict(state["task"]) if state["task"] else None)
+    monkeypatch.setattr(handlers.task_model, "get_task_strict",
                         lambda i: dict(state["task"]) if state["task"] else None)
     monkeypatch.setattr(handlers.task_model, "update_task", _update)
     monkeypatch.setattr(handlers.task_model, "_validate", lambda d: [])

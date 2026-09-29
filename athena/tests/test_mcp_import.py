@@ -346,6 +346,8 @@ def contacts(monkeypatch):
     monkeypatch.setattr(handlers.partie_model, "update_partie", _update)
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: world["existing"])
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: world["existing"])
     monkeypatch.setattr(handlers, "bump_ctag",
                         lambda name: world["bumps"].append(name))
     monkeypatch.setattr(models, "find_by_legacy_ref",
@@ -613,6 +615,8 @@ def dossiers(monkeypatch):
                         lambda fn: world["by_number"].get(fn))
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: world["parties"].get(i))
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: world["parties"].get(i))
     monkeypatch.setattr(models, "find_by_legacy_ref",
                         lambda c, r, limit=5: list(world["legacy"].get(r, [])))
     world["parties"]["p1"] = {"id": "p1", "type": "individual",
@@ -841,8 +845,12 @@ def billing(monkeypatch):
 
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
                         lambda i: world["entry"])
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry_strict",
+                        lambda i: world["entry"])
     monkeypatch.setattr(handlers.time_entry_model, "update_time_entry", _upd_entry)
     monkeypatch.setattr(handlers.expense_model, "get_expense",
+                        lambda i: world["expense"])
+    monkeypatch.setattr(handlers.expense_model, "get_expense_strict",
                         lambda i: world["expense"])
     monkeypatch.setattr(handlers.expense_model, "update_expense", _upd_expense)
     world["entry"] = {"id": "e1", "dossier_id": "d1", "description": "Rédaction",
@@ -1038,9 +1046,15 @@ def facture(monkeypatch):
                         if i == "d1" else None)
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: world["parties"].get(i))
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: world["parties"].get(i))
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
                         lambda i: world["entries"].get(i))
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry_strict",
+                        lambda i: world["entries"].get(i))
     monkeypatch.setattr(handlers.expense_model, "get_expense",
+                        lambda i: world["expenses"].get(i))
+    monkeypatch.setattr(handlers.expense_model, "get_expense_strict",
                         lambda i: world["expenses"].get(i))
     monkeypatch.setattr(handlers.invoice_model, "create_invoice", _create)
     # Explicite : sans cela le vrai lecteur interroge le MagicMock du client

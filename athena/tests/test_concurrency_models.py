@@ -1207,8 +1207,10 @@ _SINGLE_DECISION = {"decide_rendez_vous"}
 _HANDLER_GETTERS = {
     "update_partie": (partie_model, "get_partie_strict"),
     "update_dossier": (dossier_model, "get_dossier"),
-    "update_time_entry": (time_entry_model, "get_time_entry"),
-    "update_expense": (expense_model, "get_expense"),
+    # Strict since the finitions (robustness-3): an outage is never
+    # « introuvable ».
+    "update_time_entry": (time_entry_model, "get_time_entry_strict"),
+    "update_expense": (expense_model, "get_expense_strict"),
     "set_time_entry_phase": (time_entry_model, "get_time_entries_bulk"),
     "set_expense_phase": (expense_model, "get_expenses_bulk"),
     "update_task": (task_model, "get_task_strict"),
@@ -1222,7 +1224,7 @@ _HANDLER_GETTERS = {
     "update_document": (document_model, "get_document_strict"),
     "manage_folder": (folder_model, "list_dossier_folders"),
     "update_template": (doc_template_model, "get_template"),
-    "update_invoice": (invoice_model, "get_invoice"),
+    "update_invoice": (invoice_model, "get_invoice_strict"),
     "update_dossier_party": (dossier_model, "get_dossier"),
     "update_partie_mandataire": (partie_model, "get_partie"),
     "record_kyc_status": (partie_model, "get_partie"),
@@ -1420,11 +1422,11 @@ def _dossier_with_parties(db):
 _OWN_READ_CASES = {
     "append_to_note": (
         "notes", _note, lambda i: {"note_id": i, "content": "Suite."},
-        (note_model, "get_note"), {"content": "Réécrite au téléphone."},
+        (note_model, "get_note_strict"), {"content": "Réécrite au téléphone."},
         "content"),
     "complete_task": (
         "tasks", _task, lambda i: {"task_id": i},
-        (task_model, "get_task"), {"status": "annulée"},
+        (task_model, "get_task_strict"), {"status": "annulée"},
         "status"),
     "complete_dossier": (
         "dossiers", _dossier_with_parties,

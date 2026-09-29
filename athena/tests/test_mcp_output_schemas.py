@@ -434,6 +434,13 @@ def test_get_note_both_branches_conform(monkeypatch):
                    "title": "Note", "content": "Corps",
                    "category": "recherche", "pinned": True,
                    "created_at": DT, "updated_at": DT, **_PROV})
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
+        lambda i: {"id": "n1", "dossier_id": "d1",
+                   "dossier_file_number": "2026-001", "dossier_title": "T",
+                   "title": "Note", "content": "Corps",
+                   "category": "recherche", "pinned": True,
+                   "created_at": DT, "updated_at": DT, **_PROV})
     _conforms("get_note", handlers.get_note({"note_id": "n1"}))
 
     # The analyse note (read-only flag emitted True)
@@ -445,9 +452,18 @@ def test_get_note_both_branches_conform(monkeypatch):
                    "category": "stratégie", "pinned": False,
                    "is_analyse": True, "dateless": True,
                    "created_at": DT, "updated_at": DT})
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
+        lambda i: {"id": "n2", "dossier_id": "d1",
+                   "dossier_file_number": "2026-001", "dossier_title": "T",
+                   "title": "Théorie de la cause", "content": "Corps",
+                   "category": "stratégie", "pinned": False,
+                   "is_analyse": True, "dateless": True,
+                   "created_at": DT, "updated_at": DT})
     _conforms("get_note", handlers.get_note({"note_id": "n2"}))
 
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
+    monkeypatch.setattr(handlers.note_model, "get_note_strict", lambda i: None)
     _conforms("get_note", handlers.get_note({"note_id": "absent"}))
 
 
@@ -479,6 +495,8 @@ def test_list_parties_conforms(monkeypatch):
 def test_get_partie_both_branches_conform(monkeypatch):
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: _partie_doc())
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: _partie_doc())
     monkeypatch.setattr(
         handlers.dossier_model, "list_dossiers_for_partie",
         lambda i: [{"id": "d1", "file_number": "2026-001", "title": "T",
@@ -486,6 +504,7 @@ def test_get_partie_both_branches_conform(monkeypatch):
     _conforms("get_partie", handlers.get_partie({"partie_id": "p1"}))
 
     monkeypatch.setattr(handlers.partie_model, "get_partie", lambda i: None)
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict", lambda i: None)
     _conforms("get_partie", handlers.get_partie({"partie_id": "absent"}))
 
 
@@ -498,6 +517,7 @@ def test_get_partie_list_valued_address_is_coerced_to_string(monkeypatch):
     doc = _partie_doc()
     doc["address_street"] = ["450 rue Sainte-Catherine", "Bureau 5"]
     monkeypatch.setattr(handlers.partie_model, "get_partie", lambda i: doc)
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict", lambda i: doc)
     monkeypatch.setattr(handlers.dossier_model, "list_dossiers_for_partie",
                         lambda i: [])
     payload = handlers.get_partie({"partie_id": "p1"})
@@ -727,6 +747,9 @@ def test_create_note_general_branch_conforms(write_world):
 def test_append_to_note_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"})
+    monkeypatch.setattr(
+        handlers.note_model, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"})
     monkeypatch.setattr(
         handlers.note_model, "update_note",
@@ -1035,6 +1058,9 @@ def test_partie_writes_conform(monkeypatch):
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: {"id": "p1", "type": "individual",
                                    "last_name": "Tremblay"})
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: {"id": "p1", "type": "individual",
+                                   "last_name": "Tremblay"})
     # Widened (lot 0a, étape 5): the handler passes expected_etag; the stub
     # writes a NEW etag, as the model does, so the payload's one is checked.
     monkeypatch.setattr(handlers.partie_model, "update_partie",
@@ -1090,7 +1116,12 @@ def test_import_invoice_conforms(monkeypatch):
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: {"id": "p1", "type": "individual",
                                    "last_name": "Tremblay"})
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: {"id": "p1", "type": "individual",
+                                   "last_name": "Tremblay"})
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
+                        lambda i: entry)
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry_strict",
                         lambda i: entry)
     monkeypatch.setattr(
         handlers.invoice_model, "create_invoice",
@@ -1120,11 +1151,14 @@ def test_billing_edits_conform(monkeypatch):
             "category": "timbre_judiciaire", "date": DT}
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
                         lambda i: entry)
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry_strict",
+                        lambda i: entry)
     # Widened (lot 0a, étape 5): the handler passes expected_etag.
     monkeypatch.setattr(handlers.time_entry_model, "update_time_entry",
                         lambda i, d, *, expected_etag=None: (
                             {**entry, **d, "etag": "e-ecrit"}, []))
     monkeypatch.setattr(handlers.expense_model, "get_expense", lambda i: disb)
+    monkeypatch.setattr(handlers.expense_model, "get_expense_strict", lambda i: disb)
     monkeypatch.setattr(handlers.expense_model, "update_expense",
                         lambda i, d, *, expected_etag=None: (
                             {**disb, **d, "etag": "e-ecrit"}, []))
@@ -1261,6 +1295,7 @@ def test_dossier_writes_conform(monkeypatch):
                 "status": "actif", "clients": []}
     monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
     monkeypatch.setattr(handlers.partie_model, "get_partie", parties.get)
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict", parties.get)
     monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
                         lambda fn: None)
     _stub_dossier_reads(monkeypatch,
@@ -1406,6 +1441,7 @@ def test_complete_task_conforms(write_world, monkeypatch):
         "due_date": None, "completed_date": None, "related_note_id": None,
     }
     monkeypatch.setattr(handlers.task_model, "get_task", lambda i: dict(task))
+    monkeypatch.setattr(handlers.task_model, "get_task_strict", lambda i: dict(task))
     monkeypatch.setattr(handlers.task_model, "update_task",
                         lambda tid, data, *, expected_etag=None: ({**task, **data}, []))
     monkeypatch.setattr(handlers.task_model, "_validate", lambda d: [])
@@ -1461,6 +1497,7 @@ def test_complete_task_already_closed_neither_bumps_nor_claims_a_sync(
         "related_note_id": None,
     }
     monkeypatch.setattr(handlers.task_model, "get_task", lambda i: dict(task))
+    monkeypatch.setattr(handlers.task_model, "get_task_strict", lambda i: dict(task))
     monkeypatch.setattr(handlers.task_model, "update_task",
                         lambda tid, data, *, expected_etag=None: pytest.fail(
                             "un no-op ne doit jamais écrire"))
@@ -1515,6 +1552,9 @@ def test_get_document_text_pdf_conforms(monkeypatch):
         handlers.document_model, "get_document",
         lambda i: _doc_meta("application/pdf", len(data)))
     monkeypatch.setattr(
+        handlers.document_model, "get_document_strict",
+        lambda i: _doc_meta("application/pdf", len(data)))
+    monkeypatch.setattr(
         handlers.document_model, "get_document_bytes",
         lambda i, **kw: (data, ""))
     payload = handlers.get_document_text({"document_id": "doc1"})
@@ -1536,6 +1576,9 @@ def test_get_document_text_docx_segments_conform(monkeypatch):
         handlers.document_model, "get_document",
         lambda i: _doc_meta(docx_mime, len(data)))
     monkeypatch.setattr(
+        handlers.document_model, "get_document_strict",
+        lambda i: _doc_meta(docx_mime, len(data)))
+    monkeypatch.setattr(
         handlers.document_model, "get_document_bytes",
         lambda i, **kw: (data, ""))
     payload = handlers.get_document_text({"document_id": "doc1"})
@@ -1548,6 +1591,9 @@ def test_get_document_text_truncation_paging_conforms(monkeypatch):
     data = _pdf_bytes(["A" * 50, "B" * 50, "C" * 50])
     monkeypatch.setattr(
         handlers.document_model, "get_document",
+        lambda i: _doc_meta("application/pdf", len(data)))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_strict",
         lambda i: _doc_meta("application/pdf", len(data)))
     monkeypatch.setattr(
         handlers.document_model, "get_document_bytes",
@@ -1565,6 +1611,9 @@ def test_get_document_text_unreadable_branches_conform(monkeypatch):
         handlers.document_model, "get_document",
         lambda i: _doc_meta("application/pdf", 300 * 1024 * 1024))
     monkeypatch.setattr(
+        handlers.document_model, "get_document_strict",
+        lambda i: _doc_meta("application/pdf", 300 * 1024 * 1024))
+    monkeypatch.setattr(
         handlers.document_model, "get_document_bytes",
         lambda i, **kw: (None, "too_large"))
     payload = handlers.get_document_text({"document_id": "doc1"})
@@ -1574,6 +1623,9 @@ def test_get_document_text_unreadable_branches_conform(monkeypatch):
     # unsupported_type — never even reaches the byte seam.
     monkeypatch.setattr(
         handlers.document_model, "get_document",
+        lambda i: _doc_meta("image/png"))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_strict",
         lambda i: _doc_meta("image/png"))
     payload = handlers.get_document_text({"document_id": "doc1"})
     _conforms("get_document_text", payload)
@@ -1593,6 +1645,9 @@ def test_get_document_text_unreadable_branches_conform(monkeypatch):
         handlers.document_model, "get_document",
         lambda i: _doc_meta("application/pdf", len(encrypted)))
     monkeypatch.setattr(
+        handlers.document_model, "get_document_strict",
+        lambda i: _doc_meta("application/pdf", len(encrypted)))
+    monkeypatch.setattr(
         handlers.document_model, "get_document_bytes",
         lambda i, **kw: (encrypted, ""))
     payload = handlers.get_document_text({"document_id": "doc1"})
@@ -1603,6 +1658,8 @@ def test_get_document_text_unreadable_branches_conform(monkeypatch):
 def test_get_document_text_not_found_conforms(monkeypatch):
     monkeypatch.setattr(
         handlers.document_model, "get_document", lambda i: None)
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_strict", lambda i: None)
     payload = handlers.get_document_text({"document_id": "absent"})
     _conforms("get_document_text", payload)
     assert payload["found"] is False
@@ -1721,6 +1778,8 @@ def test_get_dossier_and_get_partie_emit_their_etag_and_provenance(
 
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: {**_partie_doc(), **stored})
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict",
+                        lambda i: {**_partie_doc(), **stored})
     monkeypatch.setattr(handlers.dossier_model, "list_dossiers_for_partie",
                         lambda i: [])
     payload = handlers.get_partie({"partie_id": "p1"})
@@ -1734,6 +1793,7 @@ def test_note_readers_emit_etag_and_provenance(monkeypatch, stored, emitted):
             "content": "Texte", "category": "recherche", "pinned": False,
             "created_at": DT, "updated_at": DT, **stored}
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: dict(note))
+    monkeypatch.setattr(handlers.note_model, "get_note_strict", lambda i: dict(note))
     monkeypatch.setattr(handlers.note_model, "list_notes",
                         lambda **kw: [dict(note)])
     payload = handlers.get_note({"note_id": "n1"})
