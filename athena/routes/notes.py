@@ -431,12 +431,22 @@ def note_edit(note_id: str) -> str:
 @login_required
 def note_update(note_id: str) -> str:
     """Handle edit form submission."""
-    existing_note = get_note(note_id)
-    if not existing_note:
+    # STRICT (review of the finitions, sync-4): the fail-open read answered a
+    # blip with « no note », and the route redirected to the list — the
+    # lawyer's edit DISCARDED without a word. A read that failed re-renders
+    # the form with the submitted text and the refusal (the task / hearing
+    # routes' shape); only a note the store SAID is absent goes to the list.
+    try:
+        existing_note = get_note_strict(note_id)
+        read_errors: list[str] = []
+    except Exception:
+        existing_note, read_errors = None, [concurrency.READ_UNAVAILABLE_ERROR]
+    if existing_note is None and not read_errors:
         return redirect(url_for("notes.note_list"))
 
     expected = edit_conflict.submitted_etag()
     data, link_errors = _enrich_dossier_info(_form_data())
+    link_errors = read_errors + link_errors
     return_to = request.form.get("return_to", "")
 
     # The « Théorie de la cause » note is bound to its dossier: the form

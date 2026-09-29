@@ -205,3 +205,31 @@ def test_a_chain_delete_whose_hearing_cannot_be_read_refuses_on_a_2xx(
     assert resp.status_code == 302
     assert "erreur=" in resp.headers["Location"]
     assert db.peek("hearings/h1") is not None
+
+
+def test_a_note_edit_whose_note_cannot_be_read_keeps_the_lawyer_s_text(
+        db, client, monkeypatch):
+    """Review of the finitions (sync-4). note_update read the note fail-open
+    and, on a blip, redirected to the LIST — no save, no word, the lawyer's
+    edit gone. It now reads strictly and re-renders the form with the
+    submitted text and the refusal; nothing is written, no collection
+    touched."""
+    _fail_first_read_of(monkeypatch, db, "notes/n1")
+    resp = client.post("/notes/n1", data={
+        "title": "Note", "content": "Texte que l'avocat vient de taper",
+        "category": "recherche", "dossier_id": "d2", "expected_etag": "e-n"})
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert str(escape("n'a pas pu être lu")) in body
+    assert str(escape("Texte que l'avocat vient de taper")) in body
+    stored = db.peek("notes/n1")
+    assert stored["dossier_id"] == "d1" and stored["content"] == "C"
+    assert _tombstones(db, "dossier:d1") == set()
+    assert "n1" not in _tombstones(db, "general")
+
+
+def test_a_note_the_store_says_is_absent_still_goes_to_the_list(db, client):
+    resp = client.post("/notes/absente", data={
+        "title": "Note", "content": "C", "category": "recherche"})
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/notes/")

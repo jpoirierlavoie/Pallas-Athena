@@ -357,7 +357,7 @@ def test_the_task_route_moves_exactly_as_before(monkeypatch, old, new):
 def test_the_note_route_moves_exactly_as_before(monkeypatch, old, new):
     calls = _route_recorder(monkeypatch, notes_routes)
     monkeypatch.setattr(
-        notes_routes, "get_note",
+        notes_routes, "get_note_strict",
         lambda i: {"id": i, "dossier_id": old, "title": "T", "content": "C",
                    "category": "recherche"},
     )

@@ -172,7 +172,7 @@ def test_note_move_tombstones_the_old_collection(
     (the shape routes/tasks.py uses) — bumping only the new one leaves the
     stale copy under the old dossier in DavX5 indefinitely."""
     monkeypatch.setattr(
-        notes_routes, "get_note",
+        notes_routes, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "title": "T",
                    "content": "C", "category": "recherche"},
     )
@@ -209,7 +209,7 @@ def test_analyse_note_dossier_change_is_refused(
     picker, and the route refuses a hand-crafted POST that would move it
     (a moved analyse note is invisible in every app view)."""
     monkeypatch.setattr(
-        notes_routes, "get_note",
+        notes_routes, "get_note_strict",
         lambda i: {"id": "n1", "dossier_id": "d1", "is_analyse": True,
                    "title": "Théorie de la cause", "content": "C",
                    "category": "stratégie"},
