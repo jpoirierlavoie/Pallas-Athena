@@ -12488,6 +12488,9 @@ def _record_document_analysis_impl(args: dict) -> dict:
             categorie_remplacee=bool(stocke.get("categorie_remplacee")),
             categorie_conservee=bool(stocke.get("categorie_conservee")),
             divergence_categorie=bool(stocke.get("divergence_categorie")),
+            # Revue de D25 : ce passage a remplacé une analyse que l'avocat
+            # avait confirmée — il repart présumé (booléen, jamais qui).
+            confirmation_precedente=bool(stocke.get("confirmation_precedente")),
         )
     except Exception:  # jamais au prix de l'écriture
         # Mais jamais en silence non plus : une ligne d'audit qui
@@ -12563,19 +12566,20 @@ def _analyse_warnings(champ: dict) -> list[str]:
             "Renonciation possible : le document porte des marques d'un "
             "régime protégé alors que sa nature le présume communiqué."
         )
-    if conservee and champ.get("confirme"):
-        # D25 — sa confirmation est gardée telle qu'elle était : elle couvre
-        # désormais un passage qu'il n'a pas lu. La fiche ne le présente pas
-        # comme confirmé (models.document.analysis_confirmation_predates_run :
-        # pastille « Confirmée avant cette analyse », alertes montrées,
-        # « Confirmer » offert) ; le connecteur le dit aussi.
+    if champ.get("confirmation_precedente"):
+        # Revue de D25 — les deux confirmations sont distinctes : celle de
+        # la CATÉGORIE survit (la catégorie reste la sienne), celle de
+        # l'ANALYSE couvrait le passage précédent et ne se reporte jamais —
+        # ce passage repart présumé (models.document.record_analyse la
+        # consigne en `confirmation_precedente`). Ni nom, ni date, ni
+        # contenu : ce qui s'est passé, et qui tranche.
         out.append(
-            "Catégorie et confirmation du juriste CONSERVÉES : cette analyse "
-            "paraît sous la confirmation qu'il avait donnée, sans qu'il l'ait "
-            "lue — la fiche la marque « confirmée avant cette analyse », "
-            "alertes affichées. Signalez-lui ce qu'elle change (sous-nature, "
-            "régime, alertes) ; il la confirme de nouveau ou la corrige dans "
-            "l'application."
+            "Analyse PRÉSUMÉE : le juriste avait confirmé l'analyse "
+            "précédente de ce document ; dites-lui « votre confirmation "
+            "couvrait l'analyse précédente, pas celle-ci ». La fiche la "
+            "montre « Présumée », alertes affichées, jusqu'à ce qu'il la "
+            "confirme ou la corrige dans l'application."
+            + (" La catégorie, elle, reste la sienne." if conservee else "")
         )
     elif conservee:
         out.append(

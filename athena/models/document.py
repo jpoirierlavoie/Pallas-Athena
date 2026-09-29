@@ -432,7 +432,9 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
       (presumed, D15), an upload left on the default, a generation (the
       template's own category). An analysis never writes it: one that
       REPLACES a category leaves the « analyse » source, never his, and one
-      that meets a category of his KEEPS it (D25, :func:`record_analyse`).
+      that meets a category of his KEEPS it (D25, :func:`record_analyse`) —
+      writing the marker True only when his category was his solely through
+      the analysis confirmation that run is about to supersede (below).
 
     A copy inherits its source's answer (:func:`copy_document`). And a
     category whose provenance is not « juriste » (a presumed « mcp » one,
@@ -467,7 +469,12 @@ def category_set_by_lawyer(doc: Optional[dict]) -> bool:
     confirmed) or one stored in a contradictory shape — erring, like the
     legacy rule, toward his choice. It is the rule :func:`record_analyse`
     keeps a category under: an analysis never replaces a category this
-    function calls his.
+    function calls his. And since a NEW analysis is always unconfirmed (its
+    predecessor's confirmation covered the predecessor, not it),
+    :func:`record_analyse` first makes such a protection EXPLICIT — the
+    marker, the « juriste » source, and ``category_confirmed_by`` / ``_at``
+    taken from that confirmation — so the category stays his once the
+    analysis flag resets.
     """
     doc = doc or {}
     if (doc.get("analyse") or {}).get("confirme") is True:
@@ -551,41 +558,6 @@ def analysis_category_divergence(doc: Optional[dict]) -> str:
     )
     current = str(doc.get("category") or "")
     return derived if derived and derived != current else ""
-
-
-def _as_utc(value: object) -> Optional[datetime]:
-    """*value* as an aware UTC datetime, ``None`` when it is not one."""
-    if not isinstance(value, datetime):
-        return None
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
-
-def analysis_confirmation_predates_run(doc: Optional[dict]) -> bool:
-    """True when *doc*'s analysis cache carries the lawyer's confirmation
-    but that confirmation was given BEFORE the run the cache now holds.
-    PURE.
-
-    D25 (2026-09-29): an analysis recorded on a category of his KEEPS his
-    confirmation as it was (``confirme`` / ``confirme_par`` /
-    ``confirme_le``, :func:`record_analyse`) — so the cache then holds a
-    model's qualification, summary and alerts that he never read, under a
-    confirmation dated before it (``confirme_le < genere_le``). Confirming
-    says « I saw THIS version » (plan, rule 11; §7), so the document page
-    must not present that run as confirmed: it keeps the stored
-    confirmation, and still shows the run's alerts and a « Confirmer »
-    button. :func:`confirmer_analyse` stamps ``confirme_le`` AFTER the
-    run, :func:`update_analyse` stamps both at the same instant: neither
-    reads as anterior. A stamp that is missing or not a datetime proves
-    nothing either way and reads False (the rule before D25).
-    """
-    analyse = (doc or {}).get("analyse") or {}
-    if analyse.get("confirme") is not True:
-        return False
-    confirmed = _as_utc(analyse.get("confirme_le"))
-    generated = _as_utc(analyse.get("genere_le"))
-    if confirmed is None or generated is None:
-        return False
-    return confirmed < generated
 
 
 def _parse_document_date(raw) -> tuple[Optional[datetime], Optional[str]]:
@@ -2548,10 +2520,14 @@ def get_document_summary(dossier_id: str) -> dict:
 #      garder au journal est ce qui laisse la divergence connaissable.
 #   4. (D25, 2026-09-29) L'écrasement s'ARRÊTE devant la catégorie du
 #      juriste — choisie, confirmée, ou confirmée avec une analyse
-#      (`category_set_by_lawyer`). Elle est gardée avec sa confirmation, et
-#      la catégorie dérivée va dans `categorie_derivee` à côté du drapeau
-#      `divergence_categorie` : les deux valeurs à comparer existent de
-#      nouveau, et c'est la fiche du document qui dit l'écart.
+#      (`category_set_by_lawyer`). Elle est gardée, et la catégorie dérivée
+#      va dans `categorie_derivee` à côté du drapeau `divergence_categorie` :
+#      les deux valeurs à comparer existent de nouveau, et c'est la fiche du
+#      document qui dit l'écart. Les DEUX confirmations sont distinctes :
+#      celle de la CATÉGORIE (le marqueur, `category_confirmed_by`) survit
+#      au passage ; celle de l'ANALYSE (`confirme`) ne couvre jamais un
+#      passage neuf — il repart présumé, et la confirmation précédente est
+#      consignée (`confirmation_precedente`).
 #
 # Le journal `documents/{id}/analyses/{analyseId}` est WRITE-ONCE. Aucun verbe
 # ne le modifie ni ne l'efface — c'est la doctrine « aucune suppression », et
@@ -2582,6 +2558,23 @@ _EXTRACTION_FIELDS = (
     "dispositif", "moyen_preuve", "qualification_ecrit", "parait_original",
     "indices_protection", "confiance",
 )
+
+
+def _confirmation_of(analyse: Optional[dict]) -> Optional[dict]:
+    """``{"par", "le"}`` — who confirmed *analyse* and when — or ``None``
+    when it is not confirmed. PURE.
+
+    D25, review (2026-09-29): a confirmation covers the run it was given
+    on, never the next. A new entry (a model run, or the lawyer's edit)
+    therefore records the confirmation its PREDECESSOR carried as
+    ``confirmation_precedente`` — in the cache and in the journal — instead
+    of carrying it over: the history stays knowable, and no run ever reads
+    as confirmed by a lawyer who never saw it."""
+    analyse = analyse or {}
+    if analyse.get("confirme") is not True:
+        return None
+    return {"par": analyse.get("confirme_par"),
+            "le": analyse.get("confirme_le")}
 
 
 def _analyse_derivee(
@@ -2719,13 +2712,49 @@ def _analyse_derivee(
             nature, retenus
         ),
         # §7 — jamais vrai par un chemin automatique. Seul
-        # `confirmer_analyse` le lève.
+        # `confirmer_analyse` le lève. Un passage NEUF n'est jamais
+        # confirmé, même quand le précédent l'était (revue de D25) : cette
+        # confirmation couvrait le passage précédent, pas celui-ci.
         "confirme": False,
         "confirme_par": None,
         "confirme_le": None,
+        # Ce qu'était la confirmation du passage précédent — qui, quand —,
+        # ou None. Consigné au cache ET au journal, jamais reporté.
+        "confirmation_precedente": _confirmation_of(precedent),
     }
     champ.update(_sanitize_data(extrait))
     return champ, []
+
+
+def _category_protection_from(document: dict) -> dict:
+    """The fields that make *document*'s category EXPLICITLY the lawyer's,
+    when it is his ONLY through the confirmation of its current analysis —
+    ``{}`` otherwise (no confirmed analysis, or a category that stays his
+    without it: a marker, a « Confirmer la catégorie », a legacy value).
+    PURE.
+
+    Review of D25 (2026-09-29): a new analysis run resets that confirmation
+    (it covered the previous run), and :func:`category_set_by_lawyer` must
+    keep answering True afterwards. The protection written is the shape
+    :func:`confirmer_analyse` writes — the marker and the « juriste »
+    source — plus ``category_confirmed_by`` / ``category_confirmed_at``
+    taken from the analysis confirmation, unless the category already
+    records a confirmation of its own (never overwritten)."""
+    prior = _confirmation_of(document.get("analyse"))
+    if prior is None:
+        return {}
+    unconfirmed = {**document,
+                   "analyse": {**(document.get("analyse") or {}),
+                               "confirme": False}}
+    if category_set_by_lawyer(unconfirmed):
+        return {}
+    fields: dict = {"category_set_by_lawyer": True,
+                    "category_source": "juriste"}
+    if not str(document.get("category_confirmed_by") or "").strip():
+        fields["category_confirmed_by"] = sanitize(
+            str(prior.get("par") or ""), max_length=200)
+        fields["category_confirmed_at"] = prior.get("le")
+    return fields
 
 
 def record_analyse(
@@ -2739,22 +2768,30 @@ def record_analyse(
 ) -> tuple[Optional[dict], list[str]]:
     """Enregistre une analyse : le cache, la catégorie dérivée, le journal.
 
-    Rend le document mis à jour. Ne CONFIRME jamais rien — voir §7 : une
-    analyse sur une catégorie qui n'est pas celle du juriste repart
-    présumée (`confirme: false`).
+    Rend le document mis à jour. Ne CONFIRME jamais rien — voir §7 : un
+    passage neuf repart TOUJOURS présumé (`confirme: false`, cache et
+    journal), même quand l'avocat avait confirmé le précédent — sa
+    confirmation couvrait le passage précédent, pas celui-ci. Elle est
+    consignée (`confirmation_precedente: {par, le}`), jamais reportée.
     Aucun `bump_ctag` : `documents` n'est pas exposée en DAV.
 
     D25 (2026-09-29) — la catégorie du juriste l'emporte. Quand la
     catégorie stockée est la sienne (:func:`category_set_by_lawyer` — qu'il
     l'ait choisie, confirmée, ou qu'il ait confirmé une analyse), le
-    passage NE TOUCHE PAS à `category`, `category_source` ni au marqueur, et
-    le cache GARDE sa confirmation telle qu'elle était (`confirme`,
-    `confirme_par`, `confirme_le`) ; ce que la sous-nature aurait dérivé
+    passage NE TOUCHE PAS à `category` ; ce que la sous-nature aurait dérivé
     part dans `categorie_derivee`, et `divergence_categorie` dit l'écart.
-    L'entrée au JOURNAL, elle, porte l'état propre du passage
-    (`confirme: false`) : le journal distingue ce que le modèle a proposé
-    de ce que l'avocat a arrêté, et l'avocat n'a pas confirmé CE passage.
     Ailleurs, la règle d'avant : la catégorie dérivée remplace, présumée.
+
+    Les DEUX confirmations sont distinctes (revue de D25, 2026-09-29) :
+    celle de la CATÉGORIE et celle de l'ANALYSE. Remettre la seconde à faux
+    ne doit pas défaire la première : quand la catégorie n'était la sienne
+    QUE par l'analyse confirmée que ce passage remplace (une ancienne
+    « autre » sans marqueur, ou une forme contradictoire), le passage rend
+    d'abord la protection EXPLICITE (:func:`_category_protection_from`) — le
+    marqueur, la source « juriste » (la forme qu'écrit
+    :func:`confirmer_analyse`), et `category_confirmed_by` / `_at` repris de
+    cette confirmation quand la catégorie n'en porte pas déjà. Ailleurs la
+    catégorie, sa provenance et le marqueur ne bougent pas.
 
     Lot 2A (T1, 2026-09-27) : la lecture, la dérivation et l'écriture sont
     UNE transaction. Avant, le modèle lisait le document hors transaction
@@ -2842,16 +2879,15 @@ def record_analyse(
             "remplace_un_choix_du_juriste": False,
         })
 
-        # Le cache garde la confirmation du juriste sur une catégorie
-        # conservée — « confirme / confirme_par / confirme_le restent ce
-        # qu'ils sont » (D25). Le journal, lui, reçoit `champ` tel quel :
-        # l'état propre de ce passage, jamais confirmé.
-        cache = dict(champ)
-        if conservee:
-            precedent = existing.get("analyse") or {}
-            for cle in ("confirme", "confirme_par", "confirme_le"):
-                if cle in precedent:
-                    cache[cle] = precedent[cle]
+        # Revue de D25 : le cache reçoit l'état propre de ce passage, jamais
+        # confirmé — comme le journal. La confirmation précédente est
+        # consignée par `_analyse_derivee` (`confirmation_precedente`).
+        # AVANT qu'elle ne quitte le cache, la catégorie qu'elle seule
+        # rendait sienne reçoit une protection EXPLICITE : sans quoi, le
+        # drapeau de l'analyse remis à faux, la catégorie de l'avocat
+        # redeviendrait remplaçable (D18) — par la prochaine analyse comme
+        # par une catégorie présumée.
+        protection = _category_protection_from(existing) if conservee else {}
 
         # L'analyse alimente encore UN champ natif : la date lue devient la
         # date du document. Elle l'ÉCRASE (décision du praticien,
@@ -2864,7 +2900,8 @@ def record_analyse(
             if lue is not None:
                 natifs["document_date"] = lue
 
-        fields = {"analyse": cache, **natifs, **provenance.update_fields(now)}
+        fields = {"analyse": champ, **natifs, **protection,
+                  **provenance.update_fields(now)}
         if not conservee:
             fields.update({"category": nouvelle, "category_source": "analyse"})
         transaction.set(
@@ -3147,6 +3184,9 @@ def _analyse_editee(
         # Éditer, c'est confirmer.
         "confirme": True,
         "confirme_par": sanitize(str(par or ""), max_length=200),
+        # Ce qui confirmait l'entrée précédente, consigné — jamais reporté
+        # (revue de D25), comme sur le chemin du modèle.
+        "confirmation_precedente": _confirmation_of(existing.get("analyse")),
     })
     return champ, []
 

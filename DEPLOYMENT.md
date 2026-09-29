@@ -3351,7 +3351,9 @@ Notes:
   under the accounting grant, which no token holds before §15 « Lot 5 »
   step 4. And D25 (the same day, under the ordinary write grant):
   `record_document_analysis` KEEPS a category the lawyer chose or
-  confirmed — a confirmed analysis included — with his confirmation, and
+  confirmed — a confirmed analysis included —, the new analysis itself
+  always PRESUMED (his confirmation of the previous one covered that one
+  only, and is recorded, never carried over), and
   records the category the sub-nature derives beside a
   `divergence_categorie` flag and a warning; `list_documents` rows gain
   `divergence_categorie`; `update_document` judges the lawyer's rule
@@ -3411,14 +3413,14 @@ Notes:
      outside the profile) describe what the register already holds — read
      them with the lawyer; nothing is repaired.
   6. A document whose category the lawyer chose or confirmed, analysed
-     again through the connector (D25): its category and his confirmation
-     stay. When the analysis derives another category, the fiche's
-     « Analyse » card shows, in amber, « L'analyse suggère la catégorie X ;
-     la vôtre est conservée » — ALSO under a kept confirmation, which the
-     card then marks « Confirmée avant cette analyse », the new run's
-     alerts shown and « Confirmer » offered: tell him that a kept
-     confirmation covers an analysis he has not read, and that he re-reads
-     it, then confirms it. And in the edit form, correcting an analysis
+     again through the connector (D25): its category stays. When the
+     analysis derives another category, the fiche's « Analyse » card
+     shows, in amber, « L'analyse suggère la catégorie X ; la vôtre est
+     conservée ». The analysis itself reads « Présumée », its alerts shown
+     and « Confirmer » offered, even when he had confirmed the previous
+     one — the card's footer says « Analyse précédente confirmée le … »:
+     tell him that his confirmation covered the previous analysis, not
+     this one, and that he re-reads it, then confirms it. And in the edit form, correcting an analysis
      field other than the sous-nature no longer replaces the category
      (changing the sous-nature still re-derives it).
   Watch, the first week: the finitions' `unexpected` messages

@@ -171,15 +171,14 @@ inventer une.
 
 - Il **remplace** la catégorie stockée — **jamais** celle que l'avocat a
   choisie ou confirmée (`category_set_by_lawyer`) : celle-là est GARDÉE,
-  avec sa confirmation, et si la sous-nature en dérive une autre,
-  `divergence_categorie` et un avertissement le disent. Signale-lui
-  l'écart ; une réanalyse ne le tranche pas. La catégorie remplacée,
-  elle, reste au journal.
-- Il marque le résultat **présumé**. La mention accompagne la valeur
-  partout, y compris au connecteur, jusqu'à confirmation. Là où la
-  confirmation de l'avocat a été gardée, elle précède ton passage : la
-  fiche le marque « confirmée avant cette analyse » jusqu'à ce qu'il le
-  confirme de nouveau.
+  et si la sous-nature en dérive une autre, `divergence_categorie` et un
+  avertissement le disent. Signale-lui l'écart ; une réanalyse ne le
+  tranche pas. La catégorie remplacée, elle, reste au journal.
+- Il marque le résultat **présumé** — toujours, même quand l'avocat avait
+  confirmé l'analyse précédente : sa confirmation couvrait celle-là, pas
+  la tienne (`analyse_confirmee` repasse à faux, et un avertissement te
+  demande de le lui dire). La mention accompagne la valeur partout, y
+  compris au connecteur, jusqu'à ce qu'il confirme.
 - Il est **journalisé pour toujours** : chaque exécution laisse sa trace,
   avec son modèle et sa date. Rien ne s'efface.
 - Le niveau de protection **ne redescend jamais** par une réanalyse. Si

@@ -205,12 +205,21 @@ def test_le_corps_dit_que_la_categorie_du_juriste_est_gardee():
     # Revue de D25 (2026-09-29) : le corps disait « Il **remplace** la
     # catégorie stockée », sans réserve, et qu'un avertissement le lui dit
     # quand l'avocat l'avait posée. Depuis D25 l'analyse GARDE la catégorie
-    # du juriste avec sa confirmation, et cet avertissement ne se lève
-    # plus : un modèle qui le croirait réanalyserait pour « corriger » une
-    # catégorie qu'aucune analyse ne peut changer.
+    # du juriste, et cet avertissement ne se lève plus : un modèle qui le
+    # croirait réanalyserait pour « corriger » une catégorie qu'aucune
+    # analyse ne peut changer.
+    #
+    # Réécrit délibérément (séparation des deux confirmations, même jour) :
+    # le corps disait la catégorie gardée « avec sa confirmation » et la
+    # fiche marquée « confirmée avant cette analyse ». Une analyse neuve
+    # repart désormais TOUJOURS présumée — la confirmation de l'avocat
+    # couvrait la précédente, pas celle-ci ; seule la catégorie reste la
+    # sienne.
     corps = " ".join(_module().deplier(_module().CORPS).split())
     assert "Il **remplace** la catégorie stockée. La précédente" not in corps
     assert "si c'est l'avocat qui l'avait posée, un avertissement" not in corps
-    assert "celle-là est GARDÉE, avec sa confirmation" in corps
+    assert "celle-là est GARDÉE, et si la sous-nature" in corps
+    assert "avec sa confirmation" not in corps
     assert "divergence_categorie" in corps
-    assert "« confirmée avant cette analyse »" in corps
+    assert "confirmée avant cette analyse" not in corps
+    assert "sa confirmation couvrait celle-là, pas la tienne" in corps

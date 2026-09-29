@@ -2159,10 +2159,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "l'application."),
         "privileges": _arr(_str("Codes cumulés qui fondent le niveau.")),
         "analyse_confirmee": _bool(
-            "true = l'avocat a confirmé ou corrigé l'analyse — ou une "
-            "analyse enregistrée depuis a gardé sa catégorie ET sa "
-            "confirmation (D25), sans qu'il l'ait lue. false = elle reste "
-            "PRÉSUMÉE."),
+            "true = l'avocat a confirmé ou corrigé CETTE analyse (la "
+            "dernière enregistrée). false = elle reste PRÉSUMÉE — y compris "
+            "une réanalyse d'un document dont il avait confirmé l'analyse "
+            "précédente : sa confirmation couvrait celle-là, pas celle-ci."),
         "divergence_protection": _bool(
             "true = la dernière analyse concluait à un niveau PLUS BAS que "
             "celui déjà retenu; le plus élevé a été tenu et l'avocat doit "
@@ -3825,9 +3825,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "The stored analysis, echoed in part. "
                     "categorie_derivee = the category the sub-nature "
                     "derives; categorie_conservee = true when the lawyer's "
-                    "category (and his confirmation, confirme) was KEPT "
-                    "(D25); divergence_categorie = and it differs from "
-                    "categorie_derivee."),
+                    "category was KEPT (D25); divergence_categorie = and it "
+                    "differs from categorie_derivee. confirme is ALWAYS "
+                    "false: a new analysis is presumed, whatever the "
+                    "previous one's confirmation (which covered that one "
+                    "only)."),
             },
             # Finitions (contracts-6): the document's NEW etag, for a next
             # expected_etag. Optional — a key added to a shipped output.

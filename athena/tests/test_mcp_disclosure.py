@@ -965,7 +965,12 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     assert "on any OTHER document that carries an analysis" in (
         tools.TOOLS["update_document"]["description"])
     desc = tools.TOOLS["record_document_analysis"]["description"]
-    assert "that one is KEPT, with his confirmation" in desc
+    # Rewritten deliberately (the two confirmations separated, 2026-09-29):
+    # it pinned « that one is KEPT, with his confirmation ». The category is
+    # kept; the ANALYSIS confirmation never covers a new run.
+    assert "that one is KEPT, and a gap is flagged" in desc
+    assert "with his confirmation" not in desc
+    assert "his confirmation of an earlier analysis never covers a new one" in desc
     assert "cannot choose or invent one here" in desc
     assert "REPLACES a PRESUMED one (a FILES tool's" in desc
     assert "NEVER a category the lawyer chose or confirmed" in desc

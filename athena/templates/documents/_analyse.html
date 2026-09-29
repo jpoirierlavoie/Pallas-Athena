@@ -5,33 +5,27 @@
    Les avertissements tombent à la confirmation — confirmer, c'est dire
    « j'ai vu ». Ils restent au journal, qui ne s'efface jamais.
 
-   D25 (2026-09-29) : une analyse enregistrée sur une catégorie du juriste
-   GARDE sa confirmation telle qu'elle était — elle couvre alors un passage
-   qu'il n'a pas lu (`confirmation_anterieure`, de la route :
-   models.document.analysis_confirmation_predates_run). La confirmation
-   reste stockée, mais la carte ne présente pas ce passage comme confirmé :
-   pastille « Confirmée avant cette analyse », alertes montrées,
-   « Confirmer » offert — confirmer, c'est dire « j'ai vu CETTE version ».
+   D25, revue (2026-09-29) : une analyse NEUVE n'est jamais confirmée, même
+   quand l'avocat avait confirmé la précédente — sa confirmation couvrait
+   le passage précédent, pas celui-ci (models.document.record_analyse la
+   consigne en `confirmation_precedente`). La carte suit donc le chemin
+   ordinaire : « Présumée », alertes montrées, « Confirmer » offert ; le
+   pied rappelle la confirmation précédente. La catégorie de l'avocat,
+   elle, reste la sienne.
 
    Mobile d'abord, et SANS variante responsive : l'artefact compilé n'en
    contient aucune — les 116 `sm:`/`md:`/`lg:` du dépôt sont inertes
    (mesuré 2026-08-27). Une colonne partout, comme le reste rend déjà. #}
 
 {% set a = document.analyse or {} %}
-{#- Confirmée, et pour CE passage — non pour une analyse antérieure. #}
-{% set confirmee = a.confirme and not confirmation_anterieure %}
 {% if a.sous_nature %}
 <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
 
   <div class="flex items-start justify-between gap-3 mb-3">
     <h2 class="text-sm font-semibold text-gray-900">Analyse</h2>
-    {% if confirmee %}
+    {% if a.confirme %}
     <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-green-700 bg-green-100 rounded-full whitespace-nowrap">
       {{ ms('check') }} Confirmée
-    </span>
-    {% elif a.confirme %}
-    <span class="inline-flex px-2 py-0.5 text-xs text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
-      Confirmée avant cette analyse
     </span>
     {% else %}
     <span class="inline-flex px-2 py-0.5 text-xs text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
@@ -87,8 +81,9 @@
 
   {# ── D25 (2026-09-29) : l'analyse a GARDÉ la catégorie du juriste et sa
        sous-nature en dérive une autre. Hors du bloc « non confirmé » à
-       dessein : une réanalyse garde aussi sa confirmation, et l'écart doit
-       rester visible sous elle. `categorie_suggeree` vient de la route
+       dessein : l'écart tient à la CATÉGORIE, pas à la confirmation de
+       l'analyse — il doit rester visible une fois celle-ci confirmée.
+       `categorie_suggeree` vient de la route
        (models.document.analysis_category_divergence — la règle que lit
        aussi le connecteur), sur l'état COURANT du document. #}
   {% if categorie_suggeree %}
@@ -101,8 +96,8 @@
 
   {# ── Ce qui doit être VU — et seulement tant que CE passage n'est pas
        confirmé. Confirmer, c'est dire « j'ai vu ». Le journal, lui, garde
-       tout. Une confirmation antérieure au passage (D25) ne plie rien. #}
-  {% if not confirmee %}
+       tout. Un passage neuf n'est jamais confirmé (revue de D25). #}
+  {% if not a.confirme %}
 
   {% if a.remplace_un_choix_du_juriste %}
   <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
@@ -142,19 +137,17 @@
         Confirmer
       </button>
     </form>
-    {% if confirmation_anterieure %}
-    <span class="text-xs text-gray-400">Votre confirmation précède cette analyse : confirmez-la après l'avoir lue.</span>
-    {% else %}
     <span class="text-xs text-gray-400">Présumée partout tant que non confirmée.</span>
-    {% endif %}
   </div>
 
   {% endif %}
 
   <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
     {% if a.confirme and a.confirme_le and a.confirme_le.strftime is defined %}
-    <span>Confirmée le {{ (a.confirme_le|to_mtl).strftime('%d/%m/%Y') }}
-      {%- if confirmation_anterieure and a.genere_le and a.genere_le.strftime is defined %}, avant cette analyse du {{ (a.genere_le|to_mtl).strftime('%d/%m/%Y') }}{% endif %}</span>
+    <span>Confirmée le {{ (a.confirme_le|to_mtl).strftime('%d/%m/%Y') }}</span>
+    {% elif not a.confirme and a.confirmation_precedente and a.confirmation_precedente.le and a.confirmation_precedente.le.strftime is defined %}
+    {#- Revue de D25 : la confirmation couvrait l'analyse précédente. #}
+    <span>Analyse précédente confirmée le {{ (a.confirmation_precedente.le|to_mtl).strftime('%d/%m/%Y') }}</span>
     {% endif %}
     {% if a.indices_protection %}
     <span>Indices : {{ a.indices_protection | join(' · ') }}</span>

@@ -301,11 +301,14 @@ def test_tout_ce_que_l_analyse_produit_est_editable():
     # D25 (2026-09-29) ajoute trois clés DÉRIVÉES (la catégorie que la
     # sous-nature dérive, et si celle du juriste a été gardée et diverge) :
     # elles ne se saisissent pas plus que la nature — le juriste change la
-    # catégorie au formulaire, ou la sous-nature.
+    # catégorie au formulaire, ou la sous-nature. Sa revue (même jour)
+    # ajoute `confirmation_precedente` : l'état de confirmation de l'entrée
+    # PRÉCÉDENTE, qu'un geste a produit — il ne se saisit pas plus que
+    # `confirme`.
     derives = {
         "statut", "nature_detectee", "famille", "niveau_protection_analyse",
         "niveau_protection_precedent", "divergence_protection",
-        "confirme", "confirme_par", "confirme_le",
+        "confirme", "confirme_par", "confirme_le", "confirmation_precedente",
         "categorie_derivee", "categorie_conservee", "divergence_categorie",
     }
     manquants = sorted(produits - set(doc.ANALYSE_EDITABLE) - derives)
