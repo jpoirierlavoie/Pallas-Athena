@@ -16,7 +16,9 @@ automatic_scaling:
 # Compte de service à moindre privilège (spec §3) : objectCreator sur le
 # bucket de quarantaine, datastore.viewer conditionné à la base « portail »,
 # cloudtasks.enqueuer sur la file, logWriter/cloudtrace.agent, accessor sur
-# portail-secret-key + firebase-api-key, ET appengine.appViewer au niveau du
+# portail-secret-key + firebase-api-key (+ cf-origin-secret depuis le
+# 2026-09-30 : c'est cet accès qui ARME le contrôle d'origine du portail —
+# sans lui, le contrôle reste ouvert et le dit), ET appengine.appViewer au niveau du
 # PROJET. Ce dernier manquait à cette liste jusqu'au 2026-09-12, alors que la
 # spec l'omettait aussi et que son absence a fait échouer l'enfilage en
 # silence de bout en bout au premier lancement : une tâche
@@ -54,7 +56,7 @@ env_variables:
   # (client/config.py — résolution paresseuse). La ligne ci-dessous est
   # l'INVENTAIRE, et elle est épinglée contre les appels `_secret(...)` de
   # ce module, dans les deux sens.
-  # SECRET-MANAGER-BACKED: PORTAIL_SECRET_KEY, FIREBASE_API_KEY
+  # SECRET-MANAGER-BACKED: PORTAIL_SECRET_KEY, FIREBASE_API_KEY, CF_ORIGIN_SECRET
   # AUCUNE variable GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler
   # Graph).
 

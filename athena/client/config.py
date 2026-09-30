@@ -16,7 +16,7 @@ time, which the portal's service account must not need.
 
 import os
 from functools import lru_cache
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 # ── Annexe C ─────────────────────────────────────────────────────────────
 
@@ -129,13 +129,19 @@ def _from_secret_manager(secret_id: str) -> str:
     return response.payload.data.decode("utf-8")
 
 
-def _secret(secret_id: str, env_var: str, required: bool = True) -> str:
+def _secret(secret_id: str, env_var: str, required: bool = True,
+            errors: Optional[list] = None) -> str:
+    """*errors*, when given, receives the CLASS name of a Secret Manager
+    failure an optional secret swallowed — how a caller tells « unreadable »
+    from « unset » (cf_origin_secret)."""
     if _is_production():
         try:
             return _from_secret_manager(secret_id)
-        except Exception:
+        except Exception as exc:
             if required:
                 raise
+            if errors is not None:
+                errors.append(type(exc).__name__)
             return ""
     value = os.environ.get(env_var, "")
     if required and not value:
@@ -179,12 +185,11 @@ def cf_origin_secret() -> OriginSecret:
     new instance, never a request. Never stripped — the value is compared
     byte for byte, and a trailing newline is the documented trap.
     """
-    if _is_production():
-        try:
-            value = _from_secret_manager("cf-origin-secret")
-        except Exception as exc:
-            return OriginSecret("", "cf_origin_secret_unreadable",
-                                type(exc).__name__)
-    else:
-        value = os.environ.get("CF_ORIGIN_SECRET", "")
+    # Through `_secret`, like every other secret of this module: the
+    # portail.yaml inventory is pinned against these calls, in both directions.
+    errors: list = []
+    value = _secret("cf-origin-secret", "CF_ORIGIN_SECRET", required=False,
+                    errors=errors)
+    if errors:
+        return OriginSecret("", "cf_origin_secret_unreadable", errors[0])
     return OriginSecret(value, "" if value else "cf_origin_secret_unset")

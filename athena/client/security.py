@@ -147,11 +147,13 @@ def verify_app_check() -> Optional[Response]:
     except Exception as exc:
         # The class only — the message of a pyjwt error carries the kid of
         # the unverified header (see security._verify_app_check).
+        cause = exc.__cause__   # the wrapped pyjwt error's CLASS, see there
         log_security_event(
             "appcheck_failure",
             "warning",
             reason="verification_failed",
             error_type=type(exc).__name__,
+            **({"cause_type": type(cause).__name__} if cause is not None else {}),
             path=sanitize_log_value(request.path),
         )
         abort(401)

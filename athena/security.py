@@ -498,11 +498,17 @@ def _verify_app_check() -> Optional[Response]:
         # key that matches: "<kid>" »), so the text is attacker-chosen, as long
         # as the header size limit allows, on every forged request. Was a raw
         # `current_app.logger.warning(..., exc)` until 2026-09-30.
+        # firebase-admin wraps nearly every rejection in a bare ValueError
+        # raised FROM the pyjwt error: the wrapped CLASS (never its text) is
+        # what tells an expired token from a wrong audience — a misconfigured
+        # project — or a bad signature.
+        cause = exc.__cause__
         log_security_event(
             "appcheck_failure",
             "warning",
             reason="verification_failed",
             error_type=type(exc).__name__,
+            **({"cause_type": type(cause).__name__} if cause is not None else {}),
             path=sanitize_log_value(request.path),
         )
         abort(401)

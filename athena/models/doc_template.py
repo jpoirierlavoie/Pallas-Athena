@@ -494,12 +494,14 @@ def _referenced(template_id: str, storage_path: str) -> Optional[bool]:
             .stream()
         )
         return bool(hits)
-    except Exception:
+    except Exception as exc:
         # Unreadable is its own answer — every caller then KEEPS the object
         # (an orphan costs storage, a version without bytes costs a
-        # template) — but it used to leave no trace at all.
-        log_unexpected("template reference check unreadable",
-                       template_id=template_id)
+        # template) — but it used to leave no trace at all. The class only,
+        # no traceback: a store error's text can carry the object's path,
+        # and with it the template's file name.
+        log_unexpected("template reference check unreadable", exc_info=False,
+                       template_id=template_id, error_type=type(exc).__name__)
         return None
 
 
@@ -545,8 +547,11 @@ def _clear_stale_orphan(template_id: str, storage_path: str) -> bool:
         blob.reload()
     except NotFound:
         return True  # gone meanwhile — the next attempt can create it
-    except Exception:
-        log_unexpected("template orphan check failed", template_id=template_id)
+    except Exception as exc:
+        # The class only, no traceback: google-api-core puts the request URL
+        # — the object path, the template's file name — in the error text.
+        log_unexpected("template orphan check failed", exc_info=False,
+                       template_id=template_id, error_type=type(exc).__name__)
         return False
     created = getattr(blob, "time_created", None)
     if not isinstance(created, datetime):
@@ -559,8 +564,9 @@ def _clear_stale_orphan(template_id: str, storage_path: str) -> bool:
         blob.delete(if_generation_match=blob.generation)
     except NotFound:
         pass  # deleted meanwhile — the path is free, which is what was wanted
-    except Exception:
-        log_unexpected("template orphan delete failed", template_id=template_id)
+    except Exception as exc:
+        log_unexpected("template orphan delete failed", exc_info=False,
+                       template_id=template_id, error_type=type(exc).__name__)
         return False
     return True
 

@@ -166,6 +166,19 @@ def test_an_hs256_token_signed_with_the_public_key_is_refused(service, rsa_key):
         service.verify_token(forged)
 
 
+def test_a_wrong_audience_is_a_value_error_raised_from_the_pyjwt_class(
+        service, rsa_key):
+    """What the failure log's `cause_type` relies on: firebase-admin wraps
+    the rejection in a bare ValueError raised FROM the pyjwt error, whose
+    CLASS says which check failed (here, a misconfigured project)."""
+    claims = {**_claims(), "aud": ["projects/autre-projet"]}
+    token = jwt.encode(claims, rsa_key, algorithm="RS256",
+                       headers={"kid": KID, "typ": "JWT"})
+    with pytest.raises(ValueError) as excinfo:
+        service.verify_token(token)
+    assert isinstance(excinfo.value.__cause__, jwt.InvalidAudienceError)
+
+
 # ── The failure log lines ────────────────────────────────────────────────
 
 
@@ -173,6 +186,14 @@ def _raise_with_kid(token):
     raise jwt.PyJWKClientError(
         f'Unable to find a signing key that matches: "{FORGED_KID}"'
     )
+
+
+def _raise_wrapped_audience(token):
+    try:
+        raise jwt.InvalidAudienceError(f"Audience doesn't match {FORGED_KID}")
+    except jwt.InvalidAudienceError as inner:
+        raise ValueError(f"The provided App Check token has incorrect "
+                         f"\"aud\" (audience) claim: {FORGED_KID}") from inner
 
 
 def _logged_text(caplog) -> str:
@@ -205,6 +226,41 @@ def test_the_main_service_never_logs_the_forged_kid(monkeypatch, caplog):
     assert "appcheck_failure" in text
     assert "PyJWKClientError" in text
     assert FORGED_KID not in text
+
+
+@pytest.mark.parametrize("which", ["main", "portal"])
+def test_the_failure_line_names_the_wrapped_class_never_its_text(
+        monkeypatch, caplog, which):
+    """firebase-admin raises a bare ValueError for nearly every rejection:
+    without the wrapped pyjwt CLASS, an expired token, a wrong audience (a
+    misconfigured project) and a bad signature would all read « ValueError »."""
+    monkeypatch.setattr(app_check, "verify_token", _raise_wrapped_audience)
+    app = Flask(__name__)
+    app.config["RECAPTCHA_ENTERPRISE_SITE_KEY"] = "site-key"
+    if which == "main":
+        import security
+
+        app.before_request(security._verify_app_check)
+        path, method, headers = "/partiel", "get", {"HX-Request": "true"}
+    else:
+        from client import security as portail_security
+
+        app.before_request(portail_security.verify_app_check)
+        path, method, headers = "/api/renvoi", "post", {}
+
+    @app.route(path, methods=["GET", "POST"])
+    def target():
+        return "ok"
+
+    with caplog.at_level(logging.WARNING):
+        resp = getattr(app.test_client(), method)(
+            path, headers={**headers, "X-Firebase-AppCheck": "jeton"})
+    assert resp.status_code == 401
+    (fields,) = [r.json_fields for r in caplog.records
+                 if getattr(r, "json_fields", {}).get("event") == "appcheck_failure"]
+    assert fields["error_type"] == "ValueError"
+    assert fields["cause_type"] == "InvalidAudienceError"
+    assert FORGED_KID not in _logged_text(caplog)
 
 
 def test_the_portal_never_logs_the_forged_kid(monkeypatch, caplog):

@@ -831,8 +831,13 @@ def test_no_template_upload_can_overwrite():
 
 
 def _unexpected(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records
-            if r.name == "pallas.unexpected"]
+    records = [r for r in caplog.records if r.name == "pallas.unexpected"]
+    for r in records:
+        # The class, never a traceback: a store error's text can carry the
+        # object path, and with it the template's file name.
+        assert not r.exc_info and not r.exc_text, r.getMessage()
+        assert r.json_fields.get("error_type"), r.getMessage()
+    return [r.getMessage() for r in records]
 
 
 def test_an_unreadable_reference_check_answers_none_and_says_so(
