@@ -85,6 +85,7 @@ def _load_env() -> None:
 
         load_dotenv(find_dotenv(usecwd=True))
     except ImportError:
+        # python-dotenv is a local-dev convenience: without it the environment is read as is.
         pass
 
 
@@ -147,6 +148,7 @@ def _ouvrir_seau():
             options={"storageBucket": Config.FIREBASE_STORAGE_BUCKET}
         )
     except ValueError:
+        # Already initialized by an earlier import: the existing app is reused as is.
         pass
     seau = storage.bucket()
     seau.reload()          # prouve l'existence et l'accès, pas seulement le nom
@@ -238,6 +240,7 @@ def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
+        # A stream that cannot be reconfigured keeps its encoding — nothing to repair.
         pass
 
     from config import Config

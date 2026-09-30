@@ -149,6 +149,8 @@ __all__ = [
     "TicketClaim",
     "TicketStoreUnavailable",
     "UploadSessionUnavailable",
+    "VALID_PURPOSES",
+    "VALID_STATUSES",
     "claim_ticket",
     "complete_ticket",
     "content_type_for",

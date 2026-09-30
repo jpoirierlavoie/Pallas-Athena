@@ -1,7 +1,5 @@
 """Protocol management routes — create, detail, edit, steps, completion."""
 
-from datetime import datetime, timezone
-
 from flask import (
     Blueprint,
     redirect,

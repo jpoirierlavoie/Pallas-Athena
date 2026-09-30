@@ -154,6 +154,24 @@ def test_the_protocol_vocabularies_are_the_models():
     assert not {"create_protocol", "add_protocol_step"} & tools.EDIT_TOOLS
 
 
+def test_the_task_outcome_vocabulary_is_the_services():
+    """The two output enums are literals — mcp/output_schemas.py imports no
+    service — so they are pinned here against services/protocoles, the one
+    place a linked task's outcome is decided (the handlers' unused copy of
+    the tuple was deleted 2026-09-30, CodeQL py/unused-global-variable)."""
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+    from services import protocoles as protocol_service
+
+    expected = ["none", *protocol_service.ALIGN_OUTCOMES]
+    update = OUTPUT_SCHEMAS["update_protocol"]["properties"]
+    moved = update["recompute"]["properties"]["moved"]["items"]["properties"]
+    assert moved["task_outcome"]["enum"] == expected
+    assert list(update["linked_tasks"]["properties"]) == list(
+        protocol_service.ALIGN_OUTCOMES)
+    step = OUTPUT_SCHEMAS["update_protocol_step"]["properties"]
+    assert step["linked_task"]["properties"]["outcome"]["enum"] == expected
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 1. create_protocol
 # ══════════════════════════════════════════════════════════════════════

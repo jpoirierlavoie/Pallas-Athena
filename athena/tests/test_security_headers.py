@@ -521,8 +521,7 @@ def _guard_app(**config):
     app.config.setdefault("RECAPTCHA_ENTERPRISE_SITE_KEY", "")
     app.config.update(config)
     # Warn-once is module state; reset it so each test starts clean.
-    _security._ORIGIN_SECRET_MISSING_WARNED = False
-    _security._APPCHECK_MISSING_WARNED = False
+    _security._WARNED_ONCE.clear()
     return app, _security
 
 

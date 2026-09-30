@@ -495,6 +495,11 @@ def _referenced(template_id: str, storage_path: str) -> Optional[bool]:
         )
         return bool(hits)
     except Exception:
+        # Unreadable is its own answer — every caller then KEEPS the object
+        # (an orphan costs storage, a version without bytes costs a
+        # template) — but it used to leave no trace at all.
+        log_unexpected("template reference check unreadable",
+                       template_id=template_id)
         return None
 
 
@@ -519,6 +524,8 @@ def _delete_own_object_unreferenced(
             if_generation_match=generation
         )
     except (NotFound, PreconditionFailed):
+        # Gone already, or no longer this call's generation: either way
+        # there is nothing of ours left to delete.
         pass
     except Exception:
         log_unexpected("template version rollback failed",
@@ -539,6 +546,7 @@ def _clear_stale_orphan(template_id: str, storage_path: str) -> bool:
     except NotFound:
         return True  # gone meanwhile — the next attempt can create it
     except Exception:
+        log_unexpected("template orphan check failed", template_id=template_id)
         return False
     created = getattr(blob, "time_created", None)
     if not isinstance(created, datetime):
@@ -550,8 +558,9 @@ def _clear_stale_orphan(template_id: str, storage_path: str) -> bool:
     try:
         blob.delete(if_generation_match=blob.generation)
     except NotFound:
-        pass
+        pass  # deleted meanwhile — the path is free, which is what was wanted
     except Exception:
+        log_unexpected("template orphan delete failed", template_id=template_id)
         return False
     return True
 
@@ -990,8 +999,9 @@ def set_active_template(
             raise _Refused([NOT_SPECIAL_ERROR])
         # Every template of the kind is READ — not only the holders — so a
         # rival designation (which writes one of them) conflicts with this
-        # transaction even when no template was designated yet.
-        _same_kind = list(
+        # transaction even when no template was designated yet. LOAD-BEARING:
+        # the result is never looked at; the read itself is the guard.
+        _ = list(
             db.collection(COLLECTION)
             .where(filter=FieldFilter("kind", "==", kind))
             .stream(transaction=transaction)

@@ -82,7 +82,9 @@ def add_security_headers(response: Response) -> Response:
     return response
 
 
-_APPCHECK_MISSING_WARNED = False
+# The deployment facts already said once in this process (warn-once) — the
+# main service's shape: a set mutated in place, never a rebound flag.
+_WARNED_ONCE: set[str] = set()
 
 
 def verify_app_check() -> Optional[Response]:
@@ -110,12 +112,11 @@ def verify_app_check() -> Optional[Response]:
         return None
 
     if not current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):
-        global _APPCHECK_MISSING_WARNED
         if (
             current_app.config.get("ENV") == "production"
-            and not _APPCHECK_MISSING_WARNED
+            and "appcheck_disabled" not in _WARNED_ONCE
         ):
-            _APPCHECK_MISSING_WARNED = True
+            _WARNED_ONCE.add("appcheck_disabled")
             # The main service's event, so ONE log-based metric covers both
             # services (filter on resource.labels.module_id to tell them
             # apart). Was a raw `current_app.logger.warning`, which carries no

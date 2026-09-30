@@ -3507,7 +3507,7 @@ def _dav_resync(
         log_unexpected("mcp write: DAV resync could not be planned")
         return False, False
     steps = {
-        "bump_ctag": lambda coll: bump_ctag(coll),
+        "bump_ctag": bump_ctag,       # read here, per call: a patch still applies
         "record_tombstone": lambda coll: record_tombstone(coll, entity_id),
         "remove_tombstone": lambda coll: remove_tombstone(coll, entity_id),
     }
@@ -6261,12 +6261,31 @@ def _set_phase_impl(
     }
 
 
+# Named wrappers, not the model functions themselves: the model attribute is
+# read at CALL time, so a test (or a future hot patch) that replaces it on the
+# model module is honoured — a direct reference would freeze the one bound
+# when this module was imported.
+def _time_entries_bulk(ids):
+    return time_entry_model.get_time_entries_bulk(ids)
+
+
+def _set_time_entry_phase(entry_id, phase, sous_phase, **kw):
+    return time_entry_model.set_time_entry_phase(entry_id, phase, sous_phase, **kw)
+
+
+def _expenses_bulk(ids):
+    return expense_model.get_expenses_bulk(ids)
+
+
+def _set_expense_phase(expense_id, phase, sous_phase, **kw):
+    return expense_model.set_expense_phase(expense_id, phase, sous_phase, **kw)
+
+
 _TIME_PHASE_KW = {
     "id_key": "time_entry_id",
     "entity_type": "time_entry",
-    "bulk_getter": lambda ids: time_entry_model.get_time_entries_bulk(ids),
-    "setter": lambda i, p, s, **kw: time_entry_model.set_time_entry_phase(
-        i, p, s, **kw),
+    "bulk_getter": _time_entries_bulk,
+    "setter": _set_time_entry_phase,
     "entity_builder": _time_entry_entity,
     "tool": "set_time_entry_phase",
     "stale_subject": "Cette entrée de temps a été modifiée",
@@ -6274,9 +6293,8 @@ _TIME_PHASE_KW = {
 _EXPENSE_PHASE_KW = {
     "id_key": "expense_id",
     "entity_type": "expense",
-    "bulk_getter": lambda ids: expense_model.get_expenses_bulk(ids),
-    "setter": lambda i, p, s, **kw: expense_model.set_expense_phase(
-        i, p, s, **kw),
+    "bulk_getter": _expenses_bulk,
+    "setter": _set_expense_phase,
     "entity_builder": _expense_entity,
     "tool": "set_expense_phase",
     "stale_subject": "Ce déboursé a été modifié",
@@ -11215,7 +11233,6 @@ _STEP_FIELD_KEYS = (
 )
 # The C.p.c. text of a template (mandatory) step — the law's.
 _STEP_LEGAL_KEYS = ("title", "description", "cpc_reference")
-_STEP_TASK_OUTCOMES = ("none",) + protocol_service.ALIGN_OUTCOMES
 # A CS template date sent back as it stands stays a SUGGESTION — said, since
 # « rien n'a été modifié » alone reads as « already confirmed ».
 _SUGGESTION_KEPT = (

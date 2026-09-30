@@ -43,7 +43,6 @@ from models import portail_invitation as pi
 from models.document import (
     ALLOWED_EXTENSIONS,
     CATEGORY_CHOICES,
-    CATEGORY_LABELS,
     DISPLAY_NAME_MAX,
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,

@@ -487,6 +487,8 @@ def securite_journal() -> tuple[Response, int]:
             # nommée dans la clé — elle vient du client.
             fields["factor_count_client"] = max(0, min(10, int(brut)))
         except ValueError:
+            # Un nombre illisible est écarté, jamais deviné : l'événement
+            # lui-même reste bon à consigner.
             pass
 
     # Le code Firebase d'un échec. Il vient du NAVIGATEUR, donc il est

@@ -35,7 +35,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from utils import export_pdf as _export_pdf  # noqa: F401 — registers NotoSerif
+from utils import export_pdf as _export_pdf  # registers NotoSerif at import
 from utils.format_fr import format_cents_fr
 
 logger = logging.getLogger(__name__)
@@ -87,8 +87,8 @@ COLUMNS: tuple[Column, ...] = (
 MONEY_KEYS: tuple[str, ...] = tuple(c.key for c in COLUMNS if c.money)
 TEXT_COLUMN_COUNT: int = sum(1 for c in COLUMNS if not c.money)
 
-_FONT = "NotoSerif"
-_FONT_BOLD = "NotoSerif-Bold"
+_FONT = _export_pdf.FONT
+_FONT_BOLD = _export_pdf.FONT_BOLD
 _SIZE = 7
 _PAD = 3  # left/right cell padding, mirrored in the width budget
 

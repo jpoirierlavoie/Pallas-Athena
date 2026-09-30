@@ -36,17 +36,23 @@ logger = logging.getLogger(__name__)
 # broken registration a CI deploy-gate failure, never a silent Helvetica
 # fallback in production.
 _FONT_DIR = Path(__file__).parent / "fonts"
-pdfmetrics.registerFont(TTFont("NotoSerif", str(_FONT_DIR / "NotoSerif-Regular.ttf")))
-pdfmetrics.registerFont(TTFont("NotoSerif-Bold", str(_FONT_DIR / "NotoSerif-Bold.ttf")))
+# The two names every PDF builder sets. Registered HERE, at import — so a
+# builder that reads them has imported this module, and with it the
+# registration (the four builders used to import it for that side effect
+# alone, a reference no reader could see).
+FONT = "NotoSerif"
+FONT_BOLD = "NotoSerif-Bold"
+pdfmetrics.registerFont(TTFont(FONT, str(_FONT_DIR / "NotoSerif-Regular.ttf")))
+pdfmetrics.registerFont(TTFont(FONT_BOLD, str(_FONT_DIR / "NotoSerif-Bold.ttf")))
 # No italic face is used anywhere in these reports; map the italic variants
 # onto the uprights so a stray <b>/<i> in a Paragraph can never fall back to
 # an unregistered font name.
 registerFontFamily(
-    "NotoSerif",
-    normal="NotoSerif",
-    bold="NotoSerif-Bold",
-    italic="NotoSerif",
-    boldItalic="NotoSerif-Bold",
+    FONT,
+    normal=FONT,
+    bold=FONT_BOLD,
+    italic=FONT,
+    boldItalic=FONT_BOLD,
 )
 
 

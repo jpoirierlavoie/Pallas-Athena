@@ -17,10 +17,9 @@ from models import concurrency, db, provenance
 # and the UID — is shared with models/partie (CardDAV) and lives in
 # models/dav_ids. Re-exported under the names dav/dossier_collections and
 # the tests import from here.
-from models.dav_ids import (  # noqa: F401 — RESOURCE_ID_MAX_LENGTH re-exported
+from models.dav_ids import (
     DAV_ID_INVALID,
     DAV_ID_TAKEN,
-    RESOURCE_ID_MAX_LENGTH,
     client_uid as _client_uid,
     valid_resource_id,
 )

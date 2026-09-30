@@ -1788,10 +1788,6 @@ class PaymentRefused(Exception):
     """
 
 
-#: The historical private name, kept for any caller that still reads it.
-_PaymentRefused = PaymentRefused
-
-
 def payment_updates(
     invoice: dict,
     new_amount_paid: int,

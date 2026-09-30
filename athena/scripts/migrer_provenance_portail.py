@@ -33,6 +33,7 @@ def _load_env() -> None:
 
         load_dotenv(find_dotenv(usecwd=True))
     except ImportError:
+        # python-dotenv is a local-dev convenience: without it the environment is read as is.
         pass
 
 

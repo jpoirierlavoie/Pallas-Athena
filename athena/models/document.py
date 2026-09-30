@@ -1340,6 +1340,8 @@ def _delete_own_object(storage_path: str, generation) -> None:
             if_generation_match=generation
         )
     except (NotFound, PreconditionFailed):
+        # Gone already, or no longer this call's generation: either way
+        # there is nothing of ours left to delete.
         pass
     except Exception:
         log_unexpected("document ingest: own copy rollback failed")

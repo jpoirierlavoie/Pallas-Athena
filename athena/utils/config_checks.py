@@ -308,7 +308,6 @@ def check_integrations(rpt: Report) -> None:
     # degrades to Config on any failure (a diagnostic must never be the thing
     # that breaks).
     mots_cles = Config.BOOKINGS_SUBJECT_KEYWORDS
-    source = "app.yaml"
     try:
         from models.integrations import get_integrations_state
         rec, provenance = get_integrations_state()

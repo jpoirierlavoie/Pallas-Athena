@@ -46,7 +46,6 @@ from models.document import (
     move_documents_bulk,
     update_metadata,
     update_analyse,
-    ANALYSE_EDITABLE,
 )
 from models import concurrency
 from routes import edit_conflict

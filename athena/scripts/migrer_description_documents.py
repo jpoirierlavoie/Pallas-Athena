@@ -53,6 +53,7 @@ def _load_env() -> None:
 
         load_dotenv(find_dotenv(usecwd=True))
     except ImportError:
+        # python-dotenv is a local-dev convenience: without it the environment is read as is.
         pass
 
 
@@ -84,6 +85,7 @@ def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
+        # A stream that cannot be reconfigured keeps its encoding — nothing to repair.
         pass
 
     vus = jetes = provenance = notes = fusionnes = 0

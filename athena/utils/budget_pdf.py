@@ -38,9 +38,12 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from utils import export_pdf as _export_pdf  # noqa: F401 — registers NotoSerif
+from utils import export_pdf as _export_pdf  # registers NotoSerif at import
 from utils import phases
 from utils.format_fr import format_cents_fr, format_date_fr, format_hours_fr
+
+_FONT = _export_pdf.FONT
+_FONT_BOLD = _export_pdf.FONT_BOLD
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +69,10 @@ _RULE_LIGHT = colors.HexColor("#E5E7EB")
 
 def _styles() -> dict:
     base = getSampleStyleSheet()
-    base["Normal"].fontName = "NotoSerif"
+    base["Normal"].fontName = _FONT
     return {
         "title": ParagraphStyle(
-            "BudgetTitle", parent=base["Normal"], fontName="NotoSerif-Bold",
+            "BudgetTitle", parent=base["Normal"], fontName=_FONT_BOLD,
             fontSize=16, leading=20, textColor=_INK,
         ),
         "subtitle": ParagraphStyle(
@@ -81,7 +84,7 @@ def _styles() -> dict:
             textColor=_HEADER_INK,
         ),
         "group": ParagraphStyle(
-            "BudgetGroup", parent=base["Normal"], fontName="NotoSerif-Bold",
+            "BudgetGroup", parent=base["Normal"], fontName=_FONT_BOLD,
             fontSize=10, leading=13, textColor=_INK,
         ),
         "cell": ParagraphStyle(
@@ -182,7 +185,7 @@ def _group_table(
 ) -> Table:
     data = []
     style_cmds = [
-        ("FONTNAME", (0, 0), (-1, -1), "NotoSerif"),
+        ("FONTNAME", (0, 0), (-1, -1), _FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -195,7 +198,7 @@ def _group_table(
     if first_group:
         data.append(header_cells)
         style_cmds += [
-            ("FONTNAME", (0, 0), (-1, 0), "NotoSerif-Bold"),
+            ("FONTNAME", (0, 0), (-1, 0), _FONT_BOLD),
             ("BACKGROUND", (0, 0), (-1, 0), _BAND),
             ("TEXTCOLOR", (0, 0), (-1, 0), _HEADER_INK),
             ("LINEBELOW", (0, 0), (-1, 0), 0.5, _RULE),
@@ -205,7 +208,7 @@ def _group_table(
     data.append(subtotal)
     last = len(data) - 1
     style_cmds += [
-        ("FONTNAME", (0, last), (-1, last), "NotoSerif-Bold"),
+        ("FONTNAME", (0, last), (-1, last), _FONT_BOLD),
         ("BACKGROUND", (0, last), (-1, last), _BAND),
         ("LINEABOVE", (0, last), (-1, last), 0.5, _RULE),
     ]
@@ -328,7 +331,7 @@ def _build_story(
     for data, thickness in ((total_row, 0.5), (grand_row, 1.0)):
         t = Table(data, colWidths=col_widths)
         t.setStyle(TableStyle([
-            ("FONTNAME", (0, 0), (-1, -1), "NotoSerif-Bold"),
+            ("FONTNAME", (0, 0), (-1, -1), _FONT_BOLD),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
             ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
             ("TOPPADDING", (0, 0), (-1, -1), 5),
@@ -353,7 +356,7 @@ def _footer(canvas, doc, cabinet: dict) -> None:
     """Paginated firm footer. setFont is EXPLICIT — a drawString without it
     would select Helvetica and break the font-purity test."""
     canvas.saveState()
-    canvas.setFont("NotoSerif", 7)
+    canvas.setFont(_FONT, 7)
     canvas.setFillColor(_MUTED)
     width = doc.pagesize[0]
     y = 14 * mm
@@ -402,7 +405,7 @@ def build_budget_pdf(
         leftMargin=15 * mm,
         rightMargin=15 * mm,
         title=VARIANT_TITLES.get(variant, "Budget"),
-        initialFontName="NotoSerif",
+        initialFontName=_FONT,
     )
     story = _build_story(
         variant, dossier, budget, view, actuals, _styles(), usable_width

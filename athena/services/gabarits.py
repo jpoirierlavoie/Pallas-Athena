@@ -66,7 +66,7 @@ from werkzeug.utils import secure_filename
 
 from models.document import projet_document_name, upload_document
 from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder
-from services.gabarit_champs import (  # noqa: F401 — re-exported, see above
+from services.gabarit_champs import (  # re-exported: listed in __all__ below
     AUTO_MAX_CHARS,
     BLOC_MAX_CHARS,
     BLOCS_MAX_ITEMS,
@@ -96,6 +96,47 @@ from utils import storage_identity
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.logging_setup import log_unexpected
 from utils.tracing_setup import span
+
+# The façade: this module's own names AND the read half it re-exports from
+# services.gabarit_champs (the route keeps ONE import — see the docstring).
+__all__ = [
+    "AUTO_MAX_CHARS",
+    "BLOC_MAX_CHARS",
+    "BLOCS_MAX_ITEMS",
+    "BLOCS_TOTAL_MAX_CHARS",
+    "CHAMP_MANUEL_MAX_CHARS",
+    "CHAMPS_MANUELS_MAX_ITEMS",
+    "DOSSIER_NOT_FOUND",
+    "FIELD_PREFIX",
+    "FILL_ERROR",
+    "MANUAL_MAX_CHARS",
+    "MULTILINE_MAX_CHARS",
+    "PROJETS",
+    "PROJETS_UNAVAILABLE",
+    "TEMPLATE_FILE_UNAVAILABLE",
+    "TEMPLATE_INVALID",
+    "ConnectorValues",
+    "dossier_parties",
+    "ensure_projets",
+    "field_ceiling",
+    "field_inventory",
+    "fill",
+    "form_fields",
+    "generated_from",
+    "GenerationRefused",
+    "Inventory",
+    "InventoryField",
+    "output_names",
+    "passthrough_fields",
+    "projet_names",
+    "resolve_auto_values",
+    "resolve_slots",
+    "save_generated",
+    "save_into_projets",
+    "SlotResolution",
+    "values_for_connector",
+    "values_from_submission",
+]
 
 # French messages of the write half — kept VERBATIM from the route they
 # come from (the web says exactly what it said before the hoist).
