@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from jinja2 import Environment
@@ -90,7 +91,7 @@ def test_the_filter_returns_markup_so_autoescape_never_escapes_twice():
 
 
 def test_main_registers_this_filter_and_no_copy():
-    source = open(os.path.join(ATHENA_DIR, "main.py"), encoding="utf-8").read()
+    source = Path(ATHENA_DIR, "main.py").read_text(encoding="utf-8")
     assert "from utils.html_attr import jsattr" in source
     assert 'filters["jsattr"] = jsattr' in source
     assert "def _jsattr" not in source
