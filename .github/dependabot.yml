@@ -19,6 +19,27 @@ updates:
           - "minor"
           - "patch"
 
+  # The CI-only Bandit lock of .github/workflows/bandit.yml — the same
+  # requirements.in → hash-locked requirements.txt shape as /athena.
+  - package-ecosystem: "pip"
+    directory: "/.github/bandit"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:00"
+      timezone: "America/Montreal"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+    groups:
+      bandit-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

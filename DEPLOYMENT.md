@@ -409,7 +409,10 @@ the check.
     sends, and with `min_instances: 0` the instances recycle by themselves —
     so the site starts answering **403 on every path with no deploy to
     blame**, including the login page you would use to investigate. The value
-    takes effect as instances recycle; redeploy if you want it immediate
+    takes effect as instances recycle; redeploy if you want it immediate.
+    The `portail` service arms ITS check only once `portail-svc` may read
+    the secret (the commented grant in §6.4) — grant it after the tracer
+    shows the rule firing on the portal host as well
 14. Optional: DavX5 (§10), MCP (§11), Android TWA (§12)
 
 ---
@@ -941,10 +944,16 @@ done
 # `cf-origin-secret` too, for the portal's OWN origin check (since
 # 2026-09-30, client/security.enforce_edge). This grant is what ARMS it:
 # without it the portal reads the secret as unreadable, fails OPEN and logs
-# `origin_secret_disabled` once per instance. Grant it only AFTER the
+# `origin_secret_disabled` once per worker. Grant it only AFTER the
 # Cloudflare request tracer has shown the zone-wide Transform Rule injecting
 # `X-Origin-Auth` on the portal host — arming first would 403 every client.
 # New instances arm; running ones keep the value they read at startup.
+# (Granted on the original deployment 2026-09-30, after the tracer proof.)
+# Both services read the secret ONCE per gunicorn worker (two per
+# instance), so a ROTATION needs `default` AND `portail` redeployed: a
+# worker still holding the old value answers 403 to everything the edge now
+# signs with the new one — and a worker respawned in the meantime re-reads
+# `latest`, so one instance may answer 403 only intermittently.
 #   gcloud secrets add-iam-policy-binding cf-origin-secret \
 #     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" \
 #     --role="roles/secretmanager.secretAccessor" --project=$PROJECT

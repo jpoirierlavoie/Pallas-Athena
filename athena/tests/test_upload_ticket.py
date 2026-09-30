@@ -66,7 +66,7 @@ TEMPLATE_ID = "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
 ATHENA = pathlib.Path(__file__).resolve().parent.parent
 PDF = b"%PDF-1.7 synthetic body"
 # GCS's content MD5 — an integrity check, not a security hash.
-MD5 = base64.b64encode(hashlib.md5(PDF, usedforsecurity=False).digest()).decode()  # nosec B303
+MD5 = base64.b64encode(hashlib.md5(PDF, usedforsecurity=False).digest()).decode()
 
 
 @pytest.fixture()

@@ -85,7 +85,7 @@ class StoredObject:
     @property
     def md5_hash(self) -> str:
         # GCS's content MD5 — an integrity check, not a security hash.
-        return base64.b64encode(hashlib.md5(self.data, usedforsecurity=False).digest()).decode()  # nosec B303
+        return base64.b64encode(hashlib.md5(self.data, usedforsecurity=False).digest()).decode()
 
     @property
     def crc32c(self) -> str:
@@ -148,7 +148,7 @@ class FakeBucket:
         declared = session.get("md5_hash")
         if declared is not None:
             # GCS's content MD5 — an integrity check, not a security hash.
-            actual = base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()  # nosec B303
+            actual = base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()
             if actual != declared:
                 raise AssertionError(
                     "the service refuses bytes whose MD5 is not the declared one")

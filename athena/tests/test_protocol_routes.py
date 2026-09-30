@@ -11,7 +11,6 @@ Tout passe par les vraies routes, le vrai gabarit et le faux Firestore
 partagé ; on relit ce qui est STOCKÉ.
 """
 
-import json
 import os
 import pathlib
 import re
@@ -41,10 +40,11 @@ with mock.patch("google.cloud.firestore.Client"):
     from services import protocoles as protocol_service
 
 from flask import Flask  # noqa: E402
-from markupsafe import Markup, escape  # noqa: E402
+from markupsafe import escape  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
+from utils.html_attr import jsattr  # noqa: E402
 from utils.icons import ms  # noqa: E402
 
 # Loaded for their side effect, and named here so the dependency is
@@ -90,9 +90,7 @@ def client(fake):
                                  csp_nonce="n")
     # jsattr as main.py registers it: a JS string literal, HTML-escaped
     # for a double-quoted attribute, returned as Markup.
-    app.jinja_env.filters.update(
-        to_mtl=to_mtl,
-        jsattr=lambda v: Markup(json.dumps(str(v)).replace('"', "&quot;")))
+    app.jinja_env.filters.update(to_mtl=to_mtl, jsattr=jsattr)
     for bp in (protocols_routes.protocols_bp, dossiers_routes.dossiers_bp,
                tasks_routes.tasks_bp):
         app.register_blueprint(bp)
@@ -397,7 +395,7 @@ def test_a_refused_step_edit_reopens_its_form_on_the_submission(client, fake):
     html = resp.get_data(as_text=True)
     assert resp.status_code == 200
     assert "ne peut pas être effacée" in html
-    assert "editStepId: &quot;s1&quot;" in html
+    assert "editStepId: &#34;s1&#34;" in html
     assert 'value="GARDÉE-4Z"' in html
     assert re.findall(r'name="expected_etag" value="([^"]*)"', html) == ["se-s1"]
 

@@ -1106,16 +1106,9 @@ def test_le_formulaire_n_ecrit_jamais_une_valeur_postee_crue_dans_le_x_data(
     method par |jsattr ; dossierId, clientId et purpose, dans le même bloc,
     restaient crus (revue, lot 0b). On épingle le RENDU, avec la sémantique
     réelle du filtre de main.py."""
-    import json as _json
+    from utils.html_attr import jsattr
 
-    from markupsafe import Markup
-
-    def _jsattr(value):  # main.py's filter, verbatim semantics
-        js = _json.dumps(str(value), ensure_ascii=False)
-        return Markup(js.replace("&", "&amp;").replace("<", "&lt;")
-                      .replace(">", "&gt;").replace('"', "&quot;"))
-
-    client.application.jinja_env.filters["jsattr"] = _jsattr
+    client.application.jinja_env.filters["jsattr"] = jsattr  # main.py's
     _evening(monkeypatch)
     hostile = "x');alert(1);('"
     resp = client.post("/fideicommis/", data={
@@ -1128,8 +1121,8 @@ def test_le_formulaire_n_ecrit_jamais_une_valeur_postee_crue_dans_le_x_data(
     html = resp.get_data(as_text=True)
     for key in ("dossierId", "clientId", "purpose", "direction", "method"):
         assert f"{key}: '" not in html, key
-        assert f"{key}: &quot;" in html, key
-    assert "purpose: &quot;x');alert(1);('&quot;" in html
+        assert f"{key}: &#34;" in html, key
+    assert "purpose: &#34;x&#39;);alert(1);(&#39;&#34;" in html
     assert fake.peek_collection("trust_transactions") == {}
 
 

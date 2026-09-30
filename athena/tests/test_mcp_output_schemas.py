@@ -2617,7 +2617,7 @@ def _upload_world(monkeypatch):
 
     def md5(data: bytes) -> str:
         # GCS's content MD5 — an integrity check, not a security hash.
-        return base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()  # nosec B303
+        return base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()
 
     return fake, ids, bucket, md5
 
