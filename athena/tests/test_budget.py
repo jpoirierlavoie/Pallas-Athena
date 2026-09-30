@@ -15,7 +15,6 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 from models import budget as budget_model
-from utils import phases
 
 
 # ── _normalize_lines ────────────────────────────────────────────────────────

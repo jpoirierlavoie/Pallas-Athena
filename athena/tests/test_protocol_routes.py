@@ -11,7 +11,6 @@ Tout passe par les vraies routes, le vrai gabarit et le faux Firestore
 partagé ; on relit ce qui est STOCKÉ.
 """
 
-import json
 import os
 import pathlib
 import re
@@ -31,8 +30,8 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
-    from models import dossier as dossier_model  # noqa: F401
+    import dav.sync as dav_sync  # its db is patched below
+    from models import dossier as dossier_model
     from models import protocol as protocol_model
     from models import task as task_model
     import routes.dossiers as dossiers_routes
@@ -41,11 +40,19 @@ with mock.patch("google.cloud.firestore.Client"):
     from services import protocoles as protocol_service
 
 from flask import Flask  # noqa: E402
-from markupsafe import Markup, escape  # noqa: E402
+from markupsafe import escape  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
+from utils.html_attr import jsattr  # noqa: E402
 from utils.icons import ms  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync, dossier_model, task_model)
 
 UTC = timezone.utc
 WHEN = datetime(2026, 9, 1, tzinfo=UTC)
@@ -83,9 +90,7 @@ def client(fake):
                                  csp_nonce="n")
     # jsattr as main.py registers it: a JS string literal, HTML-escaped
     # for a double-quoted attribute, returned as Markup.
-    app.jinja_env.filters.update(
-        to_mtl=to_mtl,
-        jsattr=lambda v: Markup(json.dumps(str(v)).replace('"', "&quot;")))
+    app.jinja_env.filters.update(to_mtl=to_mtl, jsattr=jsattr)
     for bp in (protocols_routes.protocols_bp, dossiers_routes.dossiers_bp,
                tasks_routes.tasks_bp):
         app.register_blueprint(bp)
@@ -390,7 +395,7 @@ def test_a_refused_step_edit_reopens_its_form_on_the_submission(client, fake):
     html = resp.get_data(as_text=True)
     assert resp.status_code == 200
     assert "ne peut pas être effacée" in html
-    assert "editStepId: &quot;s1&quot;" in html
+    assert "editStepId: &#34;s1&#34;" in html
     assert 'value="GARDÉE-4Z"' in html
     assert re.findall(r'name="expected_etag" value="([^"]*)"', html) == ["se-s1"]
 

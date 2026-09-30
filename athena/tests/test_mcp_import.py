@@ -22,7 +22,8 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
-    from models import concurrency, provenance
+    import models.concurrency as concurrency
+    import models.provenance as provenance
 
 
 def _stub_dossier_reads(monkeypatch, reader) -> None:
@@ -474,7 +475,7 @@ def test_les_vocabulaires_non_valides_par_le_modele_sont_bornes_au_schema():
     modèle et JAMAIS vérifiés par son _validate : le formulaire web les
     contraint par un <select>, le modèle non. Sur le chemin du connecteur,
     l'enum du schéma est donc l'UNIQUE garde."""
-    from models import partie as partie_model
+    import models.partie as partie_model
 
     props = tools.TOOLS["create_partie"]["input_schema"]["properties"]
     for field, vocab in (

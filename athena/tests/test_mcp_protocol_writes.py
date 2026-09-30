@@ -35,15 +35,22 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
+    import dav.sync as dav_sync  # its db is patched below
     import mcp.handlers as handlers
     import mcp.tools as tools
-    import mcp.write_support as write_support  # noqa: F401
-    from models import dossier as dossier_model  # noqa: F401
+    import mcp.write_support as write_support
+    from models import dossier as dossier_model
     from models import protocol as protocol_model
-    from models import task as task_model  # noqa: F401
+    from models import task as task_model
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync, dossier_model, task_model, write_support)
 
 UTC = timezone.utc
 WHEN = datetime(2026, 9, 1, tzinfo=UTC)
@@ -152,6 +159,24 @@ def test_the_protocol_vocabularies_are_the_models():
         assert name in tools.WRITE_TOOLS
     assert {"update_protocol", "update_protocol_step"} <= tools.EDIT_TOOLS
     assert not {"create_protocol", "add_protocol_step"} & tools.EDIT_TOOLS
+
+
+def test_the_task_outcome_vocabulary_is_the_services():
+    """The two output enums are literals — mcp/output_schemas.py imports no
+    service — so they are pinned here against services/protocoles, the one
+    place a linked task's outcome is decided (the handlers' unused copy of
+    the tuple was deleted 2026-09-30, CodeQL py/unused-global-variable)."""
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+    from services import protocoles as protocol_service
+
+    expected = ["none", *protocol_service.ALIGN_OUTCOMES]
+    update = OUTPUT_SCHEMAS["update_protocol"]["properties"]
+    moved = update["recompute"]["properties"]["moved"]["items"]["properties"]
+    assert moved["task_outcome"]["enum"] == expected
+    assert list(update["linked_tasks"]["properties"]) == list(
+        protocol_service.ALIGN_OUTCOMES)
+    step = OUTPUT_SCHEMAS["update_protocol_step"]["properties"]
+    assert step["linked_task"]["properties"]["outcome"]["enum"] == expected
 
 
 # ══════════════════════════════════════════════════════════════════════

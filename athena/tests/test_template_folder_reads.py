@@ -83,7 +83,7 @@ class _Unreadable:
 @pytest.fixture
 def template(monkeypatch):
     install(monkeypatch, *_fake_modules())
-    monkeypatch.setattr(tpl_model.storage, "bucket", lambda: FakeBucket())
+    monkeypatch.setattr(tpl_model.storage, "bucket", FakeBucket)
     data = _docx(["dossier.titre", "client.nom_complet", "date.aujourdhui",
                   "objet_lettre", "FAITS"])
     created, errors = tpl_model.create_template(

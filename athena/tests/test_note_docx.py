@@ -2,6 +2,7 @@
 
 import io
 import os
+import pathlib
 import sys
 import zipfile
 from datetime import date, datetime, timezone
@@ -123,7 +124,7 @@ def test_category_labels_mirror_models_note():
         "models",
         "note.py",
     )
-    tree = ast.parse(open(path, encoding="utf-8").read())
+    tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:

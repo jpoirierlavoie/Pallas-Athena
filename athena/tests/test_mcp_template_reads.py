@@ -527,8 +527,8 @@ def test_a_special_kind_refuses_the_slots_its_flow_never_fills(store, kind, key)
 def test_the_flow_slots_are_the_builders_own(monkeypatch):
     """Pinned against the two builders: the slots each passes a party to
     resolve_values are exactly handlers._FLOW_SLOTS."""
-    import utils.invoice_docx as invoice_docx
-    import utils.note_docx as note_docx
+    from utils import invoice_docx
+    from utils import note_docx
 
     seen = {}
 

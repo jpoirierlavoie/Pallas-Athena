@@ -43,7 +43,6 @@ from models import portail_invitation as pi
 from models.document import (
     ALLOWED_EXTENSIONS,
     CATEGORY_CHOICES,
-    CATEGORY_LABELS,
     DISPLAY_NAME_MAX,
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
@@ -816,7 +815,7 @@ def verser(inv_id: str, batch: str, seq: int):
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        return _rediriger(erreur=str(exc))
+        return _rediriger(erreur=storage_identity.public_message(exc))
 
     # Fraîcheur (revue 2026-08-11) : _versable a jugé la taille du
     # MANIFESTE, figée au traitement du lot — le blob VIVANT peut différer.

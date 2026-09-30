@@ -8,14 +8,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, render_template_string
 
-from security import build_csp, init_security
+import security
 
 
 def _make_app(**config) -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "test-secret"
     app.config.update(config)
-    init_security(app)
+    security.init_security(app)
 
     @app.route("/")
     def index():
@@ -42,7 +42,7 @@ def test_build_csp_shape():
     # Nonce-based enforcing CSP (Rocket Loader disabled). script-src carries a
     # nonce + 'unsafe-eval' (Alpine) but NO 'unsafe-inline' and NO
     # ajax.cloudflare.com; style-src keeps 'unsafe-inline' (reCAPTCHA).
-    csp = build_csp("TESTNONCE")
+    csp = security.build_csp("TESTNONCE")
     script_src = csp.split("style-src", 1)[0]
     assert "script-src 'self' 'nonce-TESTNONCE' 'unsafe-eval'" in script_src
     assert "'unsafe-inline'" not in script_src          # gone from script-src
@@ -78,13 +78,11 @@ def test_consent_page_allows_the_oauth_callback_redirect():
     consent POST answers 302 to Claude's callback, so 'self' alone blocks
     the authorization code from ever reaching the client and the connector
     can never be added."""
-    from security import _FORM_ACTION_OAUTH, build_csp
-
-    csp = build_csp("N", _FORM_ACTION_OAUTH)
+    csp = security.build_csp("N", security._FORM_ACTION_OAUTH)
     assert "form-action 'self' https://claude.ai https://claude.com;" in csp
     # Everything else in the policy is untouched by the widening.
     assert "object-src 'none'" in csp
-    assert csp.replace(_FORM_ACTION_OAUTH, "'self'") == build_csp("N")
+    assert csp.replace(security._FORM_ACTION_OAUTH, "'self'") == security.build_csp("N")
 
 
 def test_form_action_is_widened_only_on_the_consent_path():
@@ -138,9 +136,7 @@ def test_form_action_covers_every_allowed_oauth_redirect_uri():
     with mock.patch("google.cloud.firestore.Client"):
         from mcp import ALLOWED_REDIRECT_URIS
 
-    from security import _FORM_ACTION_OAUTH
-
-    sources = set(_FORM_ACTION_OAUTH.split())
+    sources = set(security._FORM_ACTION_OAUTH.split())
     for uri in ALLOWED_REDIRECT_URIS:
         parsed = urlparse(uri)
         assert f"{parsed.scheme}://{parsed.netloc}" in sources, uri
@@ -163,7 +159,7 @@ def test_csp_header_enforced_with_matching_nonce():
     assert m, header
     nonce = m.group(1)
     assert f'nonce="{nonce}"'.encode() in resp.data
-    assert header == build_csp(nonce)
+    assert header == security.build_csp(nonce)
 
 
 def test_csp_nonce_is_per_request():
@@ -512,7 +508,7 @@ def test_every_static_handler_carries_the_full_baseline():
 
 
 def _guard_app(**config):
-    import security as _security
+    _security = security
 
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "test-secret"
@@ -521,8 +517,7 @@ def _guard_app(**config):
     app.config.setdefault("RECAPTCHA_ENTERPRISE_SITE_KEY", "")
     app.config.update(config)
     # Warn-once is module state; reset it so each test starts clean.
-    _security._ORIGIN_SECRET_MISSING_WARNED = False
-    _security._APPCHECK_MISSING_WARNED = False
+    _security._WARNED_ONCE.clear()
     return app, _security
 
 

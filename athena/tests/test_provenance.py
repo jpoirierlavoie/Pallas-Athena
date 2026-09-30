@@ -83,6 +83,14 @@ def test_the_vocabulary_is_closed_and_ordered():
             pass  # pragma: no cover
 
 
+def _raise_inside(message: str) -> None:
+    """Raise from a call rather than a bare `raise` in the `with` body: the
+    statements after `pytest.raises` then read as reachable to a static
+    analyser that does not model the context manager as swallowing the
+    exception (CodeQL py/unreachable-statement) — which they are."""
+    raise RuntimeError(message)
+
+
 def test_writing_via_overrides_and_restores_even_on_exception():
     with provenance.writing_via("mcp", tool="create_task"):
         assert provenance.current_via() == "mcp"
@@ -95,7 +103,7 @@ def test_writing_via_overrides_and_restores_even_on_exception():
 
     with pytest.raises(RuntimeError):
         with provenance.writing_via("mcp", tool="x"):
-            raise RuntimeError("boom")
+            _raise_inside("boom")
     # A thread serving the next request must never inherit the override.
     assert provenance.current_via() == "script"
     assert provenance.current_tool() == ""
@@ -180,7 +188,7 @@ def test_a_nested_block_that_raises_still_hands_its_commits_up():
         with pytest.raises(RuntimeError):
             with provenance.writing_via("cron"):
                 provenance.note_commit("tasks", "t9")
-                raise RuntimeError("after the commit")
+                _raise_inside("after the commit")
         assert provenance.committed_writes() == (("tasks", "t9"),)
         assert provenance.current_via() == "mcp"  # override restored
     assert provenance.committed_writes() == ()

@@ -17,6 +17,7 @@ from flask_wtf.csrf import CSRFError, CSRFProtect
 from client import limiter, portail_bp
 from client.config import (
     PORTAIL_SESSION_HOURS,
+    cf_origin_secret,
     firebase_api_key,
     portail_secret_key,
 )
@@ -61,8 +62,13 @@ def create_portail_app() -> Flask:
         static_folder=os.path.join(athena_root, "static"),
     )
 
+    origin = cf_origin_secret()
     app.config.update(
         SECRET_KEY=portail_secret_key(),
+        # Layer 2 of the edge defence (client/security.enforce_edge). Empty =
+        # off, the reason kept for the one warning logged per process.
+        CF_ORIGIN_SECRET=origin.value,
+        CF_ORIGIN_SECRET_OFF=(origin.reason, origin.error_type),
         ENV=os.environ.get("ENV", "development"),
         # Distinct cookie name + key = hard session boundary with the main
         # service (spec §6.4).

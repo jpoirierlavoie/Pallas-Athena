@@ -40,12 +40,19 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
-    import mcp.write_support  # noqa: F401 — its db is patched below
+    import mcp.write_support  # its db is patched below
     from models import concurrency
     from models import expense as expense_model
     from models import time_entry as time_entry_model
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (mcp.write_support,)
 
 UTC = timezone.utc
 _KEYS = itertools.count(1)

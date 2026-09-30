@@ -20,7 +20,7 @@ import pathlib
 import re
 import sys
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest import mock
 
 import pytest

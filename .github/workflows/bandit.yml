@@ -11,6 +11,9 @@ permissions:
   contents: read
 
 jobs:
+  # The job id stays `analyze`: code scanning keys the uploaded analysis on
+  # the workflow file and the job, so a renamed job would open a second
+  # Bandit category beside the first.
   analyze:
     runs-on: ubuntu-latest
     permissions:
@@ -24,8 +27,67 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Perform Bandit Analysis
-        uses: PyCQA/bandit-action@8a1b30610f61f3f792fe7556e888c9d7dffa52de # v1.0.0
+
+      # Bandit reads the code through the interpreter's own `ast`, so it runs
+      # on the Python the application deploys on (app.yaml: python313).
+      # PyCQA/bandit-action v1.0.0, used until 2026-09-30, pinned Python 3.8
+      # and installed whatever Bandit pip resolved there (1.7.10), whose MD5
+      # check ignored usedforsecurity=False.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          confidence: medium
-          severity: medium
+          python-version: "3.13"
+
+      # Hash-locked, like the application: .github/bandit/requirements.txt is
+      # generated from requirements.in beside it (the re-lock command is in
+      # its header) and moves through Dependabot.
+      - name: Install Bandit
+        run: python -m pip install --require-hashes --no-deps -r .github/bandit/requirements.txt
+
+      # --exit-zero: findings travel through code scanning, not the job's
+      # exit code (the action discarded Bandit's with `|| true`).
+      - name: Run Bandit
+        run: |
+          python -m bandit --severity-level medium --confidence-level medium \
+            -x '.svn,CVS,.bzr,.hg,.git,__pycache__,.tox,.eggs,*.egg' \
+            -r . -f sarif -o results.sarif --exit-zero
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        with:
+          sarif_file: results.sarif
+
+      # A Bandit CRASH already fails « Run Bandit »: --exit-zero only zeroes
+      # the exit code the findings decide, never an exception (the SARIF
+      # formatter crash on 319a064 left an EMPTY results.sarif, which the
+      # action's `|| true` hid until the upload refused it). This step is
+      # for what Bandit reports as a success: a file it could not parse,
+      # recorded as a notification of level « error » while the SARIF still
+      # reads executionSuccessful: true — so the file would read as scanned.
+      # A SARIF without a run is refused too, as a guard.
+      - name: Check that every file was scanned
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+
+          with open("results.sarif", encoding="utf-8") as f:
+              runs = json.load(f).get("runs") or []
+          if not runs:
+              sys.exit("results.sarif holds no run")
+          unscanned = [
+              note
+              for run in runs
+              for invocation in run.get("invocations") or []
+              for key in ("toolConfigurationNotifications", "toolExecutionNotifications")
+              for note in invocation.get(key) or []
+              if note.get("level") == "error"
+          ]
+          for note in unscanned:
+              where = [
+                  loc.get("physicalLocation", {}).get("artifactLocation", {}).get("uri")
+                  for loc in note.get("locations") or []
+              ]
+              print(f"::error::Bandit: {note['message']['text']} {where}")
+          sys.exit(1 if unscanned else 0)
+          PY

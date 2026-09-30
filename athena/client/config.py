@@ -16,6 +16,7 @@ time, which the portal's service account must not need.
 
 import os
 from functools import lru_cache
+from typing import NamedTuple, Optional
 
 # ── Annexe C ─────────────────────────────────────────────────────────────
 
@@ -128,13 +129,19 @@ def _from_secret_manager(secret_id: str) -> str:
     return response.payload.data.decode("utf-8")
 
 
-def _secret(secret_id: str, env_var: str, required: bool = True) -> str:
+def _secret(secret_id: str, env_var: str, required: bool = True,
+            errors: Optional[list] = None) -> str:
+    """*errors*, when given, receives the CLASS name of a Secret Manager
+    failure an optional secret swallowed — how a caller tells « unreadable »
+    from « unset » (cf_origin_secret)."""
     if _is_production():
         try:
             return _from_secret_manager(secret_id)
-        except Exception:
+        except Exception as exc:
             if required:
                 raise
+            if errors is not None:
+                errors.append(type(exc).__name__)
             return ""
     value = os.environ.get(env_var, "")
     if required and not value:
@@ -158,3 +165,31 @@ def portail_secret_key() -> str:
 def firebase_api_key() -> str:
     """Web API key for the sign-in page (public-by-design, kept out of git)."""
     return _secret("firebase-api-key", "FIREBASE_API_KEY", required=False)
+
+
+class OriginSecret(NamedTuple):
+    """The Cloudflare origin secret, and why the check is off when it is."""
+
+    value: str
+    reason: str = ""        # "" when armed; else a closed code, for the log
+    error_type: str = ""    # the Secret Manager error's CLASS, when unreadable
+
+
+def cf_origin_secret() -> OriginSecret:
+    """The SAME `cf-origin-secret` the main service checks (2026-09-30).
+
+    Optional and fail-OPEN, the main service's policy (config.py): unset —
+    local dev — or unreadable, because `portail-svc` holds no accessor on it
+    yet, the check is off and the reason says which, for the one warning
+    the portal logs per process. Read ONCE, by the factory: arming follows a
+    new instance, never a request. Never stripped — the value is compared
+    byte for byte, and a trailing newline is the documented trap.
+    """
+    # Through `_secret`, like every other secret of this module: the
+    # portail.yaml inventory is pinned against these calls, in both directions.
+    errors: list = []
+    value = _secret("cf-origin-secret", "CF_ORIGIN_SECRET", required=False,
+                    errors=errors)
+    if errors:
+        return OriginSecret("", "cf_origin_secret_unreadable", errors[0])
+    return OriginSecret(value, "" if value else "cf_origin_secret_unset")

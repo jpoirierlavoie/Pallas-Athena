@@ -32,12 +32,19 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
     import dav.carddav as carddav
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
+    import dav.sync as dav_sync  # its db is patched below
     from models import partie as pm
 
 from flask import Flask  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync,)
 
 AUTH = {"Authorization": "Basic dGVzdEBleGFtcGxlLmNvbTpwdw=="}
 RID = "5b2d8c1e-4f3a-4e7b-9c0d-1a2b3c4d5e6f"

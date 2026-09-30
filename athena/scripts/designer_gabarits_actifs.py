@@ -87,6 +87,7 @@ def _safe_console() -> None:
     try:
         sys.stdout.reconfigure(errors="replace")
     except Exception:
+        # A stream that cannot be reconfigured keeps its encoding — nothing to repair.
         pass
 
 

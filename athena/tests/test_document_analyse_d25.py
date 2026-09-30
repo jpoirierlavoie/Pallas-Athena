@@ -50,16 +50,23 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
+    import dav.sync as dav_sync  # its db is patched below
     import mcp.handlers as handlers
     import mcp.output_schemas as output_schemas
     import mcp.tools as tools
-    import mcp.write_support as write_support  # noqa: F401
+    import mcp.write_support as write_support
     from models import document as document_model
     from models import provenance
     import routes.documents as documents_routes
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync, write_support)
 
 UTC = timezone.utc
 DT = datetime(2026, 3, 4, tzinfo=UTC)
@@ -661,7 +668,7 @@ def client(fake):
                                  csp_nonce="n")
     app.jinja_env.filters.update(to_mtl=to_mtl, jsattr=lambda v: v,
                                  phone=lambda v: v,
-                                 cents_fr=lambda c: str(c),
+                                 cents_fr=str,
                                  markdown=lambda v: v)
     for bp in (parties_routes.parties_bp, dossiers_routes.dossiers_bp,
                time_expenses_routes.time_expenses_bp,

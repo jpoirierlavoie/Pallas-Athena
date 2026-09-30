@@ -611,10 +611,6 @@ def test_payment_updates_refuse_ce_qui_n_est_pas_des_cents_positifs(bad):
                              now=datetime(2026, 9, 20, tzinfo=UTC))
 
 
-def test_payment_refused_garde_son_ancien_nom():
-    assert imod._PaymentRefused is imod.PaymentRefused
-
-
 # ── get_invoices_by_number : strict, et chaque correspondance ────────────
 
 

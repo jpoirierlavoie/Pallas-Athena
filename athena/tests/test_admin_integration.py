@@ -15,6 +15,7 @@ the template pins the house keeps for HTMX/OOB wiring.
 
 import json
 import os
+import pathlib
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -162,7 +163,7 @@ def test_la_route_d_administration_ecrit_par_le_service_commun():
     outil ne les atteindra)."""
     import ast
 
-    source = open(os.path.join(_ATHENA, "routes", "admin_ledger.py"), encoding="utf-8").read()
+    source = pathlib.Path(_ATHENA, "routes", "admin_ledger.py").read_text(encoding="utf-8")
     writers = {"create_transaction", "update_transaction", "reverse_transaction",
                "clear_transaction", "clear_transactions_bulk", "create_card_payment"}
     reached = {
@@ -332,7 +333,7 @@ def test_la_route_du_fideicommis_n_atteint_aucun_ecrivain_d_administration():
     helper reborn here would be the fail-open after-commit write again."""
     import ast
 
-    source = open(os.path.join(_ATHENA, "routes", "trust.py"), encoding="utf-8").read()
+    source = pathlib.Path(_ATHENA, "routes", "trust.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     writers = {"create_transaction", "reverse_transaction", "clear_transaction",
                "clear_transactions_bulk", "list_by_trust_transaction"}
@@ -359,7 +360,7 @@ def test_la_route_du_fideicommis_n_atteint_aucun_ecrivain_d_administration():
 
 
 def _template(name: str) -> str:
-    return open(os.path.join(_ATHENA, "templates", name), encoding="utf-8").read()
+    return pathlib.Path(_ATHENA, "templates", name).read_text(encoding="utf-8")
 
 
 def test_rows_partial_reemits_the_export_links_oob():
@@ -477,10 +478,6 @@ def _entry(**over):
 def web_rendu(monkeypatch):
     """App that REALLY renders the templates (the test_document_upload_api
     web_rendu pattern) — base.html only calls url_for for statics."""
-    import json as _json
-
-    from markupsafe import Markup
-
     from utils.format_fr import format_cents_fr
     from utils.icons import ms as _ms
 
@@ -491,13 +488,8 @@ def web_rendu(monkeypatch):
     app.jinja_env.globals["csrf_token"] = lambda: "jeton-test"
     app.jinja_env.filters["cents_fr"] = format_cents_fr
 
-    def _jsattr(value):  # the main.py filter, verbatim semantics
-        js = _json.dumps(str(value), ensure_ascii=False)
-        return Markup(
-            js.replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;")
-        )
-    app.jinja_env.filters["jsattr"] = _jsattr
+    from utils.html_attr import jsattr
+    app.jinja_env.filters["jsattr"] = jsattr  # the filter main.py registers
     app.register_blueprint(ra.admin_bp)
     client = app.test_client()
     with client.session_transaction() as s:
@@ -556,8 +548,9 @@ def test_rendu_edit_survit_a_une_apostrophe_dans_le_titre(web_rendu, monkeypatch
     """Le correctif |jsattr (revue 2026-08-13) : un dossier « L'Heureux c. X »
     interpolé cru terminait la chaîne JS du x-data — formulaire mort et,
     sous 'unsafe-eval', injection d'expression Alpine. On épingle le RENDU :
-    la valeur voyage en chaîne JSON double-quotée (&quot;), jamais en
-    chaîne simple-quotée cassable."""
+    la valeur voyage en chaîne JSON double-quotée, ses guillemets et son
+    apostrophe en entités (&#34;, &#39;), jamais en chaîne simple-quotée
+    cassable."""
     entry = _entry(dossier_id="d1", dossier_file_number="2026-004",
                    dossier_title="Succession de L'Heureux")
     monkeypatch.setattr(ra.al, "get_transaction", lambda t: entry)
@@ -569,7 +562,8 @@ def test_rendu_edit_survit_a_une_apostrophe_dans_le_titre(web_rendu, monkeypatch
                    "title": "Succession de L'Heureux"},
     )
     html = web_rendu.get("/administration/t1/modifier").get_data(as_text=True)
-    assert "dossierDisplay: &quot;2026-004 — Succession de L'Heureux&quot;" in html
+    assert ("dossierDisplay: &#34;2026-004 — Succession de L&#39;Heureux&#34;"
+            in html)
     assert "dossierDisplay: '" not in html
 
 

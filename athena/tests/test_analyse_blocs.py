@@ -482,6 +482,8 @@ def test_hostile_inputs_parse_in_bounded_time(name):
     try:
         ab.append_to_bloc(content, "A", "x")
     except ab.BlocStructureError:
+        # A refusal is a legitimate answer to a hostile input: only the time
+        # the operation takes, refused or not, is under test here.
         pass
     assert time.perf_counter() - start < 2.0, name
 

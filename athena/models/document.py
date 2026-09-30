@@ -905,7 +905,7 @@ def _storage_uid(user_id: object) -> tuple[Optional[str], list[str]]:
     try:
         return storage_identity.require_uid(user_id), []
     except storage_identity.StorageIdentityUnavailable as exc:
-        return None, [str(exc)]
+        return None, [storage_identity.public_message(exc)]
 
 
 def _prepare_document_record(
@@ -1340,6 +1340,8 @@ def _delete_own_object(storage_path: str, generation) -> None:
             if_generation_match=generation
         )
     except (NotFound, PreconditionFailed):
+        # Gone already, or no longer this call's generation: either way
+        # there is nothing of ours left to delete.
         pass
     except Exception:
         log_unexpected("document ingest: own copy rollback failed")

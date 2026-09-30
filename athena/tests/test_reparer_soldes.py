@@ -178,11 +178,11 @@ def test_la_simulation_est_le_defaut_et_n_ecrit_rien(base, monkeypatch):
     class _Piege:
         def collection(self, name):
             class _C:
-                def stream(_s):
+                def stream(self):
                     return iter(base["comptes"] if name == "admin_accounts"
                                 else base["ecritures"])
 
-                def document(_s, _i):
+                def document(self, _i):
                     pytest.fail("la simulation a écrit")
             return _C()
 

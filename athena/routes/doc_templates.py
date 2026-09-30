@@ -203,7 +203,7 @@ def template_create() -> Response | str:
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        template, errors = None, [str(exc)]
+        template, errors = None, [storage_identity.public_message(exc)]
     else:
         template, errors = create_template(
             file_stream=file,
@@ -805,7 +805,7 @@ def generate() -> Response | str:
             try:
                 user_id = storage_identity.request_uid()
             except storage_identity.StorageIdentityUnavailable as exc:
-                raise gabarits.GenerationRefused("save_failed", str(exc)) from exc
+                raise gabarits.GenerationRefused("save_failed", storage_identity.public_message(exc)) from exc
             doc = gabarits.save_into_projets(
                 template=template, dossier=dossier, filled=filled,
                 uid=user_id, today=today,

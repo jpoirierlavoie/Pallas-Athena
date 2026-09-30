@@ -63,11 +63,22 @@ def _env():
 
     from utils.icons import ms
 
-    e = Environment(loader=FileSystemLoader(str(_RACINE / "templates")))
+    # autoescape=True, as Flask renders a .html template (2026-09-30 —
+    # Bandit B701, CodeQL py/jinja2/autoescape-false).
+    e = Environment(loader=FileSystemLoader(str(_RACINE / "templates")),
+                    autoescape=True)
     # Le VRAI ms() : il émet les classes .ms/.ms-16, qui doivent elles aussi
     # exister dans l'artefact, et il lève sur un nom hors du sous-ensemble.
     e.globals.update(ms=ms, url_for=lambda *a, **k: "#")
     return e
+
+
+def test_an_extra_value_cannot_close_the_single_quoted_hx_vals():
+    """hx-vals is a SINGLE-quoted attribute: an apostrophe in an extra
+    value would end it. Escaped like Flask escapes, it stays a character."""
+    html = _rendu(_page_ctx(40, 2, extra_vals={"q": "a'b<c"}))
+    assert "a&#39;b&lt;c" in html
+    assert "a'b<c" not in html
 
 
 def _rendu(ctx):

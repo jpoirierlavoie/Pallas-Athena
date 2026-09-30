@@ -365,8 +365,9 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
             **({"dossier_id": dossier_id} if span_attrs else {}),
         )
         # A tool RESULT with isError — not a -32602, which promises that
-        # nothing was written. The message says the opposite, loudly.
-        return tools.error_result(str(committed_error))
+        # nothing was written. The message says the opposite, loudly — and
+        # it is the server-authored sentence, never the exception rendered.
+        return tools.error_result(committed_error.client_message)
 
     if argument_error is not None:
         # The refusal is LOGGED by its reason code — the text below reaches

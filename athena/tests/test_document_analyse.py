@@ -348,7 +348,10 @@ def _env():
 
     from jinja2 import Environment, FileSystemLoader
     racine = Path(__file__).resolve().parent.parent / "templates"
-    e = Environment(loader=FileSystemLoader(str(racine)))
+    # autoescape=True, as Flask renders a .html template: an environment that
+    # escaped nothing would pass a test a real page fails (2026-09-30 —
+    # Bandit B701, CodeQL py/jinja2/autoescape-false).
+    e = Environment(loader=FileSystemLoader(str(racine)), autoescape=True)
     e.globals.update(ms=lambda *a, **k: "", url_for=lambda *a, **k: "#",
                      csrf_token=lambda *a, **k: "x")
     e.filters["to_mtl"] = lambda d: d
@@ -391,6 +394,18 @@ def test_the_regime_badge_sits_beside_the_category():
     # …et PAS dupliquée dans le bloc.
     assert 'niveau_protection' not in bloc.split('{# ── Ce qui doit')[0] or \
         'niveaux' not in bloc
+
+def test_the_screen_escapes_what_an_analysis_wrote():
+    """The résumé is the MODEL's text: it renders escaped, as on the real
+    page — the environment above escapes like Flask, so a template that
+    marked it `|safe` would fail here."""
+    doc = {**_DOC_RENDU,
+           "analyse": {**_DOC_RENDU["analyse"], "resume": "<b>gras</b> & co"}}
+    html = _env().get_template("documents/_analyse.html").render(
+        document=doc, analyses=[])
+    assert "&lt;b&gt;gras&lt;/b&gt; &amp; co" in html
+    assert "<b>gras</b>" not in html
+
 
 def test_the_presumption_is_shown_not_hidden():
     """§7 nº 3 : la mention accompagne la valeur. C'est elle qui remplace le

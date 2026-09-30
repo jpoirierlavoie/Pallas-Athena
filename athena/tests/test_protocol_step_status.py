@@ -55,6 +55,13 @@ from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
 from utils.icons import ms  # noqa: E402
 
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (task_model,)
+
 UTC = timezone.utc
 WHEN = datetime(2026, 9, 1, tzinfo=UTC)
 LATER = datetime(2026, 12, 1, tzinfo=UTC)

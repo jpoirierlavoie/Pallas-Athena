@@ -46,7 +46,6 @@ from models.document import (
     move_documents_bulk,
     update_metadata,
     update_analyse,
-    ANALYSE_EDITABLE,
 )
 from models import concurrency
 from routes import edit_conflict
@@ -281,7 +280,7 @@ def folder_zip():
     try:
         uid = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        url, errors = None, [str(exc)]
+        url, errors = None, [storage_identity.public_message(exc)]
     else:
         url, errors = build_folder_zip_url(dossier_id, folder_id, uid)
     if not url:
@@ -396,7 +395,7 @@ def api_televersement():
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        return jsonify({"erreur": str(exc)}), 503
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
     printable = "".join(ch for ch in nom if ch.isprintable())
     safe = secure_filename(printable) or "document"
     objet = f"staging/{user_id}/{uuid.uuid4()}/{safe}"
@@ -440,7 +439,7 @@ def api_finaliser():
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        return jsonify({"erreur": str(exc)}), 503
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
     if not objet.startswith(f"staging/{user_id}/"):
         # Le client ne nomme jamais que SES objets staging — tout autre
         # chemin est une charge forgée.

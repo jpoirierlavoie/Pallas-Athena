@@ -32,13 +32,20 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
     import dav.dossier_collections as dc
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
+    import dav.sync as dav_sync  # its db is patched below
     import models.hearing as h
 
 from flask import Flask  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 from tz import mtl_to_utc, to_mtl  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync,)
 
 UTC = timezone.utc
 AUTH = {"Authorization": "Basic dGVzdEBleGFtcGxlLmNvbTpwdw=="}

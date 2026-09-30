@@ -825,3 +825,86 @@ def test_no_template_upload_can_overwrite():
         assert "if_generation_match" in kw
         assert isinstance(kw["if_generation_match"], ast.Constant)
         assert kw["if_generation_match"].value == 0
+
+
+# ── The silent failure branches now leave a trace (2026-09-30) ────────────
+
+
+def _unexpected(caplog) -> list[str]:
+    records = [r for r in caplog.records if r.name == "pallas.unexpected"]
+    for r in records:
+        # The class, never a traceback: a store error's text can carry the
+        # object path, and with it the template's file name.
+        assert not r.exc_info and not r.exc_text, r.getMessage()
+        assert r.json_fields.get("error_type"), r.getMessage()
+    return [r.getMessage() for r in records]
+
+
+def test_an_unreadable_reference_check_answers_none_and_says_so(
+        monkeypatch, caplog):
+    import logging
+
+    class _Down:
+        def collection(self, _name):
+            return self
+
+        def document(self, _id):
+            return self
+
+        def get(self, *_a, **_k):
+            raise RuntimeError("firestore indisponible")
+
+    monkeypatch.setattr(tpl, "db", _Down())
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        assert tpl._referenced("t1", "users/u/templates/t1/v2/a.docx") is None
+    assert _unexpected(caplog) == ["template reference check unreadable"]
+
+
+class _OrphanBlob:
+    generation = 7
+
+    def __init__(self, *, reload_error=None, delete_error=None):
+        self._reload_error, self._delete_error = reload_error, delete_error
+        self.time_created = datetime.now(timezone.utc) - timedelta(days=2)
+
+    def reload(self):
+        if self._reload_error:
+            raise self._reload_error
+
+    def delete(self, **_kwargs):
+        if self._delete_error:
+            raise self._delete_error
+
+
+def _orphan_bucket(monkeypatch, blob):
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(tpl.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(tpl, "_referenced", lambda *_a: False)
+
+
+def test_a_failed_orphan_check_refuses_and_says_so(monkeypatch, caplog):
+    import logging
+
+    _orphan_bucket(monkeypatch, _OrphanBlob(reload_error=RuntimeError("gcs")))
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        assert tpl._clear_stale_orphan("t1", "users/u/t1/v2/a.docx") is False
+    assert _unexpected(caplog) == ["template orphan check failed"]
+
+
+def test_a_failed_orphan_delete_refuses_and_says_so(monkeypatch, caplog):
+    import logging
+
+    _orphan_bucket(monkeypatch, _OrphanBlob(delete_error=RuntimeError("gcs")))
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        assert tpl._clear_stale_orphan("t1", "users/u/t1/v2/a.docx") is False
+    assert _unexpected(caplog) == ["template orphan delete failed"]
+
+
+def test_an_old_unreferenced_orphan_is_cleared_quietly(monkeypatch, caplog):
+    import logging
+
+    _orphan_bucket(monkeypatch, _OrphanBlob())
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        assert tpl._clear_stale_orphan("t1", "users/u/t1/v2/a.docx") is True
+    assert _unexpected(caplog) == []

@@ -321,6 +321,13 @@ _EVENEMENTS_JOURNAL: frozenset = frozenset({
     "reauth_failed",
 })
 
+# Le nom qui ATTEINT le journal est la valeur de cette table — la constante
+# du serveur —, jamais la chaîne postée, qui ne sert que de CLÉ (2026-09-30,
+# CodeQL py/log-injection). Le test d'appartenance suffisait déjà à fermer le
+# vocabulaire ; la table fait en sorte que ce qui est écrit ne vienne pas du
+# navigateur du tout.
+_JOURNAL_EVENTS: dict[str, str] = {nom: nom for nom in _EVENEMENTS_JOURNAL}
+
 
 # Les quatre sections du rapport, dans l'ordre d'affichage, avec leur
 # en-tête FRANÇAIS et ce que la section veut dire. Le module de contrôle rend
@@ -467,8 +474,8 @@ def securite_journal() -> tuple[Response, int]:
     n'est en jeu, donc la règle « une erreur à lire voyage en 2xx » ne
     s'applique pas. Rien ne LIT ce journal pour décider quoi que ce soit.
     """
-    evenement = (request.form.get("event") or "").strip()
-    if evenement not in _EVENEMENTS_JOURNAL:
+    evenement = _JOURNAL_EVENTS.get((request.form.get("event") or "").strip())
+    if evenement is None:
         return jsonify({"ok": False}), 400
 
     fields: dict = {}
@@ -480,6 +487,8 @@ def securite_journal() -> tuple[Response, int]:
             # nommée dans la clé — elle vient du client.
             fields["factor_count_client"] = max(0, min(10, int(brut)))
         except ValueError:
+            # Un nombre illisible est écarté, jamais deviné : l'événement
+            # lui-même reste bon à consigner.
             pass
 
     # Le code Firebase d'un échec. Il vient du NAVIGATEUR, donc il est

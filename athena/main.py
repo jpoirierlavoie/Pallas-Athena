@@ -80,20 +80,11 @@ def create_app() -> Flask:
 
     app.jinja_env.filters["cents_fr"] = _cents_fr
 
-    import json as _json
-    from markupsafe import Markup
-
-    def _jsattr(value: str) -> Markup:
-        """Escape a string for safe use as a JS string inside a double-quoted HTML attribute."""
-        js = _json.dumps(str(value), ensure_ascii=False)
-        return Markup(
-            js.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-        )
-
-    app.jinja_env.filters["jsattr"] = _jsattr
+    # A value as a JS string literal inside a double-quoted HTML attribute
+    # (the Alpine x-data blocks) — utils/html_attr.py, pure, so a test can
+    # register the real filter rather than a copy.
+    from utils.html_attr import jsattr
+    app.jinja_env.filters["jsattr"] = jsattr
 
     # The whole pipeline lives in utils/markdown_docx.py — the SAME
     # extensions/allowlist (incl. use_align_attribute=True, which restores

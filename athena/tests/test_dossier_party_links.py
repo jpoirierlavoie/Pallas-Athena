@@ -784,9 +784,9 @@ def test_the_strict_lister_refuses_a_blank_id(db, blank):
 
 
 def test_the_two_link_types_are_journal_types_and_connector_filters():
-    from mcp.tools import TOOLS
+    import mcp.tools as tools
 
-    enum = TOOLS["list_deletions"]["input_schema"]["properties"][
+    enum = tools.TOOLS["list_deletions"]["input_schema"]["properties"][
         "entity_type"]["enum"]
     for kind in ("dossier_party", "mandataire"):
         assert kind in audit_event_model.VALID_ENTITY_TYPES
@@ -798,9 +798,9 @@ def test_the_filter_says_what_a_mandataire_row_s_title_names():
     the mandataire: read like any other row (« entity X titled Y »), it
     would name the wrong person. The description must say so (it did not
     on f5033ec)."""
-    from mcp.tools import TOOLS
+    import mcp.tools as tools
 
-    text = TOOLS["list_deletions"]["input_schema"]["properties"][
+    text = tools.TOOLS["list_deletions"]["input_schema"]["properties"][
         "entity_type"]["description"]
     assert "title = the contact it REPRESENTED" in text
     assert "entity_id = the mandataire" in text

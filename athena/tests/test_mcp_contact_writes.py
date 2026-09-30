@@ -36,16 +36,23 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync  # noqa: F401 — patched below
+    import dav.sync as dav_sync  # patched below
     import mcp.handlers as handlers
     import mcp.tools as tools
-    import mcp.write_support as write_support  # noqa: F401
+    import mcp.write_support as write_support
     from models import dossier as dossier_model
     from models import partie as partie_model
     from models import provenance
     from utils import deadlines, kyc
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync, write_support)
 
 UTC = timezone.utc
 DT = datetime(2026, 3, 4, tzinfo=UTC)

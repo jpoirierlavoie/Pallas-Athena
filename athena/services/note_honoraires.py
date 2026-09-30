@@ -319,7 +319,7 @@ def generer_note_honoraires(
     try:
         uid = (resolve_uid or storage_identity.owner_uid)()
     except storage_identity.StorageIdentityUnavailable as exc:
-        raise _refuse("save_failed", str(exc), **save_fields)
+        raise _refuse("save_failed", storage_identity.public_message(exc), **save_fields)
 
     invoice_number = invoice.get("invoice_number", "")
     tmpl_base = template.get("name") or "Note d'honoraires"

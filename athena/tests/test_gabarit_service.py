@@ -61,6 +61,13 @@ from utils.icons import ms  # noqa: E402
 from utils.validators import format_phone_display  # noqa: E402
 from utils.template_fields import fallback_value, manual_value  # noqa: E402
 
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (document_model,)
+
 UTC = timezone.utc
 UID = "kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s"
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

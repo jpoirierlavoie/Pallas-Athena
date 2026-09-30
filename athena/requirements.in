@@ -98,6 +98,50 @@ defusedxml==0.7.1
 cryptography==50.0.0
 msgpack==1.2.1
 h2==4.4.1
+# pyjwt arrives only via firebase-admin, and only its App Check verifier runs
+# it here (firebase_admin.app_check: alg pinned to RS256, jwt.decode with
+# algorithms=["RS256"]). 2.13.0 carried ten advisories (2026-09-29). The one
+# REACHABLE here was CVE-2026-101917 (GHSA-2gx3-rcp4-g85q): PyJWKClient
+# re-fetched the JWKS on every unknown `kid`, and the kid is read from the
+# UNVERIFIED token header, so any unauthenticated request carrying a forged
+# X-Firebase-AppCheck header forced one outbound HTTPS fetch — on the main
+# service (HX-Request is attacker-settable) and on the public portal. Every
+# such request still ended in a 401. 2.14.0+ adds a refetch cooldown and a
+# per-client lock around the fetch; note the cooldown starts only after a
+# SUCCESSFUL fetch, so while Google's JWKS endpoint is failing each forged kid
+# still costs one fetch, now serialized. The HS/asymmetric algorithm-confusion
+# advisories (CVE-2026-102268 — labelled critical — -102271, -102272, -102273)
+# and the empty-HMAC-JWK one (-102266) need an HS* algorithm in the allow-list
+# and are unreachable under RS256-only; -102267 (JWKS redirects) and -102274
+# (malformed RSA JWK) need an attacker-controlled response from Google's
+# hard-coded JWKS URL; -102269 (non-canonical signature) needs raw-token
+# revocation state, which nothing keeps; -102265 (RecursionError on a deeply
+# nested header) ends in the verifiers' `except Exception` → 401. 2.15.1
+# carries every 2.14.0 fix, caches the parsed key set, and reverts 2.14.0's
+# over-strict `=` padding rejection. firebase-admin 7.4.0 requires
+# pyjwt[crypto]>=2.10.1 with no upper bound. tests/test_appcheck_pyjwt.py runs
+# the real verifier against this pin.
+pyjwt==2.15.1
+# anyio arrives only via httpx ← firebase-admin (httpx[http2]==0.28.1). 4.14.2
+# fixes CVE-2026-63374 (GHSA-82r6-8w77-94w6 — IDNA-2003 host-name encoding in
+# TLSStream/connect_tcp enabling certificate spoofing for NON-ASCII hosts) and
+# CVE-2026-64847 (GHSA-5p39-cfhj-2xmp — process-pool workers deadlocking on
+# undrained stderr). Neither is reachable: importing the whole default app and
+# the portal loads httpx but never httpcore or anyio (the only httpx client
+# firebase-admin builds is FCM messaging's, which the app never imports), every
+# host the app contacts is ASCII, and nothing uses anyio process pools. A
+# hygiene bump.
+anyio==4.14.2
+# urllib3 arrives only via requests (Microsoft Graph in utils/graph.py, the
+# google-auth transport). 2.8.0 (2026-09-15) fixes CVE-2026-97687
+# (GHSA-8988-9cw3-xx77 — HTTPS-proxy TLS settings ignored or overridden:
+# unreachable, the app configures no proxy anywhere) and CVE-2026-97689
+# (GHSA-vxq7-64xx-v4gw — an unbounded chunk-size line buffered in
+# stream()/read_chunked(): reachable only from a response of Graph or Google
+# themselves), plus the medium GHSA-gh4c-6fx4-qh6g (chunked Deflate
+# streaming loop). Its one behaviour change concerns HTTPS forwarding
+# proxies, which nothing here uses. requests 2.33.1 accepts urllib3 < 3.
+urllib3==2.8.0
 # PDF text extraction, added 2026-08-26 for the MCP get_document_text tool
 # (the stdlib cannot read a PDF). Pure Python — no native libs, so App Engine
 # Standard safe. Sole consumer: utils/pdf_text.py, which

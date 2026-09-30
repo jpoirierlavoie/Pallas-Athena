@@ -181,7 +181,6 @@ from utils.budget_math import (  # noqa: E402,F401  (re-exports)
     _phase_order,
     budget_totals,
     group_lines_by_phase,
-    line_fees_cents as _line_fees_cents,
 )
 
 

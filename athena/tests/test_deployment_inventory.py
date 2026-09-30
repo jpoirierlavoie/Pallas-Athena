@@ -22,6 +22,7 @@ plutôt qu'une instance :
 import ast
 import io
 import os
+import pathlib
 import re
 import sys
 
@@ -1227,8 +1228,11 @@ def test_the_app_engine_region_is_a_literal_an_adopter_must_replace():
     un adoptant hors Montréal obtient une file Cloud Tasks que le code ne
     trouve pas, et l'échec est AVALÉ par conception côté portail."""
     assert OWNER_LITERALS["App Engine region"] == "northamerica-northeast1"
-    chemin = os.path.join(_ROOT, "athena/client/config.py")
-    assert "northamerica-northeast1" in io.open(chemin, encoding="utf-8").read()
+    # Read BEFORE the assert: under `python -O` an assert is not evaluated,
+    # and a file read belongs to no assertion (CodeQL py/side-effect-in-assert).
+    source = pathlib.Path(_ROOT, "athena", "client", "config.py").read_text(
+        encoding="utf-8")
+    assert "northamerica-northeast1" in source
 
 
 # ── Les commandes que les documents font TAPER ───────────────────────────

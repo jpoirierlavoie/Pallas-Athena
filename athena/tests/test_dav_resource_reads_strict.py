@@ -201,8 +201,8 @@ def test_the_addressbook_multiget_answers_503(db, monkeypatch):
 
 
 @pytest.mark.parametrize("update, collection, doc_id, data", [
-    (lambda i, d: task_model.update_task(i, d), "tasks", T1, {"title": "Autre"}),
-    (lambda i, d: partie_model.update_partie(i, d), "parties", P1, {"notes": "x"}),
+    (task_model.update_task, "tasks", T1, {"title": "Autre"}),
+    (partie_model.update_partie, "parties", P1, {"notes": "x"}),
 ])
 def test_an_update_whose_read_fails_says_so_never_introuvable(
         db, monkeypatch, update, collection, doc_id, data):

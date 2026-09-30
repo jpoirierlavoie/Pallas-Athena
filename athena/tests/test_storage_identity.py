@@ -38,6 +38,8 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import models.doc_template as tpl
     import models.document as doc
+    import models.upload_ticket as upload_ticket
+    import routes.admin_ledger as ra
     import routes.documents as rd
     from config import Config
 
@@ -726,3 +728,198 @@ def test_the_idiom_is_absent_from_the_whole_source_tree():
                 offenders.append(f"{rel}:{node.lineno}")
     assert scanned > 50, "the sweep did not walk the source tree"
     assert offenders == []
+
+
+# ── 7. Le texte rendu au client — une phrase fixe, jamais l'exception ─────
+#
+# The routes used to answer ``jsonify({"erreur": str(exc)})`` (CodeQL
+# py/stack-trace-exposure, 2026-09-30). The text was the class's own French
+# sentence, but a response built from ``str(exc)`` is built from exception
+# data: a future raise site passing an SDK message, or a subclass, would have
+# shipped it to the browser with no test noticing. The sentence is now chosen
+# by TYPE (`public_message`, `upload_ticket.session_error_message`), and the
+# constructors take no message at all.
+
+
+class _RenderedUid(si.InvalidStorageUid):
+    """An error whose rendering carries what must never reach a client."""
+
+    def __str__(self) -> str:
+        return "Traceback (most recent call last): SECRET"
+
+
+def test_the_client_sentence_is_chosen_by_type_never_read_off_the_error():
+    assert si.public_message(si.StorageIdentityUnavailable()) == si.UNAVAILABLE_MESSAGE
+    assert si.public_message(si.InvalidStorageUid()) == si.INVALID_UID_MESSAGE
+    assert si.public_message(_RenderedUid()) == si.INVALID_UID_MESSAGE
+    # The text of the error itself is still the sentence (the logs, the
+    # tests that compare it), but no caller reads it for a client.
+    assert str(si.StorageIdentityUnavailable()) == si.UNAVAILABLE_MESSAGE
+    assert str(si.InvalidStorageUid()) == si.INVALID_UID_MESSAGE
+
+
+def test_the_storage_errors_take_no_message():
+    # The callable form: the construction IS the assertion (a bare
+    # constructor call under `with pytest.raises` reads, to a static
+    # analyser, as an exception built and never raised).
+    pytest.raises(TypeError, si.StorageIdentityUnavailable,
+                  "Firebase: user lookup denied")
+    pytest.raises(TypeError, si.InvalidStorageUid, "users/unknown")
+    pytest.raises(TypeError, upload_ticket.UploadSessionUnavailable,
+                  "Precondition failed: gs://…")
+
+
+def test_the_upload_session_sentence_is_chosen_by_type():
+    plain = upload_ticket.UploadSessionUnavailable()
+    received = upload_ticket.UploadSessionUnavailable(already_received=True)
+    assert upload_ticket.session_error_message(received) == (
+        upload_ticket.ALREADY_RECEIVED_MESSAGE)
+    assert upload_ticket.session_error_message(plain) != (
+        upload_ticket.ALREADY_RECEIVED_MESSAGE)
+    assert upload_ticket.session_error_message(plain) == str(plain)
+    assert "session_error_message" in upload_ticket.__all__
+
+
+def _admin_web(user_id):
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["TESTING"] = True
+    app.register_blueprint(ra.admin_bp)
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["user_id"] = user_id
+        s["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
+    return client
+
+
+_RECEIPT_APIS = [
+    ("/administration/api/televersement", {"name": "recu.pdf", "size": 100}),
+    ("/administration/t1/api/recu",
+     {"objet": "staging/unknown/x/recu.pdf", "name": "recu.pdf"}),
+]
+
+
+@pytest.mark.parametrize("path, payload", _RECEIPT_APIS)
+def test_an_invalid_session_uid_refuses_the_receipt_apis(monkeypatch, path, payload):
+    monkeypatch.setattr(ra.storage, "bucket",
+                        lambda: pytest.fail("touched the bucket"))
+    resp = _admin_web("unknown").post(path, json=payload)
+    assert resp.status_code == 503
+    assert resp.get_json()["erreur"] == si.INVALID_UID_MESSAGE
+
+
+_ALL_JSON_APIS = [
+    (_admin_web, path, payload) for path, payload in _RECEIPT_APIS
+] + [
+    (_web, "/documents/api/televersement", {"name": "a.pdf", "size": 100}),
+    (_web, "/documents/api/finaliser",
+     {"objet": "staging/u1/x/a.pdf", "name": "a.pdf", "dossier_id": "d1"}),
+]
+
+
+@pytest.mark.parametrize("make, path, payload", _ALL_JSON_APIS)
+def test_the_upload_apis_answer_the_sentence_never_the_error_rendered(
+        monkeypatch, make, path, payload):
+    def _raise():
+        raise _RenderedUid()
+
+    monkeypatch.setattr(si, "request_uid", _raise)
+    monkeypatch.setattr(ra.storage, "bucket", lambda: pytest.fail("bucket"))
+    monkeypatch.setattr(rd.storage, "bucket", lambda: pytest.fail("bucket"))
+    resp = make(REAL_UID).post(path, json=payload)
+    assert resp.status_code == 503
+    assert resp.get_json() == {"erreur": si.INVALID_UID_MESSAGE}
+
+
+def test_the_zip_banner_carries_the_sentence_never_the_error_rendered(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    def _raise():
+        raise _RenderedUid()
+
+    monkeypatch.setattr(si, "request_uid", _raise)
+    monkeypatch.setattr(rd, "build_folder_zip_url",
+                        lambda *a: pytest.fail("built a zip path"))
+    resp = _web(REAL_UID).get("/documents/zip?dossier_id=d1")
+    assert resp.status_code == 302
+    query = parse_qs(urlsplit(resp.headers["Location"]).query)
+    assert query["erreur"] == [si.INVALID_UID_MESSAGE]
+
+
+# The derived sweep: over the whole non-test source tree, (a) no raise of
+# these errors passes a message (UploadSessionUnavailable takes only its
+# `already_received` keyword), and (b) no handler that catches one renders
+# the bound exception — `str(exc)`, `repr(exc)` or an f-string — anywhere
+# in its body. A client-facing text goes through the type-chosen helpers.
+
+_FIXED_TEXT_ERRORS = frozenset({
+    "StorageIdentityUnavailable", "InvalidStorageUid", "UploadSessionUnavailable",
+})
+
+
+def _class_name(node) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def fixed_text_violations(source: str, rel: str) -> list[str]:
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            name = _class_name(node.exc.func)
+            if name in _FIXED_TEXT_ERRORS:
+                allowed = {"already_received"} if name == "UploadSessionUnavailable" else set()
+                if node.exc.args or any(k.arg not in allowed for k in node.exc.keywords):
+                    found.append(f"{rel}:{node.lineno} raises {name} with a message")
+        if isinstance(node, ast.ExceptHandler) and node.name and node.type is not None:
+            caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+            if not any(_class_name(c) in _FIXED_TEXT_ERRORS for c in caught):
+                continue
+            for stmt in node.body:
+                for inner in ast.walk(stmt):
+                    rendered = (
+                        isinstance(inner, ast.Call)
+                        and _class_name(inner.func) in ("str", "repr")
+                        and any(isinstance(a, ast.Name) and a.id == node.name
+                                for a in inner.args)
+                    ) or (
+                        isinstance(inner, ast.FormattedValue)
+                        and isinstance(inner.value, ast.Name)
+                        and inner.value.id == node.name
+                    )
+                    if rendered:
+                        found.append(f"{rel}:{inner.lineno} renders the caught {node.name}")
+    return found
+
+
+def test_no_storage_or_session_error_carries_or_renders_a_message():
+    offenders, scanned = [], 0
+    for path in sorted(ATHENA.rglob("*.py")):
+        rel = path.relative_to(ATHENA).as_posix()
+        if rel.startswith(("tests/", "venv/", ".venv/")) or "/site-packages/" in rel:
+            continue
+        scanned += 1
+        offenders += fixed_text_violations(path.read_text(encoding="utf-8"), rel)
+    assert scanned > 50, "the sweep did not walk the source tree"
+    assert offenders == []
+
+
+@pytest.mark.parametrize("snippet, flagged", [
+    ("raise StorageIdentityUnavailable()", False),
+    ("raise si.InvalidStorageUid() from exc", False),
+    ("raise UploadSessionUnavailable(already_received=True)", False),
+    ("raise StorageIdentityUnavailable('Firebase: denied')", True),
+    ("raise UploadSessionUnavailable(detail=str(e))", True),
+    ("try:\n    f()\nexcept si.StorageIdentityUnavailable as exc:\n"
+     "    reply({'erreur': str(exc)})", True),
+    ("try:\n    f()\nexcept (ValueError, InvalidStorageUid) as e:\n"
+     "    msg = f'refus : {e}'", True),
+    ("try:\n    f()\nexcept UploadSessionUnavailable as exc:\n"
+     "    out = [session_error_message(exc)]", False),
+    ("try:\n    f()\nexcept ValueError as exc:\n    out = str(exc)", False),
+])
+def test_the_message_sweep_catches_what_it_claims(snippet, flagged):
+    assert bool(fixed_text_violations(snippet, "snippet")) is flagged

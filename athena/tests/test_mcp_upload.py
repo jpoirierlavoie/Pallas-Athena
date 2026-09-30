@@ -53,7 +53,7 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
+    import dav.sync as dav_sync  # its db is patched below
     import mcp.handlers as handlers
     import mcp.tools as tools
     import mcp.write_support as write_support
@@ -62,9 +62,16 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import upload_ticket as ut
     from utils import storage_identity
 
-from mcp.tools import ToolArgumentError  # noqa: E402
+ToolArgumentError = tools.ToolArgumentError
 from tests._fake_firestore import install  # noqa: E402
 from tests._fake_gcs import FakeBucket  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync,)
 
 UTC = timezone.utc
 DT = datetime(2026, 3, 4, tzinfo=UTC)
@@ -103,7 +110,8 @@ LEAKY_LETTER = _docx("Monsieur Jean Tremblay, votre dossier {{objet_lettre}}")
 
 
 def _md5(data: bytes) -> str:
-    return base64.b64encode(hashlib.md5(data).digest()).decode()
+    # GCS's content MD5 — an integrity check, not a security hash.
+    return base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()
 
 
 def _fake_modules() -> list:
@@ -241,7 +249,8 @@ def test_the_session_is_what_the_service_will_hold_the_put_to(world):
 
 
 @pytest.mark.parametrize("over, fragment", [
-    ({"md5_base64": hashlib.md5(PDF).hexdigest()}, "HEXADÉCIMALE"),
+    # GCS's content MD5 — an integrity check, not a security hash.
+    ({"md5_base64": hashlib.md5(PDF, usedforsecurity=False).hexdigest()}, "HEXADÉCIMALE"),
     ({"md5_base64": "A" * 24}, "md5_base64"),
     ({"filename": "script.exe"}, "type de fichier"),
     ({"filename": "a/b.pdf"}, "barre oblique"),

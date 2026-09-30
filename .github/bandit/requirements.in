@@ -1,0 +1,11 @@
+# Bandit for .github/workflows/bandit.yml — CI-only, never deployed.
+# Exact pin (== X.Y.Z), like athena/requirements.in: requirements.txt beside
+# this file is the GENERATED hash-locked lockfile, installed with
+# --require-hashes --no-deps. Re-lock from this directory with:
+#   uv pip compile requirements.in --python-version 3.13 --python-platform linux --generate-hashes -o requirements.txt
+# Linux, not --universal: the lock serves one runner (ubuntu-latest), and a
+# Linux resolution is what Dependabot writes when it regenerates it — a
+# universal lock would lose its win32-only entries at its first PR while the
+# header above still named --universal.
+# The [sarif] extra is the formatter the workflow uploads to code scanning.
+bandit[sarif]==1.9.4

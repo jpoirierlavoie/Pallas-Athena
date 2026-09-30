@@ -311,7 +311,10 @@ def is_appengine_internal_request() -> bool:
     )
 
 
-_ORIGIN_SECRET_MISSING_WARNED = False
+# The deployment facts already said once in this process (warn-once). A set,
+# mutated in place, rather than one `global` flag per fact: nothing is ever
+# rebound, and a test resets them all with `.clear()`.
+_WARNED_ONCE: set[str] = set()
 
 
 def _enforce_origin_secret() -> Optional[Response]:
@@ -325,12 +328,11 @@ def _enforce_origin_secret() -> Optional[Response]:
         # brute-force brakes were bypassable — and nothing had ever signalled
         # it. Say it once per process, structured, so a log-based metric can
         # catch the next one.
-        global _ORIGIN_SECRET_MISSING_WARNED
         if (
             current_app.config.get("ENV") == "production"
-            and not _ORIGIN_SECRET_MISSING_WARNED
+            and "origin_secret_disabled" not in _WARNED_ONCE
         ):
-            _ORIGIN_SECRET_MISSING_WARNED = True
+            _WARNED_ONCE.add("origin_secret_disabled")
             from utils.logging_setup import log_security_event
 
             log_security_event(
@@ -347,7 +349,9 @@ def _enforce_origin_secret() -> Optional[Response]:
     if is_appengine_internal_request():
         return None
     supplied = request.headers.get("X-Origin-Auth", "")
-    if not hmac.compare_digest(supplied, secret):
+    # As BYTES: `hmac.compare_digest` raises on a non-ASCII `str`, so a
+    # forged header carrying one was a 500 instead of this 403 (2026-09-30).
+    if not hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8")):
         abort(403)
     return None
 
@@ -430,8 +434,6 @@ _APPCHECK_EXEMPT_PREFIXES = (
     "/auth/",
 )
 
-_APPCHECK_MISSING_WARNED = False
-
 
 def _verify_app_check() -> Optional[Response]:
     """Verify Firebase App Check token on HTMX requests.
@@ -450,9 +452,11 @@ def _verify_app_check() -> Optional[Response]:
     # An exempt path now also emits it, and that is correct — this is a fact
     # about the deployment, not about the request.
     if not current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):
-        global _APPCHECK_MISSING_WARNED
-        if current_app.config.get("ENV") == "production" and not _APPCHECK_MISSING_WARNED:
-            _APPCHECK_MISSING_WARNED = True
+        if (
+            current_app.config.get("ENV") == "production"
+            and "appcheck_disabled" not in _WARNED_ONCE
+        ):
+            _WARNED_ONCE.add("appcheck_disabled")
             # Was a bare `current_app.logger.warning`, which carries no
             # `jsonPayload.event` and so could not drive a log-based metric.
             from utils.logging_setup import log_security_event
@@ -473,11 +477,15 @@ def _verify_app_check() -> Optional[Response]:
         if request.path.startswith(prefix):
             return None
 
+    from utils.logging_setup import log_security_event
+
     token = request.headers.get("X-Firebase-AppCheck")
     if not token:
-        current_app.logger.warning(
-            "HTMX request missing App Check token: %s",
-            sanitize_log_value(request.path),
+        log_security_event(
+            "appcheck_failure",
+            "warning",
+            reason="token_missing",
+            path=sanitize_log_value(request.path),
         )
         abort(401)
 
@@ -485,9 +493,23 @@ def _verify_app_check() -> Optional[Response]:
         from firebase_admin import app_check as firebase_app_check
         firebase_app_check.verify_token(token)
     except Exception as exc:
-        current_app.logger.warning(
-            "App Check verification failed for %s: %s",
-            sanitize_log_value(request.path), exc,
+        # The exception's CLASS, never its text: pyjwt formats the kid of the
+        # UNVERIFIED token header into its message (« Unable to find a signing
+        # key that matches: "<kid>" »), so the text is attacker-chosen, as long
+        # as the header size limit allows, on every forged request. Was a raw
+        # `current_app.logger.warning(..., exc)` until 2026-09-30.
+        # firebase-admin wraps nearly every rejection in a bare ValueError
+        # raised FROM the pyjwt error: the wrapped CLASS (never its text) is
+        # what tells an expired token from a wrong audience — a misconfigured
+        # project — or a bad signature.
+        cause = exc.__cause__
+        log_security_event(
+            "appcheck_failure",
+            "warning",
+            reason="verification_failed",
+            error_type=type(exc).__name__,
+            **({"cause_type": type(cause).__name__} if cause is not None else {}),
+            path=sanitize_log_value(request.path),
         )
         abort(401)
 

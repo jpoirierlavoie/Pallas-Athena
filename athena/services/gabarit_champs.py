@@ -82,7 +82,6 @@ _SLOT_LABELS = {
     "adverse": "La partie adverse choisie",
     "destinataire": "Le destinataire choisi",
 }
-_SLOTS = ("client", "adverse", "destinataire")
 
 
 class GenerationRefused(Exception):

@@ -79,6 +79,13 @@ from utils.icons import ms  # noqa: E402
 from utils.markdown_docx import markdown_to_safe_html  # noqa: E402
 from utils.validators import format_phone_display  # noqa: E402
 
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync,)
+
 UTC = timezone.utc
 DT = datetime(2026, 3, 4, tzinfo=UTC)
 RIVAL_ETAG = "11111111-2222-4333-8444-555555555555"

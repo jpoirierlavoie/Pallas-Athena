@@ -363,14 +363,14 @@ def test_invisible_characters_never_split_a_name():
     a BOM pasted INSIDE a name is drawn as nothing: the page reads
     « Tremblay ». Treated as separators, they cut it into « Trem » +
     « blay » and the name escaped the scan."""
-    body = _document(_para("Jean Trem­blay"), _para("Jean Trem​blay"),
-                     _para("Jean ‎Tremblay‏"), _para("﻿Jean Tremblay"),
-                     _para("Béton⁠Nord"))
+    body = _document(_para("Jean Trem\u00adblay"), _para("Jean Trem\u200bblay"),
+                     _para("Jean \u200eTremblay\u200f"), _para("\ufeffJean Tremblay"),
+                     _para("Béton\u2060Nord"))
     result = scan.scan_identifiers(_docx({"word/document.xml": body}),
                                    ["Jean Tremblay", "BétonNord"])
     found = {r.identifier: r.count for r in result.residues}
     assert found == {"Jean Tremblay": 4, "BétonNord": 1}
-    assert scan.fold_key("Trem­blay") == ("tremblay",)
+    assert scan.fold_key("Trem\u00adblay") == ("tremblay",)
 
 
 def test_matching_is_whole_word_only():

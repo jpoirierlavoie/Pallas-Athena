@@ -60,17 +60,12 @@ def tombstones(monkeypatch):
 
 @pytest.fixture()
 def client(monkeypatch):
-    import json
-
-    from markupsafe import Markup
-
     app = Flask(__name__, template_folder=os.path.join(ATHENA_DIR, "templates"))
     app.config["SECRET_KEY"] = "test-secret"
     # The note form uses these two app-level filters (registered in
     # main.create_app, which we do not build here).
-    app.jinja_env.filters["jsattr"] = lambda v: Markup(
-        json.dumps("" if v is None else str(v))
-    )
+    from utils.html_attr import jsattr
+    app.jinja_env.filters["jsattr"] = jsattr
     app.jinja_env.filters["markdown"] = lambda v: v
     app.jinja_env.globals["csp_nonce"] = "test-nonce"
     from utils.icons import ms as _ms

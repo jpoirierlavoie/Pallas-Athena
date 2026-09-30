@@ -14,7 +14,6 @@ Error messages carry HTTP status codes only, never response bodies (a Graph
 error body can echo tenant/user identifiers into logs).
 """
 
-import json
 import threading
 import time
 from typing import Any, Optional

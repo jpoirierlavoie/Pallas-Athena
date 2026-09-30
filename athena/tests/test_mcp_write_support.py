@@ -75,7 +75,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from google.api_core import exceptions as gexc  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
-    import mcp.handlers  # noqa: F401 — registers the tools' persistence hooks
+    import mcp.handlers  # registers the tools' persistence hooks
     from mcp import tools
     from mcp import write_support as ws
     from mcp.tools import (
@@ -86,6 +86,11 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import provenance
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Imported for its side effect, and named here so the dependency is
+# visible: loading mcp.handlers registers the tools' persistence hooks.
+# Bound to `_`, the name that says « deliberately unused ».
+_ = (mcp.handlers,)
 
 UTC = timezone.utc
 ATHENA_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -963,8 +968,10 @@ def test_a_refusal_defaults_to_the_generic_reason_and_keeps_its_message():
     assert exc.reason == DEFAULT_REFUSAL_REASON == "argument_refused"
     named = ToolArgumentError("Refusé.", reason="idempotency_conflict")
     assert str(named) == "Refusé." and named.reason == "idempotency_conflict"
-    with pytest.raises(TypeError):
-        ToolArgumentError("Refusé.", "idempotency_conflict")  # keyword-only
+    # keyword-only: a second positional argument is refused. The callable
+    # form states that the construction IS the assertion.
+    pytest.raises(TypeError, ToolArgumentError, "Refusé.",
+                  "idempotency_conflict")
 
 
 def test_a_key_conflict_is_refused_under_its_own_reason(fake):

@@ -15,7 +15,7 @@ immutable — never edit in place) + delete the old one; 4. update the
 fan-out; 5. update README (URL/sha256); 6. run the suite.
 """
 
-from markupsafe import Markup, escape
+from markupsafe import Markup
 
 MATERIAL_ICONS: frozenset = frozenset({
     "add", "archive", "arrow_back", "assignment", "bookmark",
@@ -57,7 +57,8 @@ def ms(name: str, size: int = 20, classes: str = "", fill: bool = False) -> Mark
         cls += " ms-fill"
     if classes:
         cls += f" {classes}"
+    # Markup.format escapes every argument (markupsafe.escape) — the
+    # template is the only unescaped text, and it is a literal.
     return Markup(
-        f'<span class="{escape(cls)}" aria-hidden="true" '
-        f'translate="no">{escape(name)}</span>'
-    )
+        '<span class="{}" aria-hidden="true" translate="no">{}</span>'
+    ).format(cls, name)
