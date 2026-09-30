@@ -88,7 +88,6 @@ def test_the_phase_gotcha_names_the_function_that_exists():
     """truth-9: the Phase-O gotcha named the renamed
     `_auto_create_tasks_for_steps`; only « ex- » mentions may remain."""
     text = (_REPO / "CLAUDE.md").read_text(encoding="utf-8")
-    import re
     bare = [m.start() for m in re.finditer(r"`_auto_create_tasks_for_steps`", text)
             if text[max(0, m.start() - 4):m.start()] != "(ex-"]
     assert bare == []

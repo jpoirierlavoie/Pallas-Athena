@@ -132,6 +132,16 @@ pyjwt==2.15.1
 # host the app contacts is ASCII, and nothing uses anyio process pools. A
 # hygiene bump.
 anyio==4.14.2
+# urllib3 arrives only via requests (Microsoft Graph in utils/graph.py, the
+# google-auth transport). 2.8.0 (2026-09-15) fixes CVE-2026-97687
+# (GHSA-8988-9cw3-xx77 — HTTPS-proxy TLS settings ignored or overridden:
+# unreachable, the app configures no proxy anywhere) and CVE-2026-97689
+# (GHSA-vxq7-64xx-v4gw — an unbounded chunk-size line buffered in
+# stream()/read_chunked(): reachable only from a response of Graph or Google
+# themselves), plus the medium GHSA-gh4c-6fx4-qh6g (chunked Deflate
+# streaming loop). Its one behaviour change concerns HTTPS forwarding
+# proxies, which nothing here uses. requests 2.33.1 accepts urllib3 < 3.
+urllib3==2.8.0
 # PDF text extraction, added 2026-08-26 for the MCP get_document_text tool
 # (the stdlib cannot read a PDF). Pure Python — no native libs, so App Engine
 # Standard safe. Sole consumer: utils/pdf_text.py, which

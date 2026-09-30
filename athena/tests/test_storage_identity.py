@@ -759,12 +759,14 @@ def test_the_client_sentence_is_chosen_by_type_never_read_off_the_error():
 
 
 def test_the_storage_errors_take_no_message():
-    with pytest.raises(TypeError):
-        si.StorageIdentityUnavailable("Firebase: user lookup denied")
-    with pytest.raises(TypeError):
-        si.InvalidStorageUid("users/unknown")
-    with pytest.raises(TypeError):
-        upload_ticket.UploadSessionUnavailable("Precondition failed: gs://…")
+    # The callable form: the construction IS the assertion (a bare
+    # constructor call under `with pytest.raises` reads, to a static
+    # analyser, as an exception built and never raised).
+    pytest.raises(TypeError, si.StorageIdentityUnavailable,
+                  "Firebase: user lookup denied")
+    pytest.raises(TypeError, si.InvalidStorageUid, "users/unknown")
+    pytest.raises(TypeError, upload_ticket.UploadSessionUnavailable,
+                  "Precondition failed: gs://…")
 
 
 def test_the_upload_session_sentence_is_chosen_by_type():

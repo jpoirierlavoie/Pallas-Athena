@@ -42,8 +42,9 @@ from tests._fake_firestore import install  # noqa: E402
 # Loaded for their side effect, and named here so the dependency is
 # visible: the fake store is installed on every LOADED module holding a
 # `db` (a sweep of sys.modules), so each must be imported — under the
-# Firestore mock — before a test installs it.
-_LOADED_UNDER_FAKE = (dav_sync,)
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync,)
 
 AUTH = {"Authorization": "Basic dGVzdEBleGFtcGxlLmNvbTpwdw=="}
 RID = "5b2d8c1e-4f3a-4e7b-9c0d-1a2b3c4d5e6f"

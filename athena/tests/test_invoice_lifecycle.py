@@ -61,8 +61,9 @@ from utils.icons import ms  # noqa: E402
 # Loaded for their side effect, and named here so the dependency is
 # visible: the fake store is installed on every LOADED module holding a
 # `db` (a sweep of sys.modules), so each must be imported — under the
-# Firestore mock — before a test installs it.
-_LOADED_UNDER_FAKE = (expense_model, time_entry_model)
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (expense_model, time_entry_model)
 
 UTC = timezone.utc
 WHEN = datetime(2026, 6, 15, tzinfo=UTC)

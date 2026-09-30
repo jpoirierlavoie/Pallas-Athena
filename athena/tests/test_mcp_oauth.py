@@ -662,8 +662,6 @@ def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake)
     bullet reach the page — so a family added to mcp/disclosure is
     described to the lawyer by construction, and a promise deleted there
     leaves the screen with it. The checkbox summary is the registry's."""
-    import mcp.disclosure as disclosure
-
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     _, page = _consent_form(client, client_doc, challenge)

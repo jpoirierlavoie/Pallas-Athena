@@ -64,8 +64,9 @@ from utils.template_fields import fallback_value, manual_value  # noqa: E402
 # Loaded for their side effect, and named here so the dependency is
 # visible: the fake store is installed on every LOADED module holding a
 # `db` (a sweep of sys.modules), so each must be imported — under the
-# Firestore mock — before a test installs it.
-_LOADED_UNDER_FAKE = (document_model,)
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (document_model,)
 
 UTC = timezone.utc
 UID = "kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s"

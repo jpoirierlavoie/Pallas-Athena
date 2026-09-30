@@ -318,7 +318,6 @@ function uploadForm() {
     },
 
     putTranche(f, url, debut) {
-      const self = this;
       return new Promise(function (resolve, reject) {
         const fin = Math.min(debut + CHUNK, f.size);
         const xhr = new XMLHttpRequest();

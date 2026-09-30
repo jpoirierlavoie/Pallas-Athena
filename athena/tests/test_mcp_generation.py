@@ -67,8 +67,9 @@ from tests._fake_gcs import FakeBucket  # noqa: E402
 # Loaded for their side effect, and named here so the dependency is
 # visible: the fake store is installed on every LOADED module holding a
 # `db` (a sweep of sys.modules), so each must be imported — under the
-# Firestore mock — before a test installs it.
-_LOADED_UNDER_FAKE = (dav_sync, write_support)
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync, write_support)
 
 UTC = timezone.utc
 DT = datetime(2026, 3, 4, tzinfo=UTC)

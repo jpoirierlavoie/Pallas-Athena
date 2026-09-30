@@ -64,8 +64,9 @@ from utils.graph import GraphError  # noqa: E402
 # Loaded for their side effect, and named here so the dependency is
 # visible: the fake store is installed on every LOADED module holding a
 # `db` (a sweep of sys.modules), so each must be imported — under the
-# Firestore mock — before a test installs it.
-_LOADED_UNDER_FAKE = (dav_sync, partie_model, write_support)
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (dav_sync, partie_model, write_support)
 
 UTC = timezone.utc
 WHEN = datetime(2026, 9, 1, tzinfo=UTC)

@@ -89,7 +89,8 @@ from tests._fake_firestore import install  # noqa: E402
 
 # Imported for its side effect, and named here so the dependency is
 # visible: loading mcp.handlers registers the tools' persistence hooks.
-_REGISTERS_HOOKS = (mcp.handlers,)
+# Bound to `_`, the name that says « deliberately unused ».
+_ = (mcp.handlers,)
 
 UTC = timezone.utc
 ATHENA_DIR = pathlib.Path(__file__).resolve().parent.parent
