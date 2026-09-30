@@ -569,8 +569,11 @@ def test_d21_a_client_less_invoice_is_paid_when_the_dossier_has_one_client(fake)
 def test_d23_the_payee_is_the_lawyer_or_his_firm(fake):
     """Régression — D23 (2026-09-29, art. 58): a caller-supplied payee went
     to the register as typed — « Jean Tremblay » passed. It must name the
-    lawyer or his firm, as the firm profile names them; it is stored as the
-    profile spells it; omitted, it is the firm."""
+    lawyer or his firm, as the firm profile names them — either, for either
+    method (D23, settled by the lawyer on 2026-09-29); it is stored as the
+    profile spells it; omitted, it follows the method — the lawyer on a
+    chèque, the firm on a virement
+    (test_d23_a_cheque_s_default_payee_is_the_lawyer)."""
     _cleared_deposit(fake)
     refusal = _refused("record_trust_entry", **_fee(20000, counterparty="Jean Tremblay"))
     assert refusal.reason == "accounting_refused"
@@ -878,13 +881,41 @@ def test_a_cleared_entry_is_no_longer_editable(fake):
     assert "reverse_register_entry" in str(refusal)
 
 
-def test_an_admin_clearing_certifies_the_version_the_caller_read(fake):
+def _uuid4_carrying(text: str):
+    """A ``uuid.uuid4`` whose every id and etag ENDS its last group with
+    *text* (hex digits, at most 5) — each a valid lowercase uuid4, unique
+    within the run. The chance event made certain: a random id that happens
+    to spell an amount a test says the refusal never quotes."""
+    counter = itertools.count(1)
+
+    def make() -> uuid.UUID:
+        n = next(counter)
+        value = uuid.UUID(f"{n:08x}-0000-4000-8000-{n:0{12 - len(text)}x}{text}")
+        assert value.version == 4
+        return value
+
+    return make
+
+
+@pytest.mark.parametrize("ids", ["random", "carrying_20000"])
+def test_an_admin_clearing_certifies_the_version_the_caller_read(
+        fake, monkeypatch, ids):
     """Finitions, money-3 — the connector's half of the lot-5b « Compenser »
     fix. Claude reads a dépense of 114,98 $ (get_admin_ledger) to compare it
     with the statement; meanwhile the entry is corrected to 200,00 $. The
     clearing sent with the etag Claude READ is refused, whole, and nothing
     is locked: the 200,00 $ is never certified « on the statement » by a
-    call that compared 114,98 $."""
+    call that compared 114,98 $.
+
+    The refusal names the entry by its id — a random uuid4 — and the check
+    that it quotes no amount looked for « 20000 » in the WHOLE text: about
+    one run in 90 000 the id would spell it, turning the deploy gate red on
+    a refusal that quoted nothing (the D22 class of flake,
+    test_the_bank_number_check_is_deterministic_whatever_the_ids). The id
+    is set aside before the amount is looked for; ``carrying_20000`` makes
+    the chance event certain."""
+    if ids == "carrying_20000":
+        monkeypatch.setattr(uuid, "uuid4", _uuid4_carrying("20000"))
     made = _call("record_admin_entry", **_depense())["entity"]
     (row,) = handlers.get_admin_ledger({"account_id": "ops1"})["transactions"]
     seen = row["etag"]
@@ -900,7 +931,8 @@ def test_an_admin_clearing_certifies_the_version_the_caller_read(fake):
     assert refusal.reason == "stale_etag"
     assert made["id"] in str(refusal) and "Rien n'a été compensé" in str(refusal)
     assert "get_admin_ledger" in str(refusal)
-    assert "20000" not in str(refusal) and "200,00" not in str(refusal)
+    quoted = str(refusal).replace(made["id"], "")
+    assert "20000" not in quoted and "200,00" not in quoted
     assert _entries(fake, "admin_transactions") == before
     assert fake.peek(f"admin_transactions/{made['id']}")["status"] == "en_circulation"
     # With the version read AFTER the correction, it clears.

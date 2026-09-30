@@ -1020,7 +1020,7 @@ NEVERS: tuple[Never, ...] = (
         # the external-invoice path unless its caller turns it on — the web
         # form does, the connector never (allow_external_ref=False): no
         # tool may even DECLARE the paper-invoice input. The same test pins
-        # all four refusals.
+        # all five refusals.
         forbidden_inputs=(("*", "invoice_external_ref"),),
         behavioural_test=(
             "tests/test_mcp_accounting.py::"

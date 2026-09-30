@@ -3408,7 +3408,8 @@ Notes:
      accepted for EITHER method, cheque or transfer, the lawyer's name
      being only the DEFAULT on a cheque) — check the names there FIRST: a
      profile naming neither refuses every fee payment. No real entry is
-     needed to check it: an incoherent pair or another client's invoice is
+     needed to check it: an incoherent pair, another client's invoice or —
+     in a dossier of several clients — an invoice naming none (D21) is
      refused and writes nothing. Then `python -m scripts.verify_trust_integrity`
      (read-only): check 8's new NOTES (a single transfer leg, an incoherent
      objet/sens, a fee payment for another client's invoice, a payee
