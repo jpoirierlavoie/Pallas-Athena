@@ -12,7 +12,7 @@ from typing import Optional
 
 from flask import Flask, Response, abort, current_app, g, request
 
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_security_event, sanitize_log_value
 
 
 def csp_nonce() -> str:
@@ -116,27 +116,39 @@ def verify_app_check() -> Optional[Response]:
             and not _APPCHECK_MISSING_WARNED
         ):
             _APPCHECK_MISSING_WARNED = True
-            current_app.logger.warning(
-                "App Check site key not configured in production — "
-                "portal App Check verification is disabled"
+            # The main service's event, so ONE log-based metric covers both
+            # services (filter on resource.labels.module_id to tell them
+            # apart). Was a raw `current_app.logger.warning`, which carries no
+            # `jsonPayload.event`, until 2026-09-30.
+            log_security_event(
+                "appcheck_disabled",
+                "warning",
+                reason="recaptcha_site_key_unset",
             )
         return None
 
     token = request.headers.get("X-Firebase-AppCheck")
     if not token:
-        current_app.logger.warning(
-            "portal POST missing App Check token: %s",
-            sanitize_log_value(request.path),
+        log_security_event(
+            "appcheck_failure",
+            "warning",
+            reason="token_missing",
+            path=sanitize_log_value(request.path),
         )
         abort(401)
     try:
         from firebase_admin import app_check as firebase_app_check
 
         firebase_app_check.verify_token(token)
-    except Exception:
-        current_app.logger.warning(
-            "portal App Check verification failed: %s",
-            sanitize_log_value(request.path),
+    except Exception as exc:
+        # The class only — the message of a pyjwt error carries the kid of
+        # the unverified header (see security._verify_app_check).
+        log_security_event(
+            "appcheck_failure",
+            "warning",
+            reason="verification_failed",
+            error_type=type(exc).__name__,
+            path=sanitize_log_value(request.path),
         )
         abort(401)
     return None

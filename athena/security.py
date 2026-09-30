@@ -473,11 +473,15 @@ def _verify_app_check() -> Optional[Response]:
         if request.path.startswith(prefix):
             return None
 
+    from utils.logging_setup import log_security_event
+
     token = request.headers.get("X-Firebase-AppCheck")
     if not token:
-        current_app.logger.warning(
-            "HTMX request missing App Check token: %s",
-            sanitize_log_value(request.path),
+        log_security_event(
+            "appcheck_failure",
+            "warning",
+            reason="token_missing",
+            path=sanitize_log_value(request.path),
         )
         abort(401)
 
@@ -485,9 +489,17 @@ def _verify_app_check() -> Optional[Response]:
         from firebase_admin import app_check as firebase_app_check
         firebase_app_check.verify_token(token)
     except Exception as exc:
-        current_app.logger.warning(
-            "App Check verification failed for %s: %s",
-            sanitize_log_value(request.path), exc,
+        # The exception's CLASS, never its text: pyjwt formats the kid of the
+        # UNVERIFIED token header into its message (« Unable to find a signing
+        # key that matches: "<kid>" »), so the text is attacker-chosen, as long
+        # as the header size limit allows, on every forged request. Was a raw
+        # `current_app.logger.warning(..., exc)` until 2026-09-30.
+        log_security_event(
+            "appcheck_failure",
+            "warning",
+            reason="verification_failed",
+            error_type=type(exc).__name__,
+            path=sanitize_log_value(request.path),
         )
         abort(401)
 
