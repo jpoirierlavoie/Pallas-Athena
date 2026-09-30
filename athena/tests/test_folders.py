@@ -383,14 +383,23 @@ def test_a_move_on_a_stale_etag_writes_nothing(store):
 
 
 def test_ensure_creates_the_system_folder_at_its_deterministic_id(store):
+    """Default tree (2026-09-30): « Projets » lives under « Interne » — a
+    missing « Projets » is created with its parent, in ONE commit (it was a
+    lone root folder until then)."""
     created, errors = folder.ensure_system_folder("d1", folder.SYSTEM_ROLE_PROJETS)
     assert errors == []
     expected_id = folder.system_folder_id("d1", "projets")
+    interne_id = folder.system_folder_id("d1", "interne")
     assert created["id"] == expected_id
     stored = store.peek(f"folders/{expected_id}")
     assert stored["name"] == "Projets" and stored["system_role"] == "projets"
-    assert stored["parent_folder_id"] is None and stored["etag"]
-    assert store.commits[-1].ops == (("create", f"folders/{expected_id}"),)
+    assert stored["parent_folder_id"] == interne_id and stored["etag"]
+    interne = store.peek(f"folders/{interne_id}")
+    assert interne["name"] == "Interne" and interne["system_role"] == "interne"
+    assert interne["parent_folder_id"] is None
+    assert store.commits[-1].ops == (
+        ("create", f"folders/{interne_id}"), ("create", f"folders/{expected_id}"),
+    )
 
     again, errors = folder.ensure_system_folder("d1", "projets")
     assert errors == [] and again["id"] == expected_id
@@ -400,10 +409,25 @@ def test_ensure_creates_the_system_folder_at_its_deterministic_id(store):
 def test_the_deterministic_id_is_per_dossier_and_per_role():
     ids = {folder.system_folder_id(d, r) for d in ("d1", "d2")
            for r in folder.VALID_SYSTEM_ROLES}
-    assert len(ids) == 4
+    assert len(ids) == 2 * len(folder.VALID_SYSTEM_ROLES) == 14
+    nodes = {folder.node_folder_id(d, n.key) for d in ("d1", "d2")
+             for n in folder.DEFAULT_TREE}
+    assert len(nodes) == 2 * len(folder.DEFAULT_TREE) == 36 and ids <= nodes
     assert folder.system_folder_id("d1", "projets") == folder.system_folder_id("d1", "projets")
     with pytest.raises(ValueError):
         folder.system_folder_id("d1", "autre")
+    with pytest.raises(ValueError):
+        folder.system_folder_id("d1", "pieces")      # an ordinary node: no role
+    with pytest.raises(ValueError):
+        folder.node_folder_id("d1", "inconnu")
+
+
+def test_the_ids_lot_2a_minted_are_frozen():
+    """GOLDEN: every other test derives the id, so a change of the namespace
+    or of the key format would pass them all — and orphan every « Projets »
+    and « Reçus du portail » already stored."""
+    assert folder.system_folder_id("d1", "projets") == "85d397d4-ae2e-585f-9e50-e216b3e4c1cf"
+    assert folder.system_folder_id("d1", "portail") == "cd890008-29f9-567e-a663-56746b44f0d3"
 
 
 def test_parallel_ensures_never_fork_the_system_folder(store, monkeypatch):
@@ -430,7 +454,8 @@ def test_parallel_ensures_never_fork_the_system_folder(store, monkeypatch):
     second, second_errors = interleaved[0]
     assert second_errors == []
     assert first["id"] == second["id"] == folder.system_folder_id("d1", "projets")
-    assert [f["name"] for f in _folders(store).values()] == ["Projets"]
+    # Default tree: « Projets » comes with its parent « Interne » — one each.
+    assert sorted(f["name"] for f in _folders(store).values()) == ["Interne", "Projets"]
     # Review of T2: the loser READ BACK the winner's folder — it did not
     # overwrite it. A `set()` at the deterministic id would pass every
     # assertion above (one folder, one id) while replacing the winner's
@@ -549,7 +574,9 @@ def test_a_system_folder_does_not_rename_or_move_and_the_next_ensure_finds_it(st
 
     again, _ = folder.ensure_system_folder("d1", "projets")
     assert again["id"] == projets["id"]
-    assert sum(1 for f in _folders(store).values() if f.get("system_role")) == 1
+    # « Projets » and its parent « Interne » — two stamped folders, no third.
+    assert sorted(f.get("system_role") for f in _folders(store).values()
+                  if f.get("system_role")) == ["interne", "projets"]
 
 
 def test_an_unstamped_legacy_projets_is_already_protected(store):

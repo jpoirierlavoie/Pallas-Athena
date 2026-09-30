@@ -275,13 +275,20 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
     monkeypatch.setattr(ra.al, "get_transaction", lambda t: {"id": t})
     attached = {}
 
-    def _attach(tx_id, path, name, ct, size):
-        attached.update(dict(tx_id=tx_id, path=path, name=name, ct=ct, size=size))
+    def _attach(tx_id, path, name, ct, size, *, md5=""):
+        attached.update(dict(tx_id=tx_id, path=path, name=name, ct=ct, size=size,
+                             md5=md5))
         return {"_previous_receipt_path": None}, []
     monkeypatch.setattr(ra.al, "attach_receipt", _attach)
+    # Not a dépense of a dossier (the entry has no kind): no copy attempted.
+    monkeypatch.setattr(
+        ra.pieces_justificatives, "verser_recu_au_dossier",
+        lambda *a, **k: pytest.fail("aucune copie pour une écriture inadmissible"),
+    )
 
     staging = mock.MagicMock()
     staging.size = 1000
+    staging.md5_hash = "XUFAKrxLKna5cZ2REBfFkg=="   # the reloaded staging digest
     staging.download_as_bytes.return_value = b"%PDF-1.7 " + b"\x00" * 100
     dest = mock.MagicMock()
     dest.rewrite.return_value = (None, 1000, 1000)
@@ -295,6 +302,11 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
     assert reponse.status_code == 200
     assert attached["path"] == "users/u1/administration/t9/recu.pdf"
     assert attached["ct"] == "application/pdf"
+    # The receipt's MD5 travels with it, in the same write (2026-09-30).
+    assert attached["md5"] == "XUFAKrxLKna5cZ2REBfFkg=="
+    # The page to return to, built by the server on success too — and with
+    # NO banner, so a stale ?avertissement= never survives the upload.
+    assert reponse.get_json() == {"ok": True, "suivant": "/administration/t9"}
     assert dest.content_disposition == "attachment"
     staging.delete.assert_called_once()
 

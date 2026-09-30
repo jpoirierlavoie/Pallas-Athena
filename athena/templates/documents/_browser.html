@@ -184,9 +184,13 @@
              @click.outside="menuOpen = false"
              x-cloak
              class="absolute right-0 top-8 bg-white rounded-xl shadow-xl border border-gray-200 py-1 w-40 z-20">
-          {# « Projets » et « Reçus du portail » appartiennent à
-             l'application (lot 2A, T2) : ni renommage ni déplacement — le
-             modèle les refuse, le menu ne les propose pas. #}
+          {# Les sept dossiers de l'application — Mandat, Factures,
+             Déboursés, Interne, Projets, Autres, Reçus du portail —, trouvés
+             par leur rôle où qu'ils soient dans l'arborescence (plus
+             seulement à la racine) : ni renommage ni déplacement — le
+             modèle les refuse, le menu ne les propose pas. _system est jugé
+             sur TOUS les dossiers de classement du dossier
+             (routes/documents._attach_folder_counts). #}
           {% if not f._system %}
           <button @click="menuOpen = false; renaming = true"
                   class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">

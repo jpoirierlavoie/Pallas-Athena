@@ -1356,10 +1356,28 @@ def test_dossier_writes_conform(monkeypatch):
                             {**existing, **data, "id": did,
                              "etag": "e-ecrit"}, []))
 
+    # The default filing tree (2026-09-30): success, then its two failure
+    # branches — the payload is the same success, a warning added.
+    monkeypatch.setattr(handlers.folder_model, "ensure_default_tree",
+                        lambda did, *, relocate=False: (object(), []))
+
     args = {"file_number": "2019-014", "title": "Tremblay c. Lavoie",
             "clients": [{"partie_id": "p1", "roles": ["demandeur"]}],
             "status": "fermé"}
     _conforms("create_dossier", handlers.create_dossier(dict(args)))
+
+    def _raises(did, *, relocate=False):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(handlers, "log_unexpected", lambda *a, **k: None)
+    for failing in (lambda did, *, relocate=False: (None, ["Refus."]),
+                    _raises):
+        monkeypatch.setattr(handlers.folder_model, "ensure_default_tree",
+                            failing)
+        failed = handlers.create_dossier(dict(args))
+        _conforms("create_dossier", failed)
+        assert failed["created"] is True
+        assert any("ne le recréez pas" in w for w in failed["warnings"])
 
     upd = {"dossier_id": "d1", "sommaire": "résumé"}
     updated = handlers.update_dossier(dict(upd))

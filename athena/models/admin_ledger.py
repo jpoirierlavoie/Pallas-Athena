@@ -2298,24 +2298,43 @@ def create_card_payment(
 # ── attach_receipt — the pièce justificative metadata ──────────────────────
 
 
+# The receipt's MD5 as GCS reports it (base64 of 16 bytes — 24 characters).
+# Anything longer is not a digest and is stored as « unknown » ("").
+_RECEIPT_MD5_MAX = 64
+
+
 def attach_receipt(
-    tx_id: str, storage_path: str, filename: str, content_type: str, size: int
+    tx_id: str, storage_path: str, filename: str, content_type: str, size: int,
+    *, md5: str = "",
 ) -> tuple[Optional[dict], list[str]]:
-    """Set the four receipt fields on an entry — the one post-create
-    mutation OUTSIDE the lock (an annulée or reconciled entry keeps the
-    right to its supporting document; a receipt moves no money, so the
-    account etag is deliberately untouched). Returns the PREVIOUS storage
-    path under ``_previous_receipt_path`` so the caller can delete the
-    replaced blob."""
+    """Set the receipt fields on an entry — the one post-create mutation
+    OUTSIDE the lock (an annulée or reconciled entry keeps the right to its
+    supporting document; a receipt moves no money, so the account etag is
+    deliberately untouched). Returns the PREVIOUS storage path under
+    ``_previous_receipt_path`` so the caller can delete the replaced blob.
+
+    ``md5`` (2026-09-30) — the receipt's GCS ``md5_hash``, stored as
+    ``receipt_md5`` in the SAME ``update()`` as the path: it names WHICH
+    receipt the entry carries, so a copy filed in the dossier
+    (``services/pieces_justificatives``, whose document keeps
+    ``source_receipt_md5``) can be told apart from a copy of a receipt
+    since replaced. Always written — a replacement given no digest stores
+    ``""`` rather than keeping the replaced receipt's. This is the ONLY
+    register field that feature writes: the link to the copy lives on the
+    DOCUMENT."""
     existing = get_transaction(tx_id)
     if existing is None:
         return None, [_ABORT_MESSAGES["écriture_introuvable"]]
     now = datetime.now(timezone.utc)
+    receipt_md5 = (
+        md5 if isinstance(md5, str) and len(md5) <= _RECEIPT_MD5_MAX else ""
+    )
     updates = {
         "receipt_storage_path": storage_path,
         "receipt_filename": sanitize(filename or "", max_length=300),
         "receipt_file_type": sanitize(content_type or "", max_length=100),
         "receipt_file_size": int(size or 0),
+        "receipt_md5": receipt_md5,
         **provenance.update_fields(now),
     }
     try:

@@ -320,7 +320,9 @@ def test_an_unknown_old_status_never_claims_a_reopening(client, db, dossier):
     assert "réouverture est enregistrée" not in page
 
 
-@pytest.mark.parametrize("path", ["/dossiers/%20", "/dossiers/%20/dav/resync"])
+@pytest.mark.parametrize("path", ["/dossiers/%20", "/dossiers/%20/dav/resync",
+                                  "/dossiers/%20/delete",
+                                  "/dossiers/%20/arborescence"])
 def test_a_blank_dossier_id_goes_to_the_list_never_a_500(client, db, path):
     """Régression (revue 4a) — le service refuse un id blanc par une
     ValueError (ses lecteurs liraient TOUTE la collection) : une URL

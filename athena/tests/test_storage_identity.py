@@ -689,6 +689,10 @@ def test_the_caller_sweep_finds_what_it_exists_for():
         # from this list deliberately; the service obtains its uid from a
         # guard, pinned in tests/test_note_honoraires_service.py).
         "routes/reception.py:verser",
+        # 2026-09-30: the COPY of an administration dépense's pièce
+        # justificative into its dossier (« Mandat › Déboursés ») — the
+        # service's first statement is require_uid, before any folder.
+        "services/pieces_justificatives.py:verser_recu_au_dossier",
         # Lot 2A T9: the upload ticket's two filings, each obtaining the
         # owner uid itself (a released claim when it cannot).
         "mcp/handlers.py:_finalize_document_upload",

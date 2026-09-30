@@ -179,6 +179,42 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     assert ecrits
 
 
+@pytest.mark.parametrize("parent, chemin", [
+    # L'arborescence par défaut (2026-09-30) : « Reçus du portail » vit sous
+    # « Autres ». ÉCHOUE sur l'ancienne route, qui nommait le seul dossier.
+    ("f-autres", "Autres › Reçus du portail"),
+    # Un dossier pas encore doté de l'arborescence garde son ANCIEN dossier
+    # à la racine (trouvé par son rôle, utilisé où il est) : la bannière ne
+    # doit pas envoyer le juriste chercher sous un « Autres » qui ne le
+    # contient pas.
+    (None, "Reçus du portail"),
+])
+def test_verser_nomme_le_chemin_du_dossier_de_reception(
+    web, monkeypatch, parent, chemin,
+):
+    from urllib.parse import parse_qs, urlparse
+
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
+    bucket = mock.Mock()
+    bucket.blob.return_value = _blob_quarantaine()
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier",
+                        lambda d: _dossier() if d == "d1" else None)
+    monkeypatch.setattr(rc, "ensure_system_folder", lambda d, role: ({
+        "id": "f-portail", "system_role": role, "parent_folder_id": parent,
+    }, []))
+    monkeypatch.setattr(rc, "ingest_blob_as_document",
+                        mock.Mock(return_value=({"id": "doc9"}, [])))
+
+    reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                       data={"dossier_id": "d1", "category": "pièce"})
+    assert reponse.status_code == 302
+    message = parse_qs(urlparse(reponse.headers["Location"]).query)["message"][0]
+    assert message == f"Fichier versé au dossier 2026-001 (dossier « {chemin} »)."
+
+
 @pytest.mark.parametrize("categorie, du_juriste", [
     ("pièce", False),     # la valeur que le sélecteur PRÉSÉLECTIONNE
     ("autre", True),      # quittée : c'est un choix

@@ -683,6 +683,58 @@ def test_include_folders_returns_the_whole_tree_with_roles_and_etags(filed):
     _conforms("list_documents", payload)
 
 
+def test_an_unstamped_root_mandat_or_debourses_reads_ordinary(filed):
+    """The new roles of the default tree (2026-09-30) are recognized by
+    their STAMP alone: a root « Mandat » or « Déboursés » the lawyer made
+    himself reads "" — rows and tree alike — where the stamped folders of
+    the tree read their role. Only « Projets » and « Reçus du portail »
+    keep the legacy by-name reading (the « recu » row above)."""
+    db, _ = filed
+    mandat = folder_model.system_folder_id("d1", folder_model.SYSTEM_ROLE_MANDAT)
+    factures = folder_model.system_folder_id(
+        "d1", folder_model.SYSTEM_ROLE_FACTURES)
+    folders = {
+        "fmandat": {"name": "Mandat", "parent_folder_id": None,
+                    "system_role": ""},
+        "fdeb": {"name": "Déboursés", "parent_folder_id": None,
+                 "system_role": ""},
+        # The tree's own, stamped: « Mandat › Factures » (on d2, so the two
+        # « Mandat » never share a parent).
+        mandat: {"name": "Mandat", "parent_folder_id": None,
+                 "system_role": "mandat", "dossier_id": "d2"},
+        factures: {"name": "Factures", "parent_folder_id": mandat,
+                   "system_role": "factures", "dossier_id": "d2"},
+    }
+    for fid, data in folders.items():
+        db.seed(f"folders/{fid}", {"id": fid, "dossier_id": "d1", "order": 0,
+                                    "etag": f"etag-{fid}", **data})
+    for did, fid, dossier in (("conv", "fmandat", "d1"), ("dep", "fdeb", "d1"),
+                              ("fact", factures, "d2")):
+        db.seed(f"documents/{did}", {
+            "id": did, "dossier_id": dossier, "dossier_file_number": "2026-001",
+            "display_name": f"{did}.pdf", "file_type": "application/pdf",
+            "file_size": 10, "version": 1, "tags": [], "etag": f"etag-{did}",
+            "storage_path": f"users/{UID}/dossiers/{dossier}/documents/{did}/x.pdf",
+            "filename": "x.pdf", "folder_id": fid, "category": "autre",
+            "created_at": datetime(2026, 7, 1, tzinfo=UTC)})
+    payload = handlers.list_documents({"dossier_id": "d1", "include_folders": True})
+    rows = {r["id"]: r for r in payload["items"]}
+    assert rows["conv"]["folder_system_role"] == ""
+    assert rows["dep"]["folder_system_role"] == ""
+    by_id = {f["id"]: f for f in payload["folders"]}
+    assert by_id["fmandat"]["system_role"] == ""
+    assert by_id["fdeb"]["system_role"] == ""
+    _conforms("list_documents", payload)
+    stamped = handlers.list_documents({"dossier_id": "d2", "include_folders": True})
+    assert {r["id"]: r["folder_system_role"] for r in stamped["items"]} == {
+        "fact": "factures"}
+    assert {f["id"]: f["system_role"] for f in stamped["folders"]} == {
+        mandat: "mandat", factures: "factures"}
+    assert {f["id"]: f["path"] for f in stamped["folders"]}[factures] == (
+        "Mandat / Factures")
+    _conforms("list_documents", stamped)
+
+
 def test_the_tree_is_capped_and_says_so(filed, monkeypatch):
     monkeypatch.setattr(handlers, "FOLDER_TREE_MAX", 2)
     payload = handlers.list_documents({"dossier_id": "d1", "include_folders": True})

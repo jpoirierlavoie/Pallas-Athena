@@ -2231,83 +2231,196 @@ def refresh_party_names(
     return [_refresh_one(dossier, contacts)], []
 
 
-# Child collections checked before a dossier may be deleted:
-# (collection name, singular French label, plural French label)
+# Child collections that BLOCK a dossier's deletion:
+# (collection name, plural French label)
+#
+# « folders » is deliberately NOT here any more (2026-09-30). Since the
+# default tree every dossier holds eighteen folders from its creation: kept
+# as a blocking child, it would have made every new dossier undeletable. A
+# FOLDER is not content — it is the filing tree — and an empty one leaves
+# with its dossier, in the same transaction (see ``delete_dossier``). What
+# a folder can HOLD (documents) still blocks.
 _CHILD_COLLECTIONS = (
-    ("documents", "document", "documents"),
-    ("timeentries", "entrée de temps", "entrées de temps"),
-    ("expenses", "dépense", "dépenses"),
-    ("invoices", "facture", "factures"),
-    ("hearings", "audience", "audiences"),
-    ("tasks", "tâche", "tâches"),
-    ("notes", "note", "notes"),
-    ("protocols", "protocole", "protocoles"),
-    ("folders", "répertoire de documents", "répertoires de documents"),
+    ("documents", "documents"),
+    ("timeentries", "entrées de temps"),
+    ("expenses", "dépenses"),
+    ("invoices", "factures"),
+    ("hearings", "audiences"),
+    ("tasks", "tâches"),
+    ("notes", "notes"),
+    ("protocols", "protocoles"),
     # Trust (Phase K): a dossier that has EVER had a fidéicommis entry can never
     # be deleted — the register is permanent, even at a zero balance. Because
-    # trust_transactions rows are never hard-deleted, the same count>0 refusal
+    # trust_transactions rows are never hard-deleted, the existence check
     # enforces "ever existed" (spec §6.3). Archive the dossier instead.
-    ("trust_transactions", "opération fiduciaire", "opérations fiduciaires"),
+    ("trust_transactions", "opérations fiduciaires"),
+)
+
+# The closed refusal codes of :func:`delete_dossier` (the route maps them to
+# its own closed banner codes — the model's text never reaches a URL).
+DELETE_NOT_FOUND = "introuvable"
+DELETE_HAS_CONTENT = "contenu"
+DELETE_READ_FAILED = "lecture"
+DELETE_FAILED = "echec"
+
+_DELETE_MESSAGES = {
+    DELETE_NOT_FOUND: "Dossier introuvable.",
+    DELETE_READ_FAILED: (
+        "Impossible de vérifier le contenu du dossier : rien n'a été "
+        "supprimé. Veuillez réessayer."
+    ),
+    DELETE_FAILED: (
+        "La suppression n'a pas abouti : rien n'a été supprimé. Veuillez "
+        "réessayer."
+    ),
+}
+# An ``echec`` whose outcome is unknown (the commit raised, and so did the
+# re-read that would tell): never « rien n'a été supprimé ».
+_DELETE_UNCERTAIN = (
+    "La suppression n'a peut-être pas abouti — rechargez la page pour le "
+    "vérifier."
 )
 
 
-def _count_dossier_children(dossier_id: str) -> list[tuple[int, str]]:
-    """Count child records referencing a dossier.
+class _DeleteRefused(Exception):
+    """A refusal decided inside :func:`delete_dossier`'s transaction."""
 
-    Returns a list of (count, French label) tuples for every child type
-    that still has at least one record linked to the dossier.
-    """
-    remaining: list[tuple[int, str]] = []
-    for collection_name, singular, plural in _CHILD_COLLECTIONS:
-        # Fail CLOSED: a count that cannot be established must refuse the
-        # deletion rather than risk orphaning children — let errors propagate
-        # to delete_dossier, which aborts.
-        query = db.collection(collection_name).where(
-            filter=FieldFilter("dossier_id", "==", dossier_id)
+    def __init__(self, code: str, remaining: tuple[str, ...] = ()) -> None:
+        super().__init__(code)
+        self.code = code
+        self.remaining = remaining
+
+
+def _delete_refusal(code: str, remaining: tuple[str, ...] = ()) -> str:
+    if code == DELETE_HAS_CONTENT:
+        return (
+            "Impossible de supprimer : le dossier contient encore des "
+            f"éléments ({', '.join(remaining)}). Archivez le dossier ou "
+            "supprimez d'abord son contenu."
         )
-        count = sum(1 for _ in query.stream())
-        if count > 0:
-            remaining.append((count, singular if count == 1 else plural))
-    return remaining
+    return _DELETE_MESSAGES.get(code, _DELETE_MESSAGES[DELETE_FAILED])
 
 
-def delete_dossier(dossier_id: str) -> tuple[bool, str]:
-    """Delete a dossier. Returns (success, error_message).
+def delete_dossier(dossier_id: str) -> tuple[bool, str, dict]:
+    """Delete an EMPTY dossier, and its (empty) filing folders with it.
 
-    Deletion is REFUSED while child records (time entries, expenses,
-    invoices, hearings, tasks, notes, protocols, documents, folders)
-    still reference the dossier. Silently cascading the destruction of
-    billing/legal records — or orphaning confidential Storage blobs with
-    no UI path to purge them — would be worse than blocking.
+    Returns ``(ok, message, report)`` — ``report`` is ``{"code", "dossier",
+    "folders"}``: ``code`` ∈ ``""`` (deleted) | ``introuvable`` | ``contenu``
+    | ``lecture`` | ``echec``; ``dossier`` the snapshot that was deleted and
+    ``folders`` the ids of the folders deleted with it, children first —
+    ``None`` / ``[]`` unless deleted, with ONE exception: an ``echec``
+    whose outcome this function could not establish (the commit raised AND
+    the re-read that would tell raised too — the message then says « n'a
+    peut-être pas abouti », never « rien n'a été supprimé ») carries the
+    snapshot and folder ids the last attempt STAGED, so a caller whose own
+    re-read then finds the dossier gone (``routes/dossiers.dossier_delete``)
+    journals exactly what left. An ``echec`` that is certain (the dossier
+    is still there, or no attempt staged anything) carries ``None``.
+
+    Deletion is REFUSED while any record of :data:`_CHILD_COLLECTIONS`
+    references the dossier (documents, time, expenses, invoices, hearings,
+    tasks, notes, protocols, trust entries). Silently cascading the
+    destruction of billing/legal records — or orphaning confidential
+    Storage blobs with no UI path to purge them — would be worse than
+    blocking. Its FOLDERS are not content: they go with it.
+
+    ONE transaction: the dossier, then an existence check per child
+    collection, then its folders, are all read THROUGH it, and the folder
+    deletes (children first) and the dossier's delete are staged in the
+    same commit. A record COMMITTED meanwhile aborts the commit, and the
+    re-run decides on it: a DOCUMENT (one versed into « Reçus du portail »)
+    makes it refuse (``contenu``); a FOLDER (one the tree adds) is read
+    with the others and deleted with the dossier. And no folder is created
+    after the delete:
+    the folder engine re-reads the dossier's existence in its own writing
+    transaction. Fails CLOSED: a read that cannot be made refuses
+    (``lecture``), nothing written.
+
+    ⚠ The one window this transaction cannot close: a generation (gabarit,
+    note d'honoraires), a portal versement or a receipt copy ALREADY UNDER
+    WAY when an EMPTY dossier is deleted — its folder obtained, its document
+    not yet written — still files that document AFTER this commit: the
+    document writers (``models/document.upload_document`` /
+    ``ingest_blob_as_document``) do not re-read the dossier, so the document
+    points at a dossier, and a folder, that no longer exist. Nothing here
+    can see a write that has not happened yet; only the writers re-reading
+    the dossier in their own commit would close it.
     """
-    existing = get_dossier(dossier_id)
-    if not existing:
-        return False, "Dossier introuvable."
+    from models import folder as folder_model  # local: keeps the model graph flat
+
+    report: dict = {"code": "", "dossier": None, "folders": []}
+    if not isinstance(dossier_id, str) or not dossier_id.strip():
+        report["code"] = DELETE_NOT_FOUND
+        return False, _delete_refusal(DELETE_NOT_FOUND), report
+
+    ref = db.collection(COLLECTION).document(dossier_id)
+    staged: dict = {}
+
+    @firestore.transactional
+    def _delete(transaction) -> None:
+        staged.clear()
+        try:
+            snap = ref.get(transaction=transaction)
+            exists = bool(snap.exists)
+            remaining: list[str] = []
+            if exists:
+                for collection_name, plural in _CHILD_COLLECTIONS:
+                    query = db.collection(collection_name).where(
+                        filter=FieldFilter("dossier_id", "==", dossier_id)
+                    ).limit(1)
+                    if any(True for _ in query.stream(transaction=transaction)):
+                        remaining.append(plural)
+            folders = (
+                folder_model.folders_in_transaction(dossier_id, transaction)
+                if exists and not remaining else []
+            )
+        except Exception:
+            log_unexpected("dossier delete check failed", dossier_id=dossier_id)
+            raise _DeleteRefused(DELETE_READ_FAILED)
+        if not exists:
+            raise _DeleteRefused(DELETE_NOT_FOUND)
+        if remaining:
+            raise _DeleteRefused(DELETE_HAS_CONTENT, tuple(remaining))
+        order = folder_model.deepest_first(folders)
+        if len(order) != len(folders):
+            # A folder record without its « id » (only a hand edit makes
+            # one) could not be deleted by id: it would outlive its dossier.
+            log_unexpected("dossier delete: folder without id",
+                           exc_info=False, dossier_id=dossier_id)
+            raise _DeleteRefused(DELETE_READ_FAILED)
+        for folder_id in order:
+            transaction.delete(
+                db.collection(folder_model.COLLECTION).document(folder_id))
+        transaction.delete(ref)
+        staged["dossier"] = snap.to_dict() or {}
+        staged["folders"] = order
 
     try:
-        remaining = _count_dossier_children(dossier_id)
-    except Exception as exc:
-        logger.warning(
-            "delete_dossier: child check failed for %s: %s",
-            sanitize_log_value(dossier_id), type(exc).__name__,
-        )
-        return False, (
-            "Impossible de vérifier le contenu du dossier. "
-            "Veuillez réessayer."
-        )
-    if remaining:
-        details = ", ".join(f"{count} {label}" for count, label in remaining)
-        return False, (
-            f"Impossible de supprimer : le dossier contient encore {details}. "
-            "Archivez le dossier ou supprimez d'abord son contenu."
-        )
-
-    try:
-        db.collection(COLLECTION).document(dossier_id).delete()
-        return True, ""
+        _delete(db.transaction())
+    except _DeleteRefused as refusal:
+        report["code"] = refusal.code
+        return False, _delete_refusal(refusal.code, refusal.remaining), report
     except Exception:
-        log_unexpected("dossier delete failed")
-        return False, "Erreur lors de la suppression. Veuillez réessayer."
+        log_unexpected("dossier delete failed", dossier_id=dossier_id)
+        # A commit that raised may still have landed (its answer lost): the
+        # dossier's absence says so — then it WAS deleted, with the folders
+        # the last attempt staged (one commit: all of it, or none).
+        try:
+            landed = bool(staged) and not ref.get().exists
+        except Exception:
+            # UNKNOWN: the staged snapshot rides along, for the caller's own
+            # re-read to journal if it finds the dossier gone.
+            report["code"] = DELETE_FAILED
+            report["dossier"] = staged.get("dossier") or {}
+            report["folders"] = list(staged.get("folders") or [])
+            return False, _DELETE_UNCERTAIN, report
+        if not landed:
+            report["code"] = DELETE_FAILED
+            return False, _delete_refusal(DELETE_FAILED), report
+
+    report["dossier"] = staged.get("dossier") or {}
+    report["folders"] = list(staged.get("folders") or [])
+    return True, "", report
 
 
 def suggest_file_number() -> str:

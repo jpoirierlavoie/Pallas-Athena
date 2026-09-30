@@ -138,7 +138,12 @@ def test_creating_projets_is_a_commit_a_retry_reproduces(store):
         folder, errors = folder_model.ensure_system_folder("d1", "projets")
         assert errors == [] and folder["system_role"] == "projets"
         assert provenance.committed_writes() == ()
-        assert provenance.idempotent_writes() == (("folders", folder["id"]),)
+        # Default tree (2026-09-30): « Projets » comes with its parent
+        # « Interne » — BOTH reproducible, so both idempotent.
+        assert provenance.idempotent_writes() == (
+            ("folders", folder_model.system_folder_id("d1", "interne")),
+            ("folders", folder["id"]),
+        )
         again, _ = folder_model.ensure_system_folder("d1", "projets")
         assert again["id"] == folder["id"]           # reproduced, never a second
 

@@ -527,6 +527,14 @@ DossierEvent = Literal[
     # NOM avant ce lot est adopté UNE fois, et cette ligne le dit.
     # Identifiants et comptes seulement.
     "system_folder_adopted",
+    # L'arborescence par défaut (2026-09-30) : les dix-huit dossiers de
+    # classement d'un dossier — créés ou complétés (comptes par nœud), restés
+    # incomplets (un refus, ou des nœuds qu'on n'a pas pu placer), et un
+    # ancien « Projets » / « Reçus du portail » rangé sous « Interne » /
+    # « Autres ». Identifiants, rôles et comptes seulement — jamais un nom.
+    "default_folder_tree_created",
+    "default_folder_tree_incomplete",
+    "system_folder_relocated",
     # Visibilité DavX5 d'un dossier (lot 4a, services/dossier_dav). Un
     # changement de statut qui fait entrer ou sortir la collection du
     # téléphone, une purge (ou un rétablissement) restée INCOMPLÈTE — à
@@ -717,6 +725,10 @@ AdminLedgerEvent = Literal[
     "admin_transaction_refused",
     "admin_card_payment_created",
     "admin_receipt_attached",
+    # 2026-09-30 : la COPIE d'une pièce justificative de dépense, versée au
+    # dossier lié (Mandat › Déboursés) — identifiants seulement, jamais un
+    # nom de fichier.
+    "admin_receipt_filed",
     "admin_invoice_payment_projected",
     "admin_reconciliation_completed",
     "admin_reconciliation_variance",

@@ -28,16 +28,26 @@
     {{ banner_erreur }}
   </div>
   {% endif %}
-  {# Purge (ou rétablissement) DavX5 restée incomplète APRÈS l'écriture du
-     statut : le statut est enregistré, le téléphone pas encore à jour. Le
-     bouton relance services/dossier_dav.resync_dossier_dav_visibility. #}
+  {# Bandeau ambre : l'écriture principale est faite, une suite reste à
+     reprendre. Le bouton est celui que le bandeau nomme, choisi CÔTÉ ROUTE
+     dans une table fermée (routes/dossiers._DETAIL_WARNING_ACTIONS) :
+     « Resynchroniser le téléphone » après une purge DavX5 incomplète
+     (services/dossier_dav), « Créer l'arborescence par défaut » quand les
+     dossiers de classement n'ont pas pu être créés. #}
   {% if banner_avertissement %}
   <div role="alert" class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     <p class="font-semibold">{{ banner_avertissement }}</p>
+    {% if banner_action == 'dav_resync' %}
     <form method="post" action="{{ url_for('dossiers.dossier_dav_resync', dossier_id=dossier.id) }}" class="mt-1">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="font-medium underline">Resynchroniser le téléphone</button>
     </form>
+    {% elif banner_action == 'arborescence' %}
+    <form method="post" action="{{ url_for('dossiers.dossier_arborescence', dossier_id=dossier.id) }}" class="mt-1">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="font-medium underline">{{ arborescence_button }}</button>
+    </form>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -219,7 +229,7 @@
          class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
       <div class="p-6">
         <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce dossier ?</h3>
-        <p class="text-sm text-gray-600 mb-6">Cette action est irréversible. Toutes les données de ce dossier seront supprimées.</p>
+        <p class="text-sm text-gray-600 mb-6">Un dossier ne se supprime que s'il est vide : aucun temps, aucune dépense, facture, audience, tâche, note, aucun protocole, document ni opération au fidéicommis. Ses dossiers de classement vides sont supprimés avec lui. La suppression est définitive — pour mettre un dossier terminé de côté, archivez-le.</p>
         <div class="flex gap-3 justify-end">
           <button @click="deleteOpen = false"
                   class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">

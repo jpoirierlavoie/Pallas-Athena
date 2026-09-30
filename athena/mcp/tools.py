@@ -5114,7 +5114,10 @@ TOOLS: dict[str, dict] = {
             "`hourly_rate` accepts 0 (pro bono, aide juridique) — set it, "
             "because create_time_entry defaults each entry's rate to it. "
             "Check find_imported first and pass `legacy_ref`: nothing here "
-            "can delete a duplicate."
+            "can delete a duplicate. A new dossier gets the default filing "
+            "tree — Mandat, Procédures, Correspondance, Interne, Autres, with "
+            "their subfolders (list_documents include_folders); if it could "
+            "not be created, the dossier stands and a warning says so."
         ),
         "input_schema": {
             "type": "object",
@@ -5953,11 +5956,15 @@ TOOLS: dict[str, dict] = {
             "name already taken there is refused — or, with if_exists "
             "\"reuse\", that folder is returned. \"rename\": folder_id + name. "
             "\"move\": folder_id + parent_folder_id (\"\" = root); never into "
-            "itself or a subfolder, 5 levels deep at most. The system folders "
-            "« Projets » and « Reçus du portail » are the application's: never "
-            "renamed, moved or recreated here (filing documents INTO them is "
-            "allowed), and their names are reserved "
-            "at the root. A name is refused, never altered (no « / », "
+            "itself or a subfolder, 5 levels deep at most. Seven folders are "
+            "the application's (a non-empty system_role): the four it files "
+            "into itself — « Factures » and « Déboursés » under « Mandat », "
+            "« Projets » under « Interne », « Reçus du portail » under "
+            "« Autres » — and those three parents. None is renamed or moved "
+            "here (filing documents INTO any of them is allowed); a deleted "
+            "one is recreated by the application. The other default folders are "
+            "ordinary. « Projets » and « Reçus du portail » stay reserved "
+            "names at the ROOT. A name is refused, never altered (no « / », "
             "« \\ », angle brackets or control character). Nothing is ever "
             "deleted."
         ),
@@ -6010,7 +6017,8 @@ TOOLS: dict[str, dict] = {
         "title": "Remplir un gabarit",
         "description": (
             "WRITE — fill a gabarit (kind « gabarit ») for ONE dossier and "
-            "save the .docx as a NEW document in its « Projets » folder. "
+            "save the .docx as a NEW document in its « Projets » folder "
+            "(under « Interne » in the default tree). "
             "Call list_templates with template_id (and this dossier_id) "
             "first: supply only the blocs and manual fields it reports, "
             "names exact; every other field is filled by the application "
@@ -6142,7 +6150,8 @@ TOOLS: dict[str, dict] = {
             "« Projets » unless folder_id names another folder (\"\" = the "
             "dossier root). source \"invoice_note\": the Word note "
             "d'honoraires of invoice_id, on the note-d'honoraires template "
-            "the lawyer designated ACTIVE, always into « Projets »; a note "
+            "the lawyer designated ACTIVE, always into the dossier's "
+            "« Factures » folder (under « Mandat »); a note "
             "identical to what it would print is returned instead of a "
             "duplicate unless regenerate. A retry without idempotency_key "
             "creates a second document."

@@ -43,7 +43,9 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp
     import mcp.disclosure as disclosure
     import mcp.endpoint as endpoint
+    import mcp.output_schemas as output_schemas
     import mcp.tools as tools
+    from models import folder as folder_model
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 _TEMPLATES = _ATHENA / "templates"
@@ -291,6 +293,40 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # Review of D25: the FILES paragraph handed every analysed document's
     # category to record_document_analysis — which KEEPS the lawyer's.
     "`record_document_analysis`'s) — never over",
+    # The default filing tree (2026-09-30): SEVEN system folders, not two,
+    # and the note d'honoraires files into « Mandat › Factures », never
+    # « Projets ». Each retired phrasing quoted WHOLE, in the form its
+    # surface used (the consent partial's with its &nbsp;). What stays TRUE
+    # is never listed: a filled gabarit still goes « toujours dans
+    # « Projets » », and « Projets » / « Reçus du portail » are still
+    # reserved names at the root.
+    "il produit aussi la <strong>note d'honoraires</strong> word d'une "
+    "facture, sur le gabarit que vous avez désigné actif, toujours dans "
+    "«&nbsp;projets&nbsp;» — une note identique déjà classée est rendue au "
+    "lieu d'être refaite.",
+    "en déplacer — jamais «&nbsp;projets&nbsp;» ni «&nbsp;reçus du "
+    "portail&nbsp;», les dossiers de l'application.",
+    "on the note-d'honoraires template the lawyer designated active, always "
+    "into « projets »",
+    "la note d'honoraires déjà générée reste dans « projets » : elle ne "
+    "correspond plus à une facture en vigueur.",
+    "the system folders « projets » and « reçus du portail » are the "
+    "application's: never renamed, moved or recreated here (filing "
+    "documents into them is allowed), and their names are reserved at the "
+    "root.",
+    "the two system folders",
+    "« projets » | « portail »",
+    # Review of the default tree: the application FILES into four of the
+    # seven system folders (« Factures », « Déboursés », « Projets »,
+    # « Reçus du portail »); « Mandat », « Interne » and « Autres » are
+    # locked only as their parents. The consent partial's first wording
+    # said it filed into all seven — quoted as it appeared (it carried no
+    # &nbsp; inside the phrase). Its English twin was never shipped in a
+    # tool description, but it was written in this file's own docstring:
+    # guarded, so manage_folder cannot acquire it.
+    "jamais les sept dossiers où l'application classe elle-même",
+    "seven folders the application files into",
+    "« projets » (every generated document)",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -1016,7 +1052,7 @@ def test_the_lot_3b_texts_say_what_billing_does():
     * an import lands in brouillon, and update_invoice (not import_invoice)
       promotes it.
     """
-    from mcp.output_schemas import OUTPUT_SCHEMAS
+    OUTPUT_SCHEMAS = output_schemas.OUTPUT_SCHEMAS
 
     billing = next(f for f in disclosure.FAMILIES if f.key == "billing")
     assert billing.tools == ("create_invoice", "update_invoice",
@@ -1213,7 +1249,7 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     * list_deletions says it lists the LINKS detached, and its row schema
       says what each column names on a link row.
     """
-    from mcp.output_schemas import OUTPUT_SCHEMAS
+    OUTPUT_SCHEMAS = output_schemas.OUTPUT_SCHEMAS
 
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: these two DOSSIERS facts are set_dossier_status's own.
     status_desc = tools.TOOLS["set_dossier_status"]["description"]
@@ -1481,3 +1517,175 @@ def test_the_lot_5_false_claim_entries_bite_and_spare_the_true_sentences():
         "cet outil n'inscrit aucun paiement",
     ):
         assert not _false_claims_in(true), true
+
+
+# ══════════════════════════════════════════════════════════════════════
+# The default filing tree (2026-09-30): seven system folders, the note
+# d'honoraires in « Mandat › Factures »
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _role_descriptions(schema, out: list) -> list:
+    """Every ``(key, description)`` of a ``system_role`` /
+    ``folder_system_role`` property, anywhere in *schema* — nested objects,
+    array items and ``anyOf`` branches included."""
+    if isinstance(schema, dict):
+        for key, sub in (schema.get("properties") or {}).items():
+            if key in ("system_role", "folder_system_role"):
+                out.append((key, str(sub.get("description") or "")))
+        for sub in schema.values():
+            _role_descriptions(sub, out)
+    elif isinstance(schema, list):
+        for sub in schema:
+            _role_descriptions(sub, out)
+    return out
+
+
+def test_every_role_description_names_the_seven_system_roles():
+    """DERIVED from the folder model: a description that listed « projets »
+    | « portail » alone told a caller that « factures » or « mandat » —
+    values the payload now carries — were not system folders at all."""
+    roles = folder_model.VALID_SYSTEM_ROLES
+    assert len(roles) == 7
+    found = []
+    for tool, schema in output_schemas.OUTPUT_SCHEMAS.items():
+        for key, text in _role_descriptions(schema, []):
+            found.append(tool)
+            missing = [r for r in roles if f"« {r} »" not in text]
+            assert not missing, (tool, key, missing)
+    # Non-vacuous: the folder writes and the document read all declare one.
+    assert {"fill_gabarit", "create_document", "manage_folder",
+            "move_documents", "list_documents"} <= set(found)
+
+
+def test_the_folder_texts_name_every_system_folder():
+    """DERIVED: manage_folder's description and the FILES consent partial
+    name each of the seven system folders of the tree — by the display name
+    the tree gives it."""
+    desc = tools.TOOLS["manage_folder"]["description"]
+    flat = " ".join((_TEMPLATES / "mcp" / "families" / "_files.html")
+                    .read_text(encoding="utf-8").split())
+    names = folder_model.SYSTEM_FOLDER_NAMES.values()
+    assert len(set(names)) == 7
+    for name in names:
+        assert f"« {name} »" in desc, name
+        assert f"«&nbsp;{name}&nbsp;»" in flat, name
+    assert "Seven folders are the application's" in desc
+    assert "jamais les sept dossiers de l'application&nbsp;:" in flat
+
+
+def _filing_leaves_by_parent() -> dict[str, list[str]]:
+    """DERIVED from the tree: the system folders no other system folder
+    sits under — the ones the application files into — grouped by the
+    system parent that holds them, both by display name, in tree order."""
+    names = folder_model.SYSTEM_FOLDER_NAMES
+    parents = folder_model.SYSTEM_FOLDER_PARENTS
+    parent_roles = {p for p in parents.values() if p}
+    grouped: dict[str, list[str]] = {}
+    for role in folder_model.VALID_SYSTEM_ROLES:
+        if role not in parent_roles:
+            grouped.setdefault(names[parents[role]], []).append(names[role])
+    return grouped
+
+
+def test_the_folder_texts_say_the_application_files_into_four_and_locks_three_parents():
+    """Review of the default tree: the application FILES into four of the
+    seven system folders — « Factures » and « Déboursés » (under « Mandat »),
+    « Projets » (under « Interne »), « Reçus du portail » (under « Autres »)
+    — and the three others are locked only as their parents. The consent
+    partial said it filed into all seven. DERIVED from the tree's structure:
+    each parent's leaves, in tree order, are named ``under`` that parent."""
+    grouped = _filing_leaves_by_parent()
+    assert sum(len(v) for v in grouped.values()) == 4
+    assert len(grouped) == 3
+    # Every parent is itself a system folder at the root — the chain the
+    # seven locks protect.
+    names = folder_model.SYSTEM_FOLDER_NAMES
+    parents = folder_model.SYSTEM_FOLDER_PARENTS
+    by_name = {n: r for r, n in names.items()}
+    for parent_name in grouped:
+        assert parents[by_name[parent_name]] == "", parent_name
+    flat = " ".join((_TEMPLATES / "mcp" / "families" / "_files.html")
+                    .read_text(encoding="utf-8").split())
+    desc = tools.TOOLS["manage_folder"]["description"]
+    for parent, leaves in grouped.items():
+        fr = (" et ".join(f"«&nbsp;{n}&nbsp;»" for n in leaves)
+              + f" sous «&nbsp;{parent}&nbsp;»")
+        en = (" and ".join(f"« {n} »" for n in leaves) + f" under « {parent} »")
+        assert fr in flat, fr
+        assert en in desc, en
+    assert "les quatre où elle classe elle-même" in flat
+    assert "et leurs trois dossiers parents" in flat
+    assert "the four it files into itself" in desc
+    assert "and those three parents" in desc
+    # The retired wording bites — whole, as the partial carried it.
+    retired = (
+        "en déplacer — jamais les sept dossiers où l'application classe "
+        "elle-même&nbsp;: «&nbsp;Mandat&nbsp;» et ses sous-dossiers "
+        "«&nbsp;Factures&nbsp;» et «&nbsp;Déboursés&nbsp;», "
+        "«&nbsp;Interne&nbsp;» et «&nbsp;Projets&nbsp;», «&nbsp;Autres&nbsp;» "
+        "et «&nbsp;Reçus du portail&nbsp;»."
+    )
+    assert _false_claims_in(retired), retired
+    assert _false_claims_in(
+        "Seven folders are the application's: the seven folders the "
+        "application files into itself.")
+    assert not _false_claims_in(flat)
+    assert not _false_claims_in(desc)
+
+
+def test_the_default_tree_texts_are_true_and_trip_no_false_claim():
+    """The sentences that replaced the retired phrasings pass the detector —
+    and the ones that stayed TRUE stay where they were pinned."""
+    flat = " ".join((_TEMPLATES / "mcp" / "families" / "_files.html")
+                    .read_text(encoding="utf-8").split())
+    create = " ".join((_TEMPLATES / "mcp" / "families" / "_create.html")
+                      .read_text(encoding="utf-8").split())
+    desc = {n: s["description"] for n, s in tools.TOOLS.items()}
+    for true in (
+        flat, create,
+        desc["manage_folder"], desc["create_document"], desc["fill_gabarit"],
+        desc["create_dossier"],
+        "La note d'honoraires déjà générée reste classée au dossier : elle "
+        "ne correspond plus à une facture en vigueur.",
+        # Still true, never to be listed: a gabarit's project goes to
+        # « Projets », and the two legacy names stay reserved at the root.
+        "<strong>toujours</strong> dans «&nbsp;Projets&nbsp;»",
+        "« Projets » and « Reçus du portail » stay reserved names at the ROOT.",
+        "« mandat » | « factures » | « debourses » | « interne » | "
+        "« projets » | « autres » | « portail »",
+    ):
+        assert not _false_claims_in(true), true[:80]
+    assert "<strong>toujours</strong> dans «&nbsp;Projets&nbsp;»" in flat
+    assert "(sous «&nbsp;Interne&nbsp;» dans l'arborescence par défaut" in flat
+    assert ("toujours dans «&nbsp;Factures&nbsp;», sous «&nbsp;Mandat&nbsp;» "
+            "— une note identique déjà classée est rendue, là où elle se "
+            "trouve, au lieu d'être refaite") in flat
+    assert "chaque nouveau dossier reçoit l'arborescence de classement" in create
+    assert "in its « Projets » folder (under « Interne »" in desc["fill_gabarit"]
+    assert ("always into the dossier's « Factures » folder (under « Mandat »)"
+            in desc["create_document"])
+    assert "Both land in « Projets » unless folder_id" in desc["create_document"]
+    assert "A new dossier gets the default filing tree" in desc["create_dossier"]
+    # The retired phrasings bite on the texts they were written for.
+    for false in (
+        "The system folders « Projets » and « Reçus du portail » are the "
+        "application's: never renamed, moved or recreated here (filing "
+        "documents INTO them is allowed), and their names are reserved at "
+        "the root.",
+        "« projets » | « portail » for a system folder",
+        "— the two SYSTEM folders, which cannot be renamed",
+        "La note d'honoraires déjà générée reste dans « Projets » : elle ne "
+        "correspond plus à une facture en vigueur.",
+    ):
+        assert _false_claims_in(false), false
+
+
+def test_the_connector_never_reaches_the_receipt_filing_service():
+    """The copy of an Administration receipt into « Mandat › Déboursés »
+    (services/pieces_justificatives.py) is the web's: no connector module
+    imports it, directly or through a service — whether or not the file
+    exists yet."""
+    reached = services_reached(_sources())
+    assert "services/protocoles.py" in reached          # non-vacuous
+    assert "services/pieces_justificatives.py" not in reached

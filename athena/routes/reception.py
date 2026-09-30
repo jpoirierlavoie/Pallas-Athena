@@ -52,7 +52,12 @@ from models.document import (
 )
 from routes.taches_portail import sha512_flux
 from models.dossier import get_dossier, list_dossiers
-from models.folder import SYSTEM_ROLE_PORTAIL, ensure_system_folder
+from models.folder import (
+    SYSTEM_FOLDER_NAMES,
+    SYSTEM_ROLE_AUTRES,
+    SYSTEM_ROLE_PORTAIL,
+    ensure_system_folder,
+)
 from models import concurrency
 from models.hearing import get_hearing, list_bookings_strict, update_hearing
 from models.partie import (
@@ -945,8 +950,21 @@ def verser(inv_id: str, batch: str, seq: int):
         ))
     return _rediriger(
         message=f"Fichier versé au dossier {dossier.get('file_number', '')} "
-                f"(dossier « {PORTAL_FOLDER_NAME} »)."
+                f"(dossier « {_chemin_recus(folder)} »)."
     )
+
+
+def _chemin_recus(folder: dict) -> str:
+    """Where the versement landed, as the browser shows it: « Autres ›
+    Reçus du portail » since the default tree (2026-09-30). The folder is
+    found by its ROLE and used where it is — a dossier not yet given the
+    tree (backfill, « Créer l'arborescence par défaut ») still keeps its
+    old ROOT « Reçus du portail », and the banner must not send the lawyer
+    looking under an « Autres » that does not hold it. A system folder does
+    not move, so a folder with a parent sits under « Autres »."""
+    if folder.get("parent_folder_id"):
+        return f"{SYSTEM_FOLDER_NAMES[SYSTEM_ROLE_AUTRES]} › {PORTAL_FOLDER_NAME}"
+    return PORTAL_FOLDER_NAME
 
 
 @reception_bp.post("/lots/<inv_id>/<batch>/fichiers/<int:seq>/refuser")

@@ -40,8 +40,11 @@ The pipeline, in order:
    so nothing at all is written for a request that could not file it.
    :func:`save_generated` is its general form (lot 2A, T8): any generated
    .docx — a filled gabarit, a Markdown document printed on the note
-   template —, its own name, category and provenance, into « Projets » or
-   a folder the caller resolved.
+   template, the invoice's note d'honoraires —, its own name, category and
+   provenance, into a system folder named by its sentinel (:data:`PROJETS`
+   — « Interne › Projets » since the default folder tree —, or
+   :data:`FACTURES` — « Mandat › Factures », the note d'honoraires') or a
+   folder the caller resolved.
 
 Steps 1-4 READ only and live in :mod:`services.gabarit_champs` (lot 2A,
 T6), re-exported here so the route keeps one import: a connector READ
@@ -65,7 +68,12 @@ from typing import Mapping, Optional
 from werkzeug.utils import secure_filename
 
 from models.document import projet_document_name, upload_document
-from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder
+from models.folder import (
+    SYSTEM_FOLDER_NAMES,
+    SYSTEM_ROLE_FACTURES,
+    SYSTEM_ROLE_PROJETS,
+    ensure_system_folder,
+)
 from services.gabarit_champs import (  # re-exported: listed in __all__ below
     AUTO_MAX_CHARS,
     BLOC_MAX_CHARS,
@@ -107,6 +115,8 @@ __all__ = [
     "CHAMP_MANUEL_MAX_CHARS",
     "CHAMPS_MANUELS_MAX_ITEMS",
     "DOSSIER_NOT_FOUND",
+    "FACTURES",
+    "FACTURES_UNAVAILABLE",
     "FIELD_PREFIX",
     "FILL_ERROR",
     "MANUAL_MAX_CHARS",
@@ -117,6 +127,7 @@ __all__ = [
     "TEMPLATE_INVALID",
     "ConnectorValues",
     "dossier_parties",
+    "ensure_role_folder",
     "ensure_projets",
     "field_ceiling",
     "field_inventory",
@@ -146,6 +157,7 @@ TEMPLATE_FILE_UNAVAILABLE = (
 TEMPLATE_INVALID = "Le gabarit est invalide et n'a pas pu être rempli."
 FILL_ERROR = "Erreur lors de la génération. Veuillez réessayer."
 PROJETS_UNAVAILABLE = "Le dossier « Projets » est indisponible. Réessayez."
+FACTURES_UNAVAILABLE = "Le dossier « Factures » est indisponible. Réessayez."
 
 
 # ── 5. Fill ──────────────────────────────────────────────────────────────
@@ -246,20 +258,64 @@ def save_into_projets(
     return doc
 
 
+class _SystemFolderChoice:
+    """A « file it in the dossier's system folder of *role* » choice of
+    :func:`save_generated` — resolved by the ROLE, after the uid check.
+
+    Only the module's own sentinels exist (:data:`PROJETS`,
+    :data:`FACTURES`), and callers compare them by IDENTITY
+    (``folder is PROJETS``): never build another one.
+    """
+
+    __slots__ = ("role",)
+
+    def __init__(self, role: str) -> None:
+        if role not in SYSTEM_FOLDER_NAMES:
+            raise ValueError(f"unknown system folder role: {role!r}")
+        self.role = role
+
+    def __repr__(self) -> str:
+        return f"<system folder {self.role}>"
+
+
 # The « no folder named » default of save_generated: the « Projets » system
-# folder, found by its role. ``None`` means the dossier root.
-PROJETS = object()
+# folder (« Interne › Projets »), found by its role. ``None`` means the
+# dossier root.
+PROJETS = _SystemFolderChoice(SYSTEM_ROLE_PROJETS)
+# The note d'honoraires' folder: « Mandat › Factures », found by its role.
+FACTURES = _SystemFolderChoice(SYSTEM_ROLE_FACTURES)
+
+# The fallback message when the folder model names no reason of its own —
+# PROJETS_UNAVAILABLE is kept VERBATIM from the route it came from.
+_UNAVAILABLE_MESSAGES = {
+    SYSTEM_ROLE_PROJETS: PROJETS_UNAVAILABLE,
+    SYSTEM_ROLE_FACTURES: FACTURES_UNAVAILABLE,
+}
+
+
+def ensure_role_folder(dossier_id: str, role: str) -> dict:
+    """*dossier_id*'s system folder of *role* — by its ROLE, created with
+    its parent on first use (``models.folder.ensure_system_folder``: leaf
+    first, wherever it already is) — or :class:`GenerationRefused`
+    (``{role}_unavailable`` — ``projets_unavailable``,
+    ``factures_unavailable``): never a silent fall back to the dossier
+    root. The message is the folder model's own reason, else the role's
+    « Le dossier « … » est indisponible. Réessayez. »."""
+    folder, errors = ensure_system_folder(dossier_id, role)
+    if folder is None:
+        fallback = _UNAVAILABLE_MESSAGES.get(role) or (
+            f"Le dossier « {SYSTEM_FOLDER_NAMES[role]} » est indisponible. "
+            "Réessayez.")
+        raise GenerationRefused(
+            f"{role}_unavailable", errors[0] if errors else fallback)
+    return folder
 
 
 def ensure_projets(dossier_id: str) -> dict:
     """*dossier_id*'s « Projets » system folder — by its ROLE, created on
     first use — or :class:`GenerationRefused` (``projets_unavailable``):
     never a silent fall back to the dossier root."""
-    folder, errors = ensure_system_folder(dossier_id, SYSTEM_ROLE_PROJETS)
-    if folder is None:
-        raise GenerationRefused(
-            "projets_unavailable", errors[0] if errors else PROJETS_UNAVAILABLE)
-    return folder
+    return ensure_role_folder(dossier_id, SYSTEM_ROLE_PROJETS)
 
 
 def save_generated(
@@ -282,23 +338,27 @@ def save_generated(
     dossier root.
 
     *folder*: :data:`PROJETS` (the default) → the « Projets » system folder,
-    ensured by its role; ``None`` → the dossier root; a folder dict the
+    ensured by its role; :data:`FACTURES` → « Mandat › Factures », likewise
+    (the note d'honoraires); ``None`` → the dossier root; a folder dict the
     CALLER resolved in this dossier (the model re-checks it). The uid is
-    checked FIRST, before « Projets » is touched. *category_source* says who
+    checked FIRST, before any system folder is touched — nothing is written,
+    not even the folder, for a request that could not file the document.
+    *category_source* says who
     chose *category*: « juriste » for a template's own category, « mcp »
     when Claude chose it (shown « présumée »). *generated_from_invoice*
     (``{"invoice_id", "fingerprint"}``) links a note d'honoraires to the
     invoice it renders (``services.note_honoraires``, lot 3a).
 
-    Raises :class:`GenerationRefused` as :func:`save_into_projets` does.
+    Raises :class:`GenerationRefused` as :func:`save_into_projets` does —
+    ``factures_unavailable`` for :data:`FACTURES`.
     """
     try:
         uid = storage_identity.require_uid(uid)
     except storage_identity.StorageIdentityUnavailable as exc:
         raise GenerationRefused("save_failed", storage_identity.public_message(exc)) from exc
     dossier_id = dossier.get("id", "")
-    if folder is PROJETS:
-        target = ensure_projets(dossier_id)
+    if isinstance(folder, _SystemFolderChoice):
+        target = ensure_role_folder(dossier_id, folder.role)
     else:
         target = folder if isinstance(folder, dict) else None
     metadata = {

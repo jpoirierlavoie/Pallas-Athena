@@ -13,7 +13,6 @@ from flask import (
     request,
     url_for,
 )
-from markupsafe import escape
 
 from auth import login_required
 from utils import deadlines
@@ -74,8 +73,11 @@ from models.document import (
     get_file_icon,
     list_documents,
 )
+from models import folder as folder_model
 from models.folder import list_folders
 from models.dossier import (
+    DELETE_FAILED,
+    DELETE_NOT_FOUND,
     DOMAINE_LABELS,
     FEE_TYPE_LABELS,
     FORUM_TYPE_LABELS,
@@ -107,7 +109,7 @@ from utils.template_fields import format_honoraires_parts, retention_date
 from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input
 from utils.format_fr import parse_cents_or_none
-from utils.logging_setup import log_unexpected
+from utils.logging_setup import log_dossier_event, log_unexpected
 
 dossiers_bp = Blueprint(
     "dossiers", __name__, url_prefix="/dossiers"
@@ -517,18 +519,49 @@ def dossier_detail(dossier_id: str) -> str:
         request.args.get("message", ""), "")
     ctx["banner_erreur"] = _DETAIL_ERRORS.get(
         request.args.get("erreur", ""), "")
-    ctx["banner_avertissement"] = _DETAIL_WARNINGS.get(
-        request.args.get("avertissement", ""), "")
+    warning = request.args.get("avertissement", "")
+    ctx["banner_avertissement"] = _DETAIL_WARNINGS.get(warning, "")
+    ctx["banner_action"] = _DETAIL_WARNING_ACTIONS.get(warning, "")
+    ctx["arborescence_button"] = folder_model.DEFAULT_TREE_BUTTON
     return render_template("dossiers/detail.html", **ctx)
 
 
 # The detail page's banners, keyed by the closed codes this blueprint's
-# redirects set (dossier_update, dossier_dav_resync). Text lives HERE, the
-# query string carries only the key.
+# redirects set (dossier_update, dossier_dav_resync, dossier_delete,
+# dossier_create, dossier_arborescence). Text lives HERE, the query string
+# carries only the key.
 _DETAIL_MESSAGES = {
     "dav_resync": (
         "Synchronisation du téléphone refaite : DavX5 la prendra en compte "
         "à sa prochaine synchronisation."
+    ),
+    "arborescence": (
+        "L'arborescence par défaut est en place : Mandat, Procédures, "
+        "Correspondance, Interne et Autres. Les dossiers de classement "
+        "existants sont conservés."
+    ),
+    # One code per folder ACTUALLY moved (_relocation_message_code): the
+    # both-folders text is true only when both moved — and stays renderable
+    # for a link minted before the split.
+    "arborescence_rangee": (
+        "L'arborescence par défaut est en place, et les anciens « Projets » "
+        "et « Reçus du portail » ont été rangés, avec leur contenu, sous "
+        "« Interne » et « Autres »."
+    ),
+    "arborescence_rangee_projets": (
+        "L'arborescence par défaut est en place, et l'ancien « Projets » a "
+        "été rangé, avec son contenu, sous « Interne »."
+    ),
+    "arborescence_rangee_portail": (
+        "L'arborescence par défaut est en place, et l'ancien « Reçus du "
+        "portail » a été rangé, avec son contenu, sous « Autres »."
+    ),
+    # Also what a run whose commit RAISED and then re-planned nothing left
+    # answers (models/folder._landed_plan): that run DID write, so the text
+    # says what is true either way — never « rien n'a été modifié ».
+    "arborescence_complete": (
+        "L'arborescence par défaut est en place — il ne reste rien à créer "
+        "ni à ranger."
     ),
 }
 _DETAIL_ERRORS = {
@@ -536,6 +569,35 @@ _DETAIL_ERRORS = {
         "La resynchronisation du téléphone n'a pas abouti. Rien n'est perdu "
         "— les tâches, les notes et les audiences du dossier restent "
         "intactes dans l'application. Réessayez dans un instant."
+    ),
+    "suppression_contenu": (
+        "Suppression refusée : ce dossier contient encore des éléments "
+        "(temps, dépenses, factures, audiences, tâches, notes, protocoles, "
+        "documents ou opérations au fidéicommis). Rien n'a été supprimé — "
+        "archivez-le, ou supprimez d'abord son contenu."
+    ),
+    "suppression_lecture": (
+        "Le contenu du dossier n'a pas pu être vérifié : rien n'a été "
+        "supprimé. Réessayez dans un instant."
+    ),
+    "suppression_echec": (
+        "La suppression n'a pas abouti : rien n'a été supprimé. Réessayez "
+        "dans un instant."
+    ),
+    # The delete's commit raised and neither the model's re-read nor the
+    # route's could tell whether it landed: the outcome is UNKNOWN — never
+    # « rien n'a été supprimé », never « supprimé ».
+    "suppression_incertaine": (
+        "La suppression n'a peut-être pas abouti — rechargez la page pour le "
+        "vérifier."
+    ),
+    # Promises nothing about what was written — a refusal can follow a commit
+    # whose answer was lost (the engine re-plans, but its re-read can fail
+    # too). What IS true, always: the engine is idempotent.
+    "arborescence": (
+        "L'arborescence par défaut n'a pas pu être créée ou complétée — "
+        "réessayez dans un instant ; les dossiers déjà en place ne sont "
+        "jamais dupliqués."
     ),
 }
 _DETAIL_WARNINGS = {
@@ -558,7 +620,61 @@ _DETAIL_WARNINGS = {
         "Le dossier est enregistré mais la synchronisation du téléphone "
         "est incomplète — cliquez « Resynchroniser le téléphone »."
     ),
+    # dossier_create: the dossier is saved, its default filing tree is not.
+    "arborescence": (
+        "Le dossier est créé, mais son arborescence de classement par "
+        "défaut n'a pas pu l'être — cliquez « Créer l'arborescence par "
+        "défaut »."
+    ),
+    # dossier_arborescence: the engine returned a report (its writes are
+    # committed) with BLOCKED nodes — a folder it could not create where it
+    # goes, or an old « Projets » / « Reçus du portail » it could not move
+    # there (then used where it is). The rest of the tree IS in place, and a
+    # second click, once the obstacle is renamed or moved, completes it.
+    "arborescence_partielle": (
+        "L'arborescence par défaut n'a pu être complétée qu'en partie : un "
+        "ou plusieurs dossiers de classement n'ont pas pu être créés ou "
+        "rangés à leur place — le plus souvent parce qu'un dossier de "
+        "classement du même nom s'y trouve déjà, ou que l'imbrication serait "
+        "trop profonde. Les autres sont en place. Renommez ou déplacez le "
+        "dossier de classement qui fait obstacle, puis cliquez de nouveau "
+        "« Créer l'arborescence par défaut »."
+    ),
 }
+
+# The button each amber banner offers — CLOSED like the codes: the banner
+# names the way out, and the button must be THAT way out (the DAV banners'
+# « Resynchroniser le téléphone » under a tree warning would repair nothing).
+_DETAIL_WARNING_ACTIONS = {
+    "dav_fermeture": "dav_resync",
+    "dav_archivage": "dav_resync",
+    "dav_reouverture": "dav_resync",
+    "dav_enregistrement": "dav_resync",
+    "arborescence": "arborescence",
+    "arborescence_partielle": "arborescence",
+}
+
+# delete_dossier's refusal codes → this page's closed error codes.
+_DELETE_ERRORS = {
+    "contenu": "suppression_contenu",
+    "lecture": "suppression_lecture",
+    "echec": "suppression_echec",
+}
+
+
+def _relocation_message_code(relocated) -> str:
+    """The success code for a tree run that moved the old system folders —
+    named after what ACTUALLY moved (the node keys of
+    ``TreeReport.relocated``), never both when one did. ``""`` when neither
+    of the two legacy folders moved."""
+    moved = set(relocated or ())
+    if {"projets", "portail"} <= moved:
+        return "arborescence_rangee"
+    if "projets" in moved:
+        return "arborescence_rangee_projets"
+    if "portail" in moved:
+        return "arborescence_rangee_portail"
+    return ""
 
 
 def _dav_warning_code(old_status: Optional[str], saved_status: str) -> str:
@@ -722,7 +838,27 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     # Load file/folder data for the documents (Fichiers) tab (counters removed
     # July 2026 — no summary aggregation, no per-folder _count_items N+1)
     if tab_name == "documents":
-        ctx["root_folders"] = list_folders(dossier_id, parent_folder_id=None)
+        # ONE read of the dossier's folders serves the listing AND the
+        # « Créer l'arborescence par défaut » offer. On a failed read the
+        # listing falls back to its fail-open reader and the button is not
+        # offered — an outage must never read as « the tree is missing ».
+        ctx["arborescence_incomplete"] = False
+        ctx["arborescence_button"] = folder_model.DEFAULT_TREE_BUTTON
+        try:
+            folders = folder_model.list_dossier_folders(dossier_id)
+        except Exception:
+            folders = None  # logged once by list_dossier_folders
+        if folders is None:
+            ctx["root_folders"] = list_folders(dossier_id, parent_folder_id=None)
+        else:
+            # list_folders' own selection and order, over the read in hand.
+            ctx["root_folders"] = sorted(
+                (f for f in folders if f.get("parent_folder_id") is None),
+                key=lambda f: (f.get("name") or "").lower(),
+            )
+            ctx["arborescence_incomplete"] = folder_model.plan_default_tree_from(
+                dossier_id, folders, relocate=True,
+            ).pending
 
         # Root-level documents only (no folder_id)
         docs = list_documents(dossier_id=dossier_id, folder_id=None)
@@ -860,18 +996,21 @@ def dossier_create() -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
-    if _is_htmx():
-        resp = redirect(
-            url_for("dossiers.dossier_detail", dossier_id=dossier["id"])
-        )
-        resp.headers["HX-Redirect"] = url_for(
-            "dossiers.dossier_detail", dossier_id=dossier["id"]
-        )
-        return resp
-
-    return redirect(
-        url_for("dossiers.dossier_detail", dossier_id=dossier["id"])
-    )
+    # The default filing tree (18 folders). The dossier is saved whatever
+    # happens here: a tree that cannot be created is a WARNING on the
+    # detail page, with the button that completes it.
+    new_id = dossier["id"]
+    try:
+        tree, tree_errors = folder_model.ensure_default_tree(new_id)
+        tree_ok = tree is not None and not tree_errors and not tree.blocked
+    except Exception:
+        log_unexpected("default folder tree failed at dossier creation",
+                       dossier_id=new_id)
+        tree_ok = False
+    params = {} if tree_ok else {"tab": "documents",
+                                 "avertissement": "arborescence"}
+    return _redirect_to(
+        url_for("dossiers.dossier_detail", dossier_id=new_id, **params))
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────
@@ -1016,36 +1155,130 @@ def dossier_dav_resync(dossier_id: str) -> str:
 @dossiers_bp.route("/<dossier_id>/delete", methods=["POST"])
 @login_required
 def dossier_delete(dossier_id: str) -> str:
-    """Delete a dossier and redirect to the list."""
-    existing = get_dossier(dossier_id)
-    success, error = delete_dossier(dossier_id)
+    """Delete an EMPTY dossier (and its empty filing folders).
 
-    if success:
-        # Append-only deletion trail (PA-G06) — recorded BEFORE the sync
-        # teardown wipes the last context. delete_dossier refuses while any
-        # child exists, so this only ever records a childless shell.
-        record_deletion(
-            "dossier", dossier_id,
-            dossier_id=dossier_id,
-            title=(existing or {}).get("file_number", "")
-            or (existing or {}).get("title", ""),
-            status=(existing or {}).get("status", ""),
-        )
-        # No DAV endpoint reads a "dossiers" sync collection post-D1; instead,
-        # tear down the deleted dossier's live per-collection DAV sync state
-        # (its /dav/dossier-{id}/ collection no longer exists).
-        sync_name = f"dossier:{dossier_id}"
-        clear_tombstones(sync_name)
-        delete_sync_state(sync_name)
+    A refusal lands back on the dossier with a closed ``?erreur=`` code —
+    never on the list, which read as a success, and never as a 4xx
+    fragment, which htmx does not swap. Only a dossier that no longer
+    exists goes to the list.
 
+    A commit that RAISED (``echec``) is settled by one more strict read:
+    the dossier gone → the delete landed, its answer lost — the success
+    branch, journaled from the snapshot the model staged; still there →
+    ``suppression_echec``, now true; the read failing too →
+    ``suppression_incertaine``, which promises nothing either way.
+    """
+    if not dossier_id.strip():
+        # No dossier bears a blank id — the list (a crafted « /%20/delete »).
+        return _redirect_to(url_for("dossiers.dossier_list"))
+    success, _message, report = delete_dossier(dossier_id)
+
+    if not success and report.get("code") == DELETE_FAILED:
+        # The commit RAISED, and the model's own re-read could not show it
+        # landed. A raise out of a commit does not prove nothing was deleted
+        # (the answer can be lost after the server applied it): ask the
+        # store once more before saying « rien n'a été supprimé ».
+        try:
+            still_there = get_dossier_strict(dossier_id)
+        except Exception:
+            log_unexpected("dossier delete: outcome re-read failed",
+                           dossier_id=dossier_id)
+            return _redirect_to(url_for(
+                "dossiers.dossier_detail", dossier_id=dossier_id,
+                erreur="suppression_incertaine"))
+        if still_there is None:
+            if report.get("dossier") is None:
+                # Gone, yet the model KNEW this call's delete did not land
+                # (its re-read found the dossier, or no attempt staged the
+                # delete): someone else deleted it meanwhile — the list, and
+                # no trail row this call cannot vouch for.
+                return _redirect_to(url_for("dossiers.dossier_list"))
+            success = True  # the delete landed: its answer was lost
+
+    if not success:
+        if report.get("code") == DELETE_NOT_FOUND:
+            return _redirect_to(url_for("dossiers.dossier_list"))
+        code = _DELETE_ERRORS.get(report.get("code", ""), "suppression_echec")
+        return _redirect_to(url_for(
+            "dossiers.dossier_detail", dossier_id=dossier_id, erreur=code))
+
+    deleted = report.get("dossier") or {}
+    # Append-only deletion trail (PA-G06) — recorded BEFORE the sync
+    # teardown wipes the last context. delete_dossier refuses while any
+    # child exists, so this only ever records a childless shell — and ONE
+    # row: its empty filing folders left in the same commit, and a row per
+    # folder would crowd the 200-row window list_deletions reads
+    # (models/audit_event, the second documented exception).
+    record_deletion(
+        "dossier", dossier_id,
+        dossier_id=dossier_id,
+        title=deleted.get("file_number", "") or deleted.get("title", ""),
+        status=deleted.get("status", ""),
+    )
+    log_dossier_event("deleted", dossier_id,
+                      folders_deleted=len(report.get("folders") or []))
+    # No DAV endpoint reads a "dossiers" sync collection post-D1; instead,
+    # tear down the deleted dossier's live per-collection DAV sync state
+    # (its /dav/dossier-{id}/ collection no longer exists).
+    sync_name = f"dossier:{dossier_id}"
+    clear_tombstones(sync_name)
+    delete_sync_state(sync_name)
+    return _redirect_to(url_for("dossiers.dossier_list"))
+
+
+@dossiers_bp.route("/<dossier_id>/arborescence", methods=["POST"])
+@login_required
+def dossier_arborescence(dossier_id: str) -> str:
+    """« Créer l'arborescence par défaut » — create or complete the
+    dossier's default filing tree, and range an old root « Projets » /
+    « Reçus du portail » under « Interne » / « Autres » (``relocate``).
+
+    Idempotent: a second click writes nothing and says so. A plain form
+    POST answered by a redirect to the Fichiers tab — the outcome travels
+    as a closed code (``?message=`` / ``?erreur=`` / ``?avertissement=``).
+    """
+    if not dossier_id.strip():
+        return redirect(url_for("dossiers.dossier_list"))
+    try:
+        existing = get_dossier_strict(dossier_id)
+    except Exception:
+        log_unexpected("default folder tree: dossier read failed",
+                       dossier_id=dossier_id)
+        existing = False  # unreadable: an error, never « no such dossier »
+    if existing is None:
+        return redirect(url_for("dossiers.dossier_list"))
+
+    params: dict = {}
+    if existing is False:
+        params["erreur"] = "arborescence"
+    else:
+        try:
+            tree, errors = folder_model.ensure_default_tree(
+                dossier_id, relocate=True)
+        except Exception:
+            log_unexpected("default folder tree failed", dossier_id=dossier_id)
+            tree, errors = None, ["unexpected"]
+        if tree is None or errors:
+            params["erreur"] = "arborescence"
+        elif tree.blocked:
+            params["avertissement"] = "arborescence_partielle"
+        elif _relocation_message_code(tree.relocated):
+            params["message"] = _relocation_message_code(tree.relocated)
+        elif not tree.writes:
+            params["message"] = "arborescence_complete"
+        else:
+            params["message"] = "arborescence"
+    return redirect(url_for("dossiers.dossier_detail", dossier_id=dossier_id,
+                            tab="documents", **params))
+
+
+def _redirect_to(target: str) -> Response:
+    """A redirect both branches can follow: htmx gets a 2xx carrying
+    ``HX-Redirect`` (it swaps no 3xx target and no 4xx fragment), a plain
+    form the ordinary 302."""
     if _is_htmx():
-        if success:
-            resp = redirect(url_for("dossiers.dossier_list"))
-            resp.headers["HX-Redirect"] = url_for("dossiers.dossier_list")
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    return redirect(url_for("dossiers.dossier_list"))
+        return Response(status=200, headers={"HX-Redirect": target})
+    return redirect(target)
 
 
 # ── Export ───────────────────────────────────────────────────────────────

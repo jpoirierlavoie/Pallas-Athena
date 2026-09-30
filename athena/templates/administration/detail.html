@@ -45,6 +45,26 @@
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     La pièce justificative n'a pas pu être servie — réessayez dans un instant.
   </div>
+  {% elif avertissement == 'versement' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    La pièce justificative est jointe à l'écriture, mais sa copie n'a pas pu
+    être versée au dossier. Réessayez avec « Verser une copie au dossier ».
+  </div>
+  {% elif avertissement == 'versement_inadmissible' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Seule une dépense liée à un dossier et munie d'une pièce justificative
+    peut en verser une copie au dossier. Rien n'a été versé.
+  </div>
+  {# Les deux refus DURABLES de la copie (services/pieces_justificatives,
+     REASON_*) — « réessayez » n'y répondrait pas. #}
+  {% elif avertissement == 'versement_dossier_introuvable' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Le dossier de cette écriture est introuvable : aucune copie ne peut y être versée. Liez l'écriture à un dossier existant.
+  </div>
+  {% elif avertissement == 'versement_piece_modifiee' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    La pièce justificative a changé pendant le versement — rechargez la page, puis réessayez.
+  </div>
   {% endif %}
 
   <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-3 text-sm">
@@ -136,6 +156,12 @@
              });
              var resultat = await fin.json().catch(function () { return {}; });
              if (!fin.ok) { this.erreur = resultat.erreur || 'refusé'; this.occupe = false; return; }
+             {# Le serveur bâtit l'adresse — la fiche, avec un bandeau fermé
+                (?avertissement=) si la copie au dossier n'a pas été versée,
+                sans bandeau sinon : un bandeau laissé dans l'adresse par un
+                échec précédent ne survit pas à un téléversement réussi. Le
+                script ne compose jamais de texte. #}
+             if (resultat.suivant) { window.location.assign(resultat.suivant); return; }
              window.location.reload();
            } catch (e) {
              this.erreur = 'erreur réseau — réessayez'; this.occupe = false;
@@ -167,6 +193,38 @@
         </label>
       </div>
     </div>
+    {# La COPIE au dossier (« Mandat › Déboursés ») d'une dépense liée à un
+       dossier — services/pieces_justificatives. `copies` vaut None quand la
+       lecture a échoué : rien n'est affirmé, rien n'est offert. #}
+    {% if copies is not none %}
+    {% if copies.courante or copie_admissible %}
+    <div class="mt-3 pt-3 border-t border-gray-100">
+      {% if copies.courante %}
+      <p class="text-xs text-gray-600"><a href="{{ url_for('documents.document_detail', document_id=copies.courante.id) }}" class="text-indigo-600 hover:underline">Copie au dossier {{ copies.courante.dossier_file_number or entry.dossier_file_number }}{% if copies.dans_debourses %}, sous Mandat › Déboursés{% endif %}</a></p>
+      {% elif copie_dossier_introuvable %}
+      {# Le magasin DIT le dossier absent : le bouton ne pourrait qu'être
+         refusé. Une lecture en échec, elle, garde le bouton. #}
+      <p class="text-xs text-gray-500">Le dossier de cette écriture est introuvable : aucune copie ne peut y être versée.</p>
+      {% else %}
+      <form method="post" action="{{ url_for('admin_ledger.recu_verser', tx_id=entry.id) }}" class="flex items-center justify-between gap-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="document_id" value="{{ copie_document_id }}">
+        <p class="text-xs text-gray-500">Aucune copie de cette pièce au dossier {{ entry.dossier_file_number }}.</p>
+        <button type="submit" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Verser une copie au dossier</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% for autre in copies.autres %}
+    <p class="mt-2 text-xs text-gray-500">Une copie a été versée au dossier {{ autre.dossier_file_number }}.</p>
+    {% endfor %}
+    {# La copie d'un reçu REMPLACÉ reste parmi les documents du dossier :
+       la fiche la signale pour que le juriste la retrouve et la retire
+       lui-même — rien ici ne la supprime. #}
+    {% for remplacee in copies.remplacees %}
+    <p class="mt-2 text-xs text-gray-500">Une copie d'une pièce justificative remplacée demeure au dossier {{ remplacee.dossier_file_number or entry.dossier_file_number }} : <a href="{{ url_for('documents.document_detail', document_id=remplacee.document_id) }}" class="text-indigo-600 hover:underline">voir la copie</a>.</p>
+    {% endfor %}
+    {% endif %}
   </div>
 
   {# ── Actions #}

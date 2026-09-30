@@ -560,11 +560,12 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     ("hearing", "unlink_hearing"): (("hearing", "update_hearing"),),
     # Finds, or creates through create_note.
     ("note", "ensure_analyse_note"): (("note", "create_note"),),
-    # Lot 2A (T8). Finds the system folder, or adopts a legacy one, or
-    # creates it — each in its own helper, which the sweep then holds.
-    ("folder", "ensure_system_folder"): (
-        ("folder", "_adopt_legacy"), ("folder", "_create_system_folder"),
-    ),
+    # Lot 2A (T8); the default tree (2026-09-30). Finds the system folder,
+    # adopts a legacy one, or creates it with its parent — every write in
+    # the ONE writer of the tree, which the sweep then holds.
+    ("folder", "ensure_system_folder"): (("folder", "_ensure"),),
+    # The default tree of a dossier (create_dossier) — the same writer.
+    ("folder", "ensure_default_tree"): (("folder", "_ensure"),),
     # A copy IS an ingestion of the source's object (a GCS rewrite).
     ("document", "copy_document"): (("document", "ingest_blob_as_document"),),
     # Lot 2A (T9): finalize_upload replaces a template's file through it;

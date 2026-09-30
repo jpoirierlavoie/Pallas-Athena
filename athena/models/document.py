@@ -1,5 +1,7 @@
 """Document Firestore CRUD and Firebase Storage operations."""
 
+import base64
+import binascii
 import logging
 import mimetypes
 import os
@@ -747,6 +749,48 @@ def _generated_from_invoice_fields(
             "generation_fingerprint": fingerprint}, []
 
 
+# The link a COPY of an administration receipt keeps to its register entry
+# (2026-09-30): the dépense whose pièce justificative it copies, and the MD5
+# of the receipt it copied — ``services.pieces_justificatives`` finds a copy
+# of the CURRENT receipt again instead of filing a duplicate, and tells it
+# apart from a copy of a receipt since replaced. Set by that service alone,
+# through the ``from_admin_receipt`` keyword; never a metadata key a form
+# can post.
+_FROM_ADMIN_RECEIPT_ERROR = "Provenance de la pièce justificative invalide."
+
+
+def _canonical_md5_b64(value: object) -> Optional[str]:
+    """*value* as GCS reports an MD5 — standard base64 of 16 bytes,
+    re-encoded so two spellings of one digest compare equal — or ``None``."""
+    if not isinstance(value, str) or len(value) != 24:
+        return None
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if len(raw) != 16:
+        return None
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _from_admin_receipt_fields(
+    link: Optional[dict],
+) -> tuple[dict, list[str]]:
+    """``{source_admin_transaction_id, source_receipt_md5}`` from the
+    keyword, checked: exactly the two keys, an addressable entry id, an MD5
+    in its GCS form."""
+    if link is None:
+        return {}, []
+    if not isinstance(link, dict) or set(link) != {"transaction_id", "md5"}:
+        return {}, [_FROM_ADMIN_RECEIPT_ERROR]
+    transaction_id = link.get("transaction_id")
+    md5 = _canonical_md5_b64(link.get("md5"))
+    if not is_addressable_id(transaction_id) or md5 is None:
+        return {}, [_FROM_ADMIN_RECEIPT_ERROR]
+    return {"source_admin_transaction_id": transaction_id,
+            "source_receipt_md5": md5}, []
+
+
 def _validate_metadata(data: dict) -> list[str]:
     """Validate document metadata fields. Returns list of error messages."""
     errors: list[str] = []
@@ -924,6 +968,7 @@ def _prepare_document_record(
     analyse_seed: Optional[dict] = None,
     lawyer_set_category: bool = False,
     generated_from_invoice: Optional[dict] = None,
+    from_admin_receipt: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Build the Firestore record + storage path shared by the two
     ingestion paths (through-app stream and GCS-side copy).
@@ -958,6 +1003,12 @@ def _prepare_document_record(
       it printed (``services.note_honoraires``, lot 3a), stored as
       ``source_invoice_id`` / ``generation_fingerprint`` and read back by
       :func:`find_generated_for_invoice`. Absent on every other record.
+    * ``from_admin_receipt`` — ``{"transaction_id", "md5"}``: the
+      administration dépense whose pièce justificative this document COPIES
+      and the MD5 of the receipt copied (``services.pieces_justificatives``,
+      2026-09-30), stored as ``source_admin_transaction_id`` /
+      ``source_receipt_md5`` and read back by :func:`find_receipt_copies`.
+      Absent on every other record.
     """
     uid, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -974,10 +1025,14 @@ def _prepare_document_record(
     invoice_fields, invoice_errors = _generated_from_invoice_fields(
         generated_from_invoice)
     errors += invoice_errors
+    receipt_fields, receipt_errors = _from_admin_receipt_fields(
+        from_admin_receipt)
+    errors += receipt_errors
     if errors:
         return None, errors
 
-    merged = {**_default_doc(), **fields, **portail_fields, **invoice_fields}
+    merged = {**_default_doc(), **fields, **portail_fields, **invoice_fields,
+              **receipt_fields}
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
     merged["category_source"] = category_source
@@ -1034,6 +1089,7 @@ def ingest_blob_as_document(
     portail: Optional[dict] = None,
     analyse_seed: Optional[dict] = None,
     lawyer_set_category: bool = False,
+    from_admin_receipt: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Ingest an EXISTING GCS object as a document via a server-side copy.
 
@@ -1070,6 +1126,13 @@ def ingest_blob_as_document(
     and its write-once journal entry (``analyses/{analyse_id}``) is written
     in the SAME commit as the record — a copy of a protected document never
     exists, even for an instant, without the level it inherits.
+
+    ``from_admin_receipt`` (keyword, 2026-09-30) — ``{"transaction_id",
+    "md5"}``: a COPY of an administration dépense's pièce justificative
+    (``services/pieces_justificatives``), stored as
+    ``source_admin_transaction_id`` / ``source_receipt_md5`` exactly as
+    :func:`upload_document` stores a note d'honoraires' invoice link. The
+    source is the FIRM-level receipt; it is only read.
 
     Every path that RETURNS a record notes the commit
     (``provenance.note_commit``): the record exists, so a failure after it
@@ -1113,6 +1176,7 @@ def ingest_blob_as_document(
         document_id=document_id, category_source=category_source,
         portail=portail, analyse_seed=analyse_seed,
         lawyer_set_category=lawyer_set_category,
+        from_admin_receipt=from_admin_receipt,
     )
     if errors:
         return None, errors
@@ -1535,6 +1599,32 @@ def find_generated_for_invoice(invoice_id: str) -> list[dict]:
         _migrate_category(snap.to_dict() or {})
         for snap in db.collection(COLLECTION)
         .where(filter=FieldFilter("source_invoice_id", "==", invoice_id))
+        .stream()
+    ]
+    rows.sort(
+        key=lambda d: d.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return rows
+
+
+def find_receipt_copies(transaction_id: str) -> list[dict]:
+    """The documents that COPY the pièce justificative of the administration
+    entry *transaction_id* (``source_admin_transaction_id``, 2026-09-30) —,
+    newest first. A read failure PROPAGATES: the caller decides whether to
+    FILE a copy on the answer, and « none » on a transient error is a
+    duplicate. A display caller catches it itself.
+
+    A single-field equality, served by the automatic index — the
+    :func:`find_generated_for_invoice` shape.
+    """
+    if not is_addressable_id(transaction_id):
+        return []
+    rows = [
+        _migrate_category(snap.to_dict() or {})
+        for snap in db.collection(COLLECTION)
+        .where(filter=FieldFilter(
+            "source_admin_transaction_id", "==", transaction_id))
         .stream()
     ]
     rows.sort(

@@ -154,7 +154,8 @@ FAMILIES: tuple[Family, ...] = (
         checkbox_summary_fr=(
             "créer des notes, tâches, événements, temps et déboursés (un à "
             "un, ou par lots écrits en entier ou pas du tout), contacts et "
-            "dossiers, et compléter un dossier (champs encore vides, "
+            "dossiers (un dossier neuf reçoit l'arborescence de classement "
+            "par défaut), et compléter un dossier (champs encore vides, "
             "significations, événements de prescription)"
         ),
         instructions_en=(

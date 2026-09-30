@@ -608,8 +608,16 @@ def dossiers(monkeypatch):
         handlers.dossier_model._apply_prescription_deadline(doc)
         return doc, []
 
+    def _tree(dossier_id, *, relocate=False):
+        # The default filing tree (2026-09-30) — a success stub: the real
+        # engine is pinned on the shared fake in test_mcp_dossier_tree.py.
+        world["trees"].append((dossier_id, relocate, dict(world["created"])))
+        return object(), []
+
+    world["trees"] = []
     monkeypatch.setattr(handlers.dossier_model, "create_dossier", _create)
     monkeypatch.setattr(handlers.dossier_model, "update_dossier", _update)
+    monkeypatch.setattr(handlers.folder_model, "ensure_default_tree", _tree)
     _stub_dossier_reads(monkeypatch,
                         lambda i: world["existing"])
     monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
@@ -745,6 +753,68 @@ def test_une_date_pour_agir_calculee_est_annoncee(dossiers):
     payload = handlers.create_dossier(_mk(
         droit_action_date="2019-01-15", prescription_type="3_ans"))
     assert any("CALCULÉE" in w for w in payload["warnings"])
+
+
+# ── The default filing tree (2026-09-30) ──────────────────────────────────
+
+
+def test_un_dossier_cree_recoit_son_arborescence_apres_le_commit(dossiers):
+    """The tree is asked for the dossier the MODEL created — after its
+    commit, never before (the stub records what had been created when it
+    was called) — and a success adds no warning."""
+    payload = handlers.create_dossier(_mk())
+    assert [(d, r) for d, r, _ in dossiers["trees"]] == [("d-new", False)]
+    assert dossiers["trees"][0][2]["file_number"] == "2019-014"
+    assert payload["created"] is True
+    assert not any("arborescence" in w for w in payload["warnings"])
+
+
+def test_un_refus_ne_cree_jamais_d_arborescence(dossiers, monkeypatch):
+    """A refused creation — the handler's own (a file number taken) or the
+    model's — writes no folder: the tree comes after the commit only."""
+    dossiers["by_number"]["2019-014"] = {"id": "d-existant"}
+    with pytest.raises(tools.ToolArgumentError, match="existe déjà"):
+        handlers.create_dossier(_mk())
+    dossiers["by_number"].clear()
+    monkeypatch.setattr(handlers.dossier_model, "create_dossier",
+                        lambda data: (None, ["Titre requis."]))
+    with pytest.raises(tools.ToolArgumentError, match="Titre requis"):
+        handlers.create_dossier(_mk())
+    assert dossiers["trees"] == []
+
+
+def _tree_errors(dossier_id, *, relocate=False):
+    return None, ["Impossible de vérifier les dossiers de classement."]
+
+
+def _tree_raises(dossier_id, *, relocate=False):
+    raise RuntimeError("firestore down")
+
+
+@pytest.mark.parametrize("failing", [_tree_errors, _tree_raises])
+def test_une_arborescence_qui_echoue_est_un_avertissement_jamais_un_refus(
+        dossiers, monkeypatch, failing):
+    """The dossier is COMMITTED: a tree that could not be written — refused
+    by the engine, or raising — is a WARNING on a success. Never a raise,
+    which run_write would turn into « ENREGISTRÉE — NE PAS RÉESSAYER » for
+    a dossier that stands, nor a refusal, whose retry the file number would
+    then refuse."""
+    logged = []
+    monkeypatch.setattr(handlers.folder_model, "ensure_default_tree", failing)
+    monkeypatch.setattr(handlers, "log_unexpected",
+                        lambda message, **kw: logged.append((message, kw)))
+    payload = handlers.create_dossier(_mk())
+    assert payload["created"] is True and payload["entity"]["id"] == "d-new"
+    tree = [w for w in payload["warnings"] if "arborescence" in w]
+    assert len(tree) == 1
+    assert "le dossier, lui, est bien créé — ne le recréez pas" in tree[0]
+    assert f"« {handlers.folder_model.DEFAULT_TREE_BUTTON} »" in tree[0]
+    assert "« Projets », « Factures » et « Reçus du portail »" in tree[0]
+    if failing is _tree_raises:
+        assert logged == [("mcp default folder tree failed",
+                           {"dossier_id": None})]     # "d-new": no UUID
+    else:
+        assert logged == []
 
 
 # ── update_dossier ─────────────────────────────────────────────────────────

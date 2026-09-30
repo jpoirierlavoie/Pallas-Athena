@@ -63,6 +63,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import services.note_honoraires as nh
     from models import doc_template as tpl_model
+    from models import folder as folder_model
     from models import invoice as invoice_model
     from mcp.output_schemas import OUTPUT_SCHEMAS
 
@@ -809,7 +810,14 @@ def test_the_invoice_note_is_generated_then_returned_when_identical(world):
     assert doc["source_invoice_id"] == invoice["id"]
     assert "par Claude (connecteur)" in doc["genere_depuis"]
     assert doc["storage_path"].startswith(f"users/{UID}/")
-    assert first["folder"]["system_role"] == "projets"
+    # « Mandat › Factures » since the default folder tree (it was « Projets »):
+    # created with its parent on first use, at their deterministic ids.
+    factures_id = folder_model.system_folder_id("d1", "factures")
+    assert first["folder"]["system_role"] == "factures"
+    assert first["folder"]["id"] == doc["folder_id"] == factures_id
+    assert world.peek(f"folders/{factures_id}")["parent_folder_id"] == (
+        folder_model.system_folder_id("d1", "mandat"))
+    assert world.peek(f"folders/{folder_model.system_folder_id('d1', 'projets')}") is None
 
     second = handlers.create_document({"source": "invoice_note",
                                        "invoice_id": invoice["id"]})
@@ -823,6 +831,37 @@ def test_the_invoice_note_is_generated_then_returned_when_identical(world):
                                       "regenerate": True})
     assert third["reused"] is False
     assert len(world.peek_collection("documents")) == 2
+
+
+def test_the_invoice_note_refuses_when_factures_cannot_be_obtained(
+        world, monkeypatch):
+    """The folders cannot be read: « Factures » is unavailable, the call is
+    REFUSED — nothing filed, not at the dossier root, no folder written."""
+    _note_template(world)
+    invoice = _issued(world)
+    real = world._fake_server.run_query
+    refused: list = []
+
+    def _run_query(request, metadata=None, **kw):
+        sq = request["structured_query"]._pb
+        if any(f.collection_id == folder_model.COLLECTION for f in sq.from_):
+            refused.append(request["parent"])
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(world._fake_server, "run_query", _run_query)
+    events: list = []
+    monkeypatch.setattr(nh, "log_template_event",
+                        lambda event, **kw: events.append((event, kw)))
+    with pytest.raises(tools.ToolArgumentError) as caught:
+        handlers.create_document({"source": "invoice_note",
+                                  "invoice_id": invoice["id"]})
+    assert refused                      # the folder read is what failed
+    assert folder_model.READ_ERROR in str(caught.value)
+    assert [(e, kw.get("reason")) for e, kw in events] == [
+        ("generation_failed", "factures_unavailable")]
+    assert world.peek_collection("documents") == {}
+    assert world.peek_collection(folder_model.COLLECTION) == {}
 
 
 def test_the_invoice_note_is_refused_without_a_designated_template(world):

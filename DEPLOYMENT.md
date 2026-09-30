@@ -1500,8 +1500,12 @@ Notes:
   same-key retry again — see the last bullet of §11 before writing through
   the connector on the older version.
 - **Déploiement unique (D22) — the whole MCP write-expansion program in ONE
-  release (branch `mcp-ecriture-finitions`: lots 0a to 5 and the finitions,
-  none of them deployed yet).** The lawyer's decision D22 (2026-09-29): the
+  release (branch `mcp-ecriture-finitions`: lots 0a to 5 and the finitions).
+  The push is DONE: `319a064` (the merge of step 4) serves in production.
+  What remains is the lawyer's to run — the checks after the push, steps 9
+  to 15, and later the accounting train, steps 16 and 17 — and no result of
+  them is recorded here yet; a release that follows (« Arborescence par
+  défaut », below) runs its own train on top of this one.** The lawyer's decision D22 (2026-09-29): the
   final branch is pushed ONCE, under ONE consent train, and the accounting
   switch is flipped LATER, on its own, after a supervised pilot. The per-lot
   bullets below keep their detail and their recipes; each step here names
@@ -1638,7 +1642,8 @@ Notes:
       d'honoraires of « Lot 3 » step 3 (the web) and step 7e (the
       connector). That note needs a REAL invoice — a test invoice burns a
       number for ever (step 14) — so it files ONE draft into that invoice's
-      dossier, in « Projets » (the connector's call returns the same note
+      dossier, in « Projets » — « Mandat › Factures » once « Arborescence
+      par défaut » below is deployed — (the connector's call returns the same note
       when it is identical, `reused: true`): the one write outside the test
       data. Delete it in the application once opened.
   13. *The upload ticket, once*, on a test dossier (« Lot 2A », step 8):
@@ -2512,8 +2517,10 @@ Notes:
   6. **Re-add the connector and READ the new screen before ticking**
      « Autoriser les écritures »: a « Classer vos documents » block (a
      category Claude sets stays « présumée » until you confirm it; never
-     « Projets » nor « Reçus du portail »), « Produire des projets Word » (a
-     filled gabarit ALWAYS in « Projets »; a copy's protection level
+     « Projets » nor « Reçus du portail » — the seven application folders
+     since « Arborescence par défaut » below), « Produire des projets Word » (a
+     filled gabarit ALWAYS in « Projets », under « Interne » since the default
+     tree; a copy's protection level
      presumed, and its category presumed unless you had set it),
      « Téléverser un fichier » (a write-only link that transits the
      conversation, a file filed only within the hour, and the
@@ -2601,7 +2608,8 @@ Notes:
   `template_id` and the `dossier_id` first, write only the blocs and manual
   fields, plain paragraphs separated by a blank line with no numbering of
   your own, `markdown: true` only for internal structure, never « {{ » or
-  « }} », always into « Projets », and a refusal saying a party of the
+  « }} », always into « Projets » (« Interne › Projets » since the default
+  tree — « Arborescence par défaut » below), and a refusal saying a party of the
   dossier « n'a pas pu être lue » means retry — never write around it);
   `create_document`'s two sources and its
   refusal when no note-print template is designated; the presumed category
@@ -2736,7 +2744,8 @@ Notes:
      « Modifier le brouillon » then « Enregistrer » WITHOUT changing a field
      returns to the sheet and writes nothing (the no-op); « Note
      d'honoraires (Word) » on an existing, non-annulée invoice files its note
-     in « Projets », and it must open in Word WITHOUT repair (Change Impact
+     in « Projets » (in « Mandat › Factures » since « Arborescence par
+     défaut » below), and it must open in Word WITHOUT repair (Change Impact
      item 3 — the fill now runs in `services/note_honoraires.py`). Never
      test « Créer » on « Nouvelle facture »: a success takes a real number.
   4. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
@@ -2809,7 +2818,8 @@ Notes:
         nothing written (a new version is permanent — the budget is
         append-only).
      e. `create_document` with `source: "invoice_note"` on an existing,
-        non-annulée invoice: ONE note filed in « Projets » — its object in
+        non-annulée invoice: ONE note filed in « Projets » (« Mandat ›
+        Factures » since « Arborescence par défaut » below) — its object in
         the bucket under `users/<the practice's uid>/…`, never
         `users/unknown/` (the Cloud Storage console shows it; no tool output
         carries a path) — which opens in Word WITHOUT repair; the same call
@@ -3512,6 +3522,188 @@ Notes:
      day: the counts read 82 (31 + 51), 88 with the accounting grant, and
      an import of time or disbursements goes through the bulk creators (the
      key required, 50 rows a call, a refused batch resent WHOLE).
+- **Arborescence par défaut (2026-09-30) — the default folder tree of every
+  dossier (branch `arborescence-par-defaut-main`, on top of the D22 release
+  and of the bulk creators above; ONE consent train — the SAME one as the
+  bulk creators' when both ride one push).** Every dossier receives eighteen filing folders, seven of
+  them the application's own (« Mandat » with « Factures » and « Déboursés »,
+  « Interne » with « Projets », « Autres » with « Reçus du portail » — never
+  renamed or moved); the note d'honoraires is filed in « Mandat ›
+  Factures », the copy of a dépense's pièce justificative in « Mandat ›
+  Déboursés »; an EMPTY dossier deletes with its empty folders. No tool is
+  added (still 82 under the write grant, 88 with accounting — the bulk
+  creators' counts), no index, no
+  dependency, no Tailwind class or icon, no `cron.yaml` or `firestore.rules`
+  change, no DavX5 account re-add (folders and documents are not
+  DAV-exposed). But the consent text changes under a frozen scope — the
+  CREATE block (« chaque nouveau dossier reçoit l'arborescence de
+  classement par défaut ») and its checkbox summary, the FILES block (the
+  seven application folders, « Projets » under « Interne », the note in
+  « Factures » under « Mandat ») — hence the train (§11, D19). Existing
+  dossiers get the tree from `scripts/arborescence_par_defaut.py`, which
+  runs the engine of the Fichiers tab's « Créer l'arborescence par
+  défaut » button (`models/folder.ensure_default_tree(relocate=True)`). In
+  order:
+  1. **Before the push, from a checkout of THIS branch, the DRY-RUN only,
+     against production** — the script ships with the change it prepares,
+     as `designer_gabarits_actifs` does (the recipe of « Active gabarits »
+     above: Application Default Credentials, the variables inline, never
+     `ENV=production`, which would make `config.py` resolve the service's
+     secrets; `GOOGLE_CLOUD_PROJECT` stops the client from inferring another
+     project). Unlike that script this one READS a `.env` (`find_dotenv`,
+     from the working directory upward) — it never overrides a variable
+     given inline, but it fills the ones left unset: make sure no `.env` on
+     the way up points at another project, and read the two header lines
+     it prints (« Projet Firestore : … », « Fichier .env lu : … »):
+
+     ```bash
+     cd athena
+     export GOOGLE_CLOUD_PROJECT=$PROJECT FIREBASE_PROJECT_ID=$PROJECT \
+       FIREBASE_STORAGE_BUCKET=your-bucket-name \
+       AUTHORIZED_USER_EMAIL=you@example.com SECRET_KEY=unused-by-the-script
+     # (the original deployment: PROJECT=athena-pallas)
+     python -m scripts.arborescence_par_defaut          # simulation — writes nothing
+     ```
+
+     Expect « SIMULATION — ce que --apply ferait ; rien n'est écrit », one
+     line per dossier, a closing « Dossiers traités : N · en échec : 0 · … »
+     where N is the production dossier count, and exit `0`. Exit `1` means
+     a read failed, a dossier could not be treated, a folder of the tree
+     could not be placed (its reason is printed under the dossier — « [!]
+     bloqué : … ») or no dossier was read at all (the wrong project): stop,
+     and look. The output is the ONLY record of a run — the engine's events
+     do not reach Cloud Logging from a script —: keep it.
+  2. **Read that output WITH the lawyer, before the push** — after the push
+     the first generation, versement or receipt copy that needs a system
+     folder adopts it with no review at all (CLAUDE.md Known Gotchas, « The
+     default folder tree ADOPTS — and LOCKS »). Three kinds of line: « « X »
+     existant sera le dossier de l'application (ne se renommera plus, ne se
+     déplacera plus) » — a folder he made, e.g. a ROOT « Mandat » or
+     « Autres », becomes a locked application folder; « « Projets » sera
+     rangé sous « Interne » » / « « Reçus du portail » sera rangé sous
+     « Autres » » — the old root system folders move, their documents with
+     them; « à vérifier : « X » (…) porte le nom d'un dossier de
+     l'arborescence sans en être un » — a homonym out of place (a root
+     « Déboursés » of his own…), listed by folder name only, never merged:
+     he looks. « repris : N » counts his own ordinary folders already
+     bearing a default name, kept as they are, nothing written. Anything he
+     wants otherwise is renamed or moved in the application BEFORE the push
+     (step 4), and the simulation re-run — not merely before step 6: from
+     the push on, the first generation, note d'honoraires, versement or
+     receipt copy that needs « Mandat », « Interne » or « Autres » stamps
+     his root folder of that name, and it can no longer be renamed or
+     moved.
+  3. **Suspend the scheduled Claude tasks, then `python -m
+     scripts.revoke_mcp_tokens` and remove the connector in claude.ai —
+     BEFORE the push** (§11: that manual sequence is the only control, D19;
+     the consent text changed in the CREATE and FILES blocks).
+     `MCP_WRITE_ENABLED` stays `"true"`.
+  4. **Push ONE deploy.** The commits of `main` not yet in production ride
+     along — `d8de4e5` (the procedural holiday calendar, art. 82 C.p.c.),
+     `935eb0a` (the connector's context savings) and `30f1ead` (the bulk
+     creators, whose own train this one then IS: follow its checks too —
+     `tools/list` → 82 / 88); the « aucun re-consentement » of `d8de4e5` is
+     true of it alone and covers neither. Cloud Build runs the suite as the
+     gate.
+  5. **Confirm the backup before writing to every dossier**: Point-in-Time
+     Recovery or a recent scheduled backup of the `(default)` database
+     (read-only, e.g. `gcloud firestore databases describe
+     --database='(default)' --project=$PROJECT` —
+     `pointInTimeRecoveryEnablement`; `gcloud firestore backups schedules
+     list --database='(default)' --project=$PROJECT`). The backfill has no
+     undo of its own.
+  6. **`--apply` ONCE, after the push — never before it**: the OLD code
+     counts folders among the children that block `delete_dossier`, so a
+     tree written under it would make every dossier undeletable until the
+     deploy. Same environment as step 1:
+
+     ```bash
+     python -m scripts.arborescence_par_defaut --apply   # « ÉCRITURE »
+     ```
+
+     Each dossier's line says what was created, adopted and moved; exit
+     `0`. Keep this output too.
+  7. **Re-run the dry-run**: every dossier line ends « (à jour) » and the
+     exit is `0` (a « [?] » line under a dossier means its counts may be
+     incomplete — a lost answer, or another writer in between —: the
+     re-run's « (à jour) » is what settles it). The « à vérifier » lines
+     stay: nothing merges homonyms. Then open THREE dossiers in the
+     application, picked from the step-6 output: one that had a root
+     « Projets » (it now sits under « Interne », its documents inside, none
+     left at the root); one with a root « Déboursés » of the lawyer's (still
+     at the root, untouched, beside « Mandat › Déboursés », and listed « à
+     vérifier »); and one « fermé » dossier (the tree is there — the
+     backfill treats every status).
+  8. **Re-add the connector and READ the rewritten CREATE and FILES blocks
+     before ticking « Autoriser les écritures »** (and the accounting box,
+     if its switch has been armed since — §15 « Lot 5 »). `tools/list`:
+     **82** tools for a grant without accounting, **88** with it — the bulk
+     creators' counts (production served 80 before this push); this lot
+     adds none. Say it to the lawyer at this step: from this release, the
+     copy of a dépense's pièce justificative filed in « Mandat ›
+     Déboursés » is an ordinary document of the dossier — a firm-level
+     receipt no tool could reach before. Under the READ grant alone the
+     connector lists it and reads its text (`list_documents`,
+     `get_document_text`), so a supplier's invoice or a bailiff's note now
+     transits claude.ai when Claude is asked about the dossier's files.
+  9. **Pilot on a TEST dossier** (web and connector; delete the test data
+     at the end, in the order the guards allow):
+     a. Create it in the web form: the Fichiers tab shows the five root
+        folders — « Autres », « Correspondance », « Interne », « Mandat »,
+        « Procédures » (alphabetical) — and, opened, the 18; « Renommer »
+        is absent from the seven application folders' menu, present on
+        the others; no « Créer l'arborescence par défaut » button (nothing
+        left to do).
+        a'. A SECOND test dossier through the connector (`create_dossier`,
+        an obviously test file number, the client of step a — a contact on
+        two dossiers is fine): its result carries no warning naming « Créer
+        l'arborescence par défaut », and its Fichiers tab shows the same 18
+        folders (the connector writes the tree AFTER the dossier's commit,
+        under the same idempotency key — the one path step a does not
+        exercise). It stays empty: delete it in the application at the end,
+        with the first.
+     b. `fill_gabarit` on it: the result's folder reads `system_role:
+        "projets"` and `path: "Interne / Projets"`; the document opens in
+        Word WITHOUT repair.
+     c. « Note d'honoraires (Word) » on an EXISTING, non-annulée invoice
+        (never « Créer » a test invoice: a number is consumed for ever): the
+        success fragment says « sous « Mandat › Factures » », and the note
+        is there in that invoice's dossier; no invoice is created and
+        `counters/invoices-{year}` does not move. Open it in Word, then
+        delete that one draft in the application.
+     d. A test « dépense » in « Administration », linked to the TEST
+        dossier, on a period no reconciliation locks, with a pièce
+        justificative: after the upload the entry page reads « Copie au
+        dossier …, sous Mandat › Déboursés », and the copy is in the test
+        dossier's « Mandat › Déboursés » (the receipt itself stays on the
+        entry).
+     e. Try « Supprimer » on the test dossier while it still holds those
+        documents: refused ON the dossier page (red banner), nothing
+        deleted. Then delete the documents of b and d in the application,
+        and the test entry in « Administration » (an unlocked entry
+        deletes, journaled — an administration entry never blocks a
+        dossier's deletion). Once the dossier is EMPTY: « Supprimer »
+        deletes it WITH its folders and the list opens; `list_deletions`
+        (connector, read) shows ONE `dossier` row for it and no `folder`
+        row.
+  10. **Later repairs**: one dossier with `--dossier ID` (`--apply`), or its
+      Fichiers tab's « Créer l'arborescence par défaut » (offered only
+      while something is missing or misplaced). A FULL `--apply` re-run
+      recreates, at their deterministic ids, every default folder the lawyer
+      deleted since, the ordinary ones included (« Transcriptions » he had
+      no use for) — prefer `--dossier`.
+  11. **Tell the lawyer** what changed on the web — CLAUDE.md's Phase
+      History, « Arborescence par défaut des dossiers (2026-09-30) »,
+      « Changements web à annoncer ». Watch the first week:
+      `default_folder_tree_incomplete`, `generation_failed` with
+      `factures_unavailable`, `admin_receipt_filed` refused (OBSERVABILITY.md).
+  12. **Update BOTH copies of the claude.ai skill `pallas-athena`** where
+      they describe `create_dossier` (a new dossier now comes with its
+      filing tree — a warning, never a failure, when it could not be
+      created: never re-create the dossier) or say the note d'honoraires
+      goes to « Projets » (it goes to « Factures » under « Mandat »;
+      « Projets » is under « Interne »), and the seven folders
+      `manage_folder` never renames or moves.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

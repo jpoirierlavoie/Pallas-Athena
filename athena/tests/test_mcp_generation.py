@@ -83,6 +83,9 @@ _CT = (
 )
 DOCX_MIME = document_model.EXTENSION_MIME_TYPES[".docx"]
 PROJETS = folder_model.system_folder_id("d1", "projets")
+# The default tree (2026-09-30): « Projets » lives under « Interne », which
+# a first generation creates with it (leaf first — models/folder).
+INTERNE = folder_model.system_folder_id("d1", "interne")
 _NUMBERED = ('<w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/>'
              "</w:numPr></w:pPr>")
 
@@ -233,6 +236,8 @@ def _refused(call, args) -> str:
 def _nothing_generated(world, before: dict) -> None:
     assert _documents(world["db"]) == before
     assert world["db"].peek(f"folders/{PROJETS}") is None
+    # Nor its parent: a refused call creates no part of the chain.
+    assert world["db"].peek(f"folders/{INTERNE}") is None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -247,7 +252,13 @@ def test_fill_gabarit_fills_on_the_server_and_files_a_new_projet(world):
     assert result["entity"]["id"] == doc_id and result["created"] is True
     assert stored["dossier_id"] == "d1" and stored["folder_id"] == PROJETS
     assert result["folder"] == {"id": PROJETS, "name": "Projets",
-                                "system_role": "projets"}
+                                "system_role": "projets",
+                                "path": "Interne / Projets"}
+    # Leaf first: the missing « Projets » is created UNDER its parent.
+    assert world["db"].peek(f"folders/{PROJETS}")["parent_folder_id"] == INTERNE
+    interne = world["db"].peek(f"folders/{INTERNE}")
+    assert interne["system_role"] == "interne" and interne["name"] == "Interne"
+    assert interne["parent_folder_id"] is None
     assert stored["display_name"].startswith("2026-001 - ")
     assert stored["display_name"].endswith(" - Projet Mise en demeure")
     # The template's OWN category — the lawyer's choice, never presumed.
@@ -554,10 +565,34 @@ def test_an_upload_failing_after_projets_was_created_stays_a_refusal(world, monk
     with pytest.raises(tools.ToolArgumentError):
         handlers.fill_gabarit(dict(args))
     assert world["db"].peek(f"folders/{PROJETS}") is not None
+    # The chain « Interne › Projets » is created, both noted IDEMPOTENT: the
+    # call is still a refusal, and its same-key retry runs.
+    assert world["db"].peek(f"folders/{INTERNE}") is not None
     assert _documents(world["db"]) == {}
     retried = handlers.fill_gabarit(dict(args))           # same key: allowed
     assert retried["idempotent_replay"] is False
     assert len(_documents(world["db"])) == 1
+
+
+def test_a_legacy_root_projets_is_adopted_in_place_and_no_interne_created(world):
+    """Leaf first (models/folder): an existing « Projets » — here the legacy
+    UNSTAMPED root one, created by name before system roles — is used where
+    it is, stamped, never moved; no « Interne » is created around it (only
+    the button and the backfill relocate it)."""
+    world["db"].seed("folders/leg", {
+        "id": "leg", "dossier_id": "d1", "name": "Projets",
+        "parent_folder_id": None, "order": 0, "system_role": "",
+        "etag": "e-leg", "created_at": DT, "updated_at": DT})
+    result = _fill(world)
+    stored = world["db"].peek(f"documents/{result['document_id']}")
+    assert stored["folder_id"] == "leg"
+    assert result["folder"] == {"id": "leg", "name": "Projets",
+                                "system_role": "projets", "path": "Projets"}
+    legacy = world["db"].peek("folders/leg")
+    assert legacy["system_role"] == "projets"
+    assert legacy["parent_folder_id"] is None
+    assert world["db"].peek(f"folders/{INTERNE}") is None
+    assert world["db"].peek(f"folders/{PROJETS}") is None
 
 
 def test_a_failure_after_the_save_is_reported_committed(world, monkeypatch):
@@ -601,6 +636,7 @@ def test_markdown_is_printed_on_the_active_note_template(world):
     stored = world["db"].peek(f"documents/{result['entity']['id']}")
     assert result["source"] == "markdown" and result["template"]["id"] == world["note"]
     assert stored["folder_id"] == PROJETS and result["folder"]["name"] == "Projets"
+    assert result["folder"]["path"] == "Interne / Projets"
     assert stored["display_name"].endswith(" - Projet Note de recherche")
     assert stored["category"] == "autre" and stored["category_source"] == "juriste"
     assert stored["document_date"] == datetime(2026, 2, 10, tzinfo=UTC)
@@ -619,6 +655,7 @@ def test_a_category_claude_gives_is_stored_presumed(world):
     stored = world["db"].peek(f"documents/{result['entity']['id']}")
     assert stored["category_source"] == "mcp" and result["entity"]["category_presumee"]
     assert stored["folder_id"] == "f1" and result["folder"]["id"] == "f1"
+    assert result["folder"]["path"] == "Pièces"        # a root folder: its name
     at_root = _markdown(world, folder_id="")
     assert world["db"].peek(f"documents/{at_root['entity']['id']}")["folder_id"] is None
     assert at_root["folder"] == {"id": None, "name": "", "system_role": ""}

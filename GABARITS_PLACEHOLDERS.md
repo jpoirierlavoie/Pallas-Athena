@@ -342,7 +342,7 @@ A passthrough name is also what **Claude** may write, through the connector's
 | Argument | What it is | Limits |
 |---|---|---|
 | `template_id` | The gabarit. **Kind « gabarit » only** — a « Note d'honoraires » or « Note (impression) » template is refused: they have their own flows (the invoice's « Note d'honoraires (Word) » in the application, or the connector's `create_document` with `source: invoice_note` — lot 3b; the connector's `create_document` with `source: markdown` for a note print, §7) | — |
-| `dossier_id` | **Required.** Its data fills every auto field, and the document is saved as a NEW document in ITS « Projets » folder — **always there**, never another folder, never a download | — |
+| `dossier_id` | **Required.** Its data fills every auto field, and the document is saved as a NEW document in ITS « Projets » folder — **always there**, never another folder, never a download. Since the default folder tree (2026-09-30) « Projets » sits under « Interne » (« Interne › Projets »); a dossier not yet given the tree keeps its old root « Projets », used where it is | — |
 | `client_id` / `adverse_id` | The « client » / « adverse » slots — a party **on that dossier**, needed when the dossier has several and the gabarit reads the slot (never guessed, never the first one by default) | — |
 | `destinataire_id` | The « destinataire » slot — any contact; no default | — |
 | `blocs` | `[{nom, contenu, markdown?}]` — the passthrough names only | ≤ 12 blocs, ≤ 20 000 characters each, 60 000 in all |
@@ -408,6 +408,15 @@ SAME generation (`services/note_honoraires.py`) — fills the template of this t
 that is **designated as active** on its page (« Désigner comme gabarit
 actif ») — never simply the most recent one (lot 2A, 2026-09-27); with none
 designated, generation refuses and says so.
+
+The note is saved as a NEW document of the invoice's dossier in its
+« Factures » folder, under « Mandat » — since the default folder tree
+(2026-09-30); it went to « Projets » before, beside the gabarits. The folder
+is found by its role and created with « Mandat » on first use; when it
+cannot be obtained, generation refuses rather than save the note at the
+dossier root. The note keeps its « … Projet … » name. A note already filed
+in « Projets » before the tree stays there, and the connector still returns
+it when it is identical to what it would print.
 
 A note-d'honoraires template can use **everything above** for its header
 (`dossier.*`, `destinataire.*`, `cabinet.*`, `date.*`, and their flat aliases —
@@ -523,7 +532,8 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
 - The other `note.*` fields are ordinary scalars and work anywhere.
 - **The connector prints on this same template** (`create_document`, source
   « markdown », lot 2A): Claude's Markdown as `{{note.contenu}}`, its title as
-  `{{note.titre}}`, saved as a NEW document in « Projets » unless Claude names
+  `{{note.titre}}`, saved as a NEW document in « Projets » (under « Interne »
+  in the default folder tree) unless Claude names
   another folder of the dossier (the web print stays a download). Only the template the lawyer designated **active** is used —
   none designated, it refuses; and where `{{note.contenu}}` cannot take
   formatting it REFUSES rather than store a document full of Markdown sigils;

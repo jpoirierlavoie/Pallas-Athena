@@ -800,7 +800,10 @@ def _observability_md() -> str:
      # Lot 4a: the DavX5 visibility events of services/dossier_dav.
      "DossierEvent",
      # Lot 4a (step 2): the contact family (the KYC confirmation).
-     "PartieEvent"],
+     "PartieEvent",
+     # 2026-09-30: the administration family (the receipt copy filed into
+     # the dossier joined it; the others were documented already).
+     "AdminLedgerEvent"],
 )
 def test_every_event_name_is_documented(nom_du_type):
     """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding

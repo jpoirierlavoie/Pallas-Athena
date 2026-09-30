@@ -30,7 +30,9 @@ document's file, never ``notes_internes``; since lot 2A T9 an uploaded
 file, filed as a NEW document under the id its ticket reserved; since lot
 3b an invoice's note d'honoraires, through ``services/note_honoraires``),
 ``folders`` (lot 2A T7: created, renamed, moved — never a system folder;
-T8: « Projets » created on first use by a generation), ``doc_templates``
+T8: « Projets » created on first use by a generation; since 2026-09-30 the
+default tree of a dossier ``create_dossier`` creates, and « Factures »
+under « Mandat » for an invoice note), ``doc_templates``
 (lot 2A T9 through the upload ticket, T10 from a stored document —
 ``create_template``/``update_template``: a template created, its metadata
 corrected, or a NEW version of its file with its write-once ``versions``
@@ -7212,8 +7214,8 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
         )
     if _note_on_file(invoice_id):
         warnings.append(
-            "La note d'honoraires déjà générée reste dans « Projets » : elle "
-            "ne correspond plus à une facture en vigueur."
+            "La note d'honoraires déjà générée reste classée au dossier : "
+            "elle ne correspond plus à une facture en vigueur."
         )
     return _invoice_edit_payload(
         "void", written, previous_status=current, applied=True,
@@ -7648,6 +7650,8 @@ def _create_dossier_impl(args: dict) -> dict:
     dossier, errors = dossier_model.create_dossier(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    warnings.extend(_default_tree_warnings(dossier.get("id") or ""))
     warnings.extend(_prescription_warnings(dossier, data))
     if dossier.get("status") in ("fermé", "archivé"):
         warnings.append(
@@ -7659,6 +7663,37 @@ def _create_dossier_impl(args: dict) -> dict:
     return _dossier_write_result(
         dossier, verb="created", warnings=warnings
     )
+
+
+_DEFAULT_TREE_FAILED = (
+    "L'arborescence de classement par défaut n'a pas pu être créée : le "
+    "dossier, lui, est bien créé — ne le recréez pas. Le juriste la crée "
+    "depuis l'onglet Fichiers du dossier "
+    f"(« {folder_model.DEFAULT_TREE_BUTTON} ») ; « Projets », « Factures » "
+    "et « Reçus du portail » seront de toute façon créés au premier "
+    "document qui y va."
+)
+
+
+def _default_tree_warnings(dossier_id: str) -> list[str]:
+    """Give a dossier the connector just CREATED its default filing tree
+    (``models.folder.ensure_default_tree`` — the eighteen folders; the
+    engine emits its own events). Best effort, by construction: the dossier
+    is COMMITTED, so a tree that could not be written is a WARNING — never
+    a raise, which ``run_write`` would turn into « ENREGISTRÉE — NE PAS
+    RÉESSAYER » for a dossier that stands, nor a refusal, whose retry would
+    refuse the file number as taken. The engine notes its writes IDEMPOTENT
+    (``provenance.note_commit(…, idempotent=True)``): a failure of this call
+    after the tree still names only the dossier, and the button (or the
+    first document filed there) completes what a failure left out.
+    """
+    try:
+        _report, errors = folder_model.ensure_default_tree(dossier_id)
+    except Exception:
+        log_unexpected("mcp default folder tree failed",
+                       dossier_id=loggable_id(dossier_id))
+        return [_DEFAULT_TREE_FAILED]
+    return [_DEFAULT_TREE_FAILED] if errors else []
 
 
 def _prescription_warnings(doc: dict, supplied: dict) -> list[str]:
@@ -13563,11 +13598,42 @@ def _owner_uid(source: str, **log: Any) -> str:
 def _folder_row(folder: Optional[dict]) -> dict:
     if not folder:
         return {"id": None, "name": "", "system_role": ""}
-    return {
+    row = {
         "id": folder.get("id") or None,
         "name": str(folder.get("name") or ""),
         "system_role": str(folder.get("system_role") or ""),
     }
+    path = _landed_folder_path(folder)
+    if path is not None:
+        row["path"] = path
+    return row
+
+
+def _landed_folder_path(folder: dict) -> Optional[str]:
+    """« Parent / Enfant » of the folder a generated document landed in,
+    computed from the folder alone and the default tree — NEVER a read (the
+    document is saved by then; a path is not worth a new failure mode). A
+    ROOT folder is its own name (a legacy « Projets » adopted in place). A
+    system folder whose parent is its role's canonical parent at that
+    parent's deterministic id is « Interne / Projets », « Mandat /
+    Factures »: a system folder neither renames nor moves, so that parent
+    still bears its default name. Anything else — an ordinary sub-folder
+    named by folder_id, a parent adopted at another id — is ``None``, and
+    the optional key is omitted."""
+    name = str(folder.get("name") or "")
+    if not name:
+        return None
+    parent_id = folder.get("parent_folder_id") or None
+    if parent_id is None:
+        return name
+    parent_role = folder_model.SYSTEM_FOLDER_PARENTS.get(
+        str(folder.get("system_role") or ""), "")
+    dossier_id = str(folder.get("dossier_id") or "")
+    if not parent_role or not dossier_id:
+        return None
+    if parent_id != folder_model.system_folder_id(dossier_id, parent_role):
+        return None
+    return f"{folder_model.SYSTEM_FOLDER_NAMES[parent_role]} / {name}"
 
 
 def _left_in_document(filled: bytes) -> Optional[list[str]]:
@@ -13829,7 +13895,8 @@ _CREATE_DOCUMENT_ARGS = {
                  "document_date", "folder_id"),
     "copy": ("document_id", "dossier_id", "display_name", "folder_id"),
     # Lot 3b: the invoice decides the dossier, and the note always lands in
-    # « Projets » (the service files it by the folder's ROLE).
+    # « Factures », under « Mandat » (the service files it by the folder's
+    # ROLE, « factures », since the default tree of 2026-09-30).
     "invoice_note": ("invoice_id", "regenerate"),
 }
 _CREATE_DOCUMENT_REQUIRED = {
@@ -13884,8 +13951,8 @@ def _invoice_note_document(args: dict) -> dict:
     read strictly, the template the lawyer DESIGNATED, the fingerprint of
     what the note prints (an identical note already filed is returned, not
     filed twice, unless *regenerate*), the Storage uid from the guard that
-    never returns « unknown », « Projets » by its role. Every refusal comes
-    back before anything is written."""
+    never returns « unknown », « Factures » (under « Mandat ») by its role.
+    Every refusal comes back before anything is written."""
     invoice_id = str(args.get("invoice_id") or "").strip()
     if not document_model.is_addressable_id(invoice_id):
         raise ToolArgumentError(f"{_INVOICE_NOT_FOUND} {_NOTHING_CREATED}")

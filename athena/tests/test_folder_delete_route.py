@@ -569,6 +569,73 @@ def test_le_navigateur_marque_le_dossier_systeme_herite(web_reel):
     assert flags == {"leg": True, "pc": False}
 
 
+def test_un_projets_reste_a_la_racine_n_est_plus_systeme_une_fois_projets_sous_interne(
+    web_reel, rendu,
+):
+    """L'arborescence par défaut (2026-09-30) : le « Projets » estampillé vit
+    sous « Interne ». Un « Projets » NON estampillé resté à la racine (un
+    doublon d'un ancien fork) est alors un dossier ordinaire — le modèle le
+    laisse renommer, et le navigateur doit offrir « Renommer ». ÉCHOUE sur
+    l'ancien navigateur, qui jugeait sur la seule liste de la racine : il n'y
+    voyait pas le « Projets » estampillé et prenait le doublon pour l'ancien
+    dossier système — le menu cachait un geste que le modèle accepte."""
+    from models import folder as folder_model
+
+    client, store = web_reel
+    interne = folder_model.system_folder_id("d1", "interne")
+    projets = folder_model.system_folder_id("d1", "projets")
+    store.seed(f"folders/{interne}", {
+        "id": interne, "dossier_id": "d1", "name": "Interne",
+        "parent_folder_id": None, "system_role": "interne", "etag": "e-i"})
+    store.seed(f"folders/{projets}", {
+        "id": projets, "dossier_id": "d1", "name": "Projets",
+        "parent_folder_id": interne, "system_role": "projets", "etag": "e-p"})
+    store.seed("folders/reste", {
+        "id": "reste", "dossier_id": "d1", "name": "Projets",
+        "parent_folder_id": None, "etag": "e-r"})
+
+    folders = rd.list_folders("d1", parent_folder_id=None)
+    rd._attach_folder_counts(folders, "d1")
+    flags = {f["id"]: f["_system"] for f in folders}
+    assert flags == {interne: True, "reste": False}
+
+    ligne = next(f for f in folders if f["id"] == "reste")
+    html = _browser(rendu, [ligne])
+    assert "Renommer" in html
+    assert "dossier de l'application" not in html
+    html = _browser(rendu, [next(f for f in folders if f["id"] == interne)])
+    assert "Renommer" not in html
+
+    # Le navigateur et le modèle s'accordent : le renommage offert passe.
+    reponse = client.post("/documents/folders/reste/rename", data={
+        "dossier_id": "d1", "new_name": "Projets (ancien)", "expected_etag": "e-r",
+    })
+    assert _erreur(reponse) == ""
+    assert store.peek("folders/reste")["name"] == "Projets (ancien)"
+    assert store.peek(f"folders/{projets}")["name"] == "Projets"
+
+
+def test_sans_index_le_navigateur_juge_sur_le_niveau_affiche(web_reel, monkeypatch):
+    """Si la lecture de l'arbre échoue, le jugement retombe sur la liste
+    affichée — du côté prudent : le doublon de la racine paraît système
+    (« Renommer » caché), ce qui coûte un clic, jamais un fork."""
+    from models import folder as folder_model
+
+    _client, store = web_reel
+    store.seed("folders/reste", {
+        "id": "reste", "dossier_id": "d1", "name": "Projets",
+        "parent_folder_id": None})
+    folders = rd.list_folders("d1", parent_folder_id=None)
+
+    def _panne(*_a, **_k):
+        raise RuntimeError("index indisponible")
+
+    monkeypatch.setattr(folder_model, "subtree_index", _panne)
+    rd._attach_folder_counts(folders, "d1")
+    assert folders[0]["_system"] is True
+    assert folders[0]["_item_count"] == 0
+
+
 def test_un_echange_pendant_le_dialogue_est_refuse_de_bout_en_bout(web_reel, monkeypatch):
     """Revue de T2, sur la route ET le modèle réels : le navigateur annonce
     « 1 fichier » ; pendant que le dialogue est ouvert, ce fichier sort et un

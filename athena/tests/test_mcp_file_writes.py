@@ -519,16 +519,47 @@ def test_rename_and_move_an_ordinary_folder(fake):
     assert fake.peek("folders/f2")["updated_via"] == "mcp"
 
 
+@pytest.mark.parametrize("role", folder_model.VALID_SYSTEM_ROLES)
 @pytest.mark.parametrize("action, extra", [
     ("rename", {"name": "Brouillons"}),
     ("move", {"parent_folder_id": "f1"}),
 ])
-def test_a_system_folder_is_never_renamed_or_moved(fake, action, extra):
-    before = fake.peek(f"folders/{PROJETS}")
+def test_a_system_folder_is_never_renamed_or_moved(fake, action, extra, role):
+    """The seven folders of the default tree the application files into
+    itself (and their parents), each stamped at its deterministic id —
+    locked whatever the role (models/folder.is_system_folder)."""
+    fid = folder_model.system_folder_id("d1", role)
+    if role != folder_model.SYSTEM_ROLE_PROJETS:
+        _folder(fake, fid, folder_model.SYSTEM_FOLDER_NAMES[role],
+                system_role=role)
+    before = fake.peek(f"folders/{fid}")
+    fake.reset_logs()
     message = _refused(handlers.manage_folder, {
-        "action": action, "dossier_id": "d1", "folder_id": PROJETS, **extra})
+        "action": action, "dossier_id": "d1", "folder_id": fid, **extra})
     assert "dossier système" in message
-    assert fake.peek(f"folders/{PROJETS}") == before
+    assert f"« {folder_model.SYSTEM_FOLDER_NAMES[role]} »" in message
+    assert fake.peek(f"folders/{fid}") == before
+    assert _writes(fake) == []
+
+
+def test_an_unstamped_root_mandat_is_an_ordinary_folder(fake):
+    """Only the LEGACY roles (« Projets », « Reçus du portail ») keep a
+    by-name reading at the root: a « Mandat » the lawyer made himself, not
+    stamped, is his own folder — renamed like any other — and a new root
+    « Mandat » may be created, while the two legacy names stay reserved."""
+    _folder(fake, "fm", "Mandat")
+    renamed = handlers.manage_folder({"action": "rename", "dossier_id": "d1",
+                                      "folder_id": "fm", "name": "Mandats"})
+    assert renamed["outcome"] == "renamed"
+    assert renamed["entity"]["system_role"] == ""
+    assert fake.peek("folders/fm")["name"] == "Mandats"
+    created = handlers.manage_folder({"action": "create", "dossier_id": "d2",
+                                      "name": "Mandat"})
+    assert created["outcome"] == "created"
+    assert created["entity"]["system_role"] == ""
+    for name in ("Projets", "Reçus du portail"):
+        assert "réservé" in _refused(handlers.manage_folder, {
+            "action": "create", "dossier_id": "d2", "name": name})
 
 
 def test_a_legacy_projets_is_protected_too(fake):

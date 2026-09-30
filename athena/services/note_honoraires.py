@@ -47,8 +47,16 @@ surfaces log identically:
    request that could not file the note — through *resolve_uid*
    (``storage_identity.owner_uid`` by default: a caller with no browser
    session; the web passes ``request_uid``), and the save into the
-   dossier's « Projets » system folder, by its ROLE, the document carrying
-   ``source_invoice_id`` + ``generation_fingerprint``.
+   dossier's « Factures » system folder (« Mandat › Factures », role
+   ``factures`` — created with « Mandat » on first use), by its ROLE, the
+   document carrying ``source_invoice_id`` + ``generation_fingerprint``. A
+   failure to obtain it REFUSES (``factures_unavailable``), never a save at
+   the dossier root. The note keeps its « … Projet … » name and its
+   « correspondance » category: only its folder moved, with the default
+   folder tree (until then it went to « Projets », beside the gabarits).
+   A REUSED note (step 6) stays wherever it is filed — the lookup never
+   looks at folders, so a note filed in « Projets » before the tree is
+   still found, and returned, not refiled.
 
 The web passes ``regenerate=True``: its button has always filed a new note
 on every click, and keeps doing so (the note it files is fingerprinted, so
@@ -72,7 +80,12 @@ from models.document import find_generated_for_invoice
 from models.dossier import get_dossier_strict
 from models.invoice import get_invoice_with_items_strict, line_items_missing
 from models.partie import get_partie
-from services.gabarits import GenerationRefused, projet_names, save_generated
+from services.gabarits import (
+    FACTURES,
+    GenerationRefused,
+    projet_names,
+    save_generated,
+)
 from utils import storage_identity
 from utils.cabinet import cabinet_dict
 from utils.deadlines import today_mtl
@@ -147,8 +160,10 @@ class NoteGeneree:
     counts: dict = field(default_factory=dict)
     #: The invoice printed, as read (lot 3b: the connector names it).
     invoice: dict = field(default_factory=dict)
-    #: The folder the note landed in — ``None`` when it was REUSED (the
-    #: caller reads the filed document's own ``folder_id``).
+    #: The folder the note landed in — « Mandat › Factures » (role
+    #: ``factures``) — or ``None`` when it was REUSED (the caller reads the
+    #: filed document's own ``folder_id``: a note filed before the default
+    #: tree stays in « Projets »).
     folder: Optional[dict] = None
 
 
@@ -212,7 +227,7 @@ def generer_note_honoraires(
     today: Optional[date] = None,
     generated_by: str = "",
 ) -> NoteGeneree:
-    """Generate *invoice_id*'s note d'honoraires into « Projets ».
+    """Generate *invoice_id*'s note d'honoraires into « Mandat › Factures ».
 
     Raises :class:`NoteRefusee` (nothing written). See the module
     docstring for the order of the checks. *regenerate* files a new note
@@ -254,7 +269,7 @@ def generer_note_honoraires(
     dossier_id = invoice.get("dossier_id", "")
     # STRICT: this read decides what a client-facing document prints, and
     # the note is filed on its answer. « None » stays « no such dossier »
-    # (the save then refuses: « Projets » has no dossier to live in).
+    # (the save then refuses: « Factures » has no dossier to live in).
     try:
         dossier = get_dossier_strict(dossier_id) if dossier_id else None
     except Exception:
@@ -314,7 +329,7 @@ def generer_note_honoraires(
 
     save_fields = {"template_id": template_id, "dossier_id": dossier_id,
                    "invoice_id": invoice_id}
-    # The uid first, then « Projets »: nothing is written — not even the
+    # The uid first, then « Factures »: nothing is written — not even the
     # folder — for a request that could not file the note anyway.
     try:
         uid = (resolve_uid or storage_identity.owner_uid)()
@@ -326,8 +341,9 @@ def generer_note_honoraires(
     display, out_name = projet_names(
         dossier, f"{tmpl_base} {invoice_number}".strip(), day)
     try:
-        # Found by its ROLE, at its deterministic id (lot 2A, T2): a failure
-        # REFUSES, never a save at the dossier root.
+        # « Mandat › Factures », found by its ROLE at its deterministic id
+        # (the default folder tree): a failure REFUSES
+        # (``factures_unavailable``), never a save at the dossier root.
         doc, landed = save_generated(
             dossier={"id": dossier_id,
                      "file_number": invoice.get("dossier_file_number", "")},
@@ -342,6 +358,7 @@ def generer_note_honoraires(
                     generated_by.strip(),
                 ) if part),
             tags=("note_honoraires",),
+            folder=FACTURES,
             generated_from_invoice={"invoice_id": invoice_id,
                                     "fingerprint": fingerprint},
         )

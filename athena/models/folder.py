@@ -32,12 +32,25 @@ Lot 2A, step T2 (2026-09-27) — hardened before the connector reaches it:
   ``get_or_create_folder`` found them by name, swallowed its creation
   errors, and duplicated on a read error; it is gone (see
   :func:`ensure_system_folder`).
+
+The default tree (2026-09-30) — the lawyer's decision: every dossier
+receives eighteen folders (:data:`DEFAULT_TREE`), seven of them the
+application's own — « Mandat » with « Factures » and « Déboursés »,
+« Interne » with « Projets », « Autres » with « Reçus du portail ». « Projets »
+and « Reçus du portail » therefore no longer live at the root; they keep
+their roles and their ids. ONE writer (:func:`_ensure`) and ONE pure planner
+(:func:`_plan`) serve the tree (:func:`ensure_default_tree`, at a dossier's
+creation, the Fichiers tab's button and the backfill) and a single system
+folder (:func:`ensure_system_folder`, at use time). The legacy rules — the
+names reserved at the root, the adoption of an unstamped root folder by its
+name — stay the two old roles' alone (:data:`LEGACY_ROLES`).
 """
 
 import hashlib
 import logging
 import unicodedata
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
@@ -77,21 +90,114 @@ CONTENTS_MOVE = "move"
 CONTENTS_DELETE = "delete"
 VALID_CONTENTS = (CONTENTS_MOVE, CONTENTS_DELETE)
 
-# ── System folders ────────────────────────────────────────────────────────
+# ── The default tree and its system folders (2026-09-30) ──────────────────
 #
-# A role, not a name, identifies them. The display names stay the ones the
-# application has always used (models/document.py owns them).
-SYSTEM_ROLE_PROJETS = "projets"
-SYSTEM_ROLE_PORTAIL = "portail"
-SYSTEM_FOLDER_NAMES: dict[str, str] = {
-    SYSTEM_ROLE_PROJETS: GENERATED_FOLDER_NAME,
-    SYSTEM_ROLE_PORTAIL: PORTAL_FOLDER_NAME,
-}
-VALID_SYSTEM_ROLES: tuple[str, ...] = tuple(SYSTEM_FOLDER_NAMES)
+# Every dossier receives the same eighteen folders (the lawyer's decision of
+# 2026-09-30). SEVEN of them are the application's own — the ones it files
+# into (« Projets », « Reçus du portail », « Factures », « Déboursés ») and
+# their parents: a ROLE, never a name, identifies them, and they neither
+# rename nor move (is_system_folder). The other eleven are ordinary folders
+# the lawyer renames, moves or deletes like his own.
+#
+# Every node lives at a DETERMINISTIC id (node_folder_id): creating the tree
+# twice — a retry, the button, the backfill, two parallel generations — can
+# only ever target the same documents.
 
-# FROZEN FOREVER. A system folder's id is uuid5(this, "{dossier_id}:{role}");
-# changing it would make every existing system folder invisible to the
-# deterministic lookup and let the next generation create a second one.
+
+@dataclass(frozen=True)
+class DefaultFolder:
+    """One node of :data:`DEFAULT_TREE`. ``key`` is FROZEN with the id
+    namespace (it is part of the id); ``name`` is what is displayed."""
+
+    key: str
+    name: str
+    parent: Optional[str] = None     # the parent node's key; None = the root
+    role: str = ""                   # "" = an ordinary folder
+
+
+SYSTEM_ROLE_MANDAT = "mandat"
+SYSTEM_ROLE_FACTURES = "factures"
+SYSTEM_ROLE_DEBOURSES = "debourses"
+SYSTEM_ROLE_INTERNE = "interne"
+SYSTEM_ROLE_PROJETS = "projets"
+SYSTEM_ROLE_AUTRES = "autres"
+SYSTEM_ROLE_PORTAIL = "portail"
+
+# Parent first. The display names of « Projets » and « Reçus du portail »
+# stay the ones the application has always used (models/document.py).
+DEFAULT_TREE: tuple[DefaultFolder, ...] = (
+    DefaultFolder("mandat", "Mandat", None, SYSTEM_ROLE_MANDAT),
+    DefaultFolder("verifications", "Vérifications", "mandat"),
+    DefaultFolder("conventions", "Conventions", "mandat"),
+    DefaultFolder("factures", "Factures", "mandat", SYSTEM_ROLE_FACTURES),
+    DefaultFolder("debourses", "Déboursés", "mandat", SYSTEM_ROLE_DEBOURSES),
+    DefaultFolder("procedures", "Procédures"),
+    DefaultFolder("notification", "Notification", "procedures"),
+    DefaultFolder("pieces", "Pièces", "procedures"),
+    DefaultFolder("engagements", "Engagements", "procedures"),
+    DefaultFolder("transcriptions", "Transcriptions", "procedures"),
+    DefaultFolder("proces_verbaux", "Procès-verbaux", "procedures"),
+    DefaultFolder("jugements", "Jugements", "procedures"),
+    DefaultFolder("correspondance", "Correspondance"),
+    DefaultFolder("courriels", "Courriels", "correspondance"),
+    DefaultFolder("interne", "Interne", None, SYSTEM_ROLE_INTERNE),
+    DefaultFolder("projets", GENERATED_FOLDER_NAME, "interne", SYSTEM_ROLE_PROJETS),
+    DefaultFolder("autres", "Autres", None, SYSTEM_ROLE_AUTRES),
+    DefaultFolder("portail", PORTAL_FOLDER_NAME, "autres", SYSTEM_ROLE_PORTAIL),
+)
+_NODES: dict[str, DefaultFolder] = {n.key: n for n in DEFAULT_TREE}
+
+SYSTEM_FOLDER_NAMES: dict[str, str] = {n.role: n.name for n in DEFAULT_TREE if n.role}
+VALID_SYSTEM_ROLES: tuple[str, ...] = tuple(SYSTEM_FOLDER_NAMES)
+# The parent ROLE of each system folder ("" = the dossier root).
+SYSTEM_FOLDER_PARENTS: dict[str, str] = {
+    n.role: (_NODES[n.parent].role if n.parent else "") for n in DEFAULT_TREE if n.role
+}
+# The two system folders that existed before the tree, at the ROOT, and were
+# created BY NAME before roles existed (lot 2A, T2). Only they keep the
+# legacy rules — a name reserved at the root, the adoption of an unstamped
+# root folder bearing that name. Extended to the new roles, those rules
+# would silently reserve, lock and report as « système » the lawyer's own
+# root « Mandat » or « Déboursés ».
+LEGACY_ROLES: tuple[str, ...] = (SYSTEM_ROLE_PROJETS, SYSTEM_ROLE_PORTAIL)
+
+# The label of the button that creates (or completes) the tree — shared by
+# the Fichiers tab, the dossier banner and the connector's warning.
+DEFAULT_TREE_BUTTON = "Créer l'arborescence par défaut"
+
+
+def _check_default_tree() -> None:
+    """The registry's invariants, checked at import: parents first, unique
+    keys, a system node's key IS its role, every ancestor of a system node is
+    itself a system node (so the seven locks protect every system chain),
+    two levels at most, and names storage accepts as given."""
+    # Raises, never asserts: `python -O` strips an assert, Bandit flags it.
+    seen: set[str] = set()
+    for node in DEFAULT_TREE:
+        parent = _NODES.get(node.parent) if node.parent else None
+        broken = (
+            node.key in seen
+            or (node.parent is not None and node.parent not in seen)
+            or (node.role and node.role != node.key)
+            or (parent is not None and parent.parent is not None)
+            or (parent is not None and node.role and not parent.role)
+            or _name_errors(node.name)
+        )
+        if broken:
+            raise RuntimeError(f"DEFAULT_TREE: invalid node {node.key!r}")
+        seen.add(node.key)
+    for role in LEGACY_ROLES:
+        if role not in SYSTEM_FOLDER_NAMES:
+            raise RuntimeError(f"DEFAULT_TREE: legacy role {role!r} missing")
+
+
+# (Called once the name rules below are defined.)
+
+# FROZEN FOREVER. A tree node's id is uuid5(this, "{dossier_id}:{key}") —
+# for a system folder the key IS its role, so the ids of « Projets » and
+# « Reçus du portail » are the ones lot 2A minted. Changing it would make
+# every existing system folder invisible to the deterministic lookup and let
+# the next generation create a second one.
 _SYSTEM_FOLDER_NAMESPACE = uuid.UUID("f099e64f-83da-4661-9140-997f294dcac1")
 
 # ── French messages ───────────────────────────────────────────────────────
@@ -123,10 +229,24 @@ SYSTEM_FOLDER_LOCKED = (
     "« {name} » est un dossier système de l'application : il ne se renomme "
     "pas et ne se déplace pas."
 )
+# The two LEGACY names only (LEGACY_ROLES): at the root, the application
+# still recognizes by name the « Projets » and « Reçus du portail » it made
+# before the default tree — a folder created there under one of them would
+# be taken for that old system folder, and locked.
 RESERVED_ROOT_NAME = (
-    "« {name} » est réservé, à la racine du dossier, au dossier système de "
-    "l'application. Choisissez un autre nom, ou rangez ce dossier dans un "
-    "sous-dossier."
+    "« {name} » est un nom réservé à la racine du dossier : l'application y "
+    "reconnaît son ancien dossier système. Choisissez un autre nom, ou rangez "
+    "ce dossier dans un sous-dossier."
+)
+# A tree node the planner could not place: the one refusal a caller that
+# NEEDED that folder (a generation, a versement) turns into its own.
+SYSTEM_FOLDER_BLOCKED = (
+    "Le dossier de l'application « {name} » n'a pas pu être préparé : un "
+    "dossier de classement l'en empêche à son emplacement. Rien n'a été "
+    "écrit — renommez ce dossier, puis réessayez."
+)
+CREATE_ERROR = (
+    "Erreur lors de la création des dossiers de classement. Veuillez réessayer."
 )
 SUBTREE_CHANGED = (
     "Le contenu de ce dossier a changé depuis l'affichage de la page : il "
@@ -173,14 +293,15 @@ def _fold_equivalent(name: object) -> str:
     return unicodedata.normalize("NFC", name).strip().casefold()
 
 
+# LEGACY_ROLES only — see LEGACY_ROLES for why the new roles reserve nothing.
 _RESERVED_ROOT_NAMES = {
-    _fold_equivalent(n): role for role, n in SYSTEM_FOLDER_NAMES.items()
+    _fold_equivalent(SYSTEM_FOLDER_NAMES[role]): role for role in LEGACY_ROLES
 }
 
 
 def _reserved_role(name: object) -> str:
-    """The system role whose name *name* is (case-insensitively, whatever
-    its Unicode normalization), or ``''``."""
+    """The LEGACY system role whose name *name* is (case-insensitively,
+    whatever its Unicode normalization), or ``''``."""
     return _RESERVED_ROOT_NAMES.get(_fold_equivalent(name), "")
 
 
@@ -211,17 +332,31 @@ def _name_errors(name: object) -> list[str]:
     return errors
 
 
-def system_folder_id(dossier_id: str, role: str) -> str:
-    """The deterministic id of *dossier_id*'s system folder of *role*.
+_check_default_tree()
+
+
+def node_folder_id(dossier_id: str, key: str) -> str:
+    """The deterministic id of *dossier_id*'s default-tree node *key*.
 
     A documented exception to Architecture Rule 6 (UUIDv4 ids, never
-    reused): the id is a UUIDv5, and a system folder the lawyer deleted is
-    recreated at the SAME id by the next generation. That is the point —
-    two parallel callers can only ever target one document.
+    reused): the id is a UUIDv5, and a default folder the lawyer deleted is
+    recreated at the SAME id — by the next generation for a system folder,
+    by an explicit re-run of the tree (the button, the backfill) for an
+    ordinary one. That is the point: two parallel callers can only ever
+    target one document.
     """
+    if key not in _NODES:
+        raise ValueError(f"unknown default folder: {key!r}")
+    return str(uuid.uuid5(_SYSTEM_FOLDER_NAMESPACE, f"{dossier_id}:{key}"))
+
+
+def system_folder_id(dossier_id: str, role: str) -> str:
+    """The deterministic id of *dossier_id*'s system folder of *role* — its
+    tree node's (the key IS the role), byte-identical to the ids lot 2A
+    minted for « Projets » and « Reçus du portail »."""
     if role not in SYSTEM_FOLDER_NAMES:
         raise ValueError(f"unknown system folder role: {role!r}")
-    return str(uuid.uuid5(_SYSTEM_FOLDER_NAMESPACE, f"{dossier_id}:{role}"))
+    return node_folder_id(dossier_id, role)
 
 
 def _age_key(folder: dict) -> tuple:
@@ -234,7 +369,10 @@ def _age_key(folder: dict) -> tuple:
 
 def _legacy_candidates(folders: Iterable[dict], role: str) -> list[dict]:
     """ROOT folders bearing *role*'s name and no role — the system folders
-    ``get_or_create_folder`` created before system roles existed."""
+    ``get_or_create_folder`` created before system roles existed. Only the
+    LEGACY roles have any: a root « Mandat » is the lawyer's own folder."""
+    if role not in LEGACY_ROLES:
+        return []
     wanted = _fold(SYSTEM_FOLDER_NAMES[role])
     return [
         f for f in folders
@@ -248,10 +386,13 @@ def _role_holders(folders: list[dict]) -> dict[str, dict]:
     """``{role: the folder that IS that system folder}`` over one dossier.
 
     A folder STAMPED with the role wins (the one at the deterministic id if
-    several, else the oldest). Otherwise the OLDEST legacy candidate — the
-    one :func:`ensure_system_folder` would adopt. Every other folder named
+    several, else the oldest) — wherever it sits. Otherwise, for a LEGACY
+    role only, the OLDEST legacy candidate — the one
+    :func:`ensure_system_folder` would adopt. Every other folder named
     « Projets », including the duplicates a past fork left behind, is an
-    ordinary folder the lawyer may rename or move.
+    ordinary folder the lawyer may rename or move. The planner of the
+    default tree resolves a system node through THIS function, so what the
+    readers report as protected is what the writers write into.
     """
     holders: dict[str, dict] = {}
     for role in VALID_SYSTEM_ROLES:
@@ -275,10 +416,13 @@ def is_system_folder(
 ) -> bool:
     """True when *folder* is one of its dossier's system folders.
 
-    A folder carrying a ``system_role`` always is. An unstamped folder is
-    one only when it is the legacy holder of a role: a ROOT folder bearing
-    the role's name, the oldest such, while no folder carries the role —
-    which *folders* (the dossier's root folders suffice) lets this decide.
+    A folder carrying a ``system_role`` always is — wherever it sits (since
+    the default tree, « Projets » lives under « Interne »). An unstamped
+    folder is one only when it is the legacy holder of a LEGACY role: a ROOT
+    folder bearing that role's name, the oldest such, while no folder
+    carries the role — which *folders* lets this decide. Pass ALL of the
+    dossier's folders: the stamped holder may sit below the root, and
+    without it a leftover root « Projets » would read as the holder.
     Without *folders*, a root folder bearing a reserved name is PRESUMED
     system: refusing a rename by mistake costs a click, forking « Projets »
     costs the dossier's generated documents a second home.
@@ -511,7 +655,7 @@ def _subtree_fingerprint(folder_ids: Iterable[str], documents: Iterable[dict]) -
     ).hexdigest()
 
 
-def subtree_index(dossier_id: str) -> dict:
+def subtree_index(dossier_id: str, *, folders_out: Optional[list] = None) -> dict:
     """``{folder_id: {"direct": n, "documents": n, "folders": n,
     "fingerprint": sha256}}`` for EVERY folder of the dossier, in TWO
     queries.
@@ -524,9 +668,16 @@ def subtree_index(dossier_id: str) -> dict:
     back with ``fingerprint`` (:func:`_subtree_fingerprint` — which records,
     not only how many), and :func:`delete_folder` refuses when the subtree
     no longer matches them. Errors propagate.
+
+    ``folders_out`` (a list, filled in place) receives EVERY folder of the
+    dossier this read returned — the documents browser judges « dossier de
+    l'application » over the whole tree (a system folder no longer sits at
+    the root since the default tree), without a third query.
     """
     folders = _all_folders(dossier_id)
     documents = _all_documents(dossier_id)
+    if folders_out is not None:
+        folders_out.extend(folders)
 
     children = _children_index(folders)
     docs_by_folder: dict = {}
@@ -647,6 +798,270 @@ def create_folder(
     return folder, []
 
 
+# ── The default tree: one planner, one writer ─────────────────────────────
+#
+# Three callers share ONE pure planner (:func:`_plan`) — the fast path (a
+# plain read: nothing to write, nothing committed), the transaction (which
+# re-reads and re-plans on what it locks) and the dry-run
+# (:func:`plan_default_tree`) — so what the button announces, what the
+# backfill simulates and what a generation writes cannot disagree.
+
+
+@dataclass
+class _Write:
+    """One staged write of the planner — the fields WITHOUT their stamps."""
+
+    kind: str            # "create" | "update"
+    key: str             # the tree node it serves
+    folder_id: str
+    fields: dict
+
+
+@dataclass
+class TreeReport:
+    """What :func:`_plan` found and what it would write, node by node.
+
+    ``resolved`` maps each node key it placed to its folder (a pending
+    creation included). ``adopted`` holds the system nodes whose role this
+    plan STAMPS on an existing folder; ``reused`` the ordinary nodes matched
+    by name to a folder already there — nothing written for them, ever, so
+    they never make a run « pending » (the review's catch: counted as
+    adopted, a dossier holding its own « Correspondance » never read « à
+    jour »). ``blocked`` lists ``(key, reason)`` for the nodes it
+    could not place (``depth``, ``duplicate``, ``cycle``, ``conflict``,
+    ``parent``) — and, with ``relocate``, a legacy folder that could not move
+    (``relocation_depth`` / ``relocation_duplicate`` / ``relocation_cycle``,
+    the folder then used where it is). Counts and keys only: nothing in it
+    names a document or a party.
+    """
+
+    resolved: dict = field(default_factory=dict)
+    present: list = field(default_factory=list)
+    created: list = field(default_factory=list)
+    adopted: list = field(default_factory=list)
+    reused: list = field(default_factory=list)
+    relocated: list = field(default_factory=list)
+    blocked: list = field(default_factory=list)
+    writes: list = field(default_factory=list)
+    # {key: number of same-name candidates} for the adoption event.
+    candidates: dict = field(default_factory=dict)
+
+    @property
+    def pending(self) -> bool:
+        """Something to create, adopt or move — what the Fichiers tab's
+        button offers to do."""
+        return bool(self.writes)
+
+    def counts(self) -> dict:
+        return {
+            "created": len(self.created), "adopted": len(self.adopted),
+            "reused": len(self.reused), "relocated": len(self.relocated),
+            "blocked": len(self.blocked), "present": len(self.present),
+        }
+
+
+def _chain(role: str) -> list[DefaultFolder]:
+    """*role*'s node and its ancestors, root first."""
+    node = _NODES[role]
+    chain = [node]
+    while chain[0].parent:
+        chain.insert(0, _NODES[chain[0].parent])
+    return chain
+
+
+def _same_name_candidates(
+    working: list[dict], parent_id: Optional[str], name: str,
+) -> list[dict]:
+    """Unstamped folders named *name* in *parent_id* — oldest first."""
+    wanted = _fold_equivalent(name)
+    return sorted(
+        (
+            f for f in working
+            if (f.get("parent_folder_id") or None) == (parent_id or None)
+            and not f.get("system_role")
+            and _fold_equivalent(f.get("name")) == wanted
+        ),
+        key=_age_key,
+    )
+
+
+def _plan(
+    dossier_id: str,
+    folders: Iterable[dict],
+    *,
+    target: Optional[str] = None,
+    relocate: bool = False,
+) -> TreeReport:
+    """What the tree needs, over ONE read of the dossier's folders — pure.
+
+    ``target`` (a system role) plans only that folder, LEAF FIRST: when the
+    role already has its folder (at its id, stamped anywhere, or — for a
+    legacy role — the old root « Projets »), it is used where it is, stamped
+    if it was not, and no ancestor is touched: a system folder cannot be
+    moved and its parent can only be deleted with it, so an existing leaf
+    implies its chain. Only a missing leaf plans its ancestors, then itself.
+    Without ``target`` the whole tree is planned, parent first.
+
+    Per node: the folder at its deterministic id; else (a system node) the
+    folder :func:`_role_holders` names — the readers' own rule; else an
+    unstamped folder of the same name under the resolved parent (ADOPTED:
+    a system node stamps it); else a creation. ``relocate`` (the button, the
+    backfill) moves a system folder that is not under its canonical parent
+    — the root « Projets » of before the tree, stamped or not — whatever
+    branch found it. Depth, duplicates and cycles are re-checked on a
+    working copy that already carries the earlier nodes' staged writes; a
+    node that cannot be placed is reported BLOCKED, never an error of the
+    whole tree. Only what differs is written, so a second run writes
+    nothing.
+    """
+    working = [dict(f) for f in folders if isinstance(f, dict) and f.get("id")]
+    by_id = {f["id"]: f for f in working}
+    report = TreeReport()
+
+    def _stage(kind: str, key: str, folder_id: str, fields: dict) -> None:
+        report.writes.append(_Write(kind, key, folder_id, dict(fields)))
+
+    def _apply_update(folder: dict, fields: dict) -> dict:
+        merged = {**folder, **fields}
+        working[:] = [merged if f is folder else f for f in working]
+        by_id[merged["id"]] = merged
+        return merged
+
+    def _resolve(node: DefaultFolder, parent_id: Optional[str]) -> None:
+        fid = node_folder_id(dossier_id, node.key)
+        found = by_id.get(fid)
+        how = "present"
+        if found is None and node.role:
+            found = _role_holders(working).get(node.role)
+            if found is not None and not found.get("system_role"):
+                how = "adopted"
+                report.candidates[node.key] = len(_legacy_candidates(working, node.role))
+        if found is None:
+            same = _same_name_candidates(working, parent_id, node.name)
+            if same:
+                found, how = same[0], "adopted"
+                report.candidates[node.key] = len(same)
+        if found is None:
+            if parent_id is not None and _depth(parent_id, by_id) >= MAX_NESTING_DEPTH:
+                report.blocked.append((node.key, "depth"))
+                return
+            if _name_taken(working, parent_id, node.name):
+                report.blocked.append((node.key, "duplicate"))
+                return
+            new = {
+                "id": fid,
+                "dossier_id": dossier_id,
+                "name": node.name,
+                "parent_folder_id": parent_id,
+                "order": 0,
+                "system_role": node.role,
+            }
+            working.append(new)
+            by_id[fid] = new
+            _stage("create", node.key, fid, new)
+            report.created.append(node.key)
+            report.resolved[node.key] = new
+            return
+
+        fields: dict = {}
+        if node.role and found.get("system_role") != node.role:
+            if found.get("system_role"):
+                # Stamped with ANOTHER role (only a hand edit makes one):
+                # never re-stamp — a role is never taken from a folder.
+                report.blocked.append((node.key, "conflict"))
+                return
+            fields["system_role"] = node.role
+            how = "adopted"
+        if relocate and node.role and (found.get("parent_folder_id") or None) != parent_id:
+            children = _children_index(working)
+            if parent_id is not None and _is_within(found["id"], parent_id, by_id):
+                report.blocked.append((node.key, "relocation_cycle"))
+            elif parent_id is not None and (
+                _depth(parent_id, by_id) + 1 + _subtree_height(found["id"], children)
+                > MAX_NESTING_DEPTH
+            ):
+                report.blocked.append((node.key, "relocation_depth"))
+            elif _name_taken(working, parent_id, found.get("name") or "",
+                             exclude_id=found["id"]):
+                report.blocked.append((node.key, "relocation_duplicate"))
+            else:
+                fields["parent_folder_id"] = parent_id
+                report.relocated.append(node.key)
+        if fields:
+            found = _apply_update(found, fields)
+            _stage("update", node.key, found["id"], fields)
+        if "system_role" in fields:
+            report.adopted.append(node.key)
+        elif how == "adopted":
+            report.reused.append(node.key)      # matched by name, nothing to write
+        elif not fields:
+            report.present.append(node.key)
+        report.resolved[node.key] = found
+
+    if target is not None:
+        node = _NODES[target]
+        fid = node_folder_id(dossier_id, target)
+        holder = by_id.get(fid) or _role_holders(working).get(target)
+        if holder is not None:
+            # Leaf first: the chain above an existing system folder is its
+            # own (see the docstring) — nothing to plan but its stamp.
+            parent = holder.get("parent_folder_id") or None
+            _resolve(node, parent)
+            return report
+        nodes = _chain(target)
+    else:
+        nodes = list(DEFAULT_TREE)
+
+    for node in nodes:
+        parent_id: Optional[str] = None
+        if node.parent is not None:
+            parent = report.resolved.get(node.parent)
+            if parent is None:
+                report.blocked.append((node.key, "parent"))
+                continue
+            parent_id = parent["id"]
+        _resolve(node, parent_id)
+    return report
+
+
+def plan_default_tree(
+    dossier_id: str, *, relocate: bool = False,
+) -> tuple[Optional[TreeReport], list[str]]:
+    """What :func:`ensure_default_tree` would do — ONE read, NEVER a write
+    (the backfill's dry-run). Fails CLOSED: an unreadable tree is an error,
+    never « nothing to do »."""
+    if not isinstance(dossier_id, str) or not dossier_id.strip():
+        return None, [DOSSIER_REQUIRED]
+    try:
+        folders = _all_folders(dossier_id)
+    except Exception:
+        log_unexpected("folder tree read failed", dossier_id=dossier_id)
+        return None, [READ_ERROR]
+    return _plan(dossier_id, folders, relocate=relocate), []
+
+
+def plan_default_tree_from(
+    dossier_id: str, folders: Iterable[dict], *, relocate: bool = False,
+) -> TreeReport:
+    """:func:`plan_default_tree` over folders the CALLER already read (the
+    Fichiers tab reads them once for its listing) — pure."""
+    return _plan(dossier_id, folders, relocate=relocate)
+
+
+def ensure_default_tree(
+    dossier_id: str, *, relocate: bool = False,
+) -> tuple[Optional[TreeReport], list[str]]:
+    """Give *dossier_id* the default tree — created, completed, or (with
+    ``relocate``, the button and the backfill) with its old root « Projets »
+    and « Reçus du portail » moved under « Interne » and « Autres ».
+
+    Returns ``(report, [])`` or ``(None, french_errors)``. Idempotent: a
+    second run writes nothing. A node that cannot be placed is reported in
+    ``report.blocked`` — the rest of the tree is still written.
+    """
+    return _ensure(dossier_id, target=None, relocate=relocate)
+
+
 def ensure_system_folder(
     dossier_id: str,
     role: str,
@@ -658,146 +1073,167 @@ def ensure_system_folder(
     than dropping the document at the dossier root, which is what the three
     callers of the old ``get_or_create_folder`` did on its ``None``.
 
-    From ONE read of the dossier's folders (failing CLOSED):
-
-    1. a folder STAMPED with the role → it;
-    2. otherwise the legacy match — the OLDEST ROOT folder bearing the
-       role's name, created by name before roles existed → it is stamped
-       with the role (a partial update) and returned. Several such folders
-       (a past fork) are logged; the others stay ordinary folders;
-    3. otherwise it is CREATED at :func:`system_folder_id`, with
-       ``document(id).create()``. A parallel caller that created it first
-       makes that ``create()`` raise ``AlreadyExists``, and the folder is
-       read back: two generations racing on a new dossier land in ONE
-       « Projets », where the read-then-``set()`` of a fresh uuid4 forked it.
+    Leaf first (:func:`_plan`): the role's folder wherever it is — stamped,
+    or the legacy root « Projets » / « Reçus du portail », adopted IN PLACE
+    (only the button and the backfill move it); missing, it is created under
+    its parent, which is found or created first (« Interne » for
+    « Projets », « Mandat » for « Factures »…). Two generations racing on a
+    new dossier land in ONE folder: the ids are deterministic, and the
+    writing transaction re-reads what it locks.
     """
     if role not in SYSTEM_FOLDER_NAMES:
         raise ValueError(f"unknown system folder role: {role!r}")
+    report, errors = _ensure(dossier_id, target=role, relocate=False)
+    if report is None:
+        return None, errors
+    folder = report.resolved.get(role)
+    if folder is None:
+        return None, [SYSTEM_FOLDER_BLOCKED.format(name=SYSTEM_FOLDER_NAMES[role])]
+    return folder, []
+
+
+def _ensure(
+    dossier_id: str,
+    *,
+    target: Optional[str],
+    relocate: bool,
+) -> tuple[Optional[TreeReport], list[str]]:
+    """The one writer of the default tree and of the system folders.
+
+    (1) A plain read and a plan: nothing to write → the report, no
+    transaction, no commit (a generation that finds « Projets » costs one
+    query, as it always did). (2) Otherwise ONE transaction: the dossier's
+    existence and its folders re-read in it (a folder created meanwhile
+    aborts the commit and the body re-runs on fresh data), re-planned, then
+    written — creations with ``create()`` at their deterministic ids.
+    ``AlreadyExists`` (a document at a node's id the query did not return)
+    re-runs the whole thing ONCE: the second plan finds the folder, or — a
+    document of ANOTHER dossier at that id — refuses rather than overwrite.
+    Every write is noted idempotent AFTER the transaction: a second run
+    writes nothing, so a failure after this one (a generation's upload) is
+    still a retryable refusal, never « ENREGISTRÉE — NE PAS RÉESSAYER ».
+    """
     if not isinstance(dossier_id, str) or not dossier_id.strip():
         return None, [DOSSIER_REQUIRED]
+    try:
+        folders = _all_folders(dossier_id)
+    except Exception:
+        log_unexpected("system folder read failed", dossier_id=dossier_id)
+        return _refused(dossier_id, target, [READ_ERROR])
+    report = _plan(dossier_id, folders, target=target, relocate=relocate)
+    if not report.writes:
+        return report, []
 
+    committed: Optional[TreeReport] = None
     for _attempt in range(2):
+
+        @firestore.transactional
+        def _apply(transaction) -> TreeReport:
+            # Reads first (the real client refuses a read after a write).
+            if not _read_dossier_exists(dossier_id, transaction):
+                raise _Refused([DOSSIER_NOT_FOUND])
+            fresh = _read_folders(dossier_id, transaction)
+            plan = _plan(dossier_id, fresh, target=target, relocate=relocate)
+            now = datetime.now(timezone.utc)
+            for w in plan.writes:
+                ref = db.collection(COLLECTION).document(w.folder_id)
+                if w.kind == "create":
+                    data = {**w.fields, **provenance.create_fields(now)}
+                    transaction.create(ref, data)
+                else:
+                    data = {**w.fields, **provenance.update_fields(now)}
+                    transaction.update(ref, data)
+                current = plan.resolved.get(w.key) or {}
+                plan.resolved[w.key] = {**current, **data}
+            return plan
+
         try:
-            folders = _all_folders(dossier_id)
+            committed = _apply(db.transaction())
+            break
+        except AlreadyExists:
+            continue
+        except _Refused as refusal:
+            return _refused(dossier_id, target, refusal.errors)
         except Exception:
-            log_unexpected("system folder read failed", dossier_id=dossier_id)
-            return None, [READ_ERROR]
+            log_unexpected("default folder tree write failed", dossier_id=dossier_id)
+            # A raise out of a commit does not prove nothing landed (the
+            # answer can be lost after the server applied it). Re-read: a
+            # plan with nothing left to write IS the tree this call wrote —
+            # idempotent writes, so answering success is exact. Anything
+            # else is a refusal whose wording promises nothing either way.
+            landed = _landed_plan(dossier_id, target, relocate)
+            if landed is not None:
+                return landed, []
+            return _refused(dossier_id, target, [CREATE_ERROR])
+    if committed is None:
+        # A document at a node's id that this dossier's query never returns
+        # (another dossier's — only a hand edit makes one): never overwritten.
+        return _refused(dossier_id, target, [READ_ERROR])
 
-        holder = _role_holders(folders).get(role)
-        if holder is not None and holder.get("system_role") == role:
-            return holder, []
-        if holder is not None:
-            adopted, errors, vanished = _adopt_legacy(
-                dossier_id, role, holder,
-                candidates=len(_legacy_candidates(folders, role)),
-            )
-            if vanished:
-                continue          # deleted meanwhile: read again, once
-            return adopted, errors
-        return _create_system_folder(dossier_id, role)
-    return None, [READ_ERROR]
+    if not committed.writes:
+        # The transaction's fresh read found everything in place (a parallel
+        # caller got there first): nothing written, nothing to note or log.
+        return committed, []
+    for w in committed.writes:
+        provenance.note_commit(COLLECTION, w.folder_id, idempotent=True)
+    _log_tree_events(dossier_id, committed, target)
+    return committed, []
 
 
-def _adopt_legacy(
-    dossier_id: str,
-    role: str,
-    legacy: dict,
-    *,
-    candidates: int,
-) -> tuple[Optional[dict], list[str], bool]:
-    """Stamp *legacy* with *role*. Returns ``(folder, errors, vanished)``."""
-    folder_id = legacy.get("id") or ""
-    ref = db.collection(COLLECTION).document(folder_id)
-
-    @firestore.transactional
-    def _apply(transaction) -> tuple[Optional[dict], bool]:
-        snap = ref.get(transaction=transaction)
-        if not snap.exists:
-            return None, False
-        data = snap.to_dict() or {}
-        if data.get("dossier_id") != dossier_id:
-            return None, False
-        if data.get("system_role") == role:
-            return data, False            # a racing caller stamped it
-        if data.get("system_role"):
-            raise _Refused([READ_ERROR])  # stamped with another role meanwhile
-        fields = {
-            "system_role": role,
-            **provenance.update_fields(datetime.now(timezone.utc)),
-        }
-        transaction.update(ref, fields)
-        return {**data, **fields}, True
-
+def _landed_plan(
+    dossier_id: str, target: Optional[str], relocate: bool,
+) -> Optional[TreeReport]:
+    """After a commit that RAISED: the plan over a fresh read, when it has
+    nothing left to write (the commit landed, its answer lost) — else
+    ``None``. Never raises."""
     try:
-        folder, wrote = _apply(db.transaction())
-    except _Refused as refusal:
-        return None, refusal.errors, False
+        folders = _all_folders(dossier_id)
     except Exception:
-        log_unexpected("system folder adoption failed", dossier_id=dossier_id)
-        return None, ["Erreur lors de la préparation du dossier système. "
-                      "Veuillez réessayer."], False
-    if folder is None:
-        return None, [], True
-    if wrote:
-        # IDEMPOTENT (lot 2A, T8): a second run finds the role stamped and
-        # writes nothing — so a generation that fails AFTER this adoption
-        # committed nothing a retry would repeat (models/provenance).
-        provenance.note_commit(COLLECTION, folder_id, idempotent=True)
-        # ONE line per dossier and role, ever: the adoption is permanent.
-        # `legacy_candidates > 1` flags a past fork the lawyer may want to
-        # merge by hand (the others stay ordinary folders).
+        return None
+    plan = _plan(dossier_id, folders, target=target, relocate=relocate)
+    return None if plan.writes else plan
+
+
+def _refused(
+    dossier_id: str, target: Optional[str], errors: list[str],
+) -> tuple[None, list[str]]:
+    """A refusal of the engine — the whole tree's is logged as incomplete
+    (a system folder's refusal is its caller's to report, as it always
+    was)."""
+    if target is None:
         log_dossier_event(
-            "system_folder_adopted", dossier_id,
-            folder_id=folder_id, role=role, legacy_candidates=candidates,
+            "default_folder_tree_incomplete", dossier_id, reason="refused",
         )
-    return folder, [], False
+    return None, list(errors)
 
 
-def _create_system_folder(
-    dossier_id: str, role: str,
-) -> tuple[Optional[dict], list[str]]:
-    folder_id = system_folder_id(dossier_id, role)
-    ref = db.collection(COLLECTION).document(folder_id)
-    try:
-        exists = _read_dossier_exists(dossier_id)
-    except _Refused as refusal:
-        return None, refusal.errors
-    if not exists:
-        return None, [DOSSIER_NOT_FOUND]
-
-    folder = {
-        "id": folder_id,
-        "dossier_id": dossier_id,
-        "name": SYSTEM_FOLDER_NAMES[role],
-        "parent_folder_id": None,
-        "order": 0,
-        "system_role": role,
-        **provenance.create_fields(datetime.now(timezone.utc)),
-    }
-    try:
-        ref.create(folder)
-    except AlreadyExists:
-        # A parallel caller created it between our read and our create():
-        # the id is deterministic, so it is THE folder — read it back.
-        try:
-            snap = ref.get()
-        except Exception:
-            log_unexpected("system folder read-back failed", dossier_id=dossier_id)
-            return None, [READ_ERROR]
-        data = snap.to_dict() if snap.exists else None
-        if not data or data.get("dossier_id") != dossier_id:
-            return None, [READ_ERROR]
-        return data, []
-    except Exception:
-        log_unexpected("system folder create failed", dossier_id=dossier_id)
-        return None, ["Erreur lors de la création du dossier système. "
-                      "Veuillez réessayer."]
-    # IDEMPOTENT (lot 2A, T8): the id is deterministic, so a retry reads
-    # this very folder back instead of creating a second — a generation that
-    # fails after it (its upload) committed nothing a retry would repeat,
-    # and must not be reported « ENREGISTRÉE — NE PAS RÉESSAYER ».
-    provenance.note_commit(COLLECTION, folder_id, idempotent=True)
-    return folder, []
+def _log_tree_events(
+    dossier_id: str, report: TreeReport, target: Optional[str],
+) -> None:
+    """The committed plan's events — ids, roles and counts, never a name."""
+    by_key = {w.key: w for w in report.writes}
+    for key in report.adopted:
+        node = _NODES[key]
+        w = by_key.get(key)
+        if node.role and w is not None and "system_role" in w.fields:
+            log_dossier_event(
+                "system_folder_adopted", dossier_id,
+                folder_id=w.folder_id, role=node.role,
+                legacy_candidates=report.candidates.get(key, 0),
+            )
+    for key in report.relocated:
+        w = by_key[key]
+        log_dossier_event(
+            "system_folder_relocated", dossier_id,
+            folder_id=w.folder_id, role=_NODES[key].role,
+        )
+    if target is None:
+        log_dossier_event("default_folder_tree_created", dossier_id, **report.counts())
+        if report.blocked:
+            log_dossier_event(
+                "default_folder_tree_incomplete", dossier_id,
+                reason="blocked", blocked=len(report.blocked),
+            )
 
 
 def get_folder(dossier_id: str, folder_id: str) -> Optional[dict]:
@@ -1368,6 +1804,29 @@ def get_folder_tree(dossier_id: str) -> list[dict]:
     return build_folder_tree(all_folders)
 
 
+def folders_in_transaction(dossier_id: str, transaction) -> list[dict]:
+    """Every folder of *dossier_id* read INSIDE *transaction* — errors
+    PROPAGATE (the caller refuses). For ``models/dossier.delete_dossier``:
+    since the default tree (2026-09-30) every dossier holds folders, and a
+    dossier with no other child deletes them WITH itself, in its own
+    transaction — a folder created meanwhile (a generation, the button)
+    aborts the commit instead of surviving its dossier."""
+    return [
+        doc.to_dict()
+        for doc in _folders_query(dossier_id).stream(transaction=transaction)
+    ]
+
+
+def deepest_first(folders: Iterable[dict]) -> list[str]:
+    """The ids of *folders* (one dossier's), children before their parents —
+    the order ``delete_folder`` deletes records in. Cycle-safe."""
+    rows = [f for f in folders if f.get("id")]
+    by_id = {f["id"]: f for f in rows}
+    return [
+        f["id"] for f in sorted(rows, key=lambda f: -_depth(f["id"], by_id))
+    ]
+
+
 def list_dossier_folders(dossier_id: str) -> list[dict]:
     """Every folder of *dossier_id*, flat, in store order — errors PROPAGATE.
 
@@ -1417,12 +1876,13 @@ def build_folder_tree(folders: Iterable[dict]) -> list[dict]:
 def system_roles(folders: Iterable[dict]) -> dict[str, str]:
     """``{folder_id: role}`` for the SYSTEM folders among *folders*.
 
-    *folders* are ONE dossier's (all of them — the legacy rule needs the
-    root folders). A folder is the system folder of a role when it carries
-    that ``system_role`` (the one at the deterministic id first), or — no
-    folder carrying the role — when it is the oldest ROOT folder bearing
-    the role's name: the legacy « Projets » that :func:`ensure_system_folder`
-    would adopt. The same rule :func:`is_system_folder` applies, so what a
+    *folders* are ONE dossier's (all of them — a stamped holder may sit
+    below the root). A folder is the system folder of a role when it carries
+    that ``system_role`` (the one at the deterministic id first), or — for a
+    LEGACY role, no folder carrying it — when it is the oldest ROOT folder
+    bearing the role's name: the legacy « Projets » that
+    :func:`ensure_system_folder` would adopt. A root « Mandat » is never
+    reported: the new roles are recognized by their stamp alone. The same rule :func:`is_system_folder` applies, so what a
     reader reports as protected is what the writers protect — including a
     SECOND folder stamped with a role (only a hand edit makes one): it is not
     the role's holder, yet ``is_system_folder`` protects every stamped

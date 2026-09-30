@@ -25,6 +25,12 @@ Lot 3a, step 2: the note d'honoraires moved the same way, into
 connector share) whose save is ``services.gabarits.save_generated``. Its
 tests below patch the SERVICE's seams — changed deliberately, the pins
 unchanged.
+
+The default folder tree (2026-09-30): the note d'honoraires is filed in
+« Mandat › Factures » (role ``factures``), no longer in « Projets » — its
+two tests below changed deliberately (the role asked for, the refusal's
+reason ``factures_unavailable``); the gabarit generation still asks for
+« Projets » (role ``projets``, now under « Interne »), unchanged.
 """
 
 import os
@@ -55,6 +61,8 @@ from flask import Flask  # noqa: E402
 from markupsafe import escape  # noqa: E402
 
 SYSTEM_FOLDER = {"id": "sys-projets", "name": "Projets", "system_role": "projets"}
+FACTURES_FOLDER = {"id": "sys-factures", "name": "Factures",
+                   "system_role": "factures"}
 
 
 @pytest.fixture()
@@ -185,20 +193,43 @@ def facture(monkeypatch):
     return events
 
 
-def test_a_note_without_projets_is_refused_never_saved_at_the_root(
+def test_a_note_without_factures_is_refused_never_saved_at_the_root(
     web, facture, monkeypatch,
 ):
-    monkeypatch.setattr(sg, "ensure_system_folder",
-                        lambda did, role: (None, [folder_model.READ_ERROR]))
+    roles = []
+
+    def _unavailable(did, role):
+        roles.append(role)
+        return None, [folder_model.READ_ERROR]
+
+    monkeypatch.setattr(sg, "ensure_system_folder", _unavailable)
     monkeypatch.setattr(sg, "upload_document",
-                        lambda **kw: pytest.fail("note enregistrée hors de « Projets »"))
+                        lambda **kw: pytest.fail("note enregistrée hors de « Factures »"))
 
     reponse = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
 
     assert reponse.status_code == 200
     assert str(escape(folder_model.READ_ERROR)) in reponse.get_data(as_text=True)
-    assert any(e == "generation_failed" and kw.get("reason") == "projets_unavailable"
+    assert roles == [folder_model.SYSTEM_ROLE_FACTURES]
+    assert any(e == "generation_failed" and kw.get("reason") == "factures_unavailable"
                for e, kw in facture)
+
+
+def test_a_note_without_factures_and_no_reason_says_factures(
+    web, facture, monkeypatch,
+):
+    """The folder model gave no reason of its own: the refusal names the
+    folder the note needed — « Factures », never « Projets »."""
+    monkeypatch.setattr(sg, "ensure_system_folder", lambda did, role: (None, []))
+    monkeypatch.setattr(sg, "upload_document",
+                        lambda **kw: pytest.fail("note enregistrée hors de « Factures »"))
+
+    reponse = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
+
+    body = reponse.get_data(as_text=True)
+    assert reponse.status_code == 200
+    assert str(escape(sg.FACTURES_UNAVAILABLE)) in body
+    assert "Projets" not in body
 
 
 def test_a_note_files_into_the_system_folder_by_role(web, facture, monkeypatch):
@@ -207,7 +238,7 @@ def test_a_note_files_into_the_system_folder_by_role(web, facture, monkeypatch):
 
     def _ensure(did, role):
         roles.append((did, role))
-        return SYSTEM_FOLDER, []
+        return FACTURES_FOLDER, []
 
     def _upload(**kw):
         saved.update(kw)
@@ -219,8 +250,8 @@ def test_a_note_files_into_the_system_folder_by_role(web, facture, monkeypatch):
     reponse = web.post("/factures/i1/note-docx")
 
     assert reponse.status_code == 302
-    assert roles == [("d1", folder_model.SYSTEM_ROLE_PROJETS)]
-    assert saved["metadata"]["folder_id"] == "sys-projets"
+    assert roles == [("d1", folder_model.SYSTEM_ROLE_FACTURES)]
+    assert saved["metadata"]["folder_id"] == "sys-factures"
     # Filed under the SESSION's uid (the web passes request_uid), and
     # linked to its invoice with the fingerprint of what it printed.
     assert saved["user_id"] == "u1"
@@ -229,6 +260,21 @@ def test_a_note_files_into_the_system_folder_by_role(web, facture, monkeypatch):
 
 
 # ── Aucun appelant ne connaît plus les dossiers système par leur NOM ──────
+
+
+def test_a_note_resolves_the_uid_before_writing_the_folder(
+    web, facture, monkeypatch,
+):
+    """Nothing is written — not even « Mandat › Factures » — for a request
+    whose uid cannot name a Storage prefix (plan rule 8)."""
+    with web.session_transaction() as s:
+        s["user_id"] = "unknown"
+    monkeypatch.setattr(sg, "ensure_system_folder",
+                        lambda *a: pytest.fail("dossier « Factures » écrit"))
+    monkeypatch.setattr(sg, "upload_document",
+                        lambda **kw: pytest.fail("note enregistrée"))
+    reponse = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
+    assert reponse.status_code == 200
 
 
 def test_no_caller_finds_a_system_folder_by_name_any_more():

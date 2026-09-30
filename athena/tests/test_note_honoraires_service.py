@@ -10,7 +10,8 @@ MAGASIN contient.
 
 Quatre familles :
 
-1. **La génération** — la note se classe dans « Projets », sous l'uid
+1. **La génération** — la note se classe dans « Mandat › Factures » (dans
+   « Projets » jusqu'à l'arborescence par défaut, 2026-09-30), sous l'uid
    obtenu par la garde, liée à sa facture par ``source_invoice_id`` et
    l'empreinte de ce qu'elle imprime.
 2. **La déduplication** — une note identique (même gabarit, même version,
@@ -18,7 +19,7 @@ Quatre familles :
    changement de ce que la note imprime, ou une nouvelle version du
    gabarit, en fait une nouvelle ; ``regenerate`` en force une ; un
    changement que la note n'imprime pas (le statut) ne compte pas.
-3. **Les refus** — rien n'est écrit, pas même le dossier « Projets » :
+3. **Les refus** — rien n'est écrit, pas même le dossier « Factures » :
    facture annulée, lignes illisibles sous un sous-total non nul (le
    lecteur STRICT), aucun gabarit désigné, désignation illisible, uid
    introuvable, recherche des notes déjà générées illisible.
@@ -184,7 +185,7 @@ def _stored_text(bucket, storage_path: str) -> str:
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_a_note_is_filed_in_projets_linked_to_its_invoice(store, events):
+def test_a_note_is_filed_in_factures_linked_to_its_invoice(store, events):
     db, bucket, template = store
 
     note = _generate()
@@ -203,8 +204,18 @@ def test_a_note_is_filed_in_projets_linked_to_its_invoice(store, events):
     assert stored["genere_depuis"] == "Générée depuis la facture 2026-F031"
     assert stored["display_name"] == (
         "2026-001 - 2026-09-28 - Projet Note d'honoraires 2026-F031")
+    # « Mandat › Factures » — created with its parent on first use, at their
+    # deterministic ids; nothing else of the tree, and never « Projets ».
+    assert stored["folder_id"] == folder_model.system_folder_id("d1", "factures")
     folder = db.peek(f"{folder_model.COLLECTION}/{stored['folder_id']}")
-    assert folder["system_role"] == folder_model.SYSTEM_ROLE_PROJETS
+    assert folder["system_role"] == folder_model.SYSTEM_ROLE_FACTURES
+    assert folder["parent_folder_id"] == folder_model.system_folder_id("d1", "mandat")
+    mandat = db.peek(f"{folder_model.COLLECTION}/{folder['parent_folder_id']}")
+    assert mandat["system_role"] == folder_model.SYSTEM_ROLE_MANDAT
+    assert mandat["parent_folder_id"] is None
+    assert {f["system_role"] for f in
+            db.peek_collection(folder_model.COLLECTION).values()} == {
+        folder_model.SYSTEM_ROLE_MANDAT, folder_model.SYSTEM_ROLE_FACTURES}
     text = _stored_text(bucket, stored["storage_path"])
     assert "Note 2026-F031" in text and "517,39" in text
     assert [e for e, _ in events] == ["document_generated"]
@@ -274,12 +285,70 @@ def test_the_caller_is_named_in_the_provenance_and_the_note_says_what_it_printed
     assert stored["genere_depuis"] == (
         "Générée depuis la facture 2026-F031 par Claude (connecteur)")
     assert note.invoice["invoice_number"] == "2026-F031"
-    assert note.folder["system_role"] == "projets"
+    assert note.folder["system_role"] == "factures"
     assert stored["folder_id"] == note.folder["id"]
 
     again = _generate()
     assert again.reused is True and again.folder is None
     assert again.invoice["id"] == "i1"
+
+
+def test_a_reused_note_stays_where_it_is_filed(store):
+    """A note filed in « Projets » before the default tree (a legacy root
+    folder) is still FOUND and returned — the lookup never looks at
+    folders —, and stays where it is: nothing refiled, no folder written."""
+    db, bucket, _template = store
+    first = _generate()
+    db.external_write(f"{folder_model.COLLECTION}/legacy-projets", {
+        "id": "legacy-projets", "dossier_id": "d1", "name": "Projets",
+        "parent_folder_id": None, "order": 0,
+        "created_at": datetime(2026, 1, 5, tzinfo=UTC),
+        "updated_at": datetime(2026, 1, 5, tzinfo=UTC)})
+    stored = db.peek(f"documents/{first.document['id']}")
+    db.external_write(f"documents/{first.document['id']}",
+                      {**stored, "folder_id": "legacy-projets"})
+    folders_before = db.peek_collection(folder_model.COLLECTION)
+    objects = len(bucket.objects)
+    db.reset_logs()
+
+    again = _generate()
+
+    assert again.reused is True and again.folder is None
+    assert again.document["id"] == first.document["id"]
+    assert again.document["folder_id"] == "legacy-projets"
+    assert db.peek(f"documents/{first.document['id']}")["folder_id"] == (
+        "legacy-projets")
+    assert db.peek_collection(folder_model.COLLECTION) == folders_before
+    assert len(_documents(db)) == 1 and len(bucket.objects) == objects
+    assert db.commits == []
+
+
+def test_a_note_refuses_when_factures_cannot_be_obtained(
+    store, events, monkeypatch,
+):
+    """The folders cannot be read: the note is REFUSED
+    (``factures_unavailable``, the folder model's own reason) — never filed
+    at the dossier root, nothing written."""
+    db, _bucket, _template = store
+    real = db._fake_server.run_query
+    refused: list = []
+
+    def _run_query(request, metadata=None, **kw):
+        sq = request["structured_query"]._pb
+        if any(f.collection_id == folder_model.COLLECTION for f in sq.from_):
+            refused.append(request["parent"])
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(db._fake_server, "run_query", _run_query)
+
+    refusal = _refused("factures_unavailable")
+
+    assert refused                      # the folder read is what failed
+    assert refusal.message == folder_model.READ_ERROR
+    _nothing_written(db)
+    assert [e for e, _ in events] == ["generation_failed"]
+    assert events[0][1]["reason"] == "factures_unavailable"
 
 
 def test_regenerate_files_a_new_note(store):
@@ -368,7 +437,7 @@ def test_the_fingerprint_covers_template_version_values_rows_and_conditions():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 3. Les refus — rien n'est écrit, pas même « Projets »
+# 3. Les refus — rien n'est écrit, pas même « Factures »
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -624,6 +693,41 @@ def web(store):
         s["email"] = "test@example.com"
         s["expires_at"] = datetime(2099, 1, 1, tzinfo=UTC)
     return client
+
+
+def test_the_web_says_where_the_note_landed(store, web):
+    """The fragment names the folder the SERVICE filed the note in —
+    « Mandat › Factures » — where it used to say « Projets » whatever
+    happened."""
+    resp = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
+    body = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "enregistrée dans le dossier, sous « Mandat › Factures »." in body
+    assert "Projets »" not in body
+
+
+def test_the_note_location_follows_the_filed_folder(store):
+    """The route derives the path from the folder, never from a name of its
+    own: a note (re)found in a legacy root « Projets » says « Projets »; the
+    parent's name leads when it can be read; no folder at all is the root."""
+    db, _bucket, _template = store
+    note = _generate()
+    doc = note.document
+    assert ri._note_location(doc, note.folder) == {
+        "folder_path": "Mandat › Factures", "at_root": False}
+    # A reused note reports no folder: its own folder_id is read.
+    assert ri._note_location(doc, None)["folder_path"] == "Mandat › Factures"
+    db.external_write(f"{folder_model.COLLECTION}/legacy-projets", {
+        "id": "legacy-projets", "dossier_id": "d1", "name": "Projets",
+        "parent_folder_id": None, "order": 0})
+    legacy = {**doc, "folder_id": "legacy-projets"}
+    assert ri._note_location(legacy, None) == {
+        "folder_path": "Projets", "at_root": False}
+    # The parent unreadable (gone): the folder's name alone.
+    orphan = {**note.folder, "parent_folder_id": "absent"}
+    assert ri._note_location(doc, orphan)["folder_path"] == "Factures"
+    assert ri._note_location({**doc, "folder_id": None}, None) == {
+        "folder_path": "", "at_root": True}
 
 
 def test_the_web_button_still_files_one_note_per_click(store, web):

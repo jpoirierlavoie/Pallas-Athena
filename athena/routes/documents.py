@@ -102,11 +102,20 @@ def _attach_folder_counts(folders: list[dict], dossier_id: str) -> None:
     """
     from models.folder import is_system_folder, subtree_index
 
+    # EVERY folder of the dossier, from the same read as the counts: the
+    # « dossier de l'application » judgement needs the whole tree (below).
+    all_folders: list[dict] = []
     try:
-        index = subtree_index(dossier_id)
+        index = subtree_index(dossier_id, folders_out=all_folders)
     except Exception:
         logger.warning("folder counts unavailable for the browser")
         index = {}
+        all_folders = []
+    # When the read failed, the current level is all there is. That errs on
+    # the safe side: a leftover root « Projets » whose stamped successor
+    # sits under « Interne » then reads as the legacy holder, so « Renommer »
+    # is hidden — refusing a rename by mistake costs a click.
+    context = all_folders or folders
     for f in folders:
         counts = index.get(f["id"]) or {}
         f["_item_count"] = counts.get("direct", 0)
@@ -116,11 +125,15 @@ def _attach_folder_counts(folders: list[dict], dossier_id: str) -> None:
         # T2): posted back, it refuses a swap the counts cannot see. Absent
         # when the index failed — the zero counts already refuse then.
         f["_subtree_fingerprint"] = counts.get("fingerprint", "")
-        # « Projets » / « Reçus du portail » do not rename (lot 2A, T2) —
-        # the menu hides the action; the model refuses it anyway. The
-        # siblings are the context: a system folder sits at the root, and
-        # the root listing holds every candidate (models.folder).
-        f["_system"] = is_system_folder(f, folders)
+        # The seven folders of the application (Mandat, Factures, Déboursés,
+        # Interne, Projets, Autres, Reçus du portail) do not rename — the
+        # menu hides the action; the model refuses it anyway. Judged over
+        # EVERY folder of the dossier, as rename_folder judges it: since the
+        # default tree the stamped « Projets » sits under « Interne », and
+        # judged over the root listing alone, a leftover unstamped root
+        # « Projets » would read as the legacy holder (models.folder
+        # .is_system_folder) while the model lets it be renamed.
+        f["_system"] = is_system_folder(f, context)
 
 
 # ── List / Browser ───────────────────────────────────────────────────────

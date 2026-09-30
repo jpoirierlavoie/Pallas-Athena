@@ -60,6 +60,7 @@ from models.admin_ledger import (
 )
 from models.audit_event import record_deletion
 from services import comptabilite
+from services import pieces_justificatives
 from models.document import (
     _sniff_header,
     build_attachment_disposition,
@@ -353,11 +354,27 @@ def entry_detail(tx_id: str):
     lock_reason = al._entry_lock_reason(
         entry, al.get_lock_floor(entry.get("account_id", ""))
     )
+    # The copy of the receipt in the dossier (« Mandat › Déboursés »): read
+    # for DISPLAY, failing open to None — then the card claims nothing and
+    # offers nothing. The button's document id is minted HERE, so a double
+    # submission of one page lands on ONE document.
+    admissible = pieces_justificatives.admissible(entry)
+    copies = pieces_justificatives.etat_des_copies(entry)
+    # A dossier the store SAYS is gone: the button could only be refused, so
+    # the card says why instead. Read only when the button would be offered,
+    # and fail-open (an unreadable dossier keeps today's button).
+    dossier_introuvable = bool(
+        admissible and copies is not None and not copies["courante"]
+        and pieces_justificatives.dossier_introuvable(entry)
+    )
     return render_template(
         "administration/detail.html", entry=entry, account=account,
         reversal=reversal, reverses=reverses, other_leg=other_leg,
         invoice=invoice, lock_reason=lock_reason,
         avertissement=request.args.get("avertissement", ""),
+        copie_admissible=admissible, copies=copies,
+        copie_dossier_introuvable=dossier_introuvable,
+        copie_document_id=str(uuid.uuid4()),
         **_labels(),
     )
 
@@ -725,8 +742,12 @@ def api_recu(tx_id: str):
         _consume_staging()
         return jsonify({"erreur": "Erreur lors de la sauvegarde. Réessayez."}), 422
 
+    # The receipt's MD5 travels with it (the staging object's — the firm
+    # copy holds the same bytes): it names WHICH receipt the entry carries,
+    # so its copy in the dossier is told apart from a replaced one's.
+    md5 = blob.md5_hash if isinstance(blob.md5_hash, str) else ""
     updated, errors = al.attach_receipt(
-        tx_id, dest_path, nom, content_type, int(blob.size or 0)
+        tx_id, dest_path, nom, content_type, int(blob.size or 0), md5=md5,
     )
     _consume_staging()
     if errors or updated is None:
@@ -737,7 +758,89 @@ def api_recu(tx_id: str):
             bucket.blob(previous).delete()
         except Exception:
             logger.warning("admin: previous receipt cleanup failed")
-    return jsonify({"ok": True})
+    # The page to return to is built HERE, on success too: the upload
+    # widget navigates to it rather than reloading, so a banner an earlier
+    # failure left in the address (?avertissement=versement) never
+    # survives a receipt that was filed.
+    suivant = url_for("admin_ledger.entry_detail", tx_id=tx_id)
+    if pieces_justificatives.admissible(updated):
+        # A dépense of a dossier: its COPY goes to the dossier's « Mandat ›
+        # Déboursés », under the staging object's id (validated above), so
+        # a retried finalization lands on ONE document. The receipt IS
+        # attached whatever happens here: a failure is a banner on the
+        # entry page, never an error the upload widget would show as
+        # « refusé ».
+        try:
+            versement = pieces_justificatives.verser_recu_au_dossier(
+                tx_id, user_id, document_id=segments[2],
+            )
+        except Exception:
+            log_unexpected("admin: receipt copy to dossier failed",
+                           transaction_id=tx_id)
+            versement = None
+        if versement is None or versement.document is None:
+            suivant = url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                              avertissement=_versement_code(versement))
+    return jsonify({"ok": True, "suivant": suivant})
+
+
+# The CLOSED ?avertissement= codes of a copy that could not be filed. The two
+# LASTING refusals get their own banner — « réessayez » cannot help when the
+# entry's dossier is gone, nor when the receipt changed under the call (the
+# page is stale); every other refusal reads as the generic « versement ».
+_VERSEMENT_CODES = {
+    pieces_justificatives.REASON_DOSSIER_INTROUVABLE:
+        "versement_dossier_introuvable",
+    pieces_justificatives.REASON_RECU_MODIFIE: "versement_piece_modifiee",
+}
+
+
+def _versement_code(versement: "pieces_justificatives.Versement | None") -> str:
+    """The closed banner code of a copy that was NOT filed (*versement* is
+    ``None`` when the service raised)."""
+    if versement is None:
+        return "versement"
+    if versement.code == pieces_justificatives.INADMISSIBLE:
+        return "versement_inadmissible"
+    return _VERSEMENT_CODES.get(versement.reason, "versement")
+
+
+@admin_bp.route("/<tx_id>/recu/verser", methods=["POST"])
+@login_required
+def recu_verser(tx_id: str):
+    """« Verser une copie au dossier » — file a COPY of the entry's pièce
+    justificative in its dossier's « Mandat › Déboursés » folder
+    (``services/pieces_justificatives``). The document id comes from the
+    page (minted at render), so a double submission lands on ONE document;
+    every outcome returns to the entry page, a refusal under a CLOSED
+    ``?avertissement=`` code — the card itself says what was filed."""
+    entry = al.get_transaction(tx_id)
+    if not entry:
+        return render_template("errors/404.html"), 404
+    if not pieces_justificatives.admissible(entry):
+        return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                avertissement="versement_inadmissible"))
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable:
+        return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                avertissement="versement"))
+    document_id = request.form.get("document_id", "")
+    if not is_canonical_uuid4(document_id):
+        document_id = str(uuid.uuid4())
+    try:
+        versement = pieces_justificatives.verser_recu_au_dossier(
+            tx_id, user_id, document_id=document_id,
+        )
+    except Exception:
+        log_unexpected("admin: receipt copy to dossier failed",
+                       transaction_id=tx_id)
+        return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                avertissement="versement"))
+    if versement.document is None:
+        return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                avertissement=_versement_code(versement)))
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
 
 
 @admin_bp.route("/<tx_id>/recu")

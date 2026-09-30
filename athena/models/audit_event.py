@@ -44,6 +44,22 @@ whole, the connector edits one entry), so only the model sees every
 detach; ``models.dossier.update_dossier`` / ``models.partie.update_partie``
 journal them after their own commit, best-effort like every caller here.
 Neither is a record deletion: the contact stays — the row says a LINK went.
+
+ONE row per ATOMIC deletion, never one per record it took with it — two
+documented cases. (1) A recurring series deleted in one batch writes ONE
+``hearing_series`` row carrying its occurrence count (see
+``VALID_ENTITY_TYPES``). (2) A dossier deleted with its empty filing
+folders writes ONE ``dossier`` row (2026-09-30): since the default tree
+every dossier holds eighteen folders from its creation, and
+``models.dossier.delete_dossier`` deletes them with the dossier in the SAME
+transaction. ``list_recent`` reads a hard 200-row window and filters in
+Python after the read: a row per folder would evict the firm's deletion
+history, after which ``list_deletions`` would answer « nothing » with a
+false ``truncated: false``. Both are legitimate ONLY because the deletion
+is atomic — a deletion that could succeed in part would owe the detail.
+(``models.folder.delete_folder`` is not atomic across its chunks, and its
+route journals one row per entity it destroyed.)
+
 ``record_deletion`` is deliberately try/except-swallowing: it runs AFTER
 the successful delete, and a trail-write blip must never turn a completed
 deletion into a user-facing error (the delete already happened; erroring

@@ -696,6 +696,87 @@ def test_save_files_into_projets_under_the_uid_it_was_given(store):
     assert bucket.objects[stored["storage_path"]].data == filled
 
 
+# ── The system folder a save names: by its ROLE (the default folder tree) ──
+
+
+def test_save_generated_files_into_factures_under_mandat(store):
+    """FACTURES — the note d'honoraires' folder — is « Mandat › Factures »,
+    created with its parent on first use; « Projets » is never touched."""
+    db, bucket, template = store
+    filled, _ = sg.fill(TEMPLATE_BYTES, {"dossier.titre": "T"})
+    doc, folder = sg.save_generated(
+        dossier=dossier_model.get_dossier("d1"), filled=filled, uid=UID,
+        display_name="Note", filename="note.docx", category="correspondance",
+        genere_depuis="", folder=sg.FACTURES)
+    stored = db.peek(f"documents/{doc['id']}")
+    factures = folder_model.system_folder_id("d1", "factures")
+    assert folder["id"] == stored["folder_id"] == factures
+    assert folder["system_role"] == "factures"
+    assert db.peek(f"folders/{factures}")["parent_folder_id"] == (
+        folder_model.system_folder_id("d1", "mandat"))
+    assert db.peek(f"folders/{folder_model.system_folder_id('d1', 'projets')}") is None
+
+
+def test_save_into_factures_checks_the_uid_before_touching_anything(store):
+    db, bucket, template = store
+    with pytest.raises(sg.GenerationRefused) as exc:
+        sg.save_generated(
+            dossier=dossier_model.get_dossier("d1"), filled=b"x", uid="unknown",
+            display_name="Note", filename="note.docx", category="autre",
+            genere_depuis="", folder=sg.FACTURES)
+    assert exc.value.reason == "save_failed"
+    _nothing_written(db, bucket, template)
+
+
+@pytest.mark.parametrize("errors, message", [
+    ([folder_model.READ_ERROR], folder_model.READ_ERROR),
+    ([], "Le dossier « Factures » est indisponible. Réessayez."),
+])
+def test_save_refuses_without_factures_and_never_files_at_the_root(
+    store, monkeypatch, errors, message,
+):
+    db, bucket, template = store
+    asked = []
+
+    def _unavailable(did, role):
+        asked.append(role)
+        return None, list(errors)
+
+    monkeypatch.setattr(sg, "ensure_system_folder", _unavailable)
+    with pytest.raises(sg.GenerationRefused) as exc:
+        sg.save_generated(
+            dossier=dossier_model.get_dossier("d1"), filled=TEMPLATE_BYTES,
+            uid=UID, display_name="Note", filename="note.docx",
+            category="autre", genere_depuis="", folder=sg.FACTURES)
+    assert (exc.value.reason, exc.value.message) == ("factures_unavailable", message)
+    assert asked == [folder_model.SYSTEM_ROLE_FACTURES]
+    assert sg.FACTURES_UNAVAILABLE == (
+        "Le dossier « Factures » est indisponible. Réessayez.")
+    _nothing_written(db, bucket, template)
+
+
+def test_projets_keeps_its_sentinel_its_reason_and_its_message(store, monkeypatch):
+    """The connector compares ``folder is PROJETS`` and calls
+    ``ensure_projets``: the sentinel is the default of save_generated, its
+    own object, and its refusal is still ``projets_unavailable``."""
+    import inspect
+
+    assert (inspect.signature(sg.save_generated).parameters["folder"].default
+            is sg.PROJETS)
+    assert sg.PROJETS is not sg.FACTURES
+    assert sg.PROJETS.role == folder_model.SYSTEM_ROLE_PROJETS
+    assert sg.FACTURES.role == folder_model.SYSTEM_ROLE_FACTURES
+    monkeypatch.setattr(sg, "ensure_system_folder", lambda did, role: (None, []))
+    with pytest.raises(sg.GenerationRefused) as exc:
+        sg.ensure_projets("d1")
+    assert (exc.value.reason, exc.value.message) == (
+        "projets_unavailable", sg.PROJETS_UNAVAILABLE)
+    assert sg.PROJETS_UNAVAILABLE == (
+        "Le dossier « Projets » est indisponible. Réessayez.")
+    with pytest.raises(ValueError):
+        sg._SystemFolderChoice("inconnu")
+
+
 def _one_paragraph_docx(text: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

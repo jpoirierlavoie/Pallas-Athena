@@ -58,6 +58,7 @@ from models.admin_ledger import (
 from models.audit_event import record_deletion
 from models.trust import list_invoice_fee_payments
 from models.dossier import get_dossier, list_dossiers
+from models.folder import get_folder
 from models.partie import get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
@@ -597,11 +598,37 @@ def _note_error(message: str) -> str:
     )
 
 
+def _note_location(doc: dict, folder: Optional[dict]) -> dict:
+    """Where the note landed, as the success fragment says it.
+
+    ``folder_path`` — « Mandat › Factures »: the folder the SERVICE reports
+    (``NoteGeneree.folder``), preceded by its parent's name when one keyed
+    read gives it (``get_folder`` fails open — the folder's name alone,
+    then); never a name written here, so the fragment cannot say « Projets »
+    of a note filed elsewhere. A REUSED note (none on the web, which always
+    regenerates) reports no folder: its own ``folder_id`` is read instead.
+    ``at_root`` — the document carries no folder at all.
+    """
+    dossier_id = str(doc.get("dossier_id") or "")
+    if folder is None and doc.get("folder_id") and dossier_id:
+        folder = get_folder(dossier_id, doc["folder_id"])
+    name = str((folder or {}).get("name") or "").strip()
+    path = name
+    parent_id = (folder or {}).get("parent_folder_id")
+    if name and parent_id and dossier_id:
+        parent_name = str((get_folder(dossier_id, parent_id) or {})
+                          .get("name") or "").strip()
+        if parent_name:
+            path = f"{parent_name} › {name}"
+    return {"folder_path": path, "at_root": not doc.get("folder_id")}
+
+
 @invoices_bp.route("/<invoice_id>/note-docx", methods=["POST"])
 @login_required
 def invoice_note_docx(invoice_id: str) -> Response | str:
     """Fill the note-d'honoraires template from this invoice and save the
-    .docx into the dossier's « Projets » folder (§9.2).
+    .docx into the dossier's « Mandat › Factures » folder (§9.2; « Projets »
+    until the default folder tree).
 
     A request adapter since lot 3a (step 2): the generation is
     ``services.note_honoraires`` — the ONE assembly the connector will use
@@ -628,6 +655,7 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
             "display_name": doc.get("display_name", ""),
             "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
             "download_url": url_for("documents.document_download", document_id=doc["id"]),
+            **_note_location(doc, note.folder),
         },
     )
 
