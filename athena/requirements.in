@@ -64,7 +64,7 @@ icalendar==7.0.3
 vobject==0.9.9
 bcrypt==5.0.0
 python-dotenv==1.2.2
-reportlab==4.4.10
+reportlab==5.0.1
 # Pillow is a transitive dependency of reportlab (which only requires >=9.0.0).
 # Pinned explicitly here for CVE hygiene. 12.3.0 clears a batch of 2026
 # image-decoder advisories (CVE-2026-54059 / 54060 / 55379 / 55380 / 55798 /
