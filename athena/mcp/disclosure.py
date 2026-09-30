@@ -859,6 +859,15 @@ NEVERS: tuple[Never, ...] = (
         forbidden=(
             "confirmer_categorie", "confirmer_analyse", "update_analyse",
         ),
+        # Review of D25 (2026-09-29): the sweep above forbids the three
+        # gestures by NAME, and the first version of D25 breached the
+        # promise without naming any — the connector's own
+        # record_document_analysis KEPT `confirme: true` on a run the lawyer
+        # never read. The behaviour is pinned too.
+        behavioural_test=(
+            "tests/test_document_analyse_d25.py::"
+            "test_no_connector_write_confirms_an_analysis_or_a_presumed_category"
+        ),
     ),
     Never(
         key="active_template",

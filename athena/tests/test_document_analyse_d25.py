@@ -442,6 +442,51 @@ def test_list_documents_reports_a_new_run_unconfirmed(fake):
     assert row()["analyse_confirmee"] is True
 
 
+def test_no_connector_write_confirms_an_analysis_or_a_presumed_category(fake):
+    """The behavioural pin of the consent screen's « confirm » promise
+    (mcp/disclosure, NEVERS « confirm »: Claude never confirms a presumed
+    category or analysis). Its sweep forbids the three gestures by NAME
+    (confirmer_categorie, confirmer_analyse, update_analyse), and the first
+    version of D25 breached the promise without calling any of them: the
+    connector's own write KEPT `confirme: true` on a run the lawyer never
+    read, and the sweep stayed green. FAILS on that code (90e01f1).
+
+    Every document the connector can analyse — his, legacy, confirmed,
+    nobody's, presumed — comes out of a connector run with an UNCONFIRMED
+    analysis, in the cache, in the journal and in list_documents; and a
+    category nobody chose, whether the analysis or update_document posed
+    it, stays presumed: never « juriste », never his, never a
+    `category_confirmed_by`."""
+    _doc(fake, "qualifie", category="correspondance",
+         category_set_by_lawyer=True, analyse=_confirmed_analysis("CORR_TIERS"))
+    _doc(fake, "vierge", category="autre", category_set_by_lawyer=False)
+    analysed = ("choisi", "concorde", "ancien", "confirme_ancien", "defaut",
+                "presume", "qualifie")
+    for did in analysed:
+        _analyse_tool(did)
+    rows = {r["id"]: r for r in handlers.list_documents(
+        {"dossier_id": "d1"})["items"]}
+    for did in analysed:
+        stored = fake.peek(f"documents/{did}")
+        a = stored["analyse"]
+        assert (a["confirme"], a["confirme_par"], a["confirme_le"]) == (
+            False, None, None), did
+        assert all(e["confirme"] is False for e in _journal(fake, did)), did
+        assert rows[did]["analyse_confirmee"] is False, did
+    for did in ("defaut", "presume"):
+        stored = fake.peek(f"documents/{did}")
+        assert stored["category_source"] == "analyse", did
+        assert document_model.category_set_by_lawyer(stored) is False, did
+        assert "category_confirmed_by" not in stored, did
+    handlers.update_document({"document_id": "vierge", "category": "preuve"})
+    stored = fake.peek("documents/vierge")
+    assert stored["category"] == "preuve"
+    assert stored["category_source"] == "mcp"
+    assert stored["category_set_by_lawyer"] is False
+    assert "category_confirmed_by" not in stored
+    assert document_model.category_set_by_lawyer(stored) is False
+
+
 def test_a_replacement_is_never_called_his_choice(fake):
     """What an analysis still replaces under the « juriste » source was
     nobody's choice. FAILS on the old text, « posée dans l'application »."""
