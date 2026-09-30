@@ -8,7 +8,10 @@ exists to prevent:
   pure calendar arithmetic implementing art. 83: every day counts, and a raw
   deadline landing on a non-juridical day is pushed further in the direction
   of computation. **No clock is ever read here.** These functions are pinned
-  by a frozen reference table in ``tests/test_deadlines.py``.
+  by a frozen reference table in ``tests/test_deadlines.py``. All take a
+  ``regime`` except ``compute_deadline`` (art. 83 — procedural by
+  definition) and ``last_action_day`` (procedural on purpose; see its
+  docstring) — see « Two calendars » below.
 * **Lateness** (``today_mtl``, ``effective_due``, ``is_past_due``,
   ``days_until``) — the single answer to « is this deadline in the past? »,
   on the **Montréal** calendar, evaluated against the PROROGUED deadline
@@ -23,12 +26,64 @@ exists to prevent:
 "today" must go through it, or two surfaces drift by up to a day: UTC runs
 ahead of Montréal by 4-5 hours, so a UTC-based comparison declares a deadline
 past from 20:00 (EDT) / 19:00 (EST) the evening BEFORE.
+
+**Two calendars, not one.** Which days are « fériés » depends on the text
+that governs the délai, and the two texts that matter here disagree on two
+dates a year:
+
+* ``PROCEDURAL`` — art. 82-83 C.p.c.: Saturdays, the jours fériés of art.
+  61(23) L.i. (Sundays included), **plus 26 December and 2 January, which
+  art. 82 makes « en matière de procédure civile, considérés jours fériés »
+  EVERY year** (whatever weekday they fall on). The default of every helper:
+  « jour juridique » is procedural vocabulary, and ``compute_deadline`` —
+  art. 83 — is this module's reason to exist.
+* ``CIVIL`` — art. 2879 C.c.Q. (prescription: « Lorsque le dernier jour est
+  un samedi ou un jour férié ») and the business-day notion of « jours
+  ouvrables » (Monday to Friday, excluding the art. 61(23) L.i. list —
+  the definition art. 3 of the Règlement de la Cour d'appel spells out):
+  Saturdays + the art. 61(23) L.i. list, and NOTHING else. Art. 82's two
+  days are confined by their own words to civil procedure; the legislature
+  adds them expressly where it wants them elsewhere (art. 269 L.p.c., art.
+  87 of the TAL act), and neither the C.c.Q. nor the L.i. does.
+
+Neither calendar knows a « Sunday → Monday » substitute for 1 January, 24
+June or 25 December: art. 61(23) L.i. provides ONE substitute, 2 July when
+1 July is a Sunday, and that is the only one here. (The earlier code added
+2 January / 25 June / 26 December only when the holiday before them fell on
+a Sunday — wrong for procedure whenever 26 December or 2 January is a
+Tuesday to Friday, wrong for prescription on the Monday it did add, and
+wrong for both calendars on 25 June.)
 """
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from tz import MTL
+
+
+# ── The two calendars ────────────────────────────────────────────────────
+
+PROCEDURAL = "procedural"   # art. 82-83 C.p.c. — adds 26 Dec + 2 Jan
+CIVIL = "civil"             # art. 61(23) L.i. + Saturday (art. 2879 C.c.Q.)
+Regime = Literal["procedural", "civil"]
+_REGIMES = (PROCEDURAL, CIVIL)
+
+# Art. 82 C.p.c.: « non plus que les 26 décembre et 2 janvier qui sont, en
+# matière de procédure civile, considérés jours fériés ». (month, day).
+_ART_82_DAYS = ((12, 26), (1, 2))
+
+
+def _check_regime(regime: str) -> None:
+    """Refuse an unknown calendar loudly — a typo must never silently fall
+    back to one of the two (each is wrong for the other's délais)."""
+    if regime not in _REGIMES:
+        raise ValueError(f"Calendrier inconnu : {regime!r}")
+
+
+def is_art_82_day(d: date) -> bool:
+    """True on 26 December and 2 January — the two days art. 82 C.p.c.
+    treats as holidays in civil procedure, and ONLY there."""
+    return (d.month, d.day) in _ART_82_DAYS
 
 
 def compute_deadline(
@@ -49,6 +104,10 @@ def compute_deadline(
         non-juridical day, it is pushed further in the direction of
         computation until it lands on a juridical day.
 
+    Always the PROCEDURAL calendar (art. 82 C.p.c.): this IS art. 83, so a
+    deadline landing on 26 December or 2 January is extended like one
+    landing on a Saturday — whatever weekday those dates fall on.
+
     Examples:
         # 15 days after March 1, 2025 = March 16 (Sunday) → March 17 (Monday)
         compute_deadline(date(2025, 3, 1), 15, "after")
@@ -58,40 +117,46 @@ def compute_deadline(
     """
     if direction == "after":
         raw = start_date + timedelta(days=delay_days)
-        if not is_juridical_day(raw):
-            return next_juridical_day(raw)
+        if not is_juridical_day(raw, regime=PROCEDURAL):
+            return next_juridical_day(raw, regime=PROCEDURAL)
         return raw
     else:
         raw = start_date - timedelta(days=delay_days)
-        if not is_juridical_day(raw):
-            return prev_juridical_day(raw)
+        if not is_juridical_day(raw, regime=PROCEDURAL):
+            return prev_juridical_day(raw, regime=PROCEDURAL)
         return raw
 
 
-def is_juridical_day(d: date) -> bool:
-    """Return True if the date is a juridical day (not a weekend or holiday)."""
+def is_juridical_day(d: date, *, regime: Regime = PROCEDURAL) -> bool:
+    """Return True if the date is a juridical day on the given calendar.
+
+    Both calendars exclude Saturdays (art. 83 C.p.c.; art. 2879 C.c.Q.) and
+    Sundays (art. 61(23) a) L.i.). ``PROCEDURAL`` additionally excludes 26
+    December and 2 January every year (art. 82 C.p.c.); ``CIVIL`` does not.
+    """
+    _check_regime(regime)
     if d.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
-    if d in get_quebec_holidays(d.year):
+    if d in get_quebec_holidays(d.year, regime=regime):
         return False
     return True
 
 
-def next_juridical_day(d: date) -> date:
+def next_juridical_day(d: date, *, regime: Regime = PROCEDURAL) -> date:
     """Return the next juridical day on or after the given date."""
     current = d
     for _ in range(10):
-        if is_juridical_day(current):
+        if is_juridical_day(current, regime=regime):
             return current
         current += timedelta(days=1)
     return current
 
 
-def prev_juridical_day(d: date) -> date:
+def prev_juridical_day(d: date, *, regime: Regime = PROCEDURAL) -> date:
     """Return the previous juridical day on or before the given date."""
     current = d
     for _ in range(10):
-        if is_juridical_day(current):
+        if is_juridical_day(current, regime=regime):
             return current
         current -= timedelta(days=1)
     return current
@@ -106,8 +171,20 @@ def last_action_day(deadline: date) -> tuple[date, bool]:
     when it differs — otherwise it reads as a duplicated (buggy-looking)
     date. Shared by the dashboard and the MCP get_agenda alert row so the
     two surfaces can never drift.
+
+    Deliberately the PROCEDURAL calendar, even though its one consumer is
+    the prescription alert, whose date is computed on the CIVIL one: the act
+    that interrupts a prescription is the DÉPÔT of a demande « avant
+    l'expiration du délai » (art. 2892 C.c.Q.), the courts do not sit on the
+    days art. 82 C.p.c. lists — 26 December and 2 January included — and a
+    greffe is closed on a jour férié (e.g. art. 5, Règlement de la Cour du
+    Québec; art. 111 al. 2 C.p.c. defers a technological notification made
+    on one to the next jour ouvrable). So a prescription
+    running out on Friday 26 December 2025 (a jour ouvrable for art. 2879)
+    has a last day to FILE of Wednesday the 24th — which is what this
+    returns, with ``differs`` True.
     """
-    last = prev_juridical_day(deadline)
+    last = prev_juridical_day(deadline, regime=PROCEDURAL)
     return last, last != deadline
 
 
@@ -141,22 +218,30 @@ def _as_date(value) -> Optional[date]:
     return None
 
 
-def effective_due(deadline) -> Optional[date]:
+def effective_due(deadline, *, regime: Regime = PROCEDURAL) -> Optional[date]:
     """The day a deadline is actionable UNTIL: itself, prorogued if needed.
 
     ``next_juridical_day`` is inclusive, so a deadline already landing on a
     juridical day is returned unchanged — which makes this a NO-OP for every
-    computed deadline in the system (protocol steps, prescription dates all
-    go through art. 83 at computation time). It only moves hand-typed dates
-    that landed on a weekend or a Québec statutory holiday.
+    computed deadline in the system, PROVIDED the caller names the calendar
+    the deadline was computed on: protocol steps and tasks are procedural
+    (the default); a prescription date is computed on the ``CIVIL`` calendar
+    (art. 2879 C.c.Q.) and must be read back on it, or a prescription
+    expiring on a weekday 26 December would be prorogued past the day it
+    is acquired. It only moves hand-typed dates that landed on a weekend or
+    a holiday of that calendar. The ``regime`` is validated even for an
+    undated deadline (a typo must not wait for the first dated row).
     """
+    _check_regime(regime)
     when = _as_date(deadline)
     if when is None:
         return None
-    return next_juridical_day(when)
+    return next_juridical_day(when, regime=regime)
 
 
-def is_past_due(deadline, *, today: Optional[date] = None) -> bool:
+def is_past_due(
+    deadline, *, today: Optional[date] = None, regime: Regime = PROCEDURAL
+) -> bool:
     """True when the PROROGUED deadline fell strictly BEFORE today (Montréal).
 
     Two rules compose here, both the lawyer's:
@@ -168,124 +253,133 @@ def is_past_due(deadline, *, today: Optional[date] = None) -> bool:
 
     A missing deadline is never past due (an undated task cannot be late).
     ``today`` is injectable so the rule is testable without a clock.
+    ``regime`` names the calendar the prorogation runs on — see
+    ``effective_due``: a prescription date passes ``CIVIL``.
     """
-    when = effective_due(deadline)
+    when = effective_due(deadline, regime=regime)
     if when is None:
         return False
     return when < (today or today_mtl())
 
 
-def days_until(deadline, *, today: Optional[date] = None) -> Optional[int]:
+def days_until(
+    deadline, *, today: Optional[date] = None, regime: Regime = PROCEDURAL
+) -> Optional[int]:
     """Whole days from today (Montréal) to the PROROGUED deadline.
 
     None when undated. Evaluated on ``effective_due`` so the countdown and
     ``is_past_due`` can never disagree: the count reaches zero on the last
     actionable day and goes negative only once the deadline is truly past —
     never « -1 » on something that is not yet late (the dashboard's old
-    evening artifact).
+    evening artifact). Pass the SAME ``regime`` to both, or they can.
     """
-    when = effective_due(deadline)
+    when = effective_due(deadline, regime=regime)
     if when is None:
         return None
     return (when - (today or today_mtl())).days
 
 
-def add_jours_ouvrables(start: date, n: int) -> date:
+def add_jours_ouvrables(
+    start: date, n: int, *, regime: Regime = PROCEDURAL
+) -> date:
     """Add *n* business days: each counted day skips Saturdays, Sundays and
-    Québec statutory holidays (the same table ``next_juridical_day`` uses via
+    the holidays of ``regime`` (the same table ``next_juridical_day`` uses via
     ``is_juridical_day``).
 
     Serves the notice delays expressed in jours ouvrables (art. 3, Loi sur la
-    presse — the ``3_jours_ouvrables`` key of ``utils.recours.AVIS_PERIODS``).
-    ``n == 0`` returns *start* unchanged, even when *start* itself is not a
-    juridical day.
+    presse — the ``3_jours_ouvrables`` key of ``utils.recours.AVIS_PERIODS``),
+    which ``utils.recours`` counts on the ``CIVIL`` calendar: a notice to a
+    newspaper is not civil procedure, so art. 82 C.p.c.'s 26 December and
+    2 January are ordinary business days for it (the implementation's
+    reading — the Loi sur la presse text was not verified; since that avis
+    precedes the action, CIVIL yields the EARLIER, less conservative, first
+    day to sue, and the choice is the lawyer's). ``n == 0`` returns *start*
+    unchanged, even when *start* itself is not a juridical day — but the
+    ``regime`` is still validated first: a typo must fail on every call,
+    not only on those that happen to count a day.
     """
+    _check_regime(regime)
     current = start
     remaining = n
     while remaining > 0:
         current += timedelta(days=1)
-        if is_juridical_day(current):
+        if is_juridical_day(current, regime=regime):
             remaining -= 1
     return current
 
 
-def get_quebec_holidays(year: int) -> list[date]:
-    """Return all Quebec statutory holidays for a given year.
+def get_quebec_holidays(year: int, *, regime: Regime = PROCEDURAL) -> list[date]:
+    """Return the dated holidays of *year* on the given calendar, sorted.
 
-    Must include ALL of the following:
-    - Jour de l'An (January 1)
-    - Vendredi saint (Good Friday — floating, based on Easter)
-    - Lundi de Pâques (Easter Monday — floating, based on Easter)
-    - Journée nationale des patriotes (Monday preceding May 25)
-    - Fête nationale du Québec (June 24)
-    - Fête du Canada (July 1)
-    - Fête du Travail (1st Monday of September)
-    - Action de grâce (2nd Monday of October)
-    - Jour de Noël (December 25)
+    Sundays are jours fériés too (art. 61(23) a) L.i.) but are not dated
+    here — ``is_juridical_day`` excludes every weekend first.
 
-    Also include the January 2 rule: if January 1 falls on a Sunday,
-    January 2 is also a non-juridical day (observed holiday).
+    ``CIVIL`` — the dated jours fériés of art. 61(23) L.i., b) to j):
+    - 1 January (b)
+    - Vendredi saint (c) and lundi de Pâques (d) — Easter-based
+    - 24 June, Fête nationale (e) — NO substitute when it is a Sunday:
+      unlike f), paragraph e) names none
+    - 1 July, or 2 July when 1 July is a Sunday (f) — the ONLY substitute
+      day the article provides (1 July stays listed; it is a Sunday then)
+    - 1st Monday of September (g), 2nd Monday of October (g.1)
+    - 25 December (h) — no substitute either
+    - the Monday preceding 25 May: the Sovereign's birthday fixed by the
+      Governor General's proclamation (i), also the Journée nationale des
+      patriotes fixed by decree (j)
 
-    Similarly, if June 24 or July 1 or December 25 falls on a Sunday,
-    the following Monday is observed.
+    ``PROCEDURAL`` — the same list PLUS 26 December and 2 January, EVERY
+    year, whatever weekday they fall on (art. 82 C.p.c.: « non plus que les
+    26 décembre et 2 janvier qui sont, en matière de procédure civile,
+    considérés jours fériés »).
 
-    For the Easter calculation, implement the Anonymous Gregorian algorithm
-    (Meeus/Jones/Butcher) to compute Easter Sunday, then derive Good Friday
-    (Easter - 2) and Easter Monday (Easter + 1).
+    For the Easter calculation, the Anonymous Gregorian algorithm
+    (Meeus/Jones/Butcher) gives Easter Sunday; Good Friday = Easter - 2,
+    Easter Monday = Easter + 1.
     """
+    _check_regime(regime)
     holidays: list[date] = []
 
-    # Jour de l'An (January 1)
-    jan1 = date(year, 1, 1)
-    holidays.append(jan1)
-    # If Jan 1 falls on Sunday, Monday Jan 2 is also observed
-    if jan1.weekday() == 6:  # Sunday
-        holidays.append(date(year, 1, 2))
+    # 1 January — art. 61(23) b) L.i.
+    holidays.append(date(year, 1, 1))
 
-    # Easter-based holidays
+    # Easter-based holidays — art. 61(23) c) and d) L.i.
     easter = _easter_sunday(year)
     holidays.append(easter - timedelta(days=2))  # Vendredi saint (Good Friday)
     holidays.append(easter + timedelta(days=1))  # Lundi de Pâques (Easter Monday)
 
-    # Journée nationale des patriotes (last Monday on or before May 24)
-    # = the Monday immediately preceding May 25
+    # The Monday immediately preceding 25 May (= the last Monday on or before
+    # 24 May) — art. 61(23) i) and j) L.i.
     may24 = date(year, 5, 24)
-    days_since_monday = may24.weekday()  # Monday=0, ..., Sunday=6
-    patriots_day = may24 - timedelta(days=days_since_monday)
-    holidays.append(patriots_day)
+    holidays.append(may24 - timedelta(days=may24.weekday()))
 
-    # Fête nationale du Québec (June 24)
-    june24 = date(year, 6, 24)
-    holidays.append(june24)
-    if june24.weekday() == 6:  # Sunday → Monday observed
-        holidays.append(date(year, 6, 25))
+    # 24 June — art. 61(23) e) L.i. No substitute: 25 June is an ordinary
+    # day even when the 24th is a Sunday (it may be a day OFF for workers
+    # under labour legislation; that does not make it a jour férié).
+    holidays.append(date(year, 6, 24))
 
-    # Fête du Canada (July 1)
+    # 1 July, or 2 July if the 1st is a Sunday — art. 61(23) f) L.i.
     july1 = date(year, 7, 1)
     holidays.append(july1)
-    if july1.weekday() == 6:  # Sunday → Monday observed
+    if july1.weekday() == 6:
         holidays.append(date(year, 7, 2))
 
-    # Fête du Travail (1st Monday of September)
+    # First Monday of September — art. 61(23) g) L.i.
     sept1 = date(year, 9, 1)
-    days_to_monday = (7 - sept1.weekday()) % 7  # 0 if already Monday
-    labour_day = sept1 + timedelta(days=days_to_monday)
-    holidays.append(labour_day)
+    holidays.append(sept1 + timedelta(days=(7 - sept1.weekday()) % 7))
 
-    # Action de grâce (2nd Monday of October)
+    # Second Monday of October — art. 61(23) g.1) L.i.
     oct1 = date(year, 10, 1)
-    days_to_monday = (7 - oct1.weekday()) % 7
-    first_monday_oct = oct1 + timedelta(days=days_to_monday)
-    thanksgiving = first_monday_oct + timedelta(weeks=1)
-    holidays.append(thanksgiving)
+    first_monday_oct = oct1 + timedelta(days=(7 - oct1.weekday()) % 7)
+    holidays.append(first_monday_oct + timedelta(weeks=1))
 
-    # Jour de Noël (December 25)
-    dec25 = date(year, 12, 25)
-    holidays.append(dec25)
-    if dec25.weekday() == 6:  # Sunday → Monday observed
-        holidays.append(date(year, 12, 26))
+    # 25 December — art. 61(23) h) L.i. No substitute.
+    holidays.append(date(year, 12, 25))
 
-    return holidays
+    if regime == PROCEDURAL:
+        # Art. 82 C.p.c. — every year, in civil procedure only.
+        holidays.extend(date(year, m, d) for m, d in _ART_82_DAYS)
+
+    return sorted(holidays)
 
 
 def _easter_sunday(year: int) -> date:

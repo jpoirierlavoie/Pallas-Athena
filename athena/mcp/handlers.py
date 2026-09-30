@@ -660,7 +660,15 @@ def _prescription_row(d: dict, today: date) -> dict:
         # "today" runs ahead of the user's evening by up to 5 hours. Floored
         # at 0: an already-blown deadline reads 0, and prescription_status
         # carries the distinction.
-        days_remaining = max(0, deadlines.days_until(effective, today=today) or 0)
+        # CIVIL calendar for the countdown (a prescription date, art. 2879
+        # C.c.Q.); last_action_day is PROCEDURAL on purpose — the last day
+        # the demande can be FILED (art. 2892 C.c.Q., art. 82 C.p.c.).
+        days_remaining = max(
+            0,
+            deadlines.days_until(
+                effective, today=today, regime=deadlines.CIVIL
+            ) or 0,
+        )
         last_day, last_action_differs = deadlines.last_action_day(
             effective.date()
         )
@@ -3081,8 +3089,13 @@ def compute_judicial_deadline(args: dict) -> dict:
             landed = "a Saturday"
         elif raw.weekday() == 6:
             landed = "a Sunday"
-        elif raw in deadlines.get_quebec_holidays(raw.year):
+        elif raw in deadlines.get_quebec_holidays(
+            raw.year, regime=deadlines.CIVIL
+        ):
             landed = "a Québec statutory holiday"
+        elif deadlines.is_art_82_day(raw):
+            landed = ("26 December or 2 January, a holiday in civil "
+                      "procedure (art. 82 C.p.c.)")
         else:
             landed = "a non-juridical day"
         moved = "forward" if direction == "after" else "backward"
@@ -3090,6 +3103,25 @@ def compute_judicial_deadline(args: dict) -> dict:
             f"{raw.isoformat()} is {landed}; "
             f"extended {moved} to the nearest juridical day (art. 83 C.p.c.)"
         )
+        # The extension can ALSO pass over a weekday 26 December / 2 January
+        # (raw on 25 Dec or 1 Jan, a Saturday before them…). Named, or a
+        # reader sees a Friday skipped with no stated cause and « corrects »
+        # the date back. Weekend art. 82 days need no mention: skipped anyway.
+        step = 1 if direction == "after" else -1
+        skipped_82 = [
+            day
+            for day in (
+                raw + timedelta(days=i * step)
+                for i in range(1, abs((deadline - raw).days))
+            )
+            if deadlines.is_art_82_day(day) and day.weekday() < 5
+        ]
+        if skipped_82:
+            adjustment_reason += (
+                f"; {', '.join(day.isoformat() for day in skipped_82)} also "
+                "skipped — 26 December and 2 January are holidays in civil "
+                "procedure every year (art. 82 C.p.c.)"
+            )
 
     return {
         "start_date": start.isoformat(),

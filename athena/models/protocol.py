@@ -949,6 +949,45 @@ def _date_key(value) -> Optional[date]:
     return None
 
 
+# ── LEGACY — the pre-2026-09-30 holiday calendar, for ONE comparison ─────
+#
+# Until 2026-09-30 ``utils.deadlines`` added 2 January / 25 June / 26
+# December only when the holiday before them fell on a Sunday, and never
+# made a weekday 26 December or 2 January non-juridical (art. 82 C.p.c.).
+# A CS step flagged ``date_confirmed`` BEFORE ``date_confirmed_at`` existed
+# is judged by comparing its stored date to a recomputation — and a date
+# the OLD calendar suggested no longer equals what the new one computes, so
+# without this it would read « confirmed » (badge gone, MCP
+# ``date_is_suggestion`` false, PRESERVED by a start-date change) on the
+# sole evidence that the calendar was fixed. These two helpers exist ONLY
+# to recognise such a suggestion. Never compute a deadline with them.
+
+
+def _legacy_is_juridical_day(d: date) -> bool:
+    """LEGACY — the retired calendar. See the block comment above."""
+    if d.weekday() >= 5:
+        return False
+    if d in deadlines.get_quebec_holidays(d.year, regime=deadlines.CIVIL):
+        return False
+    # The retired « Sunday → Monday » substitutes: 2 Jan, 25 June, 26 Dec.
+    for month, day in ((1, 1), (6, 24), (12, 25)):
+        holiday = date(d.year, month, day)
+        if holiday.weekday() == 6 and d == holiday + timedelta(days=1):
+            return False
+    return True
+
+
+def _legacy_compute_deadline(start_date: datetime, offset_days: int) -> datetime:
+    """LEGACY — what :func:`_compute_deadline` returned before 2026-09-30
+    (art. 83 forward, on the retired calendar). Comparison only."""
+    current = start_date.date() + timedelta(days=offset_days)
+    for _ in range(10):
+        if _legacy_is_juridical_day(current):
+            break
+        current += timedelta(days=1)
+    return datetime.combine(current, datetime.min.time(), timezone.utc)
+
+
 def _date_truly_confirmed(
     protocol_type: str, start_date, step: dict
 ) -> bool:
@@ -962,7 +1001,10 @@ def _date_truly_confirmed(
     confirmed before that stamp existed, the evidence is the date itself:
     one that still equals what the template computes from the stored start
     date was never moved by hand, and follows the start date like any
-    suggestion.
+    suggestion. « What the template computes » includes what it computed
+    BEFORE the 2026-09-30 calendar fix (:func:`_legacy_compute_deadline`):
+    such a step was necessarily flagged before that date, and its stored
+    date may be the old calendar's suggestion.
     """
     if protocol_type != "cs_ordinaire" or not step.get("date_confirmed"):
         return False
@@ -972,8 +1014,11 @@ def _date_truly_confirmed(
     deadline = step.get("deadline_date")
     if offset is None or deadline is None or not isinstance(start_date, datetime):
         return bool(deadline)
-    return _date_key(deadline) != _date_key(
-        _compute_deadline(start_date, offset))
+    stored = _date_key(deadline)
+    return stored not in (
+        _date_key(_compute_deadline(start_date, offset)),
+        _date_key(_legacy_compute_deadline(start_date, offset)),
+    )
 
 
 def date_needs_confirmation(protocol: dict, step: dict) -> bool:

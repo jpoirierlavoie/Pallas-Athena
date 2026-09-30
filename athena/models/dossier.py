@@ -711,10 +711,12 @@ def derive_prescription(doc: dict) -> dict:
       time — no storage migration, silencing semantics unchanged.
     - ``interruption_reconnaissance`` / ``renonciation`` → a NEW period of
       the same confirmed duration runs from the event date
-      (``compute_date_pour_agir`` — the house arithmetic, art. 52 forward
+      (``compute_date_pour_agir`` — the house arithmetic, art. 2879 forward
       report included). No confirmed period → effective None, « a_verifier ».
     - ``suspension`` → shifts the current effective deadline by the
-      suspension's length, then forward to the next juridical day.
+      suspension's length, then forward to the next jour ouvrable on the
+      CIVIL calendar (art. 2879 C.c.Q. — never art. 82 C.p.c.'s 26 Dec /
+      2 Jan, which govern procedure, not prescription).
     - Statuses: courante | interrompue | echue | imprescriptible |
       a_verifier. « interrompue » means DECLARED by the lawyer — whether
       the demande was served within 60 days (art. 2892 al. 1) is not
@@ -753,7 +755,9 @@ def derive_prescription(doc: dict) -> dict:
             end = _coerce_event_date(ev.get("end_date"))
             if end and when:
                 shifted = (effective + (end - when)).date()
-                adjusted = next_juridical_day(shifted)
+                adjusted = next_juridical_day(
+                    shifted, regime=deadlines.CIVIL
+                )
                 effective = datetime(
                     adjusted.year, adjusted.month, adjusted.day,
                     tzinfo=timezone.utc,
@@ -764,9 +768,14 @@ def derive_prescription(doc: dict) -> dict:
     # Montréal day + prorogation (2026-08-02) — prescription dates are
     # already prorogued at computation, so this only fixes the clock: the
     # old UTC date flipped « echue » up to five hours before the lawyer's
-    # own midnight.
+    # own midnight. CIVIL calendar, the one the date was computed on: read
+    # back on the procedural one, a prescription acquired at the end of
+    # Friday 26 December 2025 would read « courante » through Monday the
+    # 29th (art. 82 C.p.c. prorogation that prescription does not get).
     status = (
-        "echue" if deadlines.is_past_due(effective) else "courante"
+        "echue"
+        if deadlines.is_past_due(effective, regime=deadlines.CIVIL)
+        else "courante"
     )
     return {"status": status, "date_effective": effective}
 

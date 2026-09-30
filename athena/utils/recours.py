@@ -13,8 +13,11 @@ Two reference tables live here and are meant to be edited in ONE place:
   to a class (Roman numeral). Each band's upper bound is inclusive at the cent.
 
 Note: ``compute_date_pour_agir`` extends a deadline that lands on a
-non-juridical day (weekend or Québec statutory holiday) forward to the next
-juridical day. It is still an indicative computation — verify every deadline.
+Saturday or a jour férié forward to the next jour ouvrable — art. 2879 al. 2
+C.c.Q. — on the CIVIL calendar of ``utils.deadlines``: the jours fériés of
+art. 61(23) L.i., WITHOUT the 26 December / 2 January art. 82 C.p.c. adds
+« en matière de procédure civile ». It is still an indicative computation —
+verify every deadline.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
 
 from utils import taxonomie
-from utils.deadlines import add_jours_ouvrables, next_juridical_day
+from utils.deadlines import CIVIL, add_jours_ouvrables, next_juridical_day
 
 # A period is (amount, unit); the unit drives which calendar arithmetic runs.
 Period = tuple[int, str]
@@ -175,9 +178,11 @@ def compute_date_pour_agir(
 
     Returns ``None`` when the start date is missing or the delay type carries
     no fixed duration (imprescriptible / autre / non définie). When the raw
-    deadline lands on a non-juridical day (weekend or Québec statutory
-    holiday), it is extended forward to the next juridical day. The result is
-    indicative — every limitation deadline must still be verified.
+    deadline lands on a Saturday or a jour férié, it is extended forward to
+    the next jour ouvrable (art. 2879 al. 2 C.c.Q.) — on the CIVIL calendar,
+    so 26 December and 2 January are ordinary days here: art. 82 C.p.c.
+    confines them to civil procedure. The result is indicative — every
+    limitation deadline must still be verified.
     """
     if not droit_action_date:
         return None
@@ -185,7 +190,7 @@ def compute_date_pour_agir(
     if period is None:
         return None
     raw = _add_period(droit_action_date, *period)
-    adjusted = next_juridical_day(raw.date())
+    adjusted = next_juridical_day(raw.date(), regime=CIVIL)
     return datetime(
         adjusted.year, adjusted.month, adjusted.day, tzinfo=timezone.utc
     )
@@ -195,8 +200,9 @@ def compute_date_pour_agir(
 # ``compute_echeances`` dispatches on the taxonomy action's ``delai_types``
 # and NEVER introduces new date arithmetic: every dated échéance goes through
 # ``compute_date_pour_agir`` / ``_add_period`` + ``next_juridical_day`` (the
-# art. 52 Loi d'interprétation forward report), the sole exception being the
-# additive business-day unit routed through ``deadlines.add_jours_ouvrables``.
+# art. 2879 al. 2 C.c.Q. forward report, on the CIVIL calendar), the sole
+# exception being the additive business-day unit routed through
+# ``deadlines.add_jours_ouvrables`` (same calendar).
 
 # Unit used ONLY by AVIS_PERIODS — never a PRESCRIPTION_PERIODS key.
 JOURS_OUVRABLES = "jours_ouvrables"
@@ -249,14 +255,20 @@ def _date_from_period(start: datetime, period: Period) -> datetime:
     Calendar units run through ``_add_period`` + ``next_juridical_day``
     (identical to ``compute_date_pour_agir``'s tail); the business-day unit
     dispatches to ``deadlines.add_jours_ouvrables`` (whose result is juridical
-    by construction). Returns a UTC-midnight datetime.
+    by construction). Both on the CIVIL calendar, like the principale — one
+    calendar per échéancier. Returns a UTC-midnight datetime.
     """
     amount, unit = period
     if unit == JOURS_OUVRABLES:
-        adjusted = add_jours_ouvrables(start.date(), amount)
+        # The one business-day avis (art. 3, Loi sur la presse — text NOT
+        # verified, absent from the corpus) is due BEFORE the action, so
+        # this is the EARLIEST day to sue: CIVIL (26 Dec / 2 Jan count)
+        # gives an earlier — less conservative — day than PROCEDURAL.
+        # The lawyer's call; switching is this one keyword.
+        adjusted = add_jours_ouvrables(start.date(), amount, regime=CIVIL)
     else:
         raw = _add_period(start, amount, unit)
-        adjusted = next_juridical_day(raw.date())
+        adjusted = next_juridical_day(raw.date(), regime=CIVIL)
     return datetime(adjusted.year, adjusted.month, adjusted.day, tzinfo=timezone.utc)
 
 
@@ -337,7 +349,7 @@ def compute_echeances(
 
     if date_depart and prescription_period(prescription_type):
         # The lawyer's confirmed period is authoritative — identical call,
-        # identical arithmetic, art. 52 report included.
+        # identical arithmetic, art. 2879 C.c.Q. report included.
         d = compute_date_pour_agir(date_depart, prescription_type)
         out.append(Echeance(
             "principale", d, niveau_qualite or "normal", "Date pour agir",

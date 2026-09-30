@@ -1801,16 +1801,21 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "computed — verify at the source."),
             "days_remaining": _nint(),
             "last_action_date": _nstr(
-                "Last juridical day ON OR BEFORE the prescription date — "
-                "the real last day to act. INCLUSIVE: when the deadline "
-                "already falls on a juridical day this EQUALS "
-                "prescription_date (see last_action_differs); it is NOT "
-                "the date an action was taken."
+                "Last juridical day of CIVIL PROCEDURE (art. 82-83 C.p.c.) "
+                "ON OR BEFORE the prescription date — Athena's last day to "
+                "file the demande. INCLUSIVE: when the deadline already "
+                "falls on a juridical day this EQUALS prescription_date "
+                "(see last_action_differs); it is NOT the date an action "
+                "was taken."
             ),
             "last_action_differs": _bool(
                 "True only when a weekend/holiday pulls the last action "
                 "day EARLIER than the prescription date — the only case "
-                "worth surfacing to the reader."
+                "worth surfacing to the reader. Includes a prescription "
+                "ending on 26 December or 2 January: Athena computes "
+                "prescription on the art. 61 L.i. calendar (art. 2879 "
+                "C.c.Q.), without the two days art. 82 C.p.c. adds for "
+                "procedure."
             ),
             "droit_action_date": _nstr(
                 "YYYY-MM-DD — start of the prescription period (the "

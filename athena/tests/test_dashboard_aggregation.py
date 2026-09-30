@@ -680,6 +680,37 @@ def test_prescription_alerts_cutoff_clamp_and_juridical_dates(monkeypatch):
     assert by_id["d1"]["_last_action_differs"] is True
 
 
+def test_prescription_alert_on_26_december_uses_both_calendars(monkeypatch):
+    """Countdown on the CIVIL calendar (art. 2879 C.c.Q.: Fri 2025-12-26 is
+    a jour ouvrable → 4 days from Mon the 22nd, not 7); last day to file on
+    the PROCEDURAL one (art. 82 C.p.c.: the courts do not sit on the 26th →
+    Wed the 24th, shown because it differs). Same rule as the MCP row."""
+    now = datetime(2025, 12, 22, 17, 0, tzinfo=UTC)          # noon Montréal
+    d = {"id": "d1", "prescription_date": datetime(2025, 12, 26, tzinfo=UTC)}
+    monkeypatch.setattr(
+        dossier_model, "list_prescription_alerts",
+        lambda cutoff, limit=50: [d],
+    )
+    [alert] = dashboard._get_prescription_alerts(now)
+    assert alert["_days_remaining"] == 4
+    assert alert["_last_action_date"] == date(2025, 12, 24)
+    assert alert["_last_action_differs"] is True
+
+
+def test_last_action_label_names_the_filing_day_not_a_jour_ouvrable():
+    """The label says what the value now means. ``_last_action_date`` is the
+    PROCEDURAL last day to FILE the demande; Fri 26 Dec 2025 IS a jour
+    ouvrable for prescription (art. 2879 C.c.Q.), so « Dernier jour
+    ouvrable : 24 déc. » beside a countdown to the 26th contradicted
+    itself."""
+    import pathlib
+    src = (pathlib.Path(dashboard.__file__).resolve().parent.parent
+           / "templates" / "dashboard" / "index.html").read_text(
+               encoding="utf-8")
+    assert "Dernier jour pour déposer la demande" in src
+    assert "Dernier jour ouvrable" not in src
+
+
 # ── routes.dashboard._get_hearings_in_range ───────────────────────────────
 
 

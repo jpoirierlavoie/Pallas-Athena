@@ -931,6 +931,39 @@ def test_get_agenda_prescription_alert_last_action_semantics(monkeypatch):
     assert on_weekend["droit_action_date"] is None
 
 
+def test_get_agenda_prescription_ending_on_26_december(monkeypatch):
+    """Two calendars in one row (2026-09-30). A prescription ending Fri
+    2025-12-26 runs on the CIVIL calendar (art. 2879 C.c.Q. — 26 December
+    is a jour ouvrable), so the countdown is 4 days from Monday the 22nd,
+    not 7 (the procedural reading would prorogue it to Mon the 29th). But
+    the last day to FILE is procedural (art. 82 C.p.c. — the courts do not
+    sit on the 26th): Wednesday the 24th, and last_action_differs is True."""
+    alerts = [{"id": "d1", "file_number": "2025-050", "title": "A c. B",
+               "prescription_date": datetime(2025, 12, 26, tzinfo=UTC),
+               "prescription_notes": ""}]
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
+                        lambda a, b, limit=100: [])
+    monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.protocol_model, "list_urgent_steps",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.dossier_model, "list_prescription_alerts",
+                        lambda cutoff, limit=50: alerts)
+    monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 0)
+    monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
+                        lambda: {"hours": 0.0, "amount": 0})
+    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 0})
+    _freeze_mtl_today(monkeypatch, date(2025, 12, 22))      # a Monday
+
+    row = handlers.get_agenda({})["prescription_alerts"][0]
+    assert row["prescription_date"] == "2025-12-26"
+    assert row["days_remaining"] == 4
+    assert row["last_action_date"] == "2025-12-24"
+    assert row["last_action_differs"] is True
+
+
 # ── list_dossiers / get_dossier ─────────────────────────────────────────
 
 def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):
@@ -1921,6 +1954,78 @@ def test_compute_judicial_deadline_holiday_extension():
     assert payload["raw_date"] == "2027-06-24"
     assert payload["deadline"] == "2027-06-25"
     assert "holiday" in payload["adjustment_reason"]
+
+
+def test_compute_judicial_deadline_extends_past_26_december(monkeypatch):
+    """Art. 82 C.p.c.: 26 December is a holiday in civil procedure EVERY
+    year. 2025-12-24 + 2 = Fri 2025-12-26 → Mon 2025-12-29, and the reason
+    names art. 82 (it is neither a weekend nor an art. 61 L.i. holiday)."""
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2025-12-24", "delay_days": 2, "direction": "after"}
+    )
+    assert payload["raw_date"] == "2025-12-26"
+    assert payload["deadline"] == "2025-12-29"
+    assert payload["was_adjusted"] is True
+    assert "art. 82 C.p.c." in payload["adjustment_reason"]
+
+
+def test_compute_judicial_deadline_names_an_art_82_day_skipped_on_the_way():
+    """The raw date is Christmas, and the extension then ALSO jumps Fri 26
+    December (art. 82 C.p.c.). The reason must say so: naming only the 25th
+    leaves a Friday skipped without a cause, and a reader « corrects » the
+    date back to the 26th — a day no court sits."""
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2025-12-24", "delay_days": 1, "direction": "after"}
+    )
+    assert payload["raw_date"] == "2025-12-25"
+    assert payload["deadline"] == "2025-12-29"
+    reason = payload["adjustment_reason"]
+    assert reason.startswith("2025-12-25 is a Québec statutory holiday")
+    assert "2025-12-26 also skipped" in reason
+    assert "art. 82 C.p.c." in reason
+
+    # Same on New Year's Day → Fri 2 Jan 2026 skipped too.
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2025-12-31", "delay_days": 1, "direction": "after"}
+    )
+    assert payload["deadline"] == "2026-01-05"
+    assert "2026-01-02 also skipped" in payload["adjustment_reason"]
+
+    # Backward: Sat 27 Dec 2025 → Wed 24 Dec, passing Fri 26 and Thu 25.
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2026-01-06", "delay_days": 10, "direction": "before"}
+    )
+    assert payload["raw_date"] == "2025-12-27"
+    assert payload["deadline"] == "2025-12-24"
+    assert "2025-12-26 also skipped" in payload["adjustment_reason"]
+
+
+def test_compute_judicial_deadline_says_nothing_of_art_82_when_not_crossed():
+    """A plain weekend extension (no art. 82 day on the way) keeps its
+    one-clause reason — the note is not boilerplate."""
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2025-03-01", "delay_days": 15, "direction": "after"}
+    )
+    assert payload["deadline"] == "2025-03-17"
+    assert "art. 82" not in payload["adjustment_reason"]
+    # A 26 Dec that is a Saturday (2026) is skipped as a weekend anyway.
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2026-12-24", "delay_days": 1, "direction": "after"}
+    )
+    assert payload["raw_date"] == "2026-12-25"
+    assert payload["deadline"] == "2026-12-28"
+    assert "also skipped" not in payload["adjustment_reason"]
+
+
+def test_compute_judicial_deadline_june_25_is_juridical():
+    """June 24, 2029 is a Sunday; art. 61(23) e) L.i. names no substitute,
+    so Monday the 25th is a juridical day — no adjustment."""
+    payload = handlers.compute_judicial_deadline(
+        {"start_date": "2029-06-22", "delay_days": 3, "direction": "after"}
+    )
+    assert payload["deadline"] == "2029-06-25"
+    assert payload["was_adjusted"] is False
+    assert payload["adjustment_reason"] is None
 
 
 def test_compute_judicial_deadline_backward_direction():

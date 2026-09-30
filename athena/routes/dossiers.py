@@ -352,7 +352,8 @@ def _attach_prescription_warnings(dossiers: list[dict]) -> None:
         else:
             # Montréal-day countdown (utils.deadlines) — the wall-clock UTC
             # delta turned the dot red an evening early (2026-08-02 fix).
-            delta = deadlines.days_until(pd)
+            # CIVIL calendar: a prescription date (art. 2879 C.c.Q.).
+            delta = deadlines.days_until(pd, regime=deadlines.CIVIL)
             if delta <= 30:
                 d["_prescription_warning"] = "red"
             elif delta <= 60:

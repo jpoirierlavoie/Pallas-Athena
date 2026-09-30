@@ -29,7 +29,7 @@ import logging
 import os
 import pathlib
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest import mock
 
 import pytest
@@ -840,6 +840,77 @@ def test_a_legacy_spurious_confirmation_can_be_confirmed_for_real(fake):
     doc, _ = protocol_model.update_protocol(P, {"start_date": START2})
     assert doc["_recompute"]["preserved"] == [
         {"step_id": "s1", "reason": "confirmed"}]
+
+
+def _legacy_cs_step(start: datetime, offset: int, stored: datetime) -> dict:
+    """A CS step flagged ``date_confirmed`` before ``date_confirmed_at``
+    existed (a notes-only save of lot 1a's era), stored at ``stored``."""
+    return {**protocol_model._default_step(), "deadline_offset_days": offset,
+            "deadline_date": stored, "date_confirmed": True}
+
+
+@pytest.mark.parametrize("start, offset, old, new", [
+    # Thu 11 Dec 2025 + 15 = Fri 26 Dec: juridical for the old calendar,
+    # a holiday in procedure every year since (art. 82 C.p.c.) → Mon 29.
+    ((2025, 12, 11), 15, (2025, 12, 26), (2025, 12, 29)),
+    # Thu 18 Dec 2025 + 15 = Fri 2 Jan 2026 → Mon 5 Jan.
+    ((2025, 12, 18), 15, (2026, 1, 2), (2026, 1, 5)),
+    # Sat 9 Jun 2029 + 15 = Sun 24 Jun: the old calendar invented a Monday
+    # 25 June holiday → Tue 26; art. 61(23) e) L.i. names none → Mon 25.
+    ((2029, 6, 9), 15, (2029, 6, 26), (2029, 6, 25)),
+])
+def test_a_legacy_flag_on_the_old_calendars_suggestion_is_still_a_suggestion(
+        start, offset, old, new):
+    """Revue du 2026-09-30. The legacy branch recognises a suggestion by
+    comparing the stored date with a recomputation. The calendar fix moved
+    the recomputation, so a date the OLD calendar suggested read
+    « confirmed » on that evidence alone — badge gone, MCP
+    ``date_is_suggestion`` false, and PRESERVED by a start-date change.
+    Either computation now counts as « what the template suggested »."""
+    start_dt = datetime(*start, tzinfo=UTC)
+    old_dt, new_dt = datetime(*old, tzinfo=UTC), datetime(*new, tzinfo=UTC)
+    assert protocol_model._legacy_compute_deadline(start_dt, offset) == old_dt
+    assert protocol_model._compute_deadline(start_dt, offset) == new_dt
+    proto = {"protocol_type": "cs_ordinaire", "start_date": start_dt}
+    for stored in (old_dt, new_dt):
+        step = _legacy_cs_step(start_dt, offset, stored)
+        assert protocol_model.date_needs_confirmation(proto, step), stored
+        assert not protocol_model._date_truly_confirmed(
+            "cs_ordinaire", start_dt, step)
+    # A date moved by hand — neither calendar's — stays confirmed.
+    hand = _legacy_cs_step(start_dt, offset, datetime(2030, 3, 4, tzinfo=UTC))
+    assert not protocol_model.date_needs_confirmation(proto, hand)
+    # A stamped confirmation is never second-guessed, whatever the date.
+    stamped = {**_legacy_cs_step(start_dt, offset, old_dt),
+               "date_confirmed_at": start_dt}
+    assert not protocol_model.date_needs_confirmation(proto, stamped)
+
+
+def test_a_legacy_old_calendar_suggestion_follows_a_start_date_change(fake):
+    """The same step MOVES with the start date, as it did before the fix."""
+    _protocol(fake, ptype="cs_ordinaire")
+    fake.seed(f"protocols/{P}", {**fake.peek(f"protocols/{P}"),
+                                 "start_date": datetime(2025, 12, 11,
+                                                        tzinfo=UTC)})
+    _cs_step(fake, "s1", 1, 15, date_confirmed=True,
+             deadline_date=datetime(2025, 12, 26, tzinfo=UTC))
+    doc, errors = protocol_model.update_protocol(P, {"start_date": START2})
+    assert errors == []
+    assert [m["step_id"] for m in doc["_recompute"]["moved"]] == ["s1"]
+
+
+@pytest.mark.parametrize("day, juridical", [
+    ((2025, 12, 26), True),     # Fri, Christmas Thu — no substitute then
+    ((2022, 12, 26), False),    # Mon after a Sunday Christmas
+    ((2023, 1, 2), False),      # Mon after a Sunday 1 January
+    ((2018, 6, 25), False),     # Mon after a Sunday 24 June
+    ((2018, 7, 2), False),      # Mon after a Sunday 1 July (kept since)
+    ((2026, 1, 2), True),       # Fri — the old calendar missed art. 82
+])
+def test_the_legacy_calendar_is_the_retired_rule(day, juridical):
+    """``_legacy_is_juridical_day`` reproduces the pre-2026-09-30 rule —
+    and nothing else — so the comparison above means what it says."""
+    assert protocol_model._legacy_is_juridical_day(date(*day)) is juridical
 
 
 def test_a_moved_cs_date_is_a_suggestion_again(fake):

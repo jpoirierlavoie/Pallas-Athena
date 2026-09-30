@@ -1704,9 +1704,13 @@ TOOLS: dict[str, dict] = {
             "that same Montréal day, so window.from and is_overdue can never "
             "disagree. In "
             "prescription alerts, last_action_date is the last juridical day "
-            "ON OR BEFORE the deadline (inclusive — it equals "
-            "prescription_date on a business-day deadline; check "
-            "last_action_differs), never the date an action was taken."
+            "of CIVIL PROCEDURE ON OR BEFORE the deadline — the last day a "
+            "demande can be filed (inclusive — it equals prescription_date "
+            "on a business-day deadline; check last_action_differs, which "
+            "is also true when the prescription ends on 26 December or 2 "
+            "January: Athena computes prescription on the art. 61 L.i. "
+            "calendar, without the two days art. 82 C.p.c. adds for "
+            "procedure), never the date an action was taken."
         ),
         "input_schema": {
             "type": "object",
@@ -2796,9 +2800,13 @@ TOOLS: dict[str, dict] = {
         "description": (
             "Compute a Quebec judicial deadline under art. 83 C.p.c.: all "
             "calendar days count; when the raw deadline lands on a "
-            "non-juridical day (weekend or Quebec statutory holiday) it is "
-            "extended in the direction of computation — 'after' pushes later, "
-            "'before' pushes earlier — to the nearest juridical day."
+            "non-juridical day (weekend, Quebec statutory holiday, or 26 "
+            "December / 2 January — holidays in civil procedure every year, "
+            "art. 82 C.p.c.) it is extended in the direction of computation "
+            "— 'after' pushes later, 'before' pushes earlier — to the "
+            "nearest juridical day. Civil procedure only: Athena computes a "
+            "PRESCRIPTION date (art. 2879 C.c.Q.) on the art. 61 L.i. "
+            "calendar, without those two days."
         ),
         "input_schema": {
             "type": "object",

@@ -6,14 +6,21 @@ import os
 # Ensure athena/ is on the path when running from the project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
+
 from utils.deadlines import (
+    CIVIL,
+    PROCEDURAL,
     add_jours_ouvrables,
     compute_deadline,
     days_until,
     effective_due,
+    is_art_82_day,
     is_juridical_day,
     is_past_due,
+    last_action_day,
     next_juridical_day,
     prev_juridical_day,
     get_quebec_holidays,
@@ -67,47 +74,70 @@ def test_thanksgiving_2025():
 
 
 def test_christmas_on_sunday():
-    """When Dec 25 is Sunday (2022), Dec 26 (Monday) is also observed."""
-    # Dec 25, 2022 = Sunday
+    """Dec 25, 2022 = Sunday. Dec 26 (Monday) is a holiday in civil
+    procedure — but because art. 82 C.p.c. makes it one EVERY year, not as
+    an « observed » Christmas: art. 61(23) h) L.i. names no substitute, so
+    for the civil calendar (prescription) Monday Dec 26, 2022 is an
+    ordinary jour ouvrable. (Rewritten 2026-09-30: the old test pinned a
+    Sunday→Monday observance no text provides.)"""
     assert date(2022, 12, 25).weekday() == 6  # confirm Sunday
-    holidays = get_quebec_holidays(2022)
-    assert date(2022, 12, 25) in holidays
-    assert date(2022, 12, 26) in holidays
+    assert date(2022, 12, 25) in get_quebec_holidays(2022)
+    assert date(2022, 12, 26) in get_quebec_holidays(2022, regime=PROCEDURAL)
+    assert date(2022, 12, 26) not in get_quebec_holidays(2022, regime=CIVIL)
+    assert is_juridical_day(date(2022, 12, 26), regime=CIVIL) is True
 
 
 def test_new_years_on_sunday():
-    """When Jan 1 is Sunday (2023), Jan 2 (Monday) is also observed."""
-    # Jan 1, 2023 = Sunday
+    """Jan 1, 2023 = Sunday. Same reasoning as Christmas: Jan 2 is a
+    procedural holiday every year (art. 82 C.p.c.), and no substitute day
+    exists for 1 January in art. 61(23) b) L.i. — civil Jan 2, 2023 is a
+    jour ouvrable."""
     assert date(2023, 1, 1).weekday() == 6  # confirm Sunday
-    holidays = get_quebec_holidays(2023)
-    assert date(2023, 1, 1) in holidays
-    assert date(2023, 1, 2) in holidays
+    assert date(2023, 1, 1) in get_quebec_holidays(2023)
+    assert date(2023, 1, 2) in get_quebec_holidays(2023, regime=PROCEDURAL)
+    assert date(2023, 1, 2) not in get_quebec_holidays(2023, regime=CIVIL)
+    assert is_juridical_day(date(2023, 1, 2), regime=CIVIL) is True
 
 
-def test_fete_nationale_on_sunday():
-    """When June 24 falls on Sunday, June 25 (Monday) is also observed."""
-    # Find a year where June 24 is Sunday
-    # June 24, 2018 = Sunday
+def test_fete_nationale_on_sunday_has_no_substitute():
+    """June 24, 2018 = Sunday. THE RULE REVERSED (2026-09-30): the old test
+    pinned June 25 as « observed ». Art. 61(23) e) L.i. lists « le 24 juin,
+    jour de la fête nationale » with NO substitute — unlike f), which gives
+    1 July its « ou le 2 juillet si le 1er tombe un dimanche ». So Monday
+    June 25 is a juridical day on BOTH calendars."""
     assert date(2018, 6, 24).weekday() == 6  # confirm Sunday
-    holidays = get_quebec_holidays(2018)
-    assert date(2018, 6, 24) in holidays
-    assert date(2018, 6, 25) in holidays
+    for regime in (PROCEDURAL, CIVIL):
+        holidays = get_quebec_holidays(2018, regime=regime)
+        assert date(2018, 6, 24) in holidays
+        assert date(2018, 6, 25) not in holidays
+        assert is_juridical_day(date(2018, 6, 25), regime=regime) is True
 
 
 def test_canada_day_on_sunday():
-    """When July 1 falls on Sunday, July 2 (Monday) is also observed."""
+    """When July 1 falls on Sunday, July 2 (Monday) is the holiday — art.
+    61(23) f) L.i., the ONE substitute day the article provides. Both
+    calendars."""
     # July 1, 2018 = Sunday
     assert date(2018, 7, 1).weekday() == 6  # confirm Sunday
-    holidays = get_quebec_holidays(2018)
-    assert date(2018, 7, 1) in holidays
-    assert date(2018, 7, 2) in holidays
+    for regime in (PROCEDURAL, CIVIL):
+        holidays = get_quebec_holidays(2018, regime=regime)
+        assert date(2018, 7, 1) in holidays
+        assert date(2018, 7, 2) in holidays
+        assert is_juridical_day(date(2018, 7, 2), regime=regime) is False
 
 
 def test_all_holidays_2025_count():
-    """2025 has exactly 9 standard holidays (no Sunday-observation extras)."""
-    holidays = get_quebec_holidays(2025)
-    # No fixed holiday falls on Sunday in 2025, so exactly 9
-    assert len(holidays) == 9
+    """2025: the nine dated jours fériés of art. 61(23) L.i. on the civil
+    calendar; eleven in procedure, art. 82 C.p.c. adding Thu Jan 2 and Fri
+    Dec 26. (Was « exactly 9 » for the single old calendar.)"""
+    assert len(get_quebec_holidays(2025, regime=CIVIL)) == 9
+    procedural = get_quebec_holidays(2025, regime=PROCEDURAL)
+    assert len(procedural) == 11
+    assert set(procedural) - set(get_quebec_holidays(2025, regime=CIVIL)) == {
+        date(2025, 1, 2), date(2025, 12, 26),
+    }
+    # The default is the procedural calendar.
+    assert get_quebec_holidays(2025) == procedural
 
 
 # ── is_juridical_day ─────────────────────────────────────────────────────
@@ -217,10 +247,13 @@ def test_forward_lands_on_holiday_before_weekend():
 
 
 def test_zero_delay_on_holiday():
-    """0-day delay on a holiday returns next juridical day."""
-    # Jan 1 (holiday) → Jan 2 (Thursday, juridical)
+    """0-day delay on a holiday returns next juridical day.
+
+    Jan 1, 2025 (holiday) → Thu Jan 2 is ALSO a holiday in civil procedure
+    (art. 82 C.p.c.) → Fri Jan 3. The old expectation (Jan 2) was the
+    defect: art. 82 applies every year, not only when Jan 1 is a Sunday."""
     result = compute_deadline(date(2025, 1, 1), 0, "after")
-    assert result == date(2025, 1, 2)
+    assert result == date(2025, 1, 3)
 
 
 def test_zero_delay_on_weekday():
@@ -490,6 +523,10 @@ COMPUTE_DEADLINE_GOLDEN = [
     ((2026, 4, 7), 1, "before", (2026, 4, 2)),
     ((2026, 4, 2), 2, "after", (2026, 4, 7)),
     # Year-end cluster: Christmas Fri Dec 25, New Year Fri Jan 1 2027.
+    # These three rows CROSS 26 Dec 2026 and 2 Jan 2027 — art. 82 C.p.c.
+    # days (2026-09-30) — but both are Saturdays that year, so every
+    # expected value is unchanged. The weekday cases live in
+    # ART_82_PROCEDURAL_GOLDEN below.
     ((2026, 12, 24), 1, "after", (2026, 12, 28)),
     ((2026, 12, 28), 2, "before", (2026, 12, 24)),
     ((2026, 12, 31), 1, "after", (2027, 1, 4)),
@@ -517,6 +554,186 @@ def test_compute_deadline_frozen_reference_table():
             f"compute_deadline({start}, {delay}, {direction!r}) "
             f"= {got}, expected {date(*expected)}"
         )
+
+
+# ── Art. 82 C.p.c. and the two calendars (2026-09-30) ────────────────────
+#
+# Art. 82 C.p.c.: « Les tribunaux ne siègent pas les samedis et les jours
+# fériés au sens de l'article 61 de la Loi d'interprétation (chapitre I-16),
+# non plus que les 26 décembre et 2 janvier qui sont, en matière de
+# procédure civile, considérés jours fériés. » EVERY year, and only « en
+# matière de procédure civile ». Art. 2879 al. 2 C.c.Q. (prescription):
+# « Lorsque le dernier jour est un samedi ou un jour férié, la prescription
+# n'est acquise qu'au premier jour ouvrable qui suit » — jour férié in the
+# sense of art. 61(23) L.i., which names neither 26 December nor 2 January.
+
+
+def test_art_82_days_are_procedural_holidays_every_year_on_every_weekday():
+    """26 Dec and 2 Jan are non-juridical in procedure in EVERY year — the
+    range is chosen so each date lands on all seven weekdays at least once,
+    which is exactly what the old « only when the holiday is a Sunday »
+    rule got wrong four years out of seven (a Tuesday-to-Friday date). On the civil calendar they are
+    ordinary days: juridical exactly when they are a weekday."""
+    seen = {(12, 26): set(), (1, 2): set()}
+    for year in range(2020, 2034):
+        for month, day in seen:
+            d = date(year, month, day)
+            seen[(month, day)].add(d.weekday())
+            assert is_art_82_day(d)
+            assert is_juridical_day(d, regime=PROCEDURAL) is False, d
+            assert is_juridical_day(d) is False, d   # the default
+            assert d in get_quebec_holidays(year, regime=PROCEDURAL), d
+            assert d not in get_quebec_holidays(year, regime=CIVIL), d
+            assert is_juridical_day(d, regime=CIVIL) is (d.weekday() < 5), d
+    assert seen[(12, 26)] == set(range(7))
+    assert seen[(1, 2)] == set(range(7))
+
+
+def test_is_art_82_day_is_exactly_the_two_dates():
+    assert is_art_82_day(date(2025, 12, 26))
+    assert is_art_82_day(date(2026, 1, 2))
+    assert not is_art_82_day(date(2025, 12, 25))
+    assert not is_art_82_day(date(2025, 12, 27))
+    assert not is_art_82_day(date(2026, 1, 1))
+    assert not is_art_82_day(date(2026, 1, 3))
+
+
+def test_june_25_is_juridical_when_june_24_is_a_sunday():
+    """2029: June 24 is a Sunday again. Monday June 25 is a working court
+    day in procedure AND a jour ouvrable for prescription — art. 61(23) e)
+    L.i. gives the Fête nationale no substitute."""
+    assert date(2029, 6, 24).weekday() == 6  # guard
+    for regime in (PROCEDURAL, CIVIL):
+        assert is_juridical_day(date(2029, 6, 25), regime=regime) is True
+        assert next_juridical_day(date(2029, 6, 24), regime=regime) == date(
+            2029, 6, 25
+        )
+
+
+def test_both_calendars_agree_everywhere_but_the_art_82_days():
+    """The two calendars differ ONLY on 26 Dec and 2 Jan — every other day
+    of a decade is judged identically (weekends, L.i. holidays, the July 2
+    substitute). A second divergence would be a bug in one of them."""
+    d = date(2020, 1, 1)
+    while d < date(2031, 1, 1):
+        if not is_art_82_day(d):
+            assert is_juridical_day(d, regime=PROCEDURAL) == is_juridical_day(
+                d, regime=CIVIL
+            ), d
+        d += timedelta(days=1)
+
+
+def test_unknown_regime_is_refused_loudly():
+    """A typo must never fall back silently to one of the two calendars."""
+    with pytest.raises(ValueError):
+        is_juridical_day(date(2025, 12, 26), regime="prescription")
+    with pytest.raises(ValueError):
+        is_juridical_day(date(2025, 12, 27), regime="procedure")  # a Saturday
+    with pytest.raises(ValueError):
+        get_quebec_holidays(2025, regime="")
+    # Also on the paths that return early without consulting a calendar:
+    # a typo must fail on every call, not only on those that count a day.
+    with pytest.raises(ValueError):
+        add_jours_ouvrables(date(2025, 12, 23), 0, regime="civile")
+    with pytest.raises(ValueError):
+        effective_due(None, regime="civile")
+    with pytest.raises(ValueError):
+        is_past_due(None, today=date(2025, 12, 23), regime="civile")
+    with pytest.raises(ValueError):
+        days_until(None, today=date(2025, 12, 23), regime="civile")
+
+
+# Hand-computed from the texts, weekday by weekday (art. 83 C.p.c.: forward
+# lands move forward, backward lands move backward; art. 82 C.p.c. for the
+# year-end days). Kept APART from the frozen table above, whose values
+# stay unchanged: it crosses 26 Dec 2026 / 2 Jan 2027 only on Saturdays.
+#   2025-12: Wed 24 · Thu 25 (Noël) · Fri 26 (art. 82) · Sat 27 · Sun 28 · Mon 29
+#   2026-01: Wed Dec 31 · Thu 1 (Jour de l'An) · Fri 2 (art. 82) · Sat 3 · Sun 4 · Mon 5
+#   2029-01: Mon 1 · Tue 2 (art. 82) · Wed 3
+#   2029-12: Mon 24 · Tue 25 (Noël) · Wed 26 (art. 82) · Thu 27
+#   2029-06: Sun 24 (Fête nationale) · Mon 25 (juridical — no substitute)
+#   2018-06: Sun 24 · Mon 25 (juridical)
+#   2023-01: Sun 1 · Mon 2 (art. 82) · Tue 3
+ART_82_PROCEDURAL_GOLDEN = [
+    ((2025, 12, 24), 2, "after", (2025, 12, 29)),    # Fri 26 → Mon 29
+    ((2025, 12, 11), 15, "after", (2025, 12, 29)),   # Fri 26 → Mon 29
+    ((2025, 12, 29), 3, "before", (2025, 12, 24)),   # Fri 26 → back over Noël
+    ((2025, 12, 31), 2, "after", (2026, 1, 5)),      # Fri Jan 2 → Mon 5
+    ((2026, 1, 5), 3, "before", (2025, 12, 31)),     # Fri Jan 2 → back over Jan 1
+    ((2028, 12, 19), 14, "after", (2029, 1, 3)),     # Tue Jan 2 → Wed 3
+    ((2029, 12, 16), 10, "after", (2029, 12, 27)),   # Wed Dec 26 → Thu 27
+    ((2029, 12, 28), 2, "before", (2029, 12, 24)),   # Wed 26, Tue 25 → Mon 24
+    ((2029, 6, 22), 3, "after", (2029, 6, 25)),      # Mon Jun 25 juridical
+    ((2029, 6, 20), 4, "after", (2029, 6, 25)),      # Sun 24 → Mon 25
+    ((2018, 6, 15), 10, "after", (2018, 6, 25)),     # Mon Jun 25 juridical
+    ((2022, 12, 30), 3, "after", (2023, 1, 3)),      # Mon Jan 2 (art. 82) → Tue 3
+]
+
+
+def test_compute_deadline_art_82_reference_table():
+    for start, delay, direction, expected in ART_82_PROCEDURAL_GOLDEN:
+        got = compute_deadline(date(*start), delay, direction)
+        assert got == date(*expected), (
+            f"compute_deadline({start}, {delay}, {direction!r}) "
+            f"= {got}, expected {date(*expected)}"
+        )
+
+
+def test_civil_calendar_reports_prescription_to_the_next_jour_ouvrable():
+    """Art. 2879 al. 2 C.c.Q.: only a Saturday or a jour férié (art. 61(23)
+    L.i.) moves the last day. 26 Dec / 2 Jan are jours ouvrables for it."""
+    # Fri Dec 26, 2025: a jour ouvrable for prescription → itself.
+    assert next_juridical_day(date(2025, 12, 26), regime=CIVIL) == date(2025, 12, 26)
+    # Thu Dec 25 → Fri Dec 26 (civil), Mon Dec 29 (procedure).
+    assert next_juridical_day(date(2025, 12, 25), regime=CIVIL) == date(2025, 12, 26)
+    assert next_juridical_day(date(2025, 12, 25), regime=PROCEDURAL) == date(2025, 12, 29)
+    # Thu Jan 1, 2026 → Fri Jan 2 (civil), Mon Jan 5 (procedure).
+    assert next_juridical_day(date(2026, 1, 1), regime=CIVIL) == date(2026, 1, 2)
+    assert next_juridical_day(date(2026, 1, 1), regime=PROCEDURAL) == date(2026, 1, 5)
+    # Mon Dec 26, 2033 after a Sunday Christmas, Mon Jan 2, 2034 after a
+    # Sunday New Year: no substitute day → ouvrables (the old code moved both
+    # to the Tuesday, one day LATER than the law).
+    assert date(2033, 12, 25).weekday() == 6 and date(2034, 1, 1).weekday() == 6
+    assert is_juridical_day(date(2033, 12, 26), regime=CIVIL) is True
+    assert is_juridical_day(date(2034, 1, 2), regime=CIVIL) is True
+
+
+def test_business_days_follow_the_calendar_they_are_given():
+    """Tue Dec 23, 2025 + 3 jours ouvrables. Civil (the presse avis):
+    Wed 24 (1), [Thu 25 Noël], Fri 26 (2), [Sat, Sun], Mon 29 (3).
+    Procedural: Wed 24 (1), [Thu 25, Fri 26 art. 82, Sat, Sun], Mon 29 (2),
+    Tue 30 (3)."""
+    assert add_jours_ouvrables(date(2025, 12, 23), 3, regime=CIVIL) == date(2025, 12, 29)
+    assert add_jours_ouvrables(date(2025, 12, 23), 3, regime=PROCEDURAL) == date(2025, 12, 30)
+
+
+def test_lateness_follows_the_calendar_of_the_deadline():
+    """A task due Fri Dec 26, 2025 (procedural) is actionable until Mon 29
+    and late Tue 30. A PRESCRIPTION ending Fri Dec 26 is acquired at the end
+    of that day (art. 2879 — a jour ouvrable): échue on Sat 27 already."""
+    due = date(2025, 12, 26)
+    assert effective_due(due) == date(2025, 12, 29)
+    assert is_past_due(due, today=date(2025, 12, 29)) is False
+    assert is_past_due(due, today=date(2025, 12, 30)) is True
+    assert days_until(due, today=date(2025, 12, 24)) == 5
+
+    assert effective_due(due, regime=CIVIL) == due
+    assert is_past_due(due, today=date(2025, 12, 26), regime=CIVIL) is False
+    assert is_past_due(due, today=date(2025, 12, 27), regime=CIVIL) is True
+    assert days_until(due, today=date(2025, 12, 24), regime=CIVIL) == 2
+
+
+def test_last_action_day_is_the_last_day_the_greffe_can_receive_a_filing():
+    """last_action_day is PROCEDURAL on purpose: a prescription running out
+    on Fri Dec 26, 2025 (a jour ouvrable under art. 2879) cannot be
+    interrupted by a dépôt that day — the courts do not sit (art. 82 C.p.c.)
+    — so the last day to FILE is Wed Dec 24, and it differs."""
+    assert last_action_day(date(2025, 12, 26)) == (date(2025, 12, 24), True)
+    assert last_action_day(date(2026, 1, 2)) == (date(2025, 12, 31), True)
+    # A plain juridical day stays itself (inclusive).
+    assert last_action_day(date(2026, 6, 17)) == (date(2026, 6, 17), False)
+    # Mon June 25, 2029 is juridical — no pull-back any more.
+    assert last_action_day(date(2029, 6, 25)) == (date(2029, 6, 25), False)
 
 
 class _FrozenDatetime(datetime):
@@ -549,3 +766,72 @@ def test_bande_du_soir_une_tache_due_demain_n_est_pas_en_retard(monkeypatch):
     due_monday = _FrozenDatetime(2026, 8, 3, tzinfo=timezone.utc)
     assert dl.is_past_due(due_monday) is False
     assert dl.days_until(due_monday) == 1  # « Demain », jamais « -1j »
+
+
+# ── Calendar sweep: every PRESCRIPTION site names CIVIL (revue 2026-09-30) ──
+#
+# Every helper defaults to PROCEDURAL, so a prescription-side call that
+# forgets ``regime=`` silently prorogues past a weekday 26 Dec / 2 Jan — a
+# LATER prescription date, the unsafe direction. Prose cannot guard that; a
+# sweep over the source can. ``last_action_day`` is deliberately absent from
+# the helper list: it is procedural BY DESIGN (the last day to FILE).
+
+import ast
+import pathlib
+
+_ATHENA = pathlib.Path(__file__).resolve().parent.parent
+
+_CALENDAR_HELPERS = frozenset({
+    "is_juridical_day", "next_juridical_day", "prev_juridical_day",
+    "add_jours_ouvrables", "effective_due", "is_past_due", "days_until",
+    "get_quebec_holidays",
+})
+
+# (file, function) — None = the whole module.
+_PRESCRIPTION_SITES = (
+    ("utils/recours.py", None),
+    ("models/dossier.py", "derive_prescription"),
+    ("routes/dossiers.py", "_attach_prescription_warnings"),
+    ("routes/dashboard.py", "_get_prescription_alerts"),
+    ("mcp/handlers.py", "_prescription_row"),
+)
+
+
+def _calendar_calls(node: ast.AST) -> list[tuple[str, ast.Call]]:
+    calls = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            func = sub.func
+            name = (func.attr if isinstance(func, ast.Attribute)
+                    else getattr(func, "id", None))
+            if name in _CALENDAR_HELPERS:
+                calls.append((name, sub))
+    return calls
+
+
+def _regime_name(call: ast.Call) -> str | None:
+    for kw in call.keywords:
+        if kw.arg == "regime":
+            value = kw.value
+            return (value.attr if isinstance(value, ast.Attribute)
+                    else getattr(value, "id", None))
+    return None
+
+
+@pytest.mark.parametrize("path, function", _PRESCRIPTION_SITES)
+def test_every_prescription_site_passes_the_civil_calendar(path, function):
+    tree = ast.parse((_ATHENA / path).read_text(encoding="utf-8"))
+    if function is not None:
+        found = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == function]
+        assert len(found) == 1, f"{path}: {function} not found — renamed?"
+        tree = found[0]
+    calls = _calendar_calls(tree)
+    # Not vacuous: each site really does consult a calendar.
+    assert calls, f"{path}:{function}: no calendar helper call left to check"
+    wrong = [(name, call.lineno, _regime_name(call))
+             for name, call in calls if _regime_name(call) != "CIVIL"]
+    assert not wrong, (
+        f"{path}:{function} calls a calendar helper without regime=CIVIL "
+        f"(a prescription date — art. 2879 C.c.Q.): {wrong}"
+    )

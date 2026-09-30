@@ -84,6 +84,23 @@ def test_sans_date_pour_agir_rien_ne_change():
     assert dossiers[0]["_prescription_warning"] == ""
 
 
+def test_la_pastille_compte_la_prescription_sur_le_calendrier_civil(
+        monkeypatch):
+    """Revue du 2026-09-30. Une prescription qui finit le vendredi 26
+    décembre 2025 est acquise ce jour-là (art. 2879 C.c.Q. — le 26 est un
+    jour ouvrable hors procédure). Le 26 novembre, il reste 30 jours :
+    rouge. Lue sur le calendrier de PROCÉDURE, elle serait prorogée au lundi
+    29 (art. 82 C.p.c.) et la pastille, à 33 jours, resterait orange — trois
+    jours de retard sur la surface que le juriste parcourt."""
+    from datetime import date
+    from utils import deadlines
+    monkeypatch.setattr(deadlines, "today_mtl", lambda: date(2025, 11, 26))
+    dossiers = [_dossier(
+        prescription_date=datetime(2025, 12, 26, tzinfo=timezone.utc))]
+    rd._attach_prescription_warnings(dossiers)
+    assert dossiers[0]["_prescription_warning"] == "red"
+
+
 # ── Saisie du formulaire ─────────────────────────────────────────────────
 
 

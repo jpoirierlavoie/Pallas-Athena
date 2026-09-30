@@ -192,6 +192,34 @@ def test_suspension_shifts_by_its_duration():
     assert derived["date_effective"] == _d(2026, 11, 23)
 
 
+def test_status_reads_the_civil_calendar_of_the_prescription(monkeypatch):
+    """A prescription ending Fri 2025-12-26 — a jour ouvrable under art.
+    2879 C.c.Q. (26 December is a holiday « en matière de procédure
+    civile » only, art. 82 C.p.c.) — is acquired at the end of that day:
+    « echue » on Saturday the 27th. Read on the procedural calendar it
+    would stay « courante » until Tuesday the 30th."""
+    doc = _doc(droit_action_date=_d(2022, 12, 26),
+               prescription_date=_d(2025, 12, 26))
+    monkeypatch.setattr(dmod.deadlines, "today_mtl", lambda: date(2025, 12, 26))
+    assert dmod.derive_prescription(doc)["status"] == "courante"
+    monkeypatch.setattr(dmod.deadlines, "today_mtl", lambda: date(2025, 12, 27))
+    assert dmod.derive_prescription(doc)["status"] == "echue"
+
+
+def test_suspension_lands_on_26_december_and_stays_there():
+    """Suspension shift, then the civil forward report: Wed 2025-11-26 +
+    30 suspended days = Fri 2025-12-26, a jour ouvrable for prescription →
+    unchanged (the procedural calendar would say Mon the 29th)."""
+    derived = dmod.derive_prescription(_doc(
+        prescription_date=_d(2025, 11, 26),
+        prescription_events=[
+            {"type": "suspension", "date": _d(2025, 1, 1),
+             "end_date": _d(2025, 1, 31)},
+        ],
+    ))
+    assert derived["date_effective"] == _d(2025, 12, 26)
+
+
 def test_depot_wins_over_everything_after():
     derived = dmod.derive_prescription(_doc(prescription_events=[
         {"type": "suspension", "date": _d(2024, 1, 1),

@@ -4,7 +4,7 @@ Pure — no Firestore, no Flask: ``compute_echeances`` dispatches on the
 taxonomy's ``delai_types`` and composes the EXISTING date arithmetic only.
 The § 8-10 identity tests are the lock on that promise: for every dated
 principale the result must equal ``compute_date_pour_agir`` verbatim
-(art. 52 Loi d'interprétation forward report included).
+(art. 2879 C.c.Q. forward report included, on the CIVIL calendar).
 """
 
 import os
@@ -145,6 +145,20 @@ def test_rcv05_avis_3_jours_ouvrables_golden():
     assert len(avis) == 1
     assert avis[0].date == _dt(2026, 5, 20)
     assert "3_jours_ouvrables" not in PRESCRIPTION_PERIODS
+
+
+def test_rcv05_avis_counts_26_december_as_a_business_day():
+    """The presse avis is not civil procedure: art. 82 C.p.c.'s 26
+    December is an ordinary jour ouvrable for it (CIVIL calendar).
+    Tue 2025-12-23 + 3 jours ouvrables = Wed 24, [Thu 25 Noël], Fri 26,
+    [Sat/Sun], Mon 29 — not Tue 30 as the procedural calendar would say."""
+    echeances = compute_echeances(
+        "RCV-05", None, "",
+        date_depart_avis=_dt(2025, 12, 23), avis_confirmes=(0,),
+    )
+    avis = [e for e in echeances if e.role == "avis"]
+    assert len(avis) == 1
+    assert avis[0].date == _dt(2025, 12, 29)
 
 
 def test_checklist_avis_without_computable_key():

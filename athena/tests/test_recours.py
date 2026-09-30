@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from utils.deadlines import is_juridical_day
+from utils.deadlines import CIVIL, PROCEDURAL, is_juridical_day
 from utils.recours import (
     PRESCRIPTION_LABELS,
     PRESCRIPTION_PERIODS,
@@ -121,8 +121,12 @@ def test_deadline_extends_forward_off_a_sunday():
 
 
 def test_deadline_extends_forward_off_a_holiday():
-    # 1 Jan 2021 + 3 ans → 1 Jan 2024 (Jour de l'An) → next juridical Tue 2 Jan.
+    # 1 Jan 2021 + 3 ans → 1 Jan 2024 (Jour de l'An) → next jour ouvrable
+    # Tue 2 Jan. A prescription is NOT civil procedure: 2 January is a
+    # holiday only « en matière de procédure civile » (art. 82 C.p.c.), so
+    # art. 2879 C.c.Q. stops on it — where art. 83 would go on to the 3rd.
     assert compute_date_pour_agir(_d(2021, 1, 1), "3_ans") == _d(2024, 1, 2)
+    assert not is_juridical_day(_d(2024, 1, 2).date(), regime=PROCEDURAL)
 
 
 def test_deadline_on_a_weekday_is_unchanged():
@@ -141,7 +145,37 @@ def test_deadline_result_is_always_juridical():
     ]:
         result = compute_date_pour_agir(start, ptype)
         assert result is not None
-        assert is_juridical_day(result.date())
+        # On the calendar it was computed on — CIVIL (art. 2879 C.c.Q.).
+        # (Was the bare predicate, i.e. the procedural calendar since
+        # 2026-09-30, on which the 2 Jan 2024 result above is a holiday.)
+        assert is_juridical_day(result.date(), regime=CIVIL)
+
+
+def test_prescription_ignores_the_art_82_days():
+    """Art. 2879 al. 2 C.c.Q. reports only past a Saturday or a jour férié
+    of art. 61(23) L.i. — never past 26 Dec / 2 Jan, which art. 82 C.p.c.
+    confines to civil procedure. Hand-computed:
+    * 26 Dec 2022 + 3 ans → Fri 26 Dec 2025, a jour ouvrable → itself;
+    * 2 Jan 2023 + 3 ans → Fri 2 Jan 2026 → itself;
+    * 25 Dec 2022 + 3 ans → Thu 25 Dec 2025 (Noël) → Fri 26 Dec."""
+    assert compute_date_pour_agir(_d(2022, 12, 26), "3_ans") == _d(2025, 12, 26)
+    assert compute_date_pour_agir(_d(2023, 1, 2), "3_ans") == _d(2026, 1, 2)
+    assert compute_date_pour_agir(_d(2022, 12, 25), "3_ans") == _d(2025, 12, 26)
+
+
+def test_prescription_has_no_sunday_substitute_days():
+    """The old calendar invented « observed » Mondays after a Sunday 24
+    June, 25 December and 1 January, pushing a prescription one day LATER
+    than the law. Art. 61(23) L.i. provides a substitute for 1 July only.
+    * 25 Jun 2026 + 3 ans → Mon 25 Jun 2029 (24 June is a Sunday) → itself;
+    * 26 Dec 2030 + 3 ans → Mon 26 Dec 2033 (Christmas a Sunday) → itself;
+    * 2 Jan 2031 + 3 ans → Mon 2 Jan 2034 (New Year a Sunday) → itself;
+    * 1 Jul 2015 + 3 ans → Sun 1 Jul 2018 → Mon 2 Jul is THE substitute
+      holiday (art. 61(23) f) L.i.) → Tue 3 Jul."""
+    assert compute_date_pour_agir(_d(2026, 6, 25), "3_ans") == _d(2029, 6, 25)
+    assert compute_date_pour_agir(_d(2030, 12, 26), "3_ans") == _d(2033, 12, 26)
+    assert compute_date_pour_agir(_d(2031, 1, 2), "3_ans") == _d(2034, 1, 2)
+    assert compute_date_pour_agir(_d(2015, 7, 1), "3_ans") == _d(2018, 7, 3)
 
 
 def test_deadline_preserves_utc_tzinfo():
@@ -230,7 +264,7 @@ def test_compute_date_pour_agir_sample_grid_unchanged():
     """Literal expected dates over month-ends and leap days — a change in any
     of these is a change to the date arithmetic itself."""
     grid = [
-        # (start, type) -> expected (incl. the art. 52 forward report)
+        # (start, type) -> expected (incl. the art. 2879 C.c.Q. forward report)
         ((2026, 7, 18), "3_ans", (2029, 7, 18)),
         ((2025, 1, 31), "3_mois", (2025, 4, 30)),   # month-length clamp
         ((2025, 1, 31), "1_an", (2026, 2, 2)),      # 2026-01-31 Sat → Mon

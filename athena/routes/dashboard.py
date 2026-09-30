@@ -180,15 +180,20 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
             if not pdate:
                 continue  # a_verifier row with no computable date
             # Calendar days on the Montréal day — the wall-clock delta
-            # under-counted by one for most of each day.
+            # under-counted by one for most of each day. CIVIL calendar:
+            # the date is a prescription date (art. 2879 C.c.Q.).
             d["_days_remaining"] = max(
                 0,
                 deadlines.days_until(
-                    pdate, today=now.astimezone(MTL).date()
+                    pdate,
+                    today=now.astimezone(MTL).date(),
+                    regime=deadlines.CIVIL,
                 )
                 or 0,
             )
             pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
+            # PROCEDURAL, on purpose: the last day the demande can be FILED
+            # (art. 2892 C.c.Q.; art. 82 C.p.c.) — see last_action_day.
             last_action, differs = last_action_day(pdate_as_date)
             d["_last_action_date"] = last_action
             d["_last_action_differs"] = differs

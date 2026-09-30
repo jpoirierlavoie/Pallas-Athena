@@ -113,7 +113,10 @@
               <div class="min-w-0">
                 <p class="text-sm text-gray-900 truncate">{{ d.file_number }} — {{ d.title }}</p>
                 {% if d._last_action_differs %}
-                  <p class="text-xs text-amber-600">Dernier jour ouvrable&nbsp;: {{ d._last_action_date.strftime('%d %b %Y') }}</p>
+                  {# The PROCEDURAL last day to FILE the demande (art. 2892
+                     C.c.Q., art. 82 C.p.c.) — not a « jour ouvrable » of
+                     prescription, whose own last day is the countdown. #}
+                  <p class="text-xs text-amber-600">Dernier jour pour déposer la demande&nbsp;: {{ d._last_action_date.strftime('%d %b %Y') }}</p>
                 {% endif %}
               </div>
               <span class="flex-shrink-0 text-xs font-medium ml-2
