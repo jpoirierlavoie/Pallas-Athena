@@ -110,7 +110,7 @@ A release is a ``delete()`` under the ``last_update_time`` the claim's own
 The policy is read from the registry — ``mcp.tools.idempotency_policy``,
 the tool's ``"idempotency"`` spec key — never passed by the handler.
 
-* ``optional`` (every write tool but the eight ``required`` ones below):
+* ``optional`` (every write tool but the ten ``required`` ones below):
   the store fails OPEN. A Firestore blip on
   the claim must not block a legitimate first write; the call runs
   unclaimed, and afterwards a best-effort ``create()`` stores its result so
@@ -123,7 +123,11 @@ the tool's ``"idempotency"`` spec key — never passed by the handler.
   ``update_admin_entry``, ``clear_register_entries`` and
   ``reverse_register_entry`` — a register entry is never deleted, so a
   duplicate is taken back only by a reversal that stays in the register
-  for good): the key is demanded (``idempotency_required``) and the store
+  for good —, and since 2026-09-30 the two bulk creators
+  ``create_time_entries_bulk`` and ``create_expenses_bulk`` — money: a
+  retry without the key would write a second batch of billable rows the
+  next invoice sweeps, and nothing in the connector can delete it): the
+  key is demanded (``idempotency_required``) and the store
   fails CLOSED (``idempotency_store_unavailable``): nothing executes when
   the claim cannot be established. (Review of lot 5, step 5: this list
   still named three tools after lot 5b; ``tests/test_mcp_accounting.py``

@@ -227,6 +227,7 @@ from mcp.tools import (
     DOCUMENT_TAGS_MAX,
     DOCUMENT_TITLE_MAX_CHARS,
     DOCUMENT_TEXT_MAX_CHARS,
+    ENTRY_BULK_MAX,
     FOLDER_TREE_MAX,
     INVOICE_NOTES_MAX_CHARS,
     INVOICE_SOURCES_MAX,
@@ -5014,13 +5015,31 @@ def _apply_legacy_ref(args: dict, data: dict, collection: str) -> None:
     import finds what it already wrote instead of writing it twice, and
     detection without refusal would only report the damage after the fact.
     """
-    if "legacy_ref" not in args:
-        return
-    ref = _clean_entity_text(str(args["legacy_ref"] or ""), "legacy_ref")
+    ref = _legacy_ref_of(args)
     if not ref:
         return
     _refuse_legacy_ref_collision(collection, ref)
     data["legacy_ref"] = ref
+
+
+def _legacy_ref_of(args: dict) -> str:
+    """The cleaned ``legacy_ref`` a create names, or "" when it names none.
+
+    One reading for :func:`_apply_legacy_ref` and the bulk creators' in-batch
+    duplicate check, so the two can never disagree on what « the same
+    reference » is. Raises the field's refusal (too long, chevrons)."""
+    if "legacy_ref" not in args:
+        return ""
+    return _clean_entity_text(str(args["legacy_ref"] or ""), "legacy_ref")
+
+
+# The refusal of a collision check whose query FAILED. Every caller runs the
+# check before its first write, so « rien n'a été enregistré » is true of
+# each of them.
+_LEGACY_REF_UNREADABLE = (
+    "La vérification de la référence d'origine n'a pas pu être lue — "
+    "réessayez ; rien n'a été enregistré."
+)
 
 
 def _refuse_legacy_ref_collision(collection: str, legacy_ref: str) -> None:
@@ -5031,12 +5050,28 @@ def _refuse_legacy_ref_collision(collection: str, legacy_ref: str) -> None:
     l'opération même qui crée N contacts. C'est aussi la seule identité
     EXACTE dont dispose une reprise ; ``utils/rapprochement`` propose et ne
     tranche jamais, par doctrine.
+
+    Une requête qui ÉCHOUE refuse sous ``read_unavailable`` (2026-09-30),
+    jamais une exception brute. ``find_by_legacy_ref`` lève à dessein — une
+    erreur avalée se lirait « absent » et frapperait un doublon —, mais levée
+    telle quelle elle sortait du gestionnaire comme une erreur interne, et
+    ``run_write`` GARDE la réservation d'un outil à clé REQUISE pour toute
+    autre exception qu'un refus : la même clé était ensuite refusée « encore
+    en cours » puis « interrompu », pour un appel qui n'avait rien écrit
+    (la vérification précède toute écriture chez chacun des appelants). Le
+    refus libère la réservation, dit « réessayez », et arrête un lot sous
+    son propre motif — un créateur en lot fait jusqu'à 50 de ces requêtes.
     """
     if not legacy_ref:
         return
     from models import find_by_legacy_ref
 
-    existing = find_by_legacy_ref(collection, legacy_ref, limit=1)
+    try:
+        existing = find_by_legacy_ref(collection, legacy_ref, limit=1)
+    except Exception:
+        log_unexpected("mcp write: legacy_ref check unreadable")
+        raise ToolArgumentError(
+            _LEGACY_REF_UNREADABLE, reason="read_unavailable")
     if existing:
         raise ToolArgumentError(
             f"La référence d'origine « {legacy_ref} » est déjà portée par "
@@ -9526,8 +9561,14 @@ def create_time_entry(args: dict) -> dict:
     )
 
 
-def _create_time_entry_impl(args: dict) -> dict:
-    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+def _time_entry_create_data(
+    args: dict, dossier_id: str, dossier: dict,
+) -> dict:
+    """The model payload of ONE new time entry, every rule of
+    ``create_time_entry`` applied — and the ONE place they live:
+    ``create_time_entries_bulk`` builds each of its rows through it, so a
+    row of a batch and a single entry cannot drift. *dossier* is the
+    already-resolved target (resolved FIRST, the create_note rule)."""
     description = _clean_entity_text(
         args.get("description") or "", "description"
     )
@@ -9562,33 +9603,42 @@ def _create_time_entry_impl(args: dict) -> dict:
         "created_via": "mcp",
     }
     _apply_legacy_ref(args, data, "timeentries")
+    return data
 
-    def _entity(doc: dict) -> dict:
-        row = {
-            "id": doc.get("id", ""),
-            "dossier_id": doc.get("dossier_id", ""),
-            "dossier_file_number": doc.get("dossier_file_number", ""),
-            "dossier_title": doc.get("dossier_title", ""),
-            "label": doc.get("description", ""),
-            "date": date_str(doc.get("date")),
-            "hours": float(doc.get("hours") or 0),
-            "billable": bool(doc.get("billable")),
-            "phase": doc.get("phase", ""),
-            "sous_phase": doc.get("sous_phase", ""),
-            # The etag AS STORED: update_time_entry's `expected_etag` text
-            # sends the caller to « the last write result ».
-            "etag": concurrency.etag_of(doc),
-        }
-        _money(row, "rate", doc.get("rate", 0))
-        _money(row, "amount", doc.get("amount", 0))
-        return row
 
+def _created_time_entry_entity(doc: dict) -> dict:
+    """The ``entity`` of a created time entry — create_time_entry's, and
+    each row of create_time_entries_bulk's ``entities``."""
+    row = {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id", ""),
+        "dossier_file_number": doc.get("dossier_file_number", ""),
+        "dossier_title": doc.get("dossier_title", ""),
+        "label": doc.get("description", ""),
+        "date": date_str(doc.get("date")),
+        "hours": float(doc.get("hours") or 0),
+        "billable": bool(doc.get("billable")),
+        "phase": doc.get("phase", ""),
+        "sous_phase": doc.get("sous_phase", ""),
+        # The etag AS STORED: update_time_entry's `expected_etag` text
+        # sends the caller to « the last write result ».
+        "etag": concurrency.etag_of(doc),
+    }
+    _money(row, "rate", doc.get("rate", 0))
+    _money(row, "amount", doc.get("amount", 0))
+    return row
+
+
+def _create_time_entry_impl(args: dict) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    data = _time_entry_create_data(args, dossier_id, dossier)
     entry, errors = time_entry_model.create_time_entry(data)
     _raise_if_outcome_uncertain(errors, reread="list_time_entries")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
-        "time_entry", _entity(entry), dossier=dossier, dav_exposed=False,
+        "time_entry", _created_time_entry_entity(entry), dossier=dossier,
+        dav_exposed=False,
     )
 
 
@@ -9600,8 +9650,12 @@ def create_expense(args: dict) -> dict:
     )
 
 
-def _create_expense_impl(args: dict) -> dict:
-    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+def _expense_create_data(
+    args: dict, dossier_id: str, dossier: dict,
+) -> dict:
+    """The model payload of ONE new disbursement, every rule of
+    ``create_expense`` applied — shared with ``create_expenses_bulk``, the
+    :func:`_time_entry_create_data` twin."""
     description = _clean_entity_text(
         args.get("description") or "", "description"
     )
@@ -9631,30 +9685,223 @@ def _create_expense_impl(args: dict) -> dict:
         "created_via": "mcp",
     }
     _apply_legacy_ref(args, data, "expenses")
+    return data
 
-    def _entity(doc: dict) -> dict:
-        row = {
-            "id": doc.get("id", ""),
-            "dossier_id": doc.get("dossier_id", ""),
-            "dossier_file_number": doc.get("dossier_file_number", ""),
-            "dossier_title": doc.get("dossier_title", ""),
-            "label": doc.get("description", ""),
-            "date": date_str(doc.get("date")),
-            "category": doc.get("category", ""),
-            "taxable": bool(doc.get("taxable")),
-            "phase": doc.get("phase", ""),
-            "sous_phase": doc.get("sous_phase", ""),
-            "etag": concurrency.etag_of(doc),   # as stored; see create_time_entry
-        }
-        _money(row, "amount", doc.get("amount", 0))
-        return row
 
+def _created_expense_entity(doc: dict) -> dict:
+    """The ``entity`` of a created disbursement — create_expense's, and
+    each row of create_expenses_bulk's ``entities``."""
+    row = {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id", ""),
+        "dossier_file_number": doc.get("dossier_file_number", ""),
+        "dossier_title": doc.get("dossier_title", ""),
+        "label": doc.get("description", ""),
+        "date": date_str(doc.get("date")),
+        "category": doc.get("category", ""),
+        "taxable": bool(doc.get("taxable")),
+        "phase": doc.get("phase", ""),
+        "sous_phase": doc.get("sous_phase", ""),
+        "etag": concurrency.etag_of(doc),   # as stored; see create_time_entry
+    }
+    _money(row, "amount", doc.get("amount", 0))
+    return row
+
+
+def _create_expense_impl(args: dict) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    data = _expense_create_data(args, dossier_id, dossier)
     expense, errors = expense_model.create_expense(data)
     _raise_if_outcome_uncertain(errors, reread="list_expenses")
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
-        "expense", _entity(expense), dossier=dossier, dav_exposed=False,
+        "expense", _created_expense_entity(expense), dossier=dossier,
+        dav_exposed=False,
+    )
+
+
+# ── 26b. create_time_entries_bulk / create_expenses_bulk (WRITE) ─────────
+#
+# One import made 61 separate create_time_entry calls, and create_time_entry
+# → create_time_entry was the most frequent same-tool pair in 30 days of
+# logs. The batch form writes up to ENTRY_BULK_MAX rows in ONE call, ALL OR
+# NOTHING — unlike the phase reclassifiers, whose rows are independent
+# edits reported one by one. A batch of billable rows that half-landed
+# would leave the caller to find which half — a duplicate the next invoice
+# sweeps, or a hole in the fee journal —, and no tool here can delete the
+# extra half. So every row is built FIRST, through the single tool's own
+# builder (_time_entry_create_data / _expense_create_data), and one refused
+# row refuses the whole call, each bad row named by its 0-based index
+# (`entries[3]` — the path validate_args gives an item, and
+# `entries[3].hours` one of its fields since this lot: it named a field bare
+# before, and the schema check runs FIRST on the MCP path, so the row of the
+# commonest faults — a missing field, hours out of bounds, a phase off the
+# list — went unnamed; also the `clients[i]` / `operations[i]` refusals).
+# Then ONE model call writes them in one Firestore batch. idempotency_key
+# is REQUIRED (money: a retry without it would be a second batch the next
+# invoice sweeps).
+
+
+def _bulk_row_dossier(item: dict, cache: dict) -> tuple[str, dict]:
+    """A row's dossier, resolved STRICTLY and read once per distinct id.
+
+    The refusal is cached with the dossier, so fifty rows naming one
+    unknown id cost one read and carry the same message — the SAME
+    exception, re-raised, so its literal reason code travels with it."""
+    dossier_id = (item.get("dossier_id") or "").strip()
+    cached = cache.get(dossier_id) if dossier_id else None
+    if isinstance(cached, ToolArgumentError):
+        raise cached
+    if cached is not None:
+        return dossier_id, cached
+    try:
+        resolved_id, dossier = _resolve_write_dossier(item, required=True)
+    except ToolArgumentError as exc:
+        if dossier_id:
+            cache[dossier_id] = exc
+        raise
+    cache[resolved_id] = dossier
+    return resolved_id, dossier
+
+
+def _create_rows_bulk_impl(
+    args: dict,
+    *,
+    entity_type: str,
+    build: Callable[[dict, str, dict], dict],
+    bulk_create: Callable[[list[dict]], tuple[list[dict], list[str]]],
+    entity_builder: Callable[[dict], dict],
+    reread: str,
+    nothing_written: str,
+) -> dict:
+    """Shared body of the two bulk creators — validate EVERY row, refuse the
+    whole call naming each bad one, then write all rows atomically."""
+    items = args.get("entries")
+    if not isinstance(items, list) or not items:
+        raise ToolArgumentError("`entries` doit contenir au moins une ligne.")
+    if len(items) > ENTRY_BULK_MAX:
+        raise ToolArgumentError(
+            f"`entries` est plafonné à {ENTRY_BULK_MAX} lignes par appel "
+            f"({len(items)} reçues). {nothing_written} Découpez le lot."
+        )
+
+    dossiers: dict[str, Any] = {}
+    payloads: list[dict] = []
+    refusals: list[tuple[int, str]] = []
+    legacy_refs: dict[str, int] = {}
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            refusals.append((index, "chaque ligne doit être un objet."))
+            continue
+        # _apply_legacy_ref queries the STORED rows; two rows of the same
+        # batch bearing one reference would both pass it. The duplicate is
+        # read off the RAW row, before its build, and the FIRST row naming a
+        # reference claims it whether or not that row builds: registered
+        # only on a successful build, a reference whose first row was refused
+        # for another reason (hours 0.333) let its later twin through
+        # unnamed — the caller fixed row 0, resent the batch, and only then
+        # learnt of row 2, against « corrigez chaque ligne nommée ».
+        try:
+            ref = _legacy_ref_of(item)
+        except ToolArgumentError:
+            ref = ""        # the build below refuses the field itself
+        duplicate = False
+        if ref:
+            first = legacy_refs.setdefault(ref, index)
+            if first != index:
+                duplicate = True
+                refusals.append((index, (
+                    f"La référence d'origine « {ref} » figure déjà à "
+                    f"`entries[{first}]` de ce lot — une référence désigne "
+                    "UN enregistrement.")))
+        try:
+            dossier_id, dossier = _bulk_row_dossier(item, dossiers)
+            data = build(item, dossier_id, dossier)
+        except ToolArgumentError as exc:
+            # A store that failed is not a row to fix: the whole call stops
+            # under its own reason (the stop-the-batch signal), nothing
+            # written.
+            if exc.reason == "read_unavailable" or exc.keep_claim:
+                raise
+            # A duplicate row is still built, so its OTHER fault is named
+            # in the same refusal rather than on the next attempt.
+            refusals.append((index, str(exc)))
+            continue
+        if not duplicate:
+            payloads.append(data)
+
+    if refusals:
+        # Rows, not messages: a duplicate row that also fails its build
+        # carries two.
+        bad_rows = len({index for index, _msg in refusals})
+        raise ToolArgumentError(
+            f"{nothing_written} {bad_rows} ligne(s) sur {len(items)} "
+            "refusée(s) — le lot s'écrit en entier ou pas du tout. Corrigez "
+            "chaque ligne nommée (position à partir de 0) et renvoyez le lot "
+            "ENTIER : "
+            + " ; ".join(f"`entries[{i}]` : {msg}" for i, msg in refusals)
+        )
+
+    docs, errors = bulk_create(payloads)
+    _raise_if_outcome_uncertain(errors, reread=reread)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    entities = [entity_builder(doc) for doc in docs]
+
+    try:
+        from utils.logging_setup import log_mcp_event
+
+        # `mcp_write` fires with entity_id: None — a batch has no single
+        # entity — so the counts live here (the mcp_phase_bulk precedent).
+        # COUNTS and ids-when-shaped only: never a description, never an
+        # amount.
+        distinct = {e.get("dossier_id") or "" for e in entities}
+        shaped = loggable_id(next(iter(distinct))) if len(distinct) == 1 else ""
+        log_mcp_event(
+            "mcp_entry_bulk", "success",
+            entity_type=entity_type, requested=len(items),
+            created=len(entities), dossiers=len(distinct),
+            **({"dossier_id": shaped} if shaped else {}),
+        )
+    except Exception:
+        log_unexpected("mcp_entry_bulk logging failed")
+    return {
+        "created": True,
+        "entity_type": entity_type,
+        "count": len(entities),
+        "entities": entities,
+        "warnings": [],
+    }
+
+
+def create_time_entries_bulk(args: dict) -> dict:
+    return run_write(
+        "create_time_entries_bulk", args,
+        lambda: _create_rows_bulk_impl(
+            args,
+            entity_type="time_entry",
+            build=_time_entry_create_data,
+            bulk_create=time_entry_model.create_time_entries_bulk,
+            entity_builder=_created_time_entry_entity,
+            reread="list_time_entries",
+            nothing_written="Aucune entrée de temps n'a été enregistrée.",
+        ),
+    )
+
+
+def create_expenses_bulk(args: dict) -> dict:
+    return run_write(
+        "create_expenses_bulk", args,
+        lambda: _create_rows_bulk_impl(
+            args,
+            entity_type="expense",
+            build=_expense_create_data,
+            bulk_create=expense_model.create_expenses_bulk,
+            entity_builder=_created_expense_entity,
+            reread="list_expenses",
+            nothing_written="Aucun déboursé n'a été enregistré.",
+        ),
     )
 
 

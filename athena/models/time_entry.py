@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 # Firestore collection path
 COLLECTION = "timeentries"
 
+# Rows per create_time_entries_bulk call — ONE Firestore batch, all or
+# nothing. Sized against gunicorn's 60 s timeout like the phase batches
+# (mcp.tools.PHASE_BULK_MAX): one commit of 50 documents is well under a
+# second, and 50 is one list_time_entries page. mcp.tools.ENTRY_BULK_MAX
+# is pinned equal to it (tests/test_mcp_entry_bulk.py).
+BULK_CREATE_MAX = 50
+
 # Quick-select description chips (French)
 QUICK_DESCRIPTIONS = (
     "Appel téléphonique",
@@ -169,15 +176,22 @@ def _validate(data: dict) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+def _prepare_create(data: dict) -> tuple[dict, list[str]]:
+    """The create pipeline up to the write — merged onto the defaults,
+    sanitized, amount computed, sub-phase defaulted, validated. Shared by
+    :func:`create_time_entry` and :func:`create_time_entries_bulk`, so one
+    entry and a batch of them obey the SAME rules by construction."""
     merged = {**_default_doc(), **_sanitize_data(data)}
     merged["amount"] = _compute_entry_amount(
         merged.get("hours", 0), merged.get("rate", 0), bool(merged.get("billable"))
     )
     phases.apply_sous_phase_default(merged)
+    return merged, _validate(merged)
 
-    errors = _validate(merged)
+
+def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
+    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+    merged, errors = _prepare_create(data)
     if errors:
         return None, errors
 
@@ -201,6 +215,72 @@ def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
     provenance.note_commit(COLLECTION, entry_id)
 
     return merged, []
+
+
+def create_time_entries_bulk(
+    rows: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Create up to :data:`BULK_CREATE_MAX` entries in ONE atomic batch.
+
+    ALL OR NOTHING: every row goes through :func:`_prepare_create` — the
+    single create's own pipeline — BEFORE anything is written, and one
+    invalid row refuses the whole list with nothing written. Each error
+    names its row by its 0-based position in *rows*, in the form of the
+    connector's ``entries`` argument (``entries[3] : …``), the one caller
+    this function has — so a model refusal reads exactly like the
+    handler's own, which repeats every rule ahead of this belt.
+
+    The documents are then written in ONE ``db.batch()`` of fresh uuid4
+    ids — the ``hearing.create_hearing_series`` shape. A batch commit is
+    atomic, so when it RAISES the first id read back tells for the whole
+    list (robustness-1): present → the batch landed and only its answer was
+    lost; absent → nothing was written; unreadable → the uncertain answer,
+    which the connector raises keeping its idempotency claim.
+
+    Returns ``(docs, errors)``: the stored documents in the order of
+    *rows*, or ``[]`` with the reasons. A caller-supplied ``id`` is never
+    honoured — :func:`create_time_entry` mints its own, and so does this.
+    """
+    if not rows:
+        return [], ["Aucune entrée de temps à créer."]
+    if len(rows) > BULK_CREATE_MAX:
+        return [], [
+            f"Au plus {BULK_CREATE_MAX} entrées de temps par lot "
+            f"({len(rows)} reçues)."
+        ]
+    prepared: list[dict] = []
+    errors: list[str] = []
+    for index, data in enumerate(rows):
+        merged, row_errors = _prepare_create(data)
+        errors.extend(f"entries[{index}] : {e}" for e in row_errors)
+        prepared.append(merged)
+    if errors:
+        return [], errors
+
+    now = datetime.now(timezone.utc)
+    docs: list[dict] = []
+    for merged in prepared:
+        merged["id"] = str(uuid.uuid4())
+        docs.append(provenance.stamp_create(merged, now))
+
+    try:
+        batch = db.batch()
+        for doc in docs:
+            batch.set(db.collection(COLLECTION).document(doc["id"]), doc)
+        batch.commit()
+    except Exception:
+        log_unexpected("time entry bulk write failed")
+        # ONE atomic batch of fresh ids: its first entry tells for all.
+        outcome, _stored = concurrency.settle_failed_create(
+            db.collection(COLLECTION).document(docs[0]["id"]))
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return [], [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return [], ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    for doc in docs:
+        provenance.note_commit(COLLECTION, doc["id"])
+
+    return docs, []
 
 
 def get_time_entry_strict(entry_id: str) -> Optional[dict]:

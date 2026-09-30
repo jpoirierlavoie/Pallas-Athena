@@ -278,8 +278,16 @@ def validate_args(schema: dict, args: Any) -> list[str]:
     but ``false``) is ignored, and a tuple-form ``items`` list crashes the
     walk. ``tests/test_mcp_tools.py`` refuses all of these in every
     declared schema.
+
+    A field below the top level is named by its PATH — ``entries[12].hours``,
+    ``adjustment.label`` — never by its bare key. Until 2026-09-30 an array
+    item's fields came back bare (« `hours` is required »), which on a batch
+    CREATOR left the caller no way to find the row: a new row has no id, so
+    its index is the only handle, and the handler that adds one never runs
+    when this check refuses first (``endpoint._tools_call`` runs it before
+    the handler). Top-level arguments stay bare (« `days` must be … »).
     """
-    return _validate_value(schema, args, "arguments")
+    return _validate_value(schema, args, "arguments", root=True)
 
 
 def _type_ok(expected: Any, value: Any) -> bool:
@@ -342,8 +350,15 @@ def _nearest_argument(key: str, properties: dict) -> str:
     return long
 
 
-def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
+def _validate_value(
+    schema: dict, value: Any, name: str, *, root: bool = False,
+) -> list[str]:
     errors: list[str] = []
+
+    def _field(key: str) -> str:
+        # The path of a property of THIS value: bare at the top level (the
+        # caller's own argument names), prefixed below it — see validate_args.
+        return key if root else f"{name}.{key}"
 
     if "anyOf" in schema:
         # Valid when ANY branch accepts the value. Used by output schemas
@@ -356,7 +371,7 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
         # INPUT schema combining anyOf with `additionalProperties: false`
         # would silently skip that security control — never write one.
         for branch in schema["anyOf"]:
-            if not _validate_value(branch, value, name):
+            if not _validate_value(branch, value, name, root=root):
                 return errors
         errors.append(f"`{name}` matches none of the allowed variants")
         return errors
@@ -467,7 +482,7 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
                     # plain improvement for ordinary wrong argument names,
                     # nothing more.
                     proche = _nearest_argument(key, properties)
-                    detail = f"`{key}` is not a supported argument"
+                    detail = f"`{_field(key)}` is not a supported argument"
                     if proche:
                         detail += f" — did you mean `{proche}`?"
                     if properties:
@@ -479,10 +494,12 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
                     errors.append(detail)
         for key in schema.get("required", []):
             if key not in value:
-                errors.append(f"`{key}` is required")
+                errors.append(f"`{_field(key)}` is required")
         for key, subschema in properties.items():
             if key in value:
-                errors.extend(_validate_value(subschema, value[key], key))
+                errors.extend(
+                    _validate_value(subschema, value[key], _field(key))
+                )
 
     return errors
 
@@ -878,7 +895,7 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #
 # * ``optional`` — an ``idempotency_key`` is accepted, not demanded. The
 #   store fails OPEN: a Firestore blip on the claim must not block a
-#   legitimate first write. Every write tool but the eight below is
+#   legitimate first write. Every write tool but the ten below is
 #   ``optional``.
 # * ``required`` — the key is demanded (a call without one is refused), and
 #   the store fails CLOSED: an unreadable claim refuses the call rather than
@@ -888,8 +905,10 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #   1b ``create_hearing_series`` (a series) and ``decide_rendez_vous`` (the
 #   outbound one) declare it, since lot 3b ``create_invoice`` (a permanent
 #   number), since lot 5b the five accounting writes (a register entry is
-#   never deleted). Such a tool must also list ``idempotency_key`` in its
-#   input schema's ``required`` (pinned by test_mcp_framework_guards).
+#   never deleted), and the two bulk creators ``create_time_entries_bulk``
+#   and ``create_expenses_bulk`` (money: a second batch the next invoice
+#   sweeps). Such a tool must also list ``idempotency_key`` in its input
+#   schema's ``required`` (pinned by test_mcp_framework_guards).
 IDEMPOTENCY_OPTIONAL = "optional"
 IDEMPOTENCY_REQUIRED = "required"
 IDEMPOTENCY_POLICIES: tuple[str, ...] = (IDEMPOTENCY_OPTIONAL, IDEMPOTENCY_REQUIRED)
@@ -1573,6 +1592,130 @@ def _phase_bulk_items(id_key: str, id_description: str) -> dict:
                 **_phase_props(on_omit=None),
             },
             "required": [id_key],
+            "additionalProperties": False,
+        },
+    }
+
+
+# Rows per create_time_entries_bulk / create_expenses_bulk call. ONE
+# Firestore batch, all or nothing, so the ceiling is the models' own
+# (models.time_entry.BULK_CREATE_MAX / models.expense.BULK_CREATE_MAX —
+# hand-copied, a model import would build the Firestore client at load, and
+# pinned equal by tests/test_mcp_entry_bulk.py). Equal to PHASE_BULK_MAX and
+# to one list_time_entries page, for the same reason: the read, the create
+# and the reclassification cadences line up.
+ENTRY_BULK_MAX = 50
+
+
+def _time_entry_fields() -> dict:
+    """The fields of ONE new time entry — create_time_entry's inputs, and
+    each item of create_time_entries_bulk's ``entries``. Fresh per usage."""
+    return {
+        "dossier_id": _id(
+            "The dossier the time belongs to (UUIDv4). Required."
+        ),
+        "date": _date("Work date, YYYY-MM-DD. Required."),
+        "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": (
+                "Billing narrative, in French — prints verbatim "
+                "on the invoice."
+            ),
+        },
+        "hours": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 24,
+            "description": (
+                "Hours worked, at most TWO decimals — so a legacy "
+                "quarter-hour (0.25) imports exactly. Anything finer "
+                "is refused rather than rounded: 0.25 h silently "
+                "rounded to 0.2 h bills 60,00 $ where the paper "
+                "invoice printed 75,00 $."
+            ),
+        },
+        "rate_cents": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000,
+            "description": (
+                "Hourly rate in cents. Omit to use the dossier's "
+                "rate."
+            ),
+        },
+        "billable": {
+            "type": "boolean",
+            "description": (
+                "Defaults to true. Non-billable time is recorded "
+                "with amount 0."
+            ),
+        },
+        **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
+        **_legacy_ref_prop(),
+    }
+
+
+_TIME_ENTRY_REQUIRED = ["dossier_id", "date", "description", "hours"]
+
+
+def _expense_fields() -> dict:
+    """The fields of ONE new disbursement — create_expense's inputs, and
+    each item of create_expenses_bulk's ``entries``. Fresh per usage."""
+    return {
+        "dossier_id": _id(
+            "The dossier the expense belongs to (UUIDv4). Required."
+        ),
+        "date": _date("Expense date, YYYY-MM-DD. Required."),
+        "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": (
+                "Billing narrative, in French — prints verbatim "
+                "on the invoice."
+            ),
+        },
+        "amount_cents": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000000,
+            "description": "Amount in integer cents (15000 = 150,00 $).",
+        },
+        "category": {
+            "type": "string",
+            "enum": _EXPENSE_CATEGORIES,
+            "description": "Defaults to 'autre'.",
+        },
+        "taxable": {
+            "type": "boolean",
+            "description": "Defaults to true.",
+        },
+        **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
+        **_legacy_ref_prop(),
+    }
+
+
+_EXPENSE_REQUIRED = ["dossier_id", "date", "description", "amount_cents"]
+
+
+def _entry_bulk_items(single: str, fields: dict, required: list[str]) -> dict:
+    """The ``entries`` array of a bulk creator: each item is *single*'s
+    own fields, with its own required list — never a second copy."""
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": ENTRY_BULK_MAX,
+        "description": (
+            f"1 to {ENTRY_BULK_MAX} rows, each with {single}'s fields and "
+            "rules. ONE refused row refuses the whole call, named "
+            "`entries[i]` (0-based)."
+        ),
+        "items": {
+            "type": "object",
+            "properties": fields,
+            "required": list(required),
             "additionalProperties": False,
         },
     }
@@ -4015,52 +4158,10 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id(
-                    "The dossier the time belongs to (UUIDv4). Required."
-                ),
-                "date": _date("Work date, YYYY-MM-DD. Required."),
-                "description": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 1000,
-                    "description": (
-                        "Billing narrative, in French — prints verbatim "
-                        "on the invoice."
-                    ),
-                },
-                "hours": {
-                    "type": "number",
-                    "minimum": 0.01,
-                    "maximum": 24,
-                    "description": (
-                        "Hours worked, at most TWO decimals — so a legacy "
-                        "quarter-hour (0.25) imports exactly. Anything finer "
-                        "is refused rather than rounded: 0.25 h silently "
-                        "rounded to 0.2 h bills 60,00 $ where the paper "
-                        "invoice printed 75,00 $."
-                    ),
-                },
-                "rate_cents": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 1000000,
-                    "description": (
-                        "Hourly rate in cents. Omit to use the dossier's "
-                        "rate."
-                    ),
-                },
-                "billable": {
-                    "type": "boolean",
-                    "description": (
-                        "Defaults to true. Non-billable time is recorded "
-                        "with amount 0."
-                    ),
-                },
-                **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
-                **_legacy_ref_prop(),
+                **_time_entry_fields(),
                 **_write_protocol_props(),
             },
-            "required": ["dossier_id", "date", "description", "hours"],
+            "required": list(_TIME_ENTRY_REQUIRED),
             "additionalProperties": False,
         },
         "handler": "create_time_entry",
@@ -4082,44 +4183,97 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id(
-                    "The dossier the expense belongs to (UUIDv4). Required."
-                ),
-                "date": _date("Expense date, YYYY-MM-DD. Required."),
-                "description": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 1000,
-                    "description": (
-                        "Billing narrative, in French — prints verbatim "
-                        "on the invoice."
-                    ),
-                },
-                "amount_cents": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100000000,
-                    "description": "Amount in integer cents (15000 = 150,00 $).",
-                },
-                "category": {
-                    "type": "string",
-                    "enum": _EXPENSE_CATEGORIES,
-                    "description": "Defaults to 'autre'.",
-                },
-                "taxable": {
-                    "type": "boolean",
-                    "description": "Defaults to true.",
-                },
-                **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
-                **_legacy_ref_prop(),
+                **_expense_fields(),
                 **_write_protocol_props(),
             },
-            "required": ["dossier_id", "date", "description", "amount_cents"],
+            "required": list(_EXPENSE_REQUIRED),
             "additionalProperties": False,
         },
         "handler": "create_expense",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "create_time_entries_bulk": {
+        "title": "Créer plusieurs entrées de temps",
+        "description": (
+            "WRITE — ALL OR NOTHING: one refused row refuses the WHOLE call "
+            "and nothing is written; the refusal names every bad row by its "
+            "0-based index (`entries[3]`, a field `entries[3].hours`) — fix "
+            "those and resend the whole batch. idempotency_key REQUIRED; "
+            "confirm the batch with "
+            "the user before calling. The batch form of `create_time_entry`: "
+            f"1 to {ENTRY_BULK_MAX} entries in ONE call, written atomically "
+            "— an import, or a day's time. Every row takes "
+            "create_time_entry's fields, defaults and rules: dossier_id "
+            "required and resolved first (an unknown one refuses), "
+            "rate_cents defaulting to that dossier's hourly rate, hours at "
+            "most two decimals (finer is refused, never rounded), a "
+            "description that prints VERBATIM on the client's invoice (a "
+            "billing narrative in French — never provenance or internal "
+            "notes; each row is marked machine-created internally), a "
+            "legacy_ref refused when already borne or borne twice in the "
+            "batch. The rows land un-invoiced. `entities` comes back in "
+            "the SAME ORDER as `entries`, each shaped like "
+            "create_time_entry's `entity` — its etag is the next edit's "
+            "expected_etag. A row is corrected with update_time_entry while "
+            "un-invoiced (its phase with set_time_entry_phase, even after); "
+            "this connector can never delete one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entries": _entry_bulk_items(
+                    "create_time_entry", _time_entry_fields(),
+                    _TIME_ENTRY_REQUIRED,
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["entries", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "create_time_entries_bulk",
+        "scope": SCOPE_WRITE,
+        # Money: a retry without its key would write a SECOND batch the
+        # next invoice sweeps, and nothing here can delete the first.
+        "idempotency": IDEMPOTENCY_REQUIRED,
+    },
+    "create_expenses_bulk": {
+        "title": "Créer plusieurs déboursés",
+        "description": (
+            "WRITE — ALL OR NOTHING: one refused row refuses the WHOLE call "
+            "and nothing is written; the refusal names every bad row by its "
+            "0-based index (`entries[3]`, a field "
+            "`entries[3].amount_cents`) — fix those and resend the whole "
+            "batch. idempotency_key REQUIRED; confirm the batch with "
+            "the user before calling. The batch form of `create_expense`: "
+            f"1 to {ENTRY_BULK_MAX} disbursements in ONE call, written "
+            "atomically. Every row takes create_expense's fields, defaults "
+            "and rules: dossier_id required and resolved first (an unknown "
+            "one refuses), amount in integer cents, category 'autre' and "
+            "taxable true by default, a description that prints VERBATIM "
+            "on the client's invoice (billing narrative in French, no "
+            "internal notes), a legacy_ref refused when already borne or "
+            "borne twice in the batch. The rows land un-invoiced. "
+            "`entities` comes back in the SAME ORDER as `entries`, each "
+            "shaped like create_expense's `entity`. A row is corrected with "
+            "update_expense while un-invoiced (its phase with "
+            "set_expense_phase, even after); this connector can never "
+            "delete one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entries": _entry_bulk_items(
+                    "create_expense", _expense_fields(), _EXPENSE_REQUIRED,
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["entries", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "create_expenses_bulk",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
     },
     "complete_dossier": {
         "title": "Compléter les champs vides d'un dossier",
@@ -6917,7 +7071,7 @@ TOOLS: dict[str, dict] = {
 # completeness review): _write_protocol_props() says « Pass one on every
 # write » (the finitions aligned it with INSTRUCTIONS — contracts-7), the
 # optional policy's truth — on
-# the eight ``required`` tools it sat beside a ``required`` list naming the
+# the ``required`` tools it sat beside a ``required`` list naming the
 # key and a description saying « idempotency_key REQUIRED », and a model
 # reads a property description as a fact about the code. One text per
 # policy, applied here so a ninth required tool is described by its

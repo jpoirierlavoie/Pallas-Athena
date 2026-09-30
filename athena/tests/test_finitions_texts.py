@@ -177,10 +177,60 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
     assert "trust sequences 28 and 42" in body
     assert "storage.googleapis.com" in body
     assert "lot 2B pilot on one real letter" in body and "not a" in body
-    # The counts it asks to verify are the registry's.
-    visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
+    # The counts it asks to verify are the registry's AS THAT RELEASE
+    # SHIPPED IT. REWRITTEN deliberately (2026-09-30): the bulk creators
+    # came after the D22 push, under their own train (« Bulk creators »,
+    # pinned below) — the runbook of a past release keeps its counts, and
+    # the registry minus what came after must still match them.
+    after_d22 = _AFTER_D22
+    assert after_d22 <= tools.WRITE_TOOLS
+    visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS - after_d22
     assert len(visible) == 80 and len(visible & tools.WRITE_TOOLS) == 49
-    assert len(tools.TOOLS) == 86 and len(tools.WRITE_TOOLS) == 54
+    assert len(set(tools.TOOLS) - after_d22) == 86
+    assert len(tools.WRITE_TOOLS - after_d22) == 54
+
+
+# The write tools shipped AFTER the D22 release, each under its own train.
+_AFTER_D22 = frozenset({"create_time_entries_bulk", "create_expenses_bulk"})
+
+
+def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts():
+    """2026-09-30: two new write tools reach the token in force the moment
+    the deploy lands (D19 — no code gate), so their release carries its own
+    ordered train in §15 — revoke BEFORE the push, re-consent AFTER it — and
+    the counts it asks to verify are the registry's, derived here."""
+    text = _flat(_REPO / "DEPLOYMENT.md")
+    runbook = _section_15(text)
+    head = ("**Bulk creators — `create_time_entries_bulk` / "
+            "`create_expenses_bulk`")
+    assert head in runbook
+    body = runbook[runbook.index(head):runbook.index("**Cold starts:**")]
+    visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
+    reads = len(visible - tools.WRITE_TOOLS)
+    writes = len(visible & tools.WRITE_TOOLS)
+    all_reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
+    ordered = [
+        "python -m pytest tests/ -q -p no:cacheprovider",
+        "*Revoke and disconnect — BEFORE the push*",
+        "python -m scripts.revoke_mcp_tokens",
+        "*The push*",
+        "*Re-add the connector and READ the CREATE paragraph",
+        f"**{len(visible)}** tools ({reads} read, {writes} write)",
+        f"**{len(tools.TOOLS)}** ({all_reads} read, "
+        f"{len(tools.WRITE_TOOLS)} write)",
+        "*One smoke test, on a TEST dossier only*",
+        "`entries[1]`",
+        "skill `pallas-athena`",
+    ]
+    positions = [body.index(fragment) for fragment in ordered]
+    assert positions == sorted(positions), list(zip(ordered, positions))
+    assert f"up to {tools.ENTRY_BULK_MAX} rows a call" in body
+    assert "there is no code gate (D19" in body
+    assert _AFTER_D22 <= tools.WRITE_TOOLS
+    # §11 points at it from the D19 paragraph.
+    section_11 = text[text.index("## 11. Optional — MCP connector"):
+                      text.index("## 11b.")]
+    assert "§15 « Bulk creators », step 2" in section_11
 
 
 def test_review_e3_the_accounting_index_line_says_what_its_tools_say():

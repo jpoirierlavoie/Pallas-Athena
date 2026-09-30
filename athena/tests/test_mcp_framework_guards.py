@@ -372,7 +372,9 @@ def test_the_key_s_description_says_what_its_policy_does():
     INSTRUCTIONS rule, never the weaker « unattended/scheduled » one."""
     required = {n for n, s in tools.TOOLS.items()
                 if s.get("idempotency") == tools.IDEMPOTENCY_REQUIRED}
-    assert len(required) == 8, sorted(required)
+    # 8 → 10 (2026-09-30), deliberately: create_time_entries_bulk and
+    # create_expenses_bulk demand their key — money, like create_invoice.
+    assert len(required) == 10, sorted(required)
     for name, spec in tools.TOOLS.items():
         prop = spec["input_schema"]["properties"].get("idempotency_key")
         if prop is None:

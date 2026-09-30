@@ -871,6 +871,51 @@ def test_create_expense_conforms(write_world, monkeypatch):
     assert "ctag_bumped" not in payload
 
 
+# ── The bulk creators (2026-09-30): real handlers, real models, real
+# run_write and idempotency store, over the shared fake Firestore ────────
+
+
+def test_create_time_entries_bulk_conforms_first_call_and_replay(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    args = {"entries": [
+        {"dossier_id": "d1", "date": "2026-09-28", "hours": 0.25,
+         "description": "Appel au client", "rate_cents": 30000,
+         "sous_phase": "PRE-01"},
+        {"dossier_id": "d2", "date": "2026-09-29", "hours": 1.5,
+         "description": "Rédaction", "billable": False},
+    ], "idempotency_key": "cle-lot-temps-conf-1"}
+    payload = handlers.create_time_entries_bulk(dict(args))
+    _conforms("create_time_entries_bulk", payload)
+    assert payload["count"] == 2
+    assert [e["dossier_id"] for e in payload["entities"]] == ["d1", "d2"]
+    # The single tool's entity shape, row for row.
+    single = OUTPUT_SCHEMAS["create_time_entry"]["properties"]["entity"]
+    bulk = OUTPUT_SCHEMAS["create_time_entries_bulk"]["properties"][
+        "entities"]["items"]
+    assert bulk == single
+    replay = handlers.create_time_entries_bulk(dict(args))
+    _conforms("create_time_entries_bulk", replay)
+    assert replay["idempotent_replay"] is True
+    assert len(fake.peek_collection("timeentries")) == 2
+
+
+def test_create_expenses_bulk_conforms(monkeypatch):
+    _agenda_world(monkeypatch)
+    payload = handlers.create_expenses_bulk({"entries": [
+        {"dossier_id": "d1", "date": "2026-09-28", "amount_cents": 9500,
+         "description": "Huissier — signification", "category": "signification"},
+        {"dossier_id": "d1", "date": "2026-09-29", "amount_cents": 1200,
+         "description": "Photocopies", "taxable": False, "phase": "PRE"},
+    ], "idempotency_key": "cle-lot-debours-conf-1"})
+    _conforms("create_expenses_bulk", payload)
+    single = OUTPUT_SCHEMAS["create_expense"]["properties"]["entity"]
+    bulk = OUTPUT_SCHEMAS["create_expenses_bulk"]["properties"][
+        "entities"]["items"]
+    assert bulk == single
+    assert [e["amount_cents"] for e in payload["entities"]] == [9500, 1200]
+    assert "ctag_bumped" not in payload      # not DAV-exposed — never faked
+
+
 # ── Lot 4: the invoice register conforms ────────────────────────────────
 
 

@@ -39,6 +39,12 @@ made concise, plus `get_dossier`'s description brought under the
 2 048-character cut below (2 154 → 2 038). For the write grant (80 tools,
 description + inputSchema only): 218 610 → 209 872 bytes.
 
+Measured again 2026-09-30 with the two bulk creators (create_time_entries_
+bulk, create_expenses_bulk — 88 tools): 258 382 bytes, the two weighing
+5 051 and 4 686 (each carries its single tool's whole row schema, the phase
+enums included), the largest still `update_partie` at 7 721; for the write
+grant (82 tools, description + inputSchema only): 222 086 bytes.
+
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
 

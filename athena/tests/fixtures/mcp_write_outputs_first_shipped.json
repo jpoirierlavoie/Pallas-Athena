@@ -278,6 +278,29 @@
    ".warnings"
   ]
  },
+ "create_expenses_bulk": {
+  "first_shipped_in": "create-bulk-2026-09-30",
+  "required": [
+   ".count",
+   ".created",
+   ".entities",
+   ".entities[].amount_cents",
+   ".entities[].amount_display",
+   ".entities[].category",
+   ".entities[].date",
+   ".entities[].dossier_file_number",
+   ".entities[].dossier_id",
+   ".entities[].dossier_title",
+   ".entities[].id",
+   ".entities[].label",
+   ".entities[].phase",
+   ".entities[].sous_phase",
+   ".entities[].taxable",
+   ".entity_type",
+   ".idempotent_replay",
+   ".warnings"
+  ]
+ },
  "create_hearing": {
   "first_shipped_in": "21012c0",
   "required": [
@@ -505,6 +528,31 @@
    ".leak_scan.unused_accept",
    ".scrubbed_properties",
    ".source_document_id",
+   ".warnings"
+  ]
+ },
+ "create_time_entries_bulk": {
+  "first_shipped_in": "create-bulk-2026-09-30",
+  "required": [
+   ".count",
+   ".created",
+   ".entities",
+   ".entities[].amount_cents",
+   ".entities[].amount_display",
+   ".entities[].billable",
+   ".entities[].date",
+   ".entities[].dossier_file_number",
+   ".entities[].dossier_id",
+   ".entities[].dossier_title",
+   ".entities[].hours",
+   ".entities[].id",
+   ".entities[].label",
+   ".entities[].phase",
+   ".entities[].rate_cents",
+   ".entities[].rate_display",
+   ".entities[].sous_phase",
+   ".entity_type",
+   ".idempotent_replay",
    ".warnings"
   ]
  },

@@ -298,7 +298,8 @@ def test_the_write_protocol_names_every_required_tool():
         "4. What is stored", 1)[0]
     for name in required:
         assert f"``{name}``" in posture, name
-    words = {3: "three", 8: "eight"}
+    # 10 since 2026-09-30: the two bulk creators demand their key too.
+    words = {3: "three", 8: "eight", 10: "ten"}
     assert f"every write tool but the {words.get(len(required), len(required))} " \
            f"``required`` ones below" in " ".join(posture.split())
     source = (_ATHENA / "mcp" / "tools.py").read_text(encoding="utf-8")

@@ -75,7 +75,8 @@ class Family:
     checkbox_summary_fr: str
     #: The INSTRUCTIONS index line after « LABEL: » — every member named,
     #: and the one rule a caller must know before opening the tools; the
-    #: rest is in each tool's description. May carry ``{phase_bulk_max}``,
+    #: rest is in each tool's description. May carry the fields of
+    #: :data:`INDEX_FIELDS` (``{phase_bulk_max}``, ``{entry_bulk_max}``),
     #: filled from the registry at build time.
     instructions_en: str
 
@@ -144,23 +145,26 @@ FAMILIES: tuple[Family, ...] = (
         scope=SCOPE_WRITE,
         tools=(
             "create_note", "append_to_note", "create_task", "create_hearing",
-            "create_time_entry", "create_expense", "create_partie",
-            "create_dossier", "complete_dossier", "record_signification",
-            "record_prescription_event",
+            "create_time_entry", "create_expense",
+            "create_time_entries_bulk", "create_expenses_bulk",
+            "create_partie", "create_dossier", "complete_dossier",
+            "record_signification", "record_prescription_event",
         ),
         consent_template="mcp/families/_create.html",
         checkbox_summary_fr=(
-            "créer des notes, tâches, événements, temps, déboursés, "
-            "contacts et dossiers, et compléter un dossier (champs encore "
-            "vides, significations, événements de prescription)"
+            "créer des notes, tâches, événements, temps et déboursés (un à "
+            "un, ou par lots écrits en entier ou pas du tout), contacts et "
+            "dossiers, et compléter un dossier (champs encore vides, "
+            "significations, événements de prescription)"
         ),
         instructions_en=(
             "`create_note`, `append_to_note`, `create_task`, "
-            "`create_hearing`, `create_time_entry`, `create_expense`, "
-            "`create_partie`, `create_dossier`; `complete_dossier` fills ONLY "
-            "empty fields and refuses to overwrite; `record_signification` "
-            "and `record_prescription_event` append to the dossier's "
-            "registers."
+            "`create_hearing`, `create_time_entry`, `create_expense` (their "
+            "batch forms `create_time_entries_bulk`, `create_expenses_bulk`: "
+            "up to {entry_bulk_max} rows, ALL OR NOTHING), `create_partie`, "
+            "`create_dossier`; `complete_dossier` fills ONLY empty fields "
+            "and refuses to overwrite; `record_signification` and "
+            "`record_prescription_event` append to the dossier's registers."
         ),
     ),
     Family(
@@ -1074,6 +1078,12 @@ NEVERS: tuple[Never, ...] = (
 
 # ── Derivations ─────────────────────────────────────────────────────────
 
+#: The ``str.format`` fields an index line (``Family.instructions_en``) may
+#: carry, each filled by :func:`build_instructions` from the registry — the
+#: reclassifiers' and the bulk creators' batch ceilings. No other brace may
+#: stand in an index line (tests/test_mcp_generation pins it).
+INDEX_FIELDS: tuple[str, ...] = ("phase_bulk_max", "entry_bulk_max")
+
 
 def write_tools() -> frozenset[str]:
     """Every write tool — the union of the families (``mcp.tools.WRITE_TOOLS``)."""
@@ -1146,14 +1156,16 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
     (rendered only while its box is offered) gets the same three:
     ``comptabilite_families``, ``comptabilite_nevers`` (the promises the
     accounting grant keeps) and ``comptabilite_summary``. ``phase_bulk_max``
-    is the reclassifiers' batch ceiling and ``series_max`` a series'
-    occurrence ceiling (utils/recurrence), both read from the registry;
-    ``register_clear_max`` is a clearing's batch ceiling.
+    is the reclassifiers' batch ceiling, ``entry_bulk_max`` the bulk
+    creators' and ``series_max`` a series' occurrence ceiling
+    (utils/recurrence), all read from the registry; ``register_clear_max``
+    is a clearing's batch ceiling.
     """
     from mcp import tools as _tools  # lazy: mcp.tools imports this module
 
     return {
         "phase_bulk_max": _tools.PHASE_BULK_MAX,
+        "entry_bulk_max": _tools.ENTRY_BULK_MAX,
         "series_max": _tools._SERIES_MAX,
         "register_clear_max": _tools.REGISTER_CLEAR_MAX,
         "write_families": families_for(SCOPE_WRITE),
@@ -1297,6 +1309,7 @@ def build_instructions(
     phase_bulk_max: Optional[int] = None,
     *,
     accounting: bool = False,
+    entry_bulk_max: Optional[int] = None,
 ) -> str:
     """The ``initialize`` instructions, assembled from the registry.
 
@@ -1318,7 +1331,8 @@ def build_instructions(
     cannot see. The core and the general promises read the same in both
     variants: each is worded to be true for every token.
     """
-    if registry is None or accounting_tools is None or phase_bulk_max is None:
+    if (registry is None or accounting_tools is None or phase_bulk_max is None
+            or entry_bulk_max is None):
         from mcp import tools as _tools
 
         registry = _tools.TOOLS if registry is None else registry
@@ -1327,6 +1341,9 @@ def build_instructions(
         )
         phase_bulk_max = (
             _tools.PHASE_BULK_MAX if phase_bulk_max is None else phase_bulk_max
+        )
+        entry_bulk_max = (
+            _tools.ENTRY_BULK_MAX if entry_bulk_max is None else entry_bulk_max
         )
 
     hidden = frozenset() if accounting else frozenset(accounting_tools)
@@ -1344,7 +1361,8 @@ def build_instructions(
     for family in families:
         parts.append(
             f"{family.label}: "
-            + family.instructions_en.format(phase_bulk_max=phase_bulk_max)
+            + family.instructions_en.format(
+                phase_bulk_max=phase_bulk_max, entry_bulk_max=entry_bulk_max)
         )
     parts.append(_READ_CONTENT_EN)
 

@@ -984,8 +984,13 @@ def test_the_instructions_state_the_rules_verbatim():
     text = endpoint.INSTRUCTIONS
     assert "« {{ » or « }} » is refused" in (
         tools.TOOLS["fill_gabarit"]["description"])
+    # The fields the builder fills are the registry's list (2026-09-30:
+    # the bulk creators' ceiling joined the reclassifiers'), never a copy.
+    assert "entry_bulk_max" in disclosure.INDEX_FIELDS
     for family in disclosure.FAMILIES:
-        line = family.instructions_en.replace("{phase_bulk_max}", "")
+        line = family.instructions_en
+        for field in disclosure.INDEX_FIELDS:
+            line = line.replace("{" + field + "}", "")
         assert "{" not in line and "}" not in line, family.key
     assert "`fill_gabarit`" in text and "`create_document`" in text
     assert "It never changes an existing document's FILE" in text

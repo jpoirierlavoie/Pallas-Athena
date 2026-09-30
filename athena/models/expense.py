@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 # Firestore collection path
 COLLECTION = "expenses"
 
+# Rows per create_expenses_bulk call — ONE Firestore batch, all or nothing;
+# the twin of models.time_entry.BULK_CREATE_MAX, for the same reasons.
+# mcp.tools.ENTRY_BULK_MAX is pinned equal to both
+# (tests/test_mcp_entry_bulk.py).
+BULK_CREATE_MAX = 50
+
 # Valid expense categories
 VALID_CATEGORIES = (
     "signification",
@@ -144,12 +150,19 @@ def _validate(data: dict) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+def _prepare_create(data: dict) -> tuple[dict, list[str]]:
+    """The create pipeline up to the write — merged onto the defaults,
+    sanitized, sub-phase defaulted, validated. Shared by
+    :func:`create_expense` and :func:`create_expenses_bulk`, so one
+    disbursement and a batch of them obey the SAME rules by construction."""
     merged = {**_default_doc(), **_sanitize_data(data)}
     phases.apply_sous_phase_default(merged)
+    return merged, _validate(merged)
 
-    errors = _validate(merged)
+
+def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
+    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+    merged, errors = _prepare_create(data)
     if errors:
         return None, errors
 
@@ -173,6 +186,59 @@ def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
     provenance.note_commit(COLLECTION, expense_id)
 
     return merged, []
+
+
+def create_expenses_bulk(
+    rows: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Create up to :data:`BULK_CREATE_MAX` disbursements in ONE atomic
+    batch — the twin of ``models.time_entry.create_time_entries_bulk``,
+    with the same contract: every row through :func:`_prepare_create`
+    before anything is written, one invalid row refusing the whole list
+    (each error named ``entries[i] : …``, 0-based), then ONE ``db.batch()``
+    of fresh uuid4 ids whose first id, read back when the commit raises,
+    tells for all. Returns ``(docs, errors)`` — the stored documents in the
+    order of *rows*, or ``[]`` with the reasons."""
+    if not rows:
+        return [], ["Aucun déboursé à créer."]
+    if len(rows) > BULK_CREATE_MAX:
+        return [], [
+            f"Au plus {BULK_CREATE_MAX} déboursés par lot "
+            f"({len(rows)} reçus)."
+        ]
+    prepared: list[dict] = []
+    errors: list[str] = []
+    for index, data in enumerate(rows):
+        merged, row_errors = _prepare_create(data)
+        errors.extend(f"entries[{index}] : {e}" for e in row_errors)
+        prepared.append(merged)
+    if errors:
+        return [], errors
+
+    now = datetime.now(timezone.utc)
+    docs: list[dict] = []
+    for merged in prepared:
+        merged["id"] = str(uuid.uuid4())
+        docs.append(provenance.stamp_create(merged, now))
+
+    try:
+        batch = db.batch()
+        for doc in docs:
+            batch.set(db.collection(COLLECTION).document(doc["id"]), doc)
+        batch.commit()
+    except Exception:
+        log_unexpected("expense bulk write failed")
+        # ONE atomic batch of fresh ids: its first disbursement tells for all.
+        outcome, _stored = concurrency.settle_failed_create(
+            db.collection(COLLECTION).document(docs[0]["id"]))
+        if outcome == concurrency.WRITE_UNKNOWN:
+            return [], [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+        if outcome == concurrency.WRITE_ABSENT:
+            return [], ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    for doc in docs:
+        provenance.note_commit(COLLECTION, doc["id"])
+
+    return docs, []
 
 
 def get_expense_strict(expense_id: str) -> Optional[dict]:

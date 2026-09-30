@@ -619,16 +619,18 @@ def test_initialize_describes_the_accounting_tools_only_to_a_token_that_sees_the
 # Lot 5, step 5 — the numbers the lawyer reads off `tools/list` in the
 # train (DEPLOYMENT.md §15 « Lot 5 »), LITERAL on purpose: every other
 # assertion of this module derives its set from the registry, and a derived
-# check passes whatever the registry holds. 86 = 32 reads + 54 writes; the
+# check passes whatever the registry holds. 88 = 32 reads + 56 writes
+# (86 → 88 on 2026-09-30, deliberately: the two bulk creators
+# create_time_entries_bulk / create_expenses_bulk, under athena:write); the
 # six accounting tools (the read get_admin_ledger and the five ACCOUNTING
 # writes) appear ONLY to a token holding athena:comptabilite while
 # MCP_COMPTABILITE_ENABLED is on — and the five writes only while
 # MCP_WRITE_ENABLED is on too (the master switch).
 @pytest.mark.parametrize("scope, write_on, compta_on, expected", [
     ("athena:read", True, True, 31),
-    ("athena:read athena:write", True, True, 80),
-    (_ALL_SCOPES, True, True, 86),
-    (_ALL_SCOPES, True, False, 80),
+    ("athena:read athena:write", True, True, 82),
+    (_ALL_SCOPES, True, True, 88),
+    (_ALL_SCOPES, True, False, 82),
     ("athena:read athena:comptabilite", True, True, 37),
     ("athena:read athena:comptabilite", True, False, 31),
     (_ALL_SCOPES, False, True, 32),
@@ -638,7 +640,7 @@ def test_tools_list_counts_per_token_are_the_train_s_checklist(
     monkeypatch, scope, write_on, compta_on, expected
 ):
     bearer.reset_brake_state()
-    assert len(tools.TOOLS) == 86 and len(tools.ACCOUNTING_TOOLS) == 6
+    assert len(tools.TOOLS) == 88 and len(tools.ACCOUNTING_TOOLS) == 6
     cl = _client_for(monkeypatch, scope, MCP_WRITE_ENABLED=write_on,
                      MCP_COMPTABILITE_ENABLED=compta_on)
     listed = _listed(cl)
@@ -884,6 +886,34 @@ def test_a_schema_refused_write_is_logged_by_count_never_by_text(
     assert not _events(caplog, "mcp_write")
     assert not _events(caplog, "mcp_tool_call")
     assert "SECRET" not in _logged_text(caplog)
+
+
+def test_a_bulk_creator_s_schema_refusal_names_each_row_through_the_endpoint(
+    write_client, monkeypatch, caplog
+):
+    """tools/call runs validate_args BEFORE the handler, so the row index
+    the handler adds never reaches the commonest faults. The endpoint's own
+    message must therefore locate each one — `entries[12].hours`, never a
+    bare `hours` the caller cannot map to one of 50 new, id-less rows."""
+    _forbid_handler(monkeypatch, "create_time_entries_bulk")
+    rows = [{"dossier_id": "d1", "date": "2026-09-28", "hours": 1.5,
+             "description": "Rédaction"} for _ in range(50)]
+    rows[12]["hours"] = 30
+    del rows[37]["hours"]
+    rows[44]["phase"] = "XYZ"
+    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
+        body = _call(write_client, "create_time_entries_bulk", {
+            "entries": rows, "idempotency_key": "cle-lot-endpoint",
+        }).get_json()
+    assert body["error"]["code"] == -32602
+    message = body["error"]["message"]
+    assert "`entries[12].hours` must be <= 24" in message
+    assert "`entries[37].hours` is required" in message
+    assert "`entries[44].phase` must be one of" in message
+    assert "; `hours`" not in message and not message.startswith("`hours`")
+    (refused,) = _events(caplog, "mcp_write_refused")
+    assert refused["reason"] == "schema_invalid"
+    assert refused["error_count"] == 3
 
 
 def test_non_object_arguments_to_a_write_are_a_schema_refusal(

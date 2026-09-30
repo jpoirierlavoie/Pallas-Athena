@@ -148,6 +148,47 @@ def test_an_oversized_array_is_refused_on_its_count_not_item_by_item():
     assert errors == ["`rows[1]` must be at most 2 characters"]
 
 
+_NESTED = {
+    "type": "object",
+    "properties": {
+        "days": {"type": "integer", "minimum": 1},
+        "rows": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "minLength": 1},
+                           "hours": {"type": "number", "maximum": 24}},
+            "required": ["name"],
+            "additionalProperties": False,
+        }},
+        "meta": {"type": "object", "properties": {
+            "label": {"type": "string"}}, "required": ["label"]},
+    },
+    "additionalProperties": False,
+}
+
+
+def test_a_nested_field_is_named_by_its_path_never_bare():
+    """Until 2026-09-30 an array item's fields came back BARE (« `hours`
+    must be <= 24 »): on a batch creator — whose new rows have no id — the
+    index was the only way to find the row, and endpoint._tools_call runs
+    this check BEFORE the handler that would add it. Every level now reads
+    as a path; the top level stays bare."""
+    errors = tools.validate_args(_NESTED, {
+        "days": 0,
+        "rows": [{"name": "ok"}, {"hours": 30, "extra": 1}, "x"],
+        "meta": {},
+    })
+    assert errors == [
+        "`days` must be >= 1",
+        "`rows[1].extra` is not a supported argument "
+        "(supported: `hours`, `name`)",
+        "`rows[1].name` is required",
+        "`rows[1].hours` must be <= 24",
+        "`rows[2]` must be an object",
+        "`meta.label` is required",
+    ]
+    assert tools.validate_args(_NESTED, "x") == ["`arguments` must be an object"]
+
+
 @pytest.mark.parametrize(
     "tool, id_key",
     [("set_time_entry_phase_bulk", "time_entry_id"),
@@ -327,7 +368,9 @@ def test_tool_result_text_is_compact_json_of_the_structured_content():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 86  # 32 lectures + 54 ecritures
+    # REWRITTEN deliberately (2026-09-30): 86 -> 88, the two bulk
+    # creators create_time_entries_bulk / create_expenses_bulk.
+    assert len(tools.TOOLS) == 88  # 32 lectures + 56 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -398,6 +441,9 @@ _IDEMPOTENT_WRITES = frozenset({
     # call is REFUSED — the entry is already cleared, already reversed —
     # rather than answered with the first).
     "update_admin_entry",
+    # NOT here (2026-09-30): create_time_entries_bulk and
+    # create_expenses_bulk — the create_invoice rule: a second call without
+    # its key is a second batch, hence the key they DEMAND.
 })
 
 
@@ -407,6 +453,9 @@ def test_write_tools_set_is_pinned():
         "create_note", "append_to_note",
         "create_task", "create_hearing",
         "create_time_entry", "create_expense",
+        # 2026-09-30 — the batch forms of the two creators, up to 50 rows,
+        # ALL OR NOTHING, the key REQUIRED (money).
+        "create_time_entries_bulk", "create_expenses_bulk",
         "complete_dossier", "record_signification",
         "record_prescription_event",
         "complete_task",
@@ -4648,14 +4697,26 @@ def test_every_phased_tool_says_what_omitting_the_pair_does():
     assert handlers._resolve_phase_pair({}) == ("", "")
     assert "get_current_phase_for_dossier" not in inspect.getsource(handlers)
     # The bulk twins say it on the array that carries the items.
+    # REWRITTEN deliberately (2026-09-30): every `entries` array with a
+    # phase used to be a reclassifier's; the bulk CREATORS carry one too,
+    # and theirs stores an omitted pair unclassified, like the single
+    # creators — so the clause is derived from the name here as well.
     bulk = []
     for tool, spec in tools.TOOLS.items():
         entries = spec["input_schema"]["properties"].get("entries", {})
-        if "phase" in entries.get("items", {}).get("properties", {}):
-            bulk.append(tool)
+        items = entries.get("items", {}).get("properties", {})
+        if "phase" not in items:
+            continue
+        bulk.append(tool)
+        if tool.startswith("set_"):
             assert ("naming neither `phase` nor `sous_phase` is refused"
                     in entries["description"]), tool
-    assert len(bulk) >= 2, bulk
+        else:
+            assert tool.startswith("create_"), tool
+            assert items["phase"]["description"].endswith(
+                tools._PHASE_OMIT_UNCLASSIFIED), tool
+            assert "is refused" not in entries["description"], tool
+    assert len(bulk) >= 4, bulk
 
 
 def test_phase_prefix_invariant_over_the_exposed_enums():

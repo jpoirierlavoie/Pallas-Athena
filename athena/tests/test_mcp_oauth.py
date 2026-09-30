@@ -554,6 +554,11 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "des tâches" in flat
     assert "des événements au calendrier" in flat
     assert "des entrées de temps et des déboursés" in flat
+    # 2026-09-30 — the bulk creators: the batch and its all-or-nothing
+    # rule said where the lawyer reads the grant, the ceiling the registry's.
+    assert (f"un à un ou par lots d'au plus {tools.ENTRY_BULK_MAX}"
+            in flat)
+    assert "<strong>en entier ou pas du tout</strong>" in flat
     assert "remplir des champs encore vides" in flat
     assert "jamais écraser une valeur existante" in flat
     assert "significations et des événements de prescription" in flat

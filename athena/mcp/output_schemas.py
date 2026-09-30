@@ -1058,6 +1058,62 @@ def _task_status_effect() -> dict:
     })
 
 
+def _created_time_entry_extra() -> dict[str, Any]:
+    """The per-tool keys of a CREATED time entry's entity — create_time_entry
+    and every row of create_time_entries_bulk (``handlers.
+    _created_time_entry_entity`` builds both), so the two shapes are one."""
+    return {
+        "hours": _num(),
+        "billable": _bool(),
+        "phase": _str("Phase du litige (code, '' = non renseignée)."),
+        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
+        **_money("rate"),
+        **_money("amount"),
+        **_written_etag(),
+    }
+
+
+def _created_expense_extra() -> dict[str, Any]:
+    """The per-tool keys of a CREATED disbursement's entity — create_expense
+    and every row of create_expenses_bulk."""
+    return {
+        "category": _str(),
+        "taxable": _bool(),
+        "phase": _str("Phase du litige (code, '' = non renseignée)."),
+        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
+        **_money("amount"),
+        **_written_etag(),
+    }
+
+
+def _entry_bulk_result(entity_type: str, entity_extra: dict[str, Any]) -> dict:
+    """The result of a bulk creator (create_time_entries_bulk,
+    create_expenses_bulk).
+
+    ALL OR NOTHING: a result exists only when EVERY row was written — a
+    refused row refuses the whole call, so there is no per-row outcome to
+    report, unlike ``_phase_bulk_result``. ``entities`` mirrors the
+    request's ``entries`` ONE-FOR-ONE AND IN ORDER, each the SAME entity the
+    single creator returns (built by the same helper) — its ``etag``
+    optional there too: a provenance key is never auto-required
+    (``_written_etag``; tests/test_mcp_output_schemas pins it), though the
+    handler always emits it."""
+    label = "time entry" if entity_type == "time_entry" else "disbursement"
+    return _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str(f"Always « {entity_type} »."),
+        "count": _int("Rows created — always len(entities), which is "
+                      "always len(entries): the batch is all or nothing."),
+        "entities": _arr(
+            _written_entity(entity_extra, optional=("etag",)),
+            f"One created {label} per requested entry, SAME ORDER as the "
+            "request.",
+        ),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    })
+
+
 # ── The registry ────────────────────────────────────────────────────────
 
 def _phase_bulk_result(entity_type: str) -> dict:
@@ -3691,24 +3747,17 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "decide_rendez_vous": _decide_rendez_vous_result(),
 
-    "create_time_entry": _entity_write_result({
-        "hours": _num(),
-        "billable": _bool(),
-        "phase": _str("Phase du litige (code, '' = non renseignée)."),
-        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
-        **_money("rate"),
-        **_money("amount"),
-        **_written_etag(),
-    }, dav=False, entity_optional=("etag",)),
+    "create_time_entry": _entity_write_result(
+        _created_time_entry_extra(), dav=False, entity_optional=("etag",)),
 
-    "create_expense": _entity_write_result({
-        "category": _str(),
-        "taxable": _bool(),
-        "phase": _str("Phase du litige (code, '' = non renseignée)."),
-        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
-        **_money("amount"),
-        **_written_etag(),
-    }, dav=False, entity_optional=("etag",)),
+    "create_expense": _entity_write_result(
+        _created_expense_extra(), dav=False, entity_optional=("etag",)),
+
+    "create_time_entries_bulk": _entry_bulk_result(
+        "time_entry", _created_time_entry_extra()),
+
+    "create_expenses_bulk": _entry_bulk_result(
+        "expense", _created_expense_extra()),
 
     "complete_dossier": _obj({
         "completed": {"type": "boolean", "enum": [True]},

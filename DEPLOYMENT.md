@@ -1291,7 +1291,8 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   token in force the moment the deploy lands. (The accounting tools are
   the exception by construction: they need `athena:comptabilite`, a scope
   no token held before lot 5b.) §15 « Déploiement unique (D22) », step 5,
-  is where this release runs it. Keep `MCP_WRITE_ENABLED` at `"true"` for that re-consent —
+  is where this release runs it — and the bulk creators' release
+  (2026-09-30) runs it again, §15 « Bulk creators », step 2. Keep `MCP_WRITE_ENABLED` at `"true"` for that re-consent —
   consenting while it is `"false"` offers no box and yields a read-only
   grant, without a word. This is the single-deploy form of the arm/disarm
   procedure in the `MCP_WRITE_ENABLED` comment of `app.yaml` (§4.1's
@@ -3440,6 +3441,57 @@ Notes:
   Watch, the first week: the finitions' `unexpected` messages
   (OBSERVABILITY.md, « Messages of the finitions ») — a burst is an outage,
   a steady line on one id a stored document to repair.
+- **Bulk creators — `create_time_entries_bulk` / `create_expenses_bulk`
+  (2026-09-30, approved by the lawyer — ONE consent train of its own,
+  after the D22 release).** Two new write tools under `athena:write`, in the
+  CREATE family: the batch forms of `create_time_entry` and
+  `create_expense`, up to 50 rows a call (`mcp.tools.ENTRY_BULK_MAX`),
+  **ALL OR NOTHING** — one refused row refuses the whole call and names
+  every bad row `entries[i]` (0-based; a field the schema refuses reads
+  `entries[i].hours`); the rows are written in ONE
+  Firestore batch — with `idempotency_key` REQUIRED (money: a retry
+  without it would be a second batch the next invoice sweeps). One import
+  had made 61 separate `create_time_entry` calls. What ships: **82** tools
+  under the write grant (31 read, 51 write), **88** with the accounting
+  grant (32 read, 56 write); no scope, no switch, no index, no TTL, no
+  dependency, no Tailwind class, no icon, no `cron.yaml` or
+  `firestore.rules` change, no DavX5 account re-add (time entries and
+  disbursements are not DAV-exposed). **A new write tool reaches the token
+  in force the moment the deploy lands** — there is no code gate (D19,
+  §11) — so this release runs the D19 train, in this order:
+  1. *Before revoking*: run the suite on the commit to push
+     (`python -m pytest tests/ -q -p no:cacheprovider`, from `athena/`) —
+     a red build after the revocation leaves the connector down.
+  2. *Revoke and disconnect — BEFORE the push*:
+     `python -m scripts.revoke_mcp_tokens`, and remove the connector in
+     claude.ai. Pause any scheduled Claude job for the deploy window (§11,
+     last bullet). `MCP_WRITE_ENABLED` stays `"true"`.
+  3. *The push*; Cloud Build runs the suite as the gate.
+  4. *Re-add the connector and READ the CREATE paragraph before ticking
+     « Autoriser les écritures »*: time entries and disbursements are now
+     created « un à un ou par lots d'au plus 50 — un lot s'écrit en entier
+     ou pas du tout ». Re-consenting while `MCP_WRITE_ENABLED` is `"false"`
+     would yield a read-only grant without a word. A token that also held
+     `athena:comptabilite` is re-granted by ticking « Autoriser la
+     comptabilité » too, after reading its block.
+  5. *Verify `tools/list`*: **82** tools (31 read, 51 write) for a write
+     token — **88** (32 read, 56 write) for one that also holds
+     `athena:comptabilite` while `MCP_COMPTABILITE_ENABLED` is `"true"`;
+     both new tools with `destructiveHint: false`, `idempotentHint: false`
+     and `idempotency_key` in their schema's `required`; the `initialize`
+     CREATE line names them.
+  6. *One smoke test, on a TEST dossier only* — the connector can never
+     delete what it creates: `create_time_entries_bulk` with two rows, the
+     second invalid (hours `0.333`) — refused, naming `entries[1]`, and
+     `list_time_entries` on the dossier shows NOTHING new (hours `30`
+     instead, a schema fault, is refused naming `entries[1].hours`); the
+     two rows corrected, under a NEW key — two entries, in order; the
+     SAME call again — `idempotent_replay: true`, still two. Then delete
+     both test entries in the application.
+  7. Update BOTH copies of the claude.ai skill `pallas-athena` the same
+     day: the counts read 82 (31 + 51), 88 with the accounting grant, and
+     an import of time or disbursements goes through the bulk creators (the
+     key required, 50 rows a call, a refused batch resent WHOLE).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

@@ -629,6 +629,11 @@ McpEvent = Literal[
     # avec `entity_id: None` — honnête, un lot n'a pas d'entité unique —,
     # d'où cette ligne de COMPTES à côté. Jamais de liste d'identifiants.
     "mcp_phase_bulk",
+    # Les créateurs en lot (create_time_entries_bulk / create_expenses_bulk).
+    # Même raison que `mcp_phase_bulk` : `mcp_write` part avec
+    # `entity_id: None`, donc les COMPTES vivent ici. Jamais de liste
+    # d'identifiants, jamais une description, jamais un montant.
+    "mcp_entry_bulk",
     # The idempotency store (mcp_idempotency) could not be read or written.
     # Under the `optional` policy the write went ahead regardless (the store
     # fails OPEN); under `required` the call was refused (fails CLOSED). `op`
