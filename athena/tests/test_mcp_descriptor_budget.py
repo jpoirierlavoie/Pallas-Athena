@@ -28,6 +28,17 @@ tool descriptions included (contracts-1, part 2): 257 183 bytes, the largest
 still `update_partie` at 7 904 — 257 227 after the review of E3 (the
 detected-conflict sentence of `record_kyc_status` made true).
 
+Measured again 2026-09-30, HEAD d8de4e5 (257 794 bytes by then), and after
+the context-cost lot and its review: 248 645 bytes, the largest
+`update_partie` at 7 721. The saving is the shared property texts repeated
+on every write tool — `idempotency_key` (54 copies, 15 684 → 9 512 bytes of
+description), `expected_etag` (23 copies, 6 014 → 4 611) and `phase` /
+`sous_phase` (12 and 13 copies, 6 071 → 4 617, the per-tool omission
+sentence included; their enums are the input contract and stay whole) —
+made concise, plus `get_dossier`'s description brought under the
+2 048-character cut below (2 154 → 2 038). For the write grant (80 tools,
+description + inputSchema only): 218 610 → 209 872 bytes.
+
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
 
@@ -109,6 +120,27 @@ def test_no_single_tool_exceeds_the_per_tool_budget():
     )
 
 
+# Claude Code cuts each tool DESCRIPTION at 2 048 characters, as it cuts the
+# server instructions (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH). A rule past
+# the cut is a rule that client never reads. Measured 2026-09-30: one tool
+# over it, get_dossier at 2 154 — tightened to 2 038; the next largest were
+# list_invoices (1 775) and import_invoice (1 743).
+DESCRIPTION_CUT = 2_048
+
+
+def test_no_tool_description_passes_the_client_s_cut():
+    over = {
+        d["name"]: len(d["description"])
+        for d in tools.list_tool_descriptors(None)
+        if len(d["description"]) > DESCRIPTION_CUT
+    }
+    assert not over, (
+        f"tool descriptions past the {DESCRIPTION_CUT}-character cut a real "
+        "client applies — tighten the wording, or move reference detail "
+        "into the input-property description it concerns: "
+        + ", ".join(f"{n} = {c}" for n, c in sorted(over.items())))
+
+
 def test_the_whole_surface_stays_within_the_total_budget():
     sizes = _model_visible_bytes()
     total = sum(sizes.values())
@@ -133,8 +165,9 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
 # rides every `initialize`, and nothing measured it — it grew from 4 461
 # characters (21012c0) to 21 579 / 24 636 (the comptabilité variant) with no
 # test noticing. And a real client CUTS the field: this connector's
-# production text reached a Claude Code session truncated at character
-# 2 047, while the protocol rules came last, after ~16 KB of family prose.
+# production text reached a Claude Code session truncated after its
+# 2 048th character, while the protocol rules came last, after ~16 KB of
+# family prose.
 #
 # Part 1 (0459d60) moved a protocol core to the front and capped the sizes
 # at 24 500 / 27 500 bytes. Part 2 (this file's current form) restructured
@@ -148,10 +181,35 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
 # REWRITTEN deliberately: the two caps (24 500 / 27 500) became ONE cap for
 # every token type, and « the core comes before READ-CONTENT » became « the
 # core IS the first characters, and is complete ».
+#
+# Part 3 (2026-09-30, the context-cost lot): the CONVENTIONS — money
+# (`*_cents` + `*_display`), date-only `YYYY-MM-DD` vs Montréal timestamps,
+# ids verbatim, the provenance the SERVER stamps — still closed the text,
+# ~4 KB after a client's 2 048-character cut, so every truncating client
+# lost them. The protocol paragraph was compressed (every rule kept) and
+# the text now opens on a HEAD: the SAFETY CORE then the CONVENTIONS, whole
+# within disclosure.HEAD_LIMIT (2 048 — Claude Code's own cut, counted in
+# characters as the client counts — this connector's text reached a
+# session cut exactly after its 2 048th character). REWRITTEN
+# deliberately: CORE_LIMIT (2 000, the core alone) became HEAD_LIMIT (core +
+# conventions), and « the index follows the core » became « the CONVENTIONS
+# follow the core, then the index ».
+# The review of that lot (same day) made the head TRUE rather than shorter:
+# « never type » the provenance became « never add a stamp, keep those a
+# re-sent text holds » (update_task stores a description exactly as sent,
+# so a model told « never type it » strips the « Créée par Claude » line for
+# good); the row fields regained « where declared » and « `created_via` on
+# creations »; « ONE effect reaches » became « Only ONE effect reaches » (an
+# exclusivity, pinned below) and the lead regained « manager »; the
+# INTERRUPTED gloss moved into that refusal itself (tests/test_mcp_write_
+# support.py pins it there), and « never blindly » left as a restatement of
+# « redo the write on the current record ». Measured: core 1 470
+# characters, head 2 045 (2 077 UTF-8 bytes — a client cutting at 2 048
+# BYTES would lose its last 28 characters, « …aude] » (compliance
+# checks). »; Claude Code counts characters); the counts header « TOOLS: … »
+# now starts at character 2 046, past the cut; 6 115 / 7 567 UTF-8 bytes
+# (base / accounting), from 6 504 / 7 956 before the lot.
 INSTRUCTIONS_CAP = 8_000
-# What a client cutting at ~2 048 characters must still have read — the
-# SAFETY CORE, whole, within this.
-CORE_LIMIT = 2_000
 _CORE_MARKERS = (
     "SAFETY CORE",
     "NEVER, whatever the tool:",
@@ -161,6 +219,9 @@ _CORE_MARKERS = (
     "CONFIRM an identity or conflict check",
     "`decide_rendez_vous`",
     "cancels the client's Outlook meeting",
+    # An EXCLUSIVITY: nothing else leaves the practice (review of the
+    # context-cost lot — « ONE effect reaches » alone reads « one such »).
+    "Only ONE effect reaches anyone outside the practice",
     "confirm with the user unless a standing instruction",
     "idempotency_key",
     "the SAME key, never a new one",
@@ -175,6 +236,26 @@ _CORE_MARKERS = (
     "re-read, then redo the write on the current record",
     "Each tool's description carries its own rules",
 )
+# What the CONVENTIONS must carry — each a fact a caller needs to read a
+# result or write an argument, whatever tool it opens.
+_CONVENTION_MARKERS = (
+    "CONVENTIONS:",
+    "French",
+    "Markdown", "raw HTML refused",
+    "`*_cents`", "`*_display`", "(CAD)",
+    "ISO 8601 America/Montreal",
+    "date-only fields `YYYY-MM-DD`",
+    "UUIDv4", "verbatim",
+    # BOTH halves (review of the context-cost lot): the server stamps, and
+    # a text sent back KEEPS the stamps it held — « never type it » alone
+    # had a model strip them from a body it re-sent in full.
+    "never add a stamp, keep those a re-sent text holds",
+    "`created_via` on creations", "`updated_via`", "`mcp_updated_at`",
+    "where declared",
+    "« … par Claude le … »",
+    "« par Claude (connecteur) »", "`genere_depuis`",
+    "`*_source` \"mcp\"", "« [AAAA-MM-JJ — inscrit par Claude] »",
+)
 
 
 def _instructions():
@@ -187,6 +268,19 @@ def _core():
     from mcp import disclosure
 
     return disclosure.safety_core_en()
+
+
+def _head_limit() -> int:
+    from mcp import disclosure
+
+    return disclosure.HEAD_LIMIT
+
+
+def test_the_head_limit_is_the_client_s_cut():
+    """Claude Code cuts server instructions and tool descriptions at 2 048
+    characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH). A larger limit
+    here would let the head outgrow the cut it exists to survive."""
+    assert _head_limit() == 2_048
 
 
 def test_the_instructions_stay_within_their_budget():
@@ -205,20 +299,56 @@ def test_the_instructions_stay_within_their_budget():
 @pytest.mark.parametrize("variant", [0, 1], ids=["base", "comptabilite"])
 def test_the_safety_core_is_the_first_characters_and_complete(variant):
     """The core opens the text — its first N characters ARE the core — and
-    the whole core fits before a client's cut."""
+    carries every protocol rule; the CONVENTIONS follow it, then the
+    index."""
+    from mcp import disclosure
+
     text = _instructions()[variant]
     core = _core()
     assert text.startswith(core + " "), "the SAFETY CORE must open the text"
-    assert len(core) <= CORE_LIMIT, (
-        f"the SAFETY CORE is {len(core)} characters, over {CORE_LIMIT}: a "
-        "client that cuts at ~2 048 would lose its end")
     missing = [m for m in _CORE_MARKERS if m not in core]
     assert missing == [], f"not in the SAFETY CORE: {missing}"
-    # Everything after the core is the index and the rest — never a second
-    # copy of the protocol rules.
+    # REWRITTEN deliberately (2026-09-30): the CONVENTIONS, not the index,
+    # follow the core — the index comes after the head.
     rest = text[len(core):]
-    assert rest.lstrip().startswith("TOOLS: ")
+    assert rest.lstrip().startswith("CONVENTIONS: ")
+    head = disclosure.instructions_head_en()
+    assert text.startswith(head + " TOOLS: ")
+    # Everything after the core is the conventions, the index and the rest
+    # — never a second copy of the protocol rules.
     assert "idempotency_key` on EVERY write" not in rest
+
+
+@pytest.mark.parametrize("variant", [0, 1], ids=["base", "comptabilite"])
+def test_the_conventions_and_every_core_promise_survive_the_client_s_cut(
+    variant,
+):
+    """What a client cutting at 2 048 characters reads: the WHOLE safety
+    core — every in-core promise, the outbound effect, the protocol — and
+    the whole CONVENTIONS, in both variants. Asserted on the actual first
+    2 048 characters of the served text, not on the pieces' lengths: a
+    reordering that pushed a promise past the cut fails here even if every
+    piece stayed short."""
+    from mcp import disclosure
+
+    text = _instructions()[variant]
+    cut = text[:_head_limit()]
+    head = disclosure.instructions_head_en()
+    assert len(head) <= _head_limit(), (
+        f"the head (core + conventions) is {len(head)} characters, over "
+        f"{_head_limit()}: a client cutting there loses its end")
+    assert head in cut
+    for never in disclosure.core_nevers():
+        assert never.en in cut, never.key
+    missing = [m for m in _CORE_MARKERS + _CONVENTION_MARKERS if m not in cut]
+    assert missing == [], f"past the client's cut: {missing}"
+    # The conventions are said ONCE: the paragraphs they replaced do not
+    # reappear after the index.
+    assert text.count("`*_cents`") == 1
+    assert text.count("inscrit par Claude") == 1
+    # The wording the review refused: obeyed literally, it deletes the
+    # stamp lines of a body re-sent through update_task / update_note.
+    assert "never type it" not in text
 
 
 def test_the_core_states_only_promises_true_for_every_token():

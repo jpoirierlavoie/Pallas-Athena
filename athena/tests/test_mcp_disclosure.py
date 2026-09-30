@@ -476,7 +476,11 @@ def test_the_instructions_follow_the_registry(monkeypatch):
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the hand-assembled list of every etag-accepting tool (~1 KB)
     # left — the SAFETY CORE states the rule once, and each such tool's own
     # schema declares the argument and names the reads that carry the etag.
-    assert "Where a tool takes `expected_etag`" in base
+    # REWRITTEN deliberately (2026-09-30, the context-cost lot): the core
+    # was compressed to leave the CONVENTIONS room within the client's
+    # 2 048-character cut — « Where a tool takes `expected_etag`, pass the
+    # `etag` of your latest read » became the equation below, same rule.
+    assert "`expected_etag` = your latest read's `etag`" in base
     for name in tools.TOOLS:
         if tools.TOOLS[name].get("concurrency") in ("optional", "required"):
             props = tools.TOOLS[name]["input_schema"]["properties"]
@@ -1226,8 +1230,11 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     # The writes that rewrite what they read: ONE rule in the core now —
     # a stale refusal with `expected_etag` omitted, when the record changed
     # during the call — instead of a list of them.
-    assert ("also given, `expected_etag` omitted, when the record changed "
-            "during the call") in disclosure.safety_core_en()
+    # REWRITTEN deliberately (2026-09-30, the context-cost lot): same rule,
+    # compressed with the rest of the core to leave the CONVENTIONS room
+    # within the client's 2 048-character cut.
+    assert ("stale_etag (also without `expected_etag`, if the record changed "
+            "during the call) wrote nothing") in disclosure.safety_core_en()
     assert "a dossier it refuses retried as its warning says" in (
         tools.TOOLS["update_dossier_party"]["description"])
     assert "`*_source` \"mcp\"" in text

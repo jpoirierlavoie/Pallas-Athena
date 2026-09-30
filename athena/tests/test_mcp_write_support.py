@@ -319,6 +319,11 @@ def test_a_stale_pending_claim_is_refused_as_interrupted(fake):
     message = str(excinfo.value)
     assert "interrompu" in message and "relisez" in message
     assert "nouvelle clé seulement si rien n'a été écrit" in message
+    # The WHY, said where the caller meets it (2026-09-30): the SAFETY CORE
+    # of INSTRUCTIONS was compressed to its rule and leaves this to the
+    # refusal — without it, « a NEW key only if nothing was written » reads
+    # as a gamble on a call that might still commit.
+    assert "il ne peut plus être en cours" in message
     assert fake.peek(_path("create_note"))["status"] == "pending"
 
 

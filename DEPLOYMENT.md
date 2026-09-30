@@ -1576,11 +1576,14 @@ Notes:
      a word.
   8. *Verify `tools/list`*: **80** tools (31 read, 49 write), no accounting
      tool, `decide_rendez_vous` alone carrying `openWorldHint: true`; and
-     the `initialize` text opens on the SAFETY CORE (« Pallas Athena is a
-     single-user … SAFETY CORE — read it before ANY write. NEVER, whatever
-     the tool: … »), 8 000 bytes at most. The deploy gate pins both, and
-     the descriptor budget (`tests/test_mcp_descriptor_budget.py`: about
-     257 KB of its 280 KB cap).
+     the `initialize` text opens on the SAFETY CORE (« Pallas Athena
+     (single-user Quebec civil litigation practice manager). SAFETY CORE —
+     read before ANY write. NEVER, whatever the tool: … »), the CONVENTIONS
+     (« CONVENTIONS: French data; … ») ending within its first 2 048
+     characters,
+     8 000 bytes at most. The deploy gate pins both, and the descriptor
+     budget (`tests/test_mcp_descriptor_budget.py`: about 248 KB of its
+     280 KB cap).
 
   **After the push** — checks that write nothing, or only on test data,
   but for ONE deletable draft (step 12). They share their test data, so
@@ -3329,9 +3332,17 @@ Notes:
   17): INSTRUCTIONS open on a SAFETY CORE that a client cutting at
   2 048 characters reads whole (the « never » list, the one outbound
   effect, confirm-before-writing, idempotency and etag, re-read before a
-  retry), then ONE index line per family naming its tools — the family
-  prose moved into the tool descriptions, and the text weighs at most
-  8 000 bytes for every token where it weighed 22-26 KB;
+  retry) and, since the context-cost lot (2026-09-30), the CONVENTIONS
+  within the same 2 048 characters (money, dates, ids, the provenance the
+  server stamps), then ONE index line per family naming its tools — the
+  family prose moved into the tool descriptions, and the text weighs at
+  most 8 000 bytes for every token where it weighed 22-26 KB; every tool
+  description fits the same cut, a tool result's text block is COMPACT
+  JSON (its `structuredContent` unchanged), and the property texts every
+  write repeats (`idempotency_key`, `expected_etag`, `phase` /
+  `sous_phase`) are concise — no tool, scope, input contract or
+  outputSchema moved: those texts need no revocation, the next
+  `initialize` and `tools/list` carry them;
   `clear_register_entries` takes
   `expected_etags` (REQUIRED at the administration register);
   `record_document_analysis` takes an optional `expected_etag` and returns

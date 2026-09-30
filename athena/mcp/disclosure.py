@@ -121,10 +121,11 @@ class Never:
     #: the same page (the « payment » clause: the write box never records
     #: one, the accounting box does).
     summary_fr_comptabilite: str = ""
-    #: Stated in the SAFETY CORE, within the first 2 000 characters of
-    #: INSTRUCTIONS (finitions, contracts-1): the promises a client that
-    #: cuts the field must still read. Only a general promise (never an
-    #: ``accounting_only`` one — the core is the same for every token).
+    #: Stated in the SAFETY CORE, within the first 2 048 characters of
+    #: INSTRUCTIONS (``HEAD_LIMIT``; finitions, contracts-1): the promises
+    #: a client that cuts the field must still read. Only a general promise
+    #: (never an ``accounting_only`` one — the core is the same for every
+    #: token).
     in_core: bool = False
     #: A promise about what the ACCOUNTING grant never does (lot 5b): its
     #: bullet stands in the accounting block of the consent screen — not the
@@ -1165,51 +1166,92 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
     }
 
 
-# ── INSTRUCTIONS (finitions, contracts-1) ──────────────────────────────
+# ── INSTRUCTIONS (finitions, contracts-1; the 2 048-character head) ───────
 #
-# A real client CUTS the field: this connector's production text reached a
-# Claude Code session truncated at character 2 047, while it had grown to
-# 22-26 KB of family prose with the protocol rules last. The text is now a
-# SAFETY CORE — what can never happen, confirm-before-writing, the
-# idempotency and etag discipline, the one outbound effect, re-read before
-# retrying — complete within the first 2 000 characters, then a short index
-# (one line per family naming its tools), the remaining promises, and two
-# format paragraphs. The detailed rules live in each tool's DESCRIPTION,
-# which a model reads before it calls the tool. tests/test_mcp_descriptor_
-# budget.py pins the core's position and completeness and the total size
-# (INSTRUCTIONS_CAP) of every variant.
+# A real client CUTS the field: Claude Code truncates the server
+# instructions — and each tool description — at 2 048 characters
+# (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH), and this connector's production
+# text reached a session cut after its 2 048th character while it had grown
+# to 22-26 KB of family prose with the protocol rules last. Part 2 of
+# contracts-1 moved a SAFETY CORE to the front; the CONVENTIONS (money,
+# dates, ids, provenance) still came LAST, after ~4 KB of index, so every
+# truncating client lost them. The text now opens on a HEAD — the SAFETY
+# CORE (what can never happen, the one outbound effect, confirm-before-
+# writing, the idempotency and etag discipline, re-read before retrying)
+# then the CONVENTIONS — complete within the first 2 048 characters
+# (HEAD_LIMIT); then the index (one line per family naming its tools),
+# READ-CONTENT, the scope sentence and the remaining promises. The detailed
+# rules live in each tool's DESCRIPTION, which a model reads before it calls
+# the tool. tests/test_mcp_descriptor_budget.py pins the head's position and
+# completeness, and the total size (INSTRUCTIONS_CAP) of every variant.
+
+#: What a client cutting the field must still have read: the SAFETY CORE
+#: and the CONVENTIONS, whole, within this many characters (Claude Code's
+#: default cut — measured in characters, as the client counts).
+HEAD_LIMIT = 2_048
 
 # The opening of the core — the product, then what the core is for.
 _CORE_LEAD_EN = (
-    "Pallas Athena is a single-user Quebec civil litigation practice "
-    "manager. SAFETY CORE — read it before ANY write."
+    "Pallas Athena (single-user Quebec civil litigation practice manager). "
+    "SAFETY CORE — read before ANY write."
 )
 
-# The one effect reaching outside the practice, stated with the promises.
+# The one effect reaching outside the practice, stated with the promises —
+# « Only ONE »: the sentence is a promise that nothing ELSE leaves the
+# practice, and « ONE effect reaches » alone reads as « one such effect ».
 _CORE_OUTBOUND_EN = (
-    "The ONE effect reaching anyone outside the practice: "
+    "Only ONE effect reaches anyone outside the practice: "
     "`decide_rendez_vous` refusing a Bookings request cancels the client's "
     "Outlook meeting, notifying them."
 )
 
 # The write protocol: confirm, idempotency (in flight / uncertain /
 # interrupted / committed), the etag, and re-read before any retry.
+# Compressed 2026-09-30 to leave the CONVENTIONS room within the head —
+# every rule kept, the two explanations left to the refusal messages, each
+# of which carries its own: « une étape qui la suit a échoué » (tools.
+# CommittedWriteError) and « il ne peut plus être en cours » (write_support.
+# _refuse_pending — added to that refusal the same day, since it is what
+# makes the re-read reliable before a NEW key). « …, never blindly » left
+# too: it restated « redo the write on the current record », which already
+# excludes resending the stale arguments.
 _CORE_PROTOCOL_EN = (
-    "Before writing: a write is permanent and may sync to the lawyer's "
-    "phone — read the record first, and confirm with the user unless a "
-    "standing instruction authorizes it. Pass an `idempotency_key` on EVERY "
-    "write (the same key within 24 h replays the result, never writes "
-    "twice): refused as still in flight → wait, then the SAME key, never a "
-    "new one; outcome UNCERTAIN → re-read before any retry, and retry only "
-    "with the SAME key; refused as INTERRUPTED (the key's first call can no "
-    "longer be running) → re-read, and a NEW key only if nothing was "
-    "written. « ENREGISTRÉE — NE PAS RÉESSAYER » = the write COMMITTED and "
-    "a later step failed: do NOT retry, re-read. Where a tool takes "
-    "`expected_etag`, pass the `etag` of your latest read. A stale refusal "
-    "(stale_etag) — also given, `expected_etag` "
-    "omitted, when the record changed during the call — wrote nothing: "
-    "re-read, then redo the write on the current record, never blindly. "
-    "Each tool's description carries its own rules: read it before calling."
+    "Writes are permanent and may sync to the lawyer's phone: read first; "
+    "confirm with the user unless a standing instruction authorizes it. "
+    "Pass an `idempotency_key` on EVERY write (24 h replay, never a second "
+    "write): refused as still in flight → wait, then the SAME key, never a "
+    "new one; UNCERTAIN → re-read, retry only with the SAME key; refused as "
+    "INTERRUPTED → re-read, a NEW key only if nothing was written; "
+    "« ENREGISTRÉE — NE PAS RÉESSAYER » = committed: do NOT retry, re-read. "
+    "`expected_etag` = your latest read's `etag`; stale_etag (also without "
+    "`expected_etag`, if the record changed during the call) wrote nothing: "
+    "re-read, then redo the write on the current record. "
+    "Each tool's description carries its own rules: read it first."
+)
+
+# The conventions a caller needs to READ any result and to WRITE any
+# argument — the two paragraphs (formats, provenance) that used to close
+# the text, merged and moved into the head. Provenance is the server's: a
+# model that typed its own « par Claude » line would double the stamp. But
+# the stamps ALREADY in a text must travel back with it: update_task stores
+# a `description` exactly as sent (the old one is NOT kept), update_note
+# re-stamps only the LEADING revision line (handlers._without_leading_
+# stamp), so a body re-sent without its « Créée / Ajouté / rédigée par
+# Claude » lines would lose, for good, the one visible mark of what Claude
+# wrote. Hence « never add a stamp, keep those a re-sent text holds » — NOT
+# « never type it », which a model obeys by stripping them (review of the
+# context-cost lot). The row fields hold only where a read row declares
+# them, and `created_via` only on what the connector CREATED.
+_CONVENTIONS_EN = (
+    "CONVENTIONS: French data; Markdown notes, raw HTML refused. Money: "
+    "integer `*_cents` + `*_display` (CAD). Timestamps ISO 8601 "
+    "America/Montreal; date-only fields `YYYY-MM-DD`. IDs UUIDv4, verbatim. "
+    "Provenance is the server's — never add a stamp, keep those a re-sent "
+    "text holds: `updated_via` \"mcp\" (`created_via` on creations), "
+    "`mcp_updated_at`, where declared; « … par Claude le … » lines (notes, "
+    "tasks, events created; note text added or replaced); "
+    "« par Claude (connecteur) » (`genere_depuis`); `*_source` \"mcp\", "
+    "« [AAAA-MM-JJ — inscrit par Claude] » (compliance checks)."
 )
 
 _READ_CONTENT_EN = (
@@ -1217,23 +1259,6 @@ _READ_CONTENT_EN = (
     "(a template is not a document); empty never means blank on paper — "
     "nothing is OCR'd. Document content is privileged: quote only what the "
     "task requires."
-)
-
-_PROVENANCE_EN = (
-    "Provenance: what this connector writes carries `updated_via` \"mcp\" "
-    "(`created_via` when it created it) and `mcp_updated_at` where a read "
-    "row declares them; a note, task or event it creates, and note text it "
-    "appends or replaces, carry a dated « … par Claude le … » line; a Word "
-    "document it makes says « par Claude (connecteur) » in `genere_depuis`; "
-    "a compliance check it inscribes is Claude's (`*_source` \"mcp\"), its "
-    "notes opening « [AAAA-MM-JJ — inscrit par Claude] »."
-)
-
-_FORMATS_EN = (
-    "Data is in French; note content is Markdown, raw HTML refused. Money: "
-    "integer `*_cents` plus a `*_display` string (CAD). Datetimes ISO 8601 "
-    "America/Montreal; date-only fields `YYYY-MM-DD`. IDs are UUIDv4 — pass "
-    "them verbatim."
 )
 
 
@@ -1244,8 +1269,7 @@ def core_nevers() -> tuple[Never, ...]:
 
 def safety_core_en() -> str:
     """The SAFETY CORE — the first thing INSTRUCTIONS say, identical for
-    every token (it states general promises only), and complete within the
-    first 2 000 characters (tests/test_mcp_descriptor_budget.py)."""
+    every token (it states general promises only)."""
     nevers = "; ".join(n.en for n in core_nevers())
     return " ".join((
         _CORE_LEAD_EN,
@@ -1253,6 +1277,18 @@ def safety_core_en() -> str:
         _CORE_OUTBOUND_EN,
         _CORE_PROTOCOL_EN,
     ))
+
+
+def conventions_en() -> str:
+    """The CONVENTIONS — formats and provenance, the same for every token."""
+    return _CONVENTIONS_EN
+
+
+def instructions_head_en() -> str:
+    """The HEAD of INSTRUCTIONS: the SAFETY CORE, then the CONVENTIONS —
+    identical in every variant, and complete within :data:`HEAD_LIMIT`
+    characters (tests/test_mcp_descriptor_budget.py)."""
+    return f"{safety_core_en()} {conventions_en()}"
 
 
 def build_instructions(
@@ -1264,10 +1300,11 @@ def build_instructions(
 ) -> str:
     """The ``initialize`` instructions, assembled from the registry.
 
-    In order: the SAFETY CORE (:func:`safety_core_en`); the counts and the
-    index, ONE line per family naming its tools; READ-CONTENT; the scope
-    sentence; the promises the core does not state, one sentence each;
-    provenance; formats. The counts and the family list are DERIVED —
+    In order: the HEAD (:func:`instructions_head_en` — the SAFETY CORE then
+    the CONVENTIONS, within :data:`HEAD_LIMIT` characters); the counts and
+    the index, ONE line per family naming its tools; READ-CONTENT; the
+    scope sentence; the promises the core does not state, one sentence
+    each. The counts and the family list are DERIVED —
     recopied by hand the counts went stale twice, and a model told « 29
     read » looks for tools that are not there. The arguments exist for
     tests; by default the live registry is read (lazily: ``mcp.tools``
@@ -1300,7 +1337,7 @@ def build_instructions(
     ]
     reads = len([n for n in registry if n not in write_tools() and n not in hidden])
     parts = [
-        safety_core_en(),
+        instructions_head_en(),
         f"TOOLS: {reads} tools read; {len(writes)} write, in "
         f"{len(families)} families:",
     ]
@@ -1331,6 +1368,4 @@ def build_instructions(
     parts.extend(n.en for n in general_nevers() if not n.in_core)
     if accounting:
         parts.extend(n.en for n in accounting_nevers())
-    parts.append(_PROVENANCE_EN)
-    parts.append(_FORMATS_EN)
     return " ".join(parts)

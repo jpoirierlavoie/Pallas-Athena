@@ -301,6 +301,29 @@ def test_tool_result_envelope():
     assert result_new["structuredContent"] == payload
 
 
+def test_tool_result_text_is_compact_json_of_the_structured_content():
+    """The text block is paid in the model's context on every call: compact
+    JSON (2026-09-30 — it was indent=2), never a lossy rendering — it
+    parses back to exactly the structuredContent, which is unchanged."""
+    import json
+
+    payload = {
+        "entity": {"id": "abc", "titre": "Réponse déposée",
+                   "amount_cents": 15000, "amount_display": "150,00 $",
+                   "tags": ["a", "b"], "due_date": None},
+        "warnings": [],
+        "truncated": False,
+    }
+    result = tools.tool_result(payload, "2025-06-18")
+    text = result["content"][0]["text"]
+    assert "\n" not in text
+    assert ": " not in text and ", " not in text
+    assert text == json.dumps(payload, ensure_ascii=False,
+                              separators=(",", ":"))
+    assert json.loads(text) == result["structuredContent"] == payload
+    assert "Réponse déposée" in text  # ensure_ascii=False still
+
+
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
@@ -4575,6 +4598,64 @@ def test_phase_enums_are_derived_from_the_pure_module():
         assert "sous_phase" not in schema.get("required", []), tool
         assert props["phase"]["description"], tool
         assert props["sous_phase"]["description"], tool
+
+
+def test_every_phased_tool_says_what_omitting_the_pair_does():
+    """Review of the context-cost lot (2026-09-30): the SHARED phase text
+    lost « Optionnel : omis = non renseignée » (false on an edit, which
+    leaves the pair alone, and on a reclassifier, which refuses), and the
+    four creators were left saying NOTHING about omission — while the web
+    forms prefill the protocol's current phase, so a model had reason to
+    expect it here. Each phased tool now says it, in its phase text or its
+    own description, and the sentence that fits: derived from the name, so a
+    new phased tool is checked by its declaration alone."""
+    import inspect
+
+    by_prefix = {
+        "create_": tools._PHASE_OMIT_UNCLASSIFIED,
+        "add_": tools._PHASE_OMIT_UNCLASSIFIED,
+        "update_": tools._PHASE_OMIT_KEPT,
+        "set_": tools._PHASE_OMIT_REFUSED,
+    }
+    clauses = set(by_prefix.values())
+    # The tools whose own DESCRIPTION already said it (on_omit=None) — said
+    # once, never twice.
+    own = {
+        "update_task":
+            "Omitting both phase keys leaves the classification alone",
+        "update_time_entry":
+            "Omitting BOTH phase keys leaves the classification alone",
+    }
+    phased = _phased_tools()
+    assert len(phased) >= 10, phased     # garde contre un balayage vide
+    for tool in phased:
+        spec = tools.TOOLS[tool]
+        text = spec["input_schema"]["properties"]["phase"]["description"]
+        clause = next(v for k, v in by_prefix.items() if tool.startswith(k))
+        if tool in own:
+            assert own[tool] in spec["description"], tool
+            assert not any(c in text for c in clauses), tool
+        else:
+            assert text.endswith(clause), tool
+            assert not any(c in text for c in clauses - {clause}), tool
+    for tool in ("create_task", "create_time_entry", "create_expense",
+                 "add_protocol_step"):
+        assert tools._PHASE_OMIT_UNCLASSIFIED in (
+            tools.TOOLS[tool]["input_schema"]["properties"]["phase"]
+            ["description"]), tool
+    # ... and TRUE: omission resolves to the unclassified pair, and no
+    # handler reads the protocol's current phase the way the web forms do.
+    assert handlers._resolve_phase_pair({}) == ("", "")
+    assert "get_current_phase_for_dossier" not in inspect.getsource(handlers)
+    # The bulk twins say it on the array that carries the items.
+    bulk = []
+    for tool, spec in tools.TOOLS.items():
+        entries = spec["input_schema"]["properties"].get("entries", {})
+        if "phase" in entries.get("items", {}).get("properties", {}):
+            bulk.append(tool)
+            assert ("naming neither `phase` nor `sous_phase` is refused"
+                    in entries["description"]), tool
+    assert len(bulk) >= 2, bulk
 
 
 def test_phase_prefix_invariant_over_the_exposed_enums():

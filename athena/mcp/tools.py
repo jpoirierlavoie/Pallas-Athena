@@ -214,13 +214,24 @@ def _jsonable(value: Any) -> Any:
 
 
 def tool_result(payload: Any, protocol_version: str) -> dict:
-    """Wrap a handler payload in the MCP tools/call result envelope."""
+    """Wrap a handler payload in the MCP tools/call result envelope.
+
+    The text block is COMPACT JSON (no indent, no space after a separator):
+    it is the copy the model reads on a client that ignores
+    ``structuredContent``, and every byte of it is paid in the
+    conversation's context. ``indent=2`` cost ~23 % more bytes on the
+    conformance fixtures (2026-09-30) for no information a model uses.
+    ``structuredContent`` is the same object either way — only its text
+    rendering changed.
+    """
     clean = _jsonable(payload)
     result: dict[str, Any] = {
         "content": [
             {
                 "type": "text",
-                "text": json.dumps(clean, ensure_ascii=False, indent=2),
+                "text": json.dumps(
+                    clean, ensure_ascii=False, separators=(",", ":")
+                ),
             }
         ],
         "isError": False,
@@ -540,13 +551,15 @@ def _write_protocol_props() -> dict:
             "type": "string",
             "minLength": 8,
             "maxLength": 128,
+            # Concise on purpose (2026-09-30): this text is repeated in
+            # every write tool's schema — 46 copies, ~13 KB before — and the
+            # SAFETY CORE of INSTRUCTIONS states the full retry discipline
+            # once. The policy's two facts stay: « Pass one on every write »
+            # and no « REQUIRED » (tests/test_mcp_framework_guards).
             "description": (
-                "Caller-chosen key identifying THIS write. Retrying with "
-                "the same key returns the first call's stored result "
-                "instead of writing twice (kept 24 h); the same key with "
-                "different arguments is refused. Pass one on every write: "
-                "without it, a retry after an answer you did not receive "
-                "writes again."
+                "Caller-chosen key for THIS write: within 24 h the same key "
+                "returns the stored result, never a second write; with "
+                "other arguments it is refused. Pass one on every write."
             ),
         },
     }
@@ -596,13 +609,16 @@ def _expected_etag_prop(readers: tuple[str, ...]) -> dict:
         "expected_etag": {
             "type": "string",
             "maxLength": 64,
+            # Concise on purpose (2026-09-30): repeated on every edit tool
+            # (23 copies); the SAFETY CORE states the stale_etag remedy once.
+            # The readers stay named — the guard checks each is (test_mcp_
+            # framework_guards), and they are what differs per tool.
             "description": (
                 "The `etag` from your latest read of this record ("
                 + " / ".join(readers)
-                + ", or the last write result). If the record changed "
-                "since — in the application, on the phone or through "
-                "another call — the write is REFUSED and nothing is "
-                "written: re-read, then retry."
+                + ", or the last write result); if the record changed "
+                "since, the write is REFUSED and nothing is written — "
+                "re-read, then retry."
             ),
         },
     }
@@ -1374,27 +1390,50 @@ _QUALITE_RECONNAISSANCE = list(_tax.QUALITES_RECONNAISSANCE)
 _PHASE_CODES = [c for c in phases.VALID_PHASES if c]
 _SOUS_PHASE_CODES = [c for c in phases.VALID_SOUS_PHASES if c]
 
-# The optional phase pair shared by the three phased write tools.
+# The phase pair shared by every phased write tool.
+# Concise on purpose (2026-09-30): repeated on twelve tools, beside enums
+# that are the input contract and stay whole. « Optionnel : omis = non
+# renseignée » left the SHARED text — it was the creators' truth only: on
+# an update an omitted pair leaves the classification ALONE, and the
+# reclassifiers refuse a call with neither key. So what omitting BOTH keys
+# does is said PER TOOL: ``_phase_props(on_omit=…)``, keyword-only and
+# without a default, so a new phased tool cannot forget to decide it. A
+# creator stores the record UNCLASSIFIED — never the protocol's current
+# phase, which is what the web forms offer (routes/tasks, routes/
+# time_expenses → models/protocol.get_current_phase_for_dossier; no
+# handler calls it), so a model that saw the form would otherwise expect
+# it here. ``None`` = the tool's own description already says it (update_
+# task, update_time_entry). tests/test_mcp_tools.py checks that every
+# phased tool states it somewhere, and the one of the three that fits.
 _PHASE_DESCRIPTION = (
-    "Code de phase du litige (axe 1 — ex. « CTS » Contestation, « PRE » "
-    "Préjudiciaire, « ADM » Administration). Optionnel : omis = non "
-    "renseignée. Indépendant de `category` (nature du travail). Si seul "
-    "`sous_phase` est fourni, la phase parente est déduite du préfixe."
+    "Litigation phase code (axis 1 — e.g. « CTS » Contestation, « ADM » "
+    "Administration; labels: get_reference_vocabulary kind phases), not "
+    "`category`. Given `sous_phase` alone, derived from its prefix."
 )
 _SOUS_PHASE_DESCRIPTION = (
-    "Sous-code complet de la phase (ex. « CTS-02 » Demande "
-    "reconventionnelle). Optionnel : une phase sans sous-code impute au "
-    "« -00 » (Général) de cette phase. Le préfixe doit concorder avec "
-    "`phase` si les deux sont fournis."
+    "Full sub-code (e.g. « CTS-02 »); its prefix must match `phase` when "
+    "both are given. `phase` alone imputes to its « -00 » (Général)."
 )
+_PHASE_OMIT_UNCLASSIFIED = (
+    "Omit both: stored unclassified (non renseignée) — never defaulted "
+    "from the protocol."
+)
+_PHASE_OMIT_KEPT = "Omit both: the stored pair is left alone."
+_PHASE_OMIT_REFUSED = "Naming neither is refused."
 
 
-def _phase_props() -> dict:
+def _phase_props(*, on_omit: Optional[str]) -> dict:
+    """The ``phase`` / ``sous_phase`` pair. *on_omit* — one of the three
+    ``_PHASE_OMIT_*`` sentences, or ``None`` when the tool's own
+    description says what omitting both does — ends the ``phase`` text."""
     return {
         "phase": {
             "type": "string",
             "enum": _PHASE_CODES,
-            "description": _PHASE_DESCRIPTION,
+            "description": (
+                f"{_PHASE_DESCRIPTION} {on_omit}" if on_omit
+                else _PHASE_DESCRIPTION
+            ),
         },
         "sous_phase": {
             "type": "string",
@@ -1531,7 +1570,7 @@ def _phase_bulk_items(id_key: str, id_description: str) -> dict:
             "type": "object",
             "properties": {
                 id_key: _id(id_description),
-                **_phase_props(),
+                **_phase_props(on_omit=None),
             },
             "required": [id_key],
             "additionalProperties": False,
@@ -1769,43 +1808,52 @@ TOOLS: dict[str, dict] = {
     "get_dossier": {
         "title": "Détail d'un dossier",
         "description": (
-            "Fetch one dossier by dossier_id or by file_number (provide exactly "
-            "one), with the full record — including the free-text `sommaire` "
-            "(case summary), court metadata and "
-            "the recourse & prescription fields — plus per-module summaries "
-            "(tasks, hearings, notes, documents, time, expenses, invoices, "
-            "protocol). In summaries.protocol, `upcoming` counts open steps "
-            "due within `upcoming_window_days` (7) calendar days — NOT all "
-            "future steps; `next_deadline_date` is the nearest open deadline "
-            "regardless of window, and a step due today is upcoming, never "
-            "overdue. forum_type is 'judiciaire' (a Québec judicial court, "
-            "file number parsed into greffe/juridiction/tribunal), "
-            "'administratif' or 'federal' (the body's name is in `tribunal`, "
-            "file number stored unparsed), or 'prejudiciaire' (no proceedings "
-            "filed yet — only district_judiciaire is set and "
-            "court_file_number reads 'Préjudiciaire'). The recourse "
-            "is classified by the Québec action "
-            "taxonomy: domaine/domaine_label (the family) and action/"
-            "action_label/action_precision (the named recourse, e.g. REC-01). "
-            "delai is the taxonomy's INDICATIVE delay for that action and "
-            "delai_types lists what kind(s) it is — PE prescription "
-            "extinctive, PA prescription acquisitive (defensive), D déchéance "
-            "stricte (neither suspends nor interrupts), DR déchéance "
-            "relevable (statutory relief exists), A avis préalable, R délai "
-            "raisonnable, N no delay, I imprescriptible, S follows the "
-            "underlying right, V variable, F retrospective window — with "
-            "delai_types_label as the joined French label and a_valider "
-            "flagging qualifications still to confirm at the sources. avis "
-            "lists structured prior-notice obligations (libelle/delai/"
-            "sanction/conditionnel); delai_point_depart, ref_delai (source of "
-            "the delay) and ref_fondement (seat of the right of action) carry "
-            "its starting point and statutory references. Also valeur + "
-            "valeur_classe, "
+            # ≤ 2 048 characters: Claude Code cuts a description there
+            # (tests/test_mcp_descriptor_budget.py). Tightened 2026-09-30
+            # from 2 154 — every rule kept, the wording shortened; « exactly
+            # one » of the two ids is said by both input properties. The
+            # INDICATIVE warning moved from the end (past the cut) to the
+            # front, and was made TRUE on the way: it said « interruption/
+            # suspension are not computed », while this very payload's
+            # prescription_status / prescription_date_effective derive both
+            # from the recorded prescription_events (derive_prescription —
+            # arts. 2892/2896, 2904 C.c.Q.).
+            "Fetch one dossier by dossier_id or file_number: the full "
+            "record — free-text `sommaire` (case summary), court "
+            "metadata, recourse & prescription fields — plus per-module "
+            "summaries (tasks, hearings, notes, documents, time, expenses, "
+            "invoices, protocol). Every delay here is INDICATIVE: its "
+            "starting point is a question of fact, and interruption/"
+            "suspension count only as recorded prescription_events (they "
+            "drive prescription_status / prescription_date_effective; the "
+            "raw prescription_date, the computed « date pour agir », never "
+            "moves). summaries.protocol: `upcoming` = open steps due within "
+            "`upcoming_window_days` (7) calendar days, NOT all future ones; "
+            "`next_deadline_date` = the nearest open deadline, whatever the "
+            "window; a step due today is upcoming, never overdue. "
+            "forum_type: 'judiciaire' (a Québec judicial court; the number "
+            "parsed into greffe/juridiction/tribunal), 'administratif' or "
+            "'federal' (the body's name in `tribunal`, the number stored "
+            "unparsed), or "
+            "'prejudiciaire' (nothing filed yet — only district_judiciaire "
+            "is set, court_file_number reads 'Préjudiciaire'). Recourse "
+            "(Québec action taxonomy): domaine/domaine_label (the family), "
+            "action/action_label/action_precision (the named recourse, e.g. "
+            "REC-01). delai = the taxonomy's suggestion; "
+            "delai_types its kind(s) — PE prescription extinctive, PA "
+            "acquisitive (defensive), D déchéance stricte (neither "
+            "suspends nor interrupts), DR déchéance relevable (statutory "
+            "relief exists), A avis préalable, R délai raisonnable, N "
+            "none, I imprescriptible, S follows the "
+            "underlying right, V variable, F retrospective window; "
+            "delai_types_label = the joined French label; a_valider = a "
+            "qualification still to confirm at the sources. avis lists "
+            "prior-notice obligations (libelle/delai/sanction/conditionnel); "
+            "delai_point_depart (its starting point), ref_delai (source of "
+            "the delay), ref_fondement (seat of the right of action). Also "
+            "valeur/valeur_classe, droit_action_date and "
             "prescription_type/prescription_label (the delay the lawyer "
-            "confirmed, which may differ from the taxonomy suggestion), "
-            "droit_action_date, and prescription_date = the computed « date "
-            "pour agir ». Every delay is indicative — the starting point is a "
-            "question of fact and interruption/suspension are not computed."
+            "CONFIRMED — may differ from the taxonomy's suggestion)."
         ),
         "input_schema": {
             "type": "object",
@@ -3324,7 +3372,7 @@ TOOLS: dict[str, dict] = {
                     "New deadline, YYYY-MM-DD; \"\" removes it (an undated "
                     "task never reaches the urgent lists)."
                 ),
-                **_phase_props(),
+                **_phase_props(on_omit=None),
                 "dossier_id": _id(
                     "MOVE the task to this dossier (UUIDv4), or \"\" for "
                     "« Général ». An id that does not resolve is refused, "
@@ -3535,7 +3583,7 @@ TOOLS: dict[str, dict] = {
                     "description": "E.g. « art. 246 C.p.c. ».",
                 },
                 "deadline_date": _date("YYYY-MM-DD. Omit for no deadline."),
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
                 "notes": {
                     "type": "string", "maxLength": 2000,
                     "description": "Free notes on the step.",
@@ -3592,7 +3640,7 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "New notes — replaces the whole text, no history."),
                 },
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_KEPT),
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 300,
                     "description": "New title — custom steps only.",
@@ -3675,7 +3723,7 @@ TOOLS: dict[str, dict] = {
                     "enum": _TASK_CATEGORIES,
                     "description": "Defaults to 'autre'.",
                 },
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
                 **_write_protocol_props(),
             },
             "required": ["title"],
@@ -4008,7 +4056,7 @@ TOOLS: dict[str, dict] = {
                         "with amount 0."
                     ),
                 },
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
                 **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
@@ -4062,7 +4110,7 @@ TOOLS: dict[str, dict] = {
                     "type": "boolean",
                     "description": "Defaults to true.",
                 },
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
                 **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
@@ -4327,7 +4375,7 @@ TOOLS: dict[str, dict] = {
                 },
                 "dossier_id": _id(
                     "Move the entry to this dossier (list_dossiers)."),
-                **_phase_props(),
+                **_phase_props(on_omit=None),
                 **_legacy_ref_prop(),
                 **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
                 **_write_protocol_props(),
@@ -4379,7 +4427,7 @@ TOOLS: dict[str, dict] = {
                 },
                 "dossier_id": _id(
                     "Move the disbursement to this dossier (list_dossiers)."),
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_KEPT),
                 **_legacy_ref_prop(),
                 **_expected_etag_prop(_EXPENSE_ETAG_READERS),
                 **_write_protocol_props(),
@@ -4417,7 +4465,7 @@ TOOLS: dict[str, dict] = {
                 "time_entry_id": _id(
                     "The entry to reclassify (UUIDv4). Required."
                 ),
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_REFUSED),
                 **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
                 **_write_protocol_props(),
             },
@@ -4450,7 +4498,7 @@ TOOLS: dict[str, dict] = {
                 "expense_id": _id(
                     "The disbursement to reclassify. Required."
                 ),
-                **_phase_props(),
+                **_phase_props(on_omit=_PHASE_OMIT_REFUSED),
                 **_expected_etag_prop(_EXPENSE_ETAG_READERS),
                 **_write_protocol_props(),
             },
@@ -6875,11 +6923,10 @@ TOOLS: dict[str, dict] = {
 # policy, applied here so a ninth required tool is described by its
 # declaration alone.
 REQUIRED_KEY_DESCRIPTION = (
-    "Caller-chosen key identifying THIS write — REQUIRED here: a call "
-    "without it is refused, and so is one whose replay record cannot be "
-    "read. Retrying with the same key returns the first call's stored "
-    "result instead of writing twice (kept 24 h); the same key with "
-    "different arguments is refused."
+    "Caller-chosen key for THIS write — REQUIRED here: refused without it, "
+    "or when its replay record cannot be read. Within 24 h the same key "
+    "returns the stored result, never a second write; with other arguments "
+    "it is refused."
 )
 
 

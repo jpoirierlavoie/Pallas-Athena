@@ -573,10 +573,15 @@ def _refuse_pending(data: dict, snap: Any, now: datetime) -> None:
     # the caller wait; « new key » could make it write twice.
     if age is None or age < IN_FLIGHT_WINDOW:
         raise _in_flight_refusal(IN_FLIGHT_WINDOW - (age or timedelta(0)))
+    # « il ne peut plus être en cours » (2026-09-30): past IN_FLIGHT_WINDOW
+    # the first call has outlived the platform's request deadline, which is
+    # what makes the re-read FINAL — and so a NEW key safe when it shows
+    # nothing written. The SAFETY CORE of INSTRUCTIONS states the rule and
+    # leaves this explanation here, where the caller meets it.
     raise ToolArgumentError(
-        "Un appel avec cette idempotency_key a été interrompu : l'écriture a "
-        "peut-être eu lieu, relisez avant de réessayer (nouvelle clé "
-        "seulement si rien n'a été écrit).",
+        "Un appel avec cette idempotency_key a été interrompu — il ne peut "
+        "plus être en cours, mais l'écriture a peut-être eu lieu : relisez "
+        "avant de réessayer (nouvelle clé seulement si rien n'a été écrit).",
         reason="idempotency_interrupted",
     )
 
