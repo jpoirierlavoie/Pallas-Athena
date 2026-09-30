@@ -31,7 +31,6 @@ import re
 import sys
 from unittest import mock
 
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1081,7 +1080,7 @@ def test_the_lot_3b_texts_say_what_billing_does():
     assert "an IMPORTED number can be imported again" in desc["update_invoice"]
     assert "only then can it be imported again" in desc["import_invoice"]
     with mock.patch("google.cloud.firestore.Client"):
-        from mcp import handlers as _handlers
+        import mcp.handlers as _handlers
     assert _handlers._NUMBER_IS_PERMANENT.startswith(
         "Le numéro {number} est consommé DÉFINITIVEMENT : la numérotation de "
         "l'année")

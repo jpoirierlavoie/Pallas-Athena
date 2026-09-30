@@ -37,7 +37,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from flask import Flask  # noqa: E402
 
-from security import csrf, init_security, limiter  # noqa: E402
+from security import init_security  # noqa: E402
 
 
 def _app(require_mfa=True, ratelimit=False, csrf_on=False):
@@ -297,15 +297,14 @@ def test_the_journal_accepts_an_allowlisted_event(web):
 
 
 def test_the_journal_logs_the_servers_name_for_the_posted_key(web, caplog):
-    """The posted string is only a KEY into `_JOURNAL_EVENTS`; what reaches
+    """The posted string is only a KEY into `rs._JOURNAL_EVENTS`; what reaches
     the journal is the table's value (CodeQL py/log-injection, 2026-09-30).
     The table must say exactly what the vocabulary says — no event the
     allowlist refuses, none it accepts missing."""
     import logging
-    from routes.settings import _EVENEMENTS_JOURNAL, _JOURNAL_EVENTS
 
-    assert set(_JOURNAL_EVENTS) == set(_EVENEMENTS_JOURNAL)
-    assert all(k == v for k, v in _JOURNAL_EVENTS.items())
+    assert set(rs._JOURNAL_EVENTS) == set(rs._EVENEMENTS_JOURNAL)
+    assert all(k == v for k, v in rs._JOURNAL_EVENTS.items())
     with caplog.at_level(logging.INFO, logger="pallas.auth"):
         r = web.post("/parametres/securite/journal",
                      data={"event": "  password_changed\n"})
@@ -374,9 +373,8 @@ def test_a_failed_event_is_logged_as_a_FAILURE_not_a_success(web, caplog):
     rendrait le journal pire qu'absent : une alerte bâtie dessus ne se
     déclencherait jamais, et la ligne dirait le contraire du fait."""
     import logging
-    from routes.settings import _EVENEMENTS_JOURNAL
 
-    echecs = [e for e in _EVENEMENTS_JOURNAL if e.endswith("_failed")]
+    echecs = [e for e in rs._EVENEMENTS_JOURNAL if e.endswith("_failed")]
     assert echecs, "le vocabulaire ne porte plus aucun échec — dérive"
     for evenement in sorted(echecs):
         with caplog.at_level(logging.INFO, logger="pallas.auth"):
@@ -427,13 +425,12 @@ def test_the_error_code_pattern_stays_LINEAR(web):
     """Doctrine CWE-1333 du dépôt : aucun `.`, aucun DOTALL, et des bornes.
     Un motif ancré des deux côtés et plafonné à 48 ne peut pas revenir sur
     ses pas ; la borne de longueur qui le précède est la ceinture."""
-    from routes.settings import _CODE_ERREUR_RE
 
-    assert "." not in _CODE_ERREUR_RE.pattern
-    assert not _CODE_ERREUR_RE.flags & 16  # re.DOTALL
-    assert _CODE_ERREUR_RE.pattern.startswith("^")
-    assert _CODE_ERREUR_RE.pattern.endswith("$")
-    assert "{1,48}" in _CODE_ERREUR_RE.pattern
+    assert "." not in rs._CODE_ERREUR_RE.pattern
+    assert not rs._CODE_ERREUR_RE.flags & 16  # re.DOTALL
+    assert rs._CODE_ERREUR_RE.pattern.startswith("^")
+    assert rs._CODE_ERREUR_RE.pattern.endswith("$")
+    assert "{1,48}" in rs._CODE_ERREUR_RE.pattern
 
 
 def test_the_security_page_NAMES_a_code_it_does_not_recognise(web):

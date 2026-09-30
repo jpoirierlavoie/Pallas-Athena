@@ -15,7 +15,6 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 
-import pytest
 from jinja2 import Environment, FileSystemLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

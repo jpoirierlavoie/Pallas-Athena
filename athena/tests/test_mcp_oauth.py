@@ -28,7 +28,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.bearer as bearer
     import mcp.store as store
     import mcp.tools as tools
-    from mcp import disclosure
+    import mcp.disclosure as disclosure
 
 from tests import _dummy_accounting  # noqa: E402
 
@@ -662,7 +662,7 @@ def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake)
     bullet reach the page — so a family added to mcp/disclosure is
     described to the lawyer by construction, and a promise deleted there
     leaves the screen with it. The checkbox summary is the registry's."""
-    from mcp import disclosure
+    import mcp.disclosure as disclosure
 
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()

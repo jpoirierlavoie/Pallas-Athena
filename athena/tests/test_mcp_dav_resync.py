@@ -48,7 +48,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.hearings as hearings_routes
     import routes.notes as notes_routes
     import routes.tasks as tasks_routes
-    from mcp.output_schemas import OUTPUT_SCHEMAS
 
 from flask import Flask  # noqa: E402
 
@@ -627,7 +626,7 @@ def test_a_schema_declares_previous_collection_cleared_iff_its_handler_emits_it(
     undocumented one. Lot 0 has no mover: both sides are empty today, and
     the first Lot 1 mover must move them together."""
     declared = {
-        t for t, schema in OUTPUT_SCHEMAS.items()
+        t for t, schema in output_schemas.OUTPUT_SCHEMAS.items()
         if "previous_collection_cleared" in schema.get("properties", {})
     }
     assert declared == _tools_passing_previous_dossier_id()

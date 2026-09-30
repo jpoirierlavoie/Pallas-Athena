@@ -31,8 +31,8 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync  # noqa: F401 — its db is patched below
-    from models import dossier as dossier_model  # noqa: F401
+    import dav.sync as dav_sync  # its db is patched below
+    from models import dossier as dossier_model
     from models import protocol as protocol_model
     from models import task as task_model
     import routes.dossiers as dossiers_routes
@@ -46,6 +46,12 @@ from markupsafe import Markup, escape  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
 from utils.icons import ms  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it.
+_LOADED_UNDER_FAKE = (dav_sync, dossier_model, task_model)
 
 UTC = timezone.utc
 WHEN = datetime(2026, 9, 1, tzinfo=UTC)

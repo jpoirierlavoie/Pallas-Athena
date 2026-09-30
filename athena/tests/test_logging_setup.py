@@ -814,7 +814,7 @@ def test_every_event_name_is_documented(nom_du_type):
     """
     import typing
 
-    import utils.logging_setup as ls
+    from utils import logging_setup as ls
 
     membres = typing.get_args(getattr(ls, nom_du_type))
     assert membres, nom_du_type

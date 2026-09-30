@@ -17,7 +17,6 @@ import sys
 
 import pytest
 from flask import Flask
-from markupsafe import Markup
 
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ATHENA)

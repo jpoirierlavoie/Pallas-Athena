@@ -53,6 +53,12 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from tests._fake_firestore import install  # noqa: E402
 
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it.
+_LOADED_UNDER_FAKE = (dav_sync, dossier_dav)
+
 UTC = timezone.utc
 DT = datetime(2026, 10, 15, 14, 0, tzinfo=UTC)
 KEY = "cle-statut-0001"

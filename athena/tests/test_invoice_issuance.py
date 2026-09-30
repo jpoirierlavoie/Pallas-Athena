@@ -47,10 +47,10 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import expense as expense_model  # noqa: F401
+    from models import expense as expense_model
     from models import invoice as invoice_model
-    from models import settings as settings_model  # noqa: F401
-    from models import time_entry as time_entry_model  # noqa: F401
+    from models import settings as settings_model
+    from models import time_entry as time_entry_model
     import routes.admin_ledger as admin_ledger_routes
     import routes.dossiers as dossiers_routes
     import routes.invoices as invoices_routes
@@ -62,6 +62,12 @@ from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
 from utils.format_fr import format_cents_fr  # noqa: E402
 from utils.icons import ms  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it.
+_LOADED_UNDER_FAKE = (expense_model, settings_model, time_entry_model)
 
 UTC = timezone.utc
 TODAY = date(2026, 6, 15)

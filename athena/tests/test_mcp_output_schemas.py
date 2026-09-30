@@ -31,7 +31,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import mcp.write_support as write_support
     from mcp.output_schemas import OUTPUT_SCHEMAS
-    from models import concurrency
+    import models.concurrency as concurrency
 
 
 def _stub_dossier_reads(monkeypatch, reader) -> None:
@@ -1906,7 +1906,7 @@ def test_steps_are_stamped_and_their_rows_emit_it(monkeypatch):
     etag is the overdue stamp of a page view."""
     from datetime import date
 
-    from models import provenance
+    import models.provenance as provenance
     from tests._fake_firestore import install
 
     protocol_model = handlers.protocol_model
@@ -2398,8 +2398,8 @@ def test_list_hearings_conforms_in_its_two_selection_modes(monkeypatch):
 def _files_world(monkeypatch):
     import sys
 
-    from models import document as document_model
-    from models import folder as folder_model
+    import models.document as document_model
+    import models.folder as folder_model
     from tests._fake_firestore import install
 
     modules = [m for n, m in sorted(sys.modules.items())
@@ -2500,8 +2500,8 @@ def _generation_world(monkeypatch):
     import sys
     import zipfile
 
-    from models import doc_template as tpl_model
-    from models import document as document_model
+    import models.doc_template as tpl_model
+    import models.document as document_model
     from tests._fake_firestore import install
     from tests._fake_gcs import FakeBucket
     from utils import storage_identity
@@ -2611,7 +2611,7 @@ def _upload_world(monkeypatch):
     import hashlib
 
     fake, ids = _generation_world(monkeypatch)
-    from models import doc_template as tpl_model
+    import models.doc_template as tpl_model
 
     bucket = tpl_model.storage.bucket()
 
@@ -2703,7 +2703,7 @@ def _seed_leaky_source(fake, bucket):
     import io
     import zipfile
 
-    from models import document as document_model
+    import models.document as document_model
 
     w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
     buf = io.BytesIO()
@@ -2731,7 +2731,7 @@ def _seed_leaky_source(fake, bucket):
 
 def test_create_template_conforms_clean_scrubbed_and_with_residues(monkeypatch):
     fake, _ids = _generation_world(monkeypatch)
-    from models import doc_template as tpl_model
+    import models.doc_template as tpl_model
 
     clean = handlers.create_template({
         "source_document_id": "src", "name": "Modèle", "category": "autre"})
@@ -2762,7 +2762,7 @@ def _seed_tracked_source(fake, bucket):
     import io
     import zipfile
 
-    from models import document as document_model
+    import models.document as document_model
 
     w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
     buf = io.BytesIO()
@@ -2791,7 +2791,7 @@ def _seed_tracked_source(fake, bucket):
 
 def test_preview_templatize_conforms_ready_residual_and_blocked(monkeypatch):
     fake, _ids = _generation_world(monkeypatch)
-    from models import doc_template as tpl_model
+    import models.doc_template as tpl_model
 
     bucket = tpl_model.storage.bucket()
     _seed_leaky_source(fake, bucket)
@@ -2826,7 +2826,7 @@ def test_preview_templatize_conforms_ready_residual_and_blocked(monkeypatch):
 
 def test_create_template_conforms_when_templatized(monkeypatch):
     fake, _ids = _generation_world(monkeypatch)
-    from models import doc_template as tpl_model
+    import models.doc_template as tpl_model
 
     _seed_leaky_source(fake, tpl_model.storage.bucket())
     templatized = handlers.create_template({

@@ -75,7 +75,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from google.api_core import exceptions as gexc  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
-    import mcp.handlers  # noqa: F401 — registers the tools' persistence hooks
+    import mcp.handlers  # registers the tools' persistence hooks
     from mcp import tools
     from mcp import write_support as ws
     from mcp.tools import (
@@ -86,6 +86,10 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import provenance
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Imported for its side effect, and named here so the dependency is
+# visible: loading mcp.handlers registers the tools' persistence hooks.
+_REGISTERS_HOOKS = (mcp.handlers,)
 
 UTC = timezone.utc
 ATHENA_DIR = pathlib.Path(__file__).resolve().parent.parent

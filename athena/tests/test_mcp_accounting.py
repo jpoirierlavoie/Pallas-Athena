@@ -50,12 +50,18 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.write_support as write_support
     from models import admin_ledger as al
     from models import fee_payment
-    from models import settings as settings_model  # noqa: F401 — faked below
+    from models import settings as settings_model  # faked below
     from models import trust
     from services import comptabilite as svc
 
 from tests._fake_firestore import install  # noqa: E402
 from tests.test_mcp_output_schemas import _conforms  # noqa: E402
+
+# Loaded for their side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so each must be imported — under the
+# Firestore mock — before a test installs it.
+_LOADED_UNDER_FAKE = (settings_model,)
 
 UTC = timezone.utc
 TRANSIT = "12345"

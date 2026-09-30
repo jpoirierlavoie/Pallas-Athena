@@ -530,7 +530,7 @@ def test_an_empty_dossier_still_bumps(db):
 
 
 _STRICT = [
-    ("tasks", lambda d: task_model.list_tasks_strict(d)),
+    ("tasks", task_model.list_tasks_strict),
     ("notes", lambda d: note_model.list_notes_strict(d, include_analyse=True)),
     ("hearings", lambda d: hearing_model.list_hearings_strict(
         d, include_unconfirmed=False)),

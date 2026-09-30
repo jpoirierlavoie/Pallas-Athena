@@ -47,8 +47,8 @@ import re
 import sys
 import time
 import zipfile
-from re import _constants as sre_constants
-from re import _parser as sre_parse
+import re._constants as sre_constants
+import re._parser as sre_parse
 from unittest import mock
 
 import pytest

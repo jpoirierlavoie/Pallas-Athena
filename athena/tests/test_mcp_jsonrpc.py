@@ -223,7 +223,7 @@ def test_initialize_shape(client):
     # the promises as clauses, then ONE index line per family — the family
     # prose these assertions pinned moved into the tool descriptions, where
     # they are pinned now (tools.TOOLS below).
-    from mcp import tools as _tools
+    import mcp.tools as _tools
     desc = {name: spec["description"] for name, spec in _tools.TOOLS.items()}
     assert instructions.startswith(disclosure.safety_core_en())
     assert len(instructions.encode("utf-8")) <= 8_000
