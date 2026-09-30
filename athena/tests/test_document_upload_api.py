@@ -341,7 +341,7 @@ def test_le_formulaire_envoie_les_metadonnees_a_l_ouverture():
     )
     html = open(chemin, encoding="utf-8").read()
     ouverture = html[html.index("documents.api_televersement"):
-                     html.index("documents.api_finaliser')")]
+                     html.index('documents.api_finaliser")')]
     for champ in ("category", "tags", "display_name", "document_date"):
         assert f"{champ}: this.champ('{champ}')" in ouverture, champ
 

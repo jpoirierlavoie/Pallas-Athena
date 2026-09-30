@@ -237,7 +237,7 @@
 
   {# The App SDK is UNCONDITIONAL (2026-09-07). firebase-auth-compat opens by
      dereferencing `globalThis.firebase.INTERNAL` AT PARSE TIME, so any page
-     pulling the auth SDK in `page_scripts` died on its own <script src> line
+     pulling the auth SDK in `page_scripts` died on the very tag that loads it
      whenever RECAPTCHA_ENTERPRISE_SITE_KEY was unset — i.e. every local dev
      run of /parametres/securite (and of the MFA pages before it). 31 KB,
      immutable for a year, already in sw.js PRECACHE, and in production the
