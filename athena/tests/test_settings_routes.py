@@ -289,6 +289,25 @@ def test_the_journal_accepts_an_allowlisted_event(web):
     assert r.status_code == 204
 
 
+def test_the_journal_logs_the_servers_name_for_the_posted_key(web, caplog):
+    """The posted string is only a KEY into `_JOURNAL_EVENTS`; what reaches
+    the journal is the table's value (CodeQL py/log-injection, 2026-09-30).
+    The table must say exactly what the vocabulary says — no event the
+    allowlist refuses, none it accepts missing."""
+    import logging
+    from routes.settings import _EVENEMENTS_JOURNAL, _JOURNAL_EVENTS
+
+    assert set(_JOURNAL_EVENTS) == set(_EVENEMENTS_JOURNAL)
+    assert all(k == v for k, v in _JOURNAL_EVENTS.items())
+    with caplog.at_level(logging.INFO, logger="pallas.auth"):
+        r = web.post("/parametres/securite/journal",
+                     data={"event": "  password_changed\n"})
+    assert r.status_code == 204
+    (rec,) = [x for x in caplog.records if x.name == "pallas.auth"]
+    assert rec.getMessage() == "password_changed"
+    assert rec.json_fields["event"] == "password_changed"
+
+
 def test_the_journal_refuses_an_unknown_event_and_logs_nothing(web, caplog):
     import logging
     with caplog.at_level(logging.INFO, logger="pallas.auth"):

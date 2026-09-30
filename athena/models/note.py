@@ -264,7 +264,12 @@ def get_note(note_id: str) -> Optional[dict]:
     try:
         return get_note_strict(note_id)
     except Exception as exc:
-        logger.warning("get_note failed for %s: %s", sanitize_log_value(note_id), exc)
+        # The class only, never the error's text — the doc_template.py
+        # convention: a store error's message can name the document path.
+        logger.warning(
+            "get_note failed for %s: %s",
+            sanitize_log_value(note_id), type(exc).__name__,
+        )
     return None
 
 
