@@ -72,17 +72,39 @@ INVALID_UID_MESSAGE = (
 
 
 class StorageIdentityUnavailable(RuntimeError):
-    """No trustworthy uid: nothing may be written. The message is French."""
+    """No trustworthy uid: nothing may be written. The message is French.
 
-    def __init__(self, message: str = UNAVAILABLE_MESSAGE) -> None:
-        super().__init__(message)
+    It takes NO argument (2026-09-30): its text is always the class's fixed
+    sentence, so nothing a raise site passes — a Firebase or configuration
+    error, a path — can ever reach a client through it. The real cause
+    travels as ``__cause__``, for the logs. A caller shows the sentence
+    through :func:`public_message`, never ``str(exc)``.
+    """
+
+    _MESSAGE = UNAVAILABLE_MESSAGE
+
+    def __init__(self) -> None:
+        super().__init__(self._MESSAGE)
 
 
 class InvalidStorageUid(StorageIdentityUnavailable):
     """A uid was supplied, and it cannot name a Storage prefix."""
 
-    def __init__(self, message: str = INVALID_UID_MESSAGE) -> None:
-        super().__init__(message)
+    _MESSAGE = INVALID_UID_MESSAGE
+
+
+def public_message(exc: StorageIdentityUnavailable) -> str:
+    """The French sentence to show a client for *exc* — chosen by TYPE.
+
+    ``str(exc)`` returns the same text today, but a response built from it is
+    built from exception data, and a future subclass or raise site could put
+    an SDK message there without any caller noticing (CodeQL's
+    py/stack-trace-exposure flagged the six routes that did). This returns one
+    of the two module constants and reads nothing off the exception.
+    """
+    if isinstance(exc, InvalidStorageUid):
+        return INVALID_UID_MESSAGE
+    return UNAVAILABLE_MESSAGE
 
 
 _LOCK = threading.Lock()

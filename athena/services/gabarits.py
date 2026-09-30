@@ -254,7 +254,7 @@ def save_generated(
     try:
         uid = storage_identity.require_uid(uid)
     except storage_identity.StorageIdentityUnavailable as exc:
-        raise GenerationRefused("save_failed", str(exc)) from exc
+        raise GenerationRefused("save_failed", storage_identity.public_message(exc)) from exc
     dossier_id = dossier.get("id", "")
     if folder is PROJETS:
         target = ensure_projets(dossier_id)

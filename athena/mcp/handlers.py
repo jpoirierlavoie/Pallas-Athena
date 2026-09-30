@@ -14676,7 +14676,9 @@ def _rehydrate_begin_upload(stored: dict) -> dict:
     try:
         url = upload_ticket_model.open_session(ticket)
     except upload_ticket_model.UploadSessionUnavailable as exc:
-        raise ToolArgumentError(str(exc), reason="upload_retry")
+        raise ToolArgumentError(
+            upload_ticket_model.session_error_message(exc), reason="upload_retry"
+        )
     return {**stored, "upload_url": url}
 
 

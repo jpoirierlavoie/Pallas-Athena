@@ -905,7 +905,7 @@ def _storage_uid(user_id: object) -> tuple[Optional[str], list[str]]:
     try:
         return storage_identity.require_uid(user_id), []
     except storage_identity.StorageIdentityUnavailable as exc:
-        return None, [str(exc)]
+        return None, [storage_identity.public_message(exc)]
 
 
 def _prepare_document_record(

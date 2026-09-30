@@ -624,7 +624,7 @@ def api_televersement():
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        return jsonify({"erreur": str(exc)}), 503
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
     printable = "".join(ch for ch in nom if ch.isprintable())
     safe = secure_filename(printable) or "recu"
     objet = f"staging/{user_id}/{uuid.uuid4()}/{safe}"
@@ -660,7 +660,7 @@ def api_recu(tx_id: str):
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        return jsonify({"erreur": str(exc)}), 503
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
     if not objet.startswith(f"staging/{user_id}/"):
         return jsonify({"erreur": "Requête invalide."}), 400
     # staging/{uid}/{uuid4}/{nom} — EXACTEMENT la forme que frappe

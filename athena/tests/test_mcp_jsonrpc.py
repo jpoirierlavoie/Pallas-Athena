@@ -1129,6 +1129,7 @@ def test_a_committed_then_failed_write_says_so_and_is_never_retryable(
     assert "ENREGISTRÉE" in text and "NE PAS RÉESSAYER" in text
     assert "internal error" not in text.lower()
     assert _NOTE_ID in text
+    assert "SECRET" not in text             # the cause never reaches the client
 
     (partial,) = _events(caplog, "mcp_write_partial")
     assert partial == {
@@ -1151,6 +1152,32 @@ def test_a_committed_then_failed_write_says_so_and_is_never_retryable(
     assert "SECRET" not in "\n".join(
         f"{r.getMessage()} {getattr(r, 'json_fields', '')}"
         for r in caplog.records if r.name == "pallas.mcp")
+
+
+def test_the_client_reads_the_committed_sentence_never_the_error_rendered(
+    write_client, monkeypatch
+):
+    """The endpoint answers with `client_message` — the sentence the error
+    built from its ids — never `str(exc)` (py/stack-trace-exposure,
+    2026-09-30). An error whose rendering carried anything else (a future
+    subclass, a cause folded into its string) still shows only that
+    sentence."""
+    class _Rendered(tools.CommittedWriteError):
+        def __str__(self) -> str:
+            return "Traceback (most recent call last): titre SECRET"
+
+    def create_note(args):
+        raise _Rendered("create_note", _NOTE_ID, _DOSSIER_ID, collection="notes")
+
+    monkeypatch.setattr(handlers, "create_note", create_note)
+    body = _call(write_client, "create_note", _partial_args()).get_json()
+
+    assert body["result"]["isError"] is True
+    text = body["result"]["content"][0]["text"]
+    assert "SECRET" not in text and "Traceback" not in text
+    assert text == tools.CommittedWriteError(
+        "create_note", _NOTE_ID, _DOSSIER_ID, collection="notes"
+    ).client_message
 
 
 def test_a_same_key_retry_of_a_committed_write_repeats_the_warning(

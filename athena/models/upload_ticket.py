@@ -163,6 +163,7 @@ __all__ = [
     "record_staged_digest",
     "refuse_ticket",
     "release_ticket",
+    "session_error_message",
     "staged_after_window",
     "staged_blob",
     "staged_exists",
@@ -292,10 +293,29 @@ RETRYABLE_OPEN_ERRORS = (_SESSION_MESSAGE, _SAVE_MESSAGE)
 
 class UploadSessionUnavailable(Exception):
     """A resumable session could not be opened. French message; never the
-    URL (there is none on failure) nor an exception's text."""
+    URL (there is none on failure) nor an exception's text.
 
-    def __init__(self, message: str = _SESSION_MESSAGE) -> None:
-        super().__init__(message)
+    Its text is chosen by KIND, never passed in (2026-09-30): the default
+    « could not open, retry », or — ``already_received=True`` — the ticket
+    already holds its bytes. Callers show it through
+    :func:`session_error_message`, never ``str(exc)``.
+    """
+
+    def __init__(self, *, already_received: bool = False) -> None:
+        self.already_received = bool(already_received)
+        super().__init__(
+            ALREADY_RECEIVED_MESSAGE if self.already_received
+            else _SESSION_MESSAGE
+        )
+
+
+def session_error_message(exc: UploadSessionUnavailable) -> str:
+    """The French sentence for *exc*: one of two module constants, read off
+    nothing but its kind flag (what a caller hands a client — the connector,
+    the ticket store — must never be built from exception data)."""
+    if exc.already_received:
+        return ALREADY_RECEIVED_MESSAGE
+    return _SESSION_MESSAGE
 
 
 class StagedBytesChanged(Exception):
@@ -644,7 +664,7 @@ def create_ticket(
     try:
         uid = storage_identity.require_uid(user_id)
     except storage_identity.StorageIdentityUnavailable as exc:
-        errors.append(str(exc))
+        errors.append(storage_identity.public_message(exc))
     if errors:
         return None, errors
 
@@ -683,7 +703,7 @@ def create_ticket(
         try:
             before_write(doc)
         except UploadSessionUnavailable as exc:
-            return None, [str(exc)]
+            return None, [session_error_message(exc)]
     try:
         _ref(ticket_id).create(doc)
     except AlreadyExists:
@@ -790,7 +810,7 @@ def open_session(ticket: dict) -> str:
             if_generation_match=0,
         )
     except PreconditionFailed:
-        raise UploadSessionUnavailable(ALREADY_RECEIVED_MESSAGE) from None
+        raise UploadSessionUnavailable(already_received=True) from None
     except Exception as exc:
         # The class only: an initiation failure carries no session URI, but
         # its text is the service's, and nothing here needs it.

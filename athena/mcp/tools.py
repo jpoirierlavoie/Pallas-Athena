@@ -90,6 +90,12 @@ class CommittedWriteError(Exception):
     (``mcp_write_partial``) and the message reaches the client verbatim.
     ``replay`` is true when the error is re-raised from a stored ``partial``
     idempotency record rather than from this call's own failure.
+
+    The endpoint answers with :attr:`client_message` — the sentence built
+    here from those fields — and never ``str(exc)`` (2026-09-30): the text a
+    client reads is the server's own, whatever an exception's string ever
+    becomes, and CodeQL's py/stack-trace-exposure no longer has an exception
+    rendering to follow into the response.
     """
 
     def __init__(
@@ -108,7 +114,8 @@ class CommittedWriteError(Exception):
         self.collection = collection or ""
         self.rows = int(rows or 0)
         self.replay = bool(replay)
-        super().__init__(self._message())
+        self.client_message = self._message()
+        super().__init__(self.client_message)
 
     def _message(self) -> str:
         parts = []

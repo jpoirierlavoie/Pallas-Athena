@@ -717,7 +717,7 @@ def create_template(
     try:
         user_id = storage_identity.require_uid(user_id)
     except storage_identity.StorageIdentityUnavailable as exc:
-        return None, [str(exc)]
+        return None, [storage_identity.public_message(exc)]
     reserved = template_id is not None
     if reserved:
         from models.document import is_canonical_uuid4
