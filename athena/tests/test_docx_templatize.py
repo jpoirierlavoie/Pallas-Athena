@@ -42,6 +42,7 @@ doit rouvrir sans réparation. Ce qui est épinglé :
 import ast
 import io
 import os
+import pathlib
 import re
 import sys
 import time
@@ -422,7 +423,7 @@ def test_a_soft_hyphen_is_inside_the_word_for_the_whole_word_rule():
     '<w:moveFrom w:id="1" w:author="X">' + _r("Jean Tremblay") + "</w:moveFrom>",
     '<w:moveTo w:id="1" w:author="X">' + _r("Jean Tremblay") + "</w:moveTo>",
     '<w:r><w:rPr><w:b/><w:rPrChange w:id="2" w:author="X"><w:rPr/></w:rPrChange>'
-    "</w:rPr><w:t>Jean Tremblay</w:t></w:r>",
+    + "</w:rPr><w:t>Jean Tremblay</w:t></w:r>",
 ])
 def test_tracked_changes_refuse_the_source_naming_the_reason(change):
     data = _docx(_doc(_p(change), _p(_r("Jean Tremblay"))))
@@ -1082,7 +1083,7 @@ def test_the_engine_is_pure():
     est une dépendance directe épinglée, en Python pur, sans aucune E/S (le
     module DAV s'en sert déjà) : la pureté qui compte — ni Firestore, ni
     Flask, ni aller-retour python-docx — tient."""
-    source = open(tz.__file__, encoding="utf-8").read()
+    source = pathlib.Path(tz.__file__).read_text(encoding="utf-8")
     allowed = {"__future__", "io", "re", "unicodedata", "zipfile", "array",
                "collections", "dataclasses", "typing", "defusedxml.ElementTree",
                "utils.docx_fill", "utils.template_fields"}

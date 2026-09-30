@@ -557,8 +557,8 @@ def test_an_unreadable_lookup_refuses_rather_than_duplicating(store, monkeypatch
     assert len(_documents(db)) == 1
 
 
-def test_regenerate_skips_the_lookup(store, monkeypatch):
-    db, _bucket, _template = store
+@pytest.mark.usefixtures("store")          # the fake store, installed
+def test_regenerate_skips_the_lookup(monkeypatch):
     monkeypatch.setattr(nh, "find_generated_for_invoice",
                         lambda iid: pytest.fail("lookup read on regenerate"))
     note = _generate(regenerate=True)

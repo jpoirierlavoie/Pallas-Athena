@@ -10,6 +10,7 @@ sniffe une sonde de 512 octets et ingère par copie côté serveur
 
 import json
 import os
+import pathlib
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -148,7 +149,7 @@ def test_le_gabarit_replie_vers_le_navigateur_filtre():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "templates", "documents", "upload.html",
     )
-    html = open(chemin, encoding="utf-8").read()
+    html = pathlib.Path(chemin).read_text(encoding="utf-8")
     assert "'?dossier_id=' + encodeURIComponent(dossierId)" in html
     assert "'&folder_id=' + encodeURIComponent(dossierClassement)" in html
 
@@ -339,7 +340,7 @@ def test_le_formulaire_envoie_les_metadonnees_a_l_ouverture():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "templates", "documents", "upload.html",
     )
-    html = open(chemin, encoding="utf-8").read()
+    html = pathlib.Path(chemin).read_text(encoding="utf-8")
     ouverture = html[html.index("documents.api_televersement"):
                      html.index('documents.api_finaliser")')]
     for champ in ("category", "tags", "display_name", "document_date"):

@@ -15,6 +15,7 @@ the template pins the house keeps for HTMX/OOB wiring.
 
 import json
 import os
+import pathlib
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -162,7 +163,7 @@ def test_la_route_d_administration_ecrit_par_le_service_commun():
     outil ne les atteindra)."""
     import ast
 
-    source = open(os.path.join(_ATHENA, "routes", "admin_ledger.py"), encoding="utf-8").read()
+    source = pathlib.Path(_ATHENA, "routes", "admin_ledger.py").read_text(encoding="utf-8")
     writers = {"create_transaction", "update_transaction", "reverse_transaction",
                "clear_transaction", "clear_transactions_bulk", "create_card_payment"}
     reached = {
@@ -332,7 +333,7 @@ def test_la_route_du_fideicommis_n_atteint_aucun_ecrivain_d_administration():
     helper reborn here would be the fail-open after-commit write again."""
     import ast
 
-    source = open(os.path.join(_ATHENA, "routes", "trust.py"), encoding="utf-8").read()
+    source = pathlib.Path(_ATHENA, "routes", "trust.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     writers = {"create_transaction", "reverse_transaction", "clear_transaction",
                "clear_transactions_bulk", "list_by_trust_transaction"}
@@ -359,7 +360,7 @@ def test_la_route_du_fideicommis_n_atteint_aucun_ecrivain_d_administration():
 
 
 def _template(name: str) -> str:
-    return open(os.path.join(_ATHENA, "templates", name), encoding="utf-8").read()
+    return pathlib.Path(_ATHENA, "templates", name).read_text(encoding="utf-8")
 
 
 def test_rows_partial_reemits_the_export_links_oob():

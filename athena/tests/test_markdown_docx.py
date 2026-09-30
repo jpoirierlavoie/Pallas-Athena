@@ -6,6 +6,7 @@ namespaced root) — the automated proxy for « Word opens it without repair »
 """
 
 import os
+import pathlib
 import re
 import sys
 
@@ -371,9 +372,7 @@ def test_screen_pipeline_uses_shared_constants():
     times (screen filter, this module). The Jinja
     filter is now markdown_to_safe_html itself, so screen and paper cannot
     drift even in the composition."""
-    main_src = open(
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"),
-        encoding="utf-8",
-    ).read()
+    main_src = (pathlib.Path(__file__).resolve().parent.parent
+                / "main.py").read_text(encoding="utf-8")
     assert "from utils.markdown_docx import markdown_to_safe_html" in main_src
     assert 'app.jinja_env.filters["markdown"] = markdown_to_safe_html' in main_src

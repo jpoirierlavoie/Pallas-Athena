@@ -11,6 +11,7 @@ base.html.
 """
 
 import os
+import pathlib
 import sys
 from datetime import datetime, timezone
 
@@ -111,17 +112,14 @@ def test_une_facture_heritee_sans_les_champs_ne_leve_pas():
 def test_le_partial_porte_le_chiffre_car_il_est_la_cible_HTMX():
     """Les filtres et la pagination échangent `#invoice-rows` : un chiffre
     posé dans list.html resterait figé après un filtrage."""
-    src = open(os.path.join(_TEMPLATES, "invoices", "_invoice_rows.html"),
-               encoding="utf-8").read()
+    src = pathlib.Path(_TEMPLATES, "invoices", "_invoice_rows.html").read_text(encoding="utf-8")
     assert "_balance" in src
-    liste = open(os.path.join(_TEMPLATES, "invoices", "list.html"),
-                 encoding="utf-8").read()
+    liste = pathlib.Path(_TEMPLATES, "invoices", "list.html").read_text(encoding="utf-8")
     assert "cents_fr" not in liste, "une somme a migré hors de la cible HTMX"
 
 
 def test_aucune_classe_absente_du_css_compile():
     """`tabular-nums` est l'instinct naturel pour aligner des montants — et il
     n'est PAS dans l'artefact compilé, donc il ne ferait rien, en silence."""
-    src = open(os.path.join(_TEMPLATES, "invoices", "_invoice_rows.html"),
-               encoding="utf-8").read()
+    src = pathlib.Path(_TEMPLATES, "invoices", "_invoice_rows.html").read_text(encoding="utf-8")
     assert "tabular-nums" not in src

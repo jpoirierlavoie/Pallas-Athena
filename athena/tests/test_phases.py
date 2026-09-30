@@ -6,6 +6,7 @@ D-9 synthesis, the ASCII invariant (D-3), and the derived constants (Annexe B).
 """
 
 import json
+import pathlib
 import re
 
 from utils import phases
@@ -226,7 +227,7 @@ def test_module_stays_pure():
     import sys
 
     mod = sys.modules["utils.phases"]
-    src = open(mod.__file__, encoding="utf-8").read()
+    src = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
     imports = [
         line.strip()
         for line in src.splitlines()

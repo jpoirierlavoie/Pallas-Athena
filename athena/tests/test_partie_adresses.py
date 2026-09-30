@@ -12,6 +12,7 @@ deux libellés, ce que fait l'épingle de source correspondante.
 """
 
 import os
+import pathlib
 import sys
 
 import pytest
@@ -153,10 +154,7 @@ def _spans_du_formulaire() -> list[tuple[str, str, bool]]:
     du formulaire — la paire condition↔libellé, pas seulement sa présence."""
     import re
 
-    src = open(
-        os.path.join(_ATHENA, "templates", "parties", "form.html"),
-        encoding="utf-8",
-    ).read()
+    src = pathlib.Path(_ATHENA, "templates", "parties", "form.html").read_text(encoding="utf-8")
     out = []
     for balise, texte in re.findall(r"<span (x-show=[^>]*)>([^<]+)</span>", src):
         condition = balise.split('x-show="', 1)[1].split('"', 1)[0]

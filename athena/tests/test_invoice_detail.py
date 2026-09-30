@@ -12,6 +12,7 @@ so no Flask app, no base.html, no session is needed.
 """
 
 import os
+import pathlib
 import sys
 from datetime import datetime, timezone
 
@@ -225,9 +226,7 @@ def test_document_render_markers_are_gone(marker):
 
 
 def test_template_declares_no_print_stylesheet():
-    src = open(
-        os.path.join(_TEMPLATES_DIR, "invoices", "detail.html"), encoding="utf-8"
-    ).read()
+    src = pathlib.Path(_TEMPLATES_DIR, "invoices", "detail.html").read_text(encoding="utf-8")
     # Only the explanatory comment may mention it — never a {% block head %}
     # carrying an @media print rule.
     assert "{% block head %}" not in src
@@ -305,9 +304,7 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
 def test_no_template_offers_to_mark_an_invoice_paid_by_hand():
     """La branche morte doit rester morte : laisser le balisage en place est
     la façon dont le prochain lecteur conclut que le bouton existe encore."""
-    src = open(
-        os.path.join(_TEMPLATES_DIR, "invoices", "detail.html"), encoding="utf-8"
-    ).read()
+    src = pathlib.Path(_TEMPLATES_DIR, "invoices", "detail.html").read_text(encoding="utf-8")
     assert "Marquer comme payée" not in src
 
 

@@ -958,8 +958,10 @@ def test_a_refusal_defaults_to_the_generic_reason_and_keeps_its_message():
     assert exc.reason == DEFAULT_REFUSAL_REASON == "argument_refused"
     named = ToolArgumentError("Refusé.", reason="idempotency_conflict")
     assert str(named) == "Refusé." and named.reason == "idempotency_conflict"
-    with pytest.raises(TypeError):
-        ToolArgumentError("Refusé.", "idempotency_conflict")  # keyword-only
+    # keyword-only: a second positional argument is refused. The callable
+    # form states that the construction IS the assertion.
+    pytest.raises(TypeError, ToolArgumentError, "Refusé.",
+                  "idempotency_conflict")
 
 
 def test_a_key_conflict_is_refused_under_its_own_reason(fake):
