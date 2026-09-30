@@ -9,6 +9,7 @@ finitions.
 
 import os
 import pathlib
+import re
 import sys
 from unittest import mock
 
@@ -175,7 +176,7 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
         assert pa < pb, f"« {b} » comes before « {a} »"
     # The decisions of the plan's « Ops » row, stated where they bind.
     assert "trust sequences 28 and 42" in body
-    assert "storage.googleapis.com" in body
+    assert re.search(r"storage\.googleapis\.com", body)
     assert "lot 2B pilot on one real letter" in body and "not a" in body
     # The counts it asks to verify are the registry's.
     visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS

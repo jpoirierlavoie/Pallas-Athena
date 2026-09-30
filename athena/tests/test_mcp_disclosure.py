@@ -939,7 +939,7 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the egress, the « Projets » rule and the presumed category are
     # pinned in the descriptions of the tools that carry them.
     desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
-    assert "storage.googleapis.com" in desc["begin_upload"]
+    assert re.search(r"storage\.googleapis\.com", desc["begin_upload"])
     assert "in its « Projets » folder" in desc["fill_gabarit"]
     assert "stored PRESUMED until the lawyer confirms it" in desc["update_document"]
     assert "stays PRESUMED" in text                       # the FILES line
@@ -980,7 +980,7 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     files = (_TEMPLATES / "mcp" / "families" / "_files.html").read_text(
         encoding="utf-8")
     flat_files = " ".join(files.split())
-    assert "storage.googleapis.com" in flat_files
+    assert re.search(r"storage\.googleapis\.com", flat_files)
     assert "<strong>toujours</strong> dans «&nbsp;Projets&nbsp;»" in flat_files
     templates = (_TEMPLATES / "mcp" / "families" / "_templates.html").read_text(
         encoding="utf-8")

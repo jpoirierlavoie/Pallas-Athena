@@ -103,7 +103,8 @@ LEAKY_LETTER = _docx("Monsieur Jean Tremblay, votre dossier {{objet_lettre}}")
 
 
 def _md5(data: bytes) -> str:
-    return base64.b64encode(hashlib.md5(data).digest()).decode()
+    # GCS's content MD5 — an integrity check, not a security hash.
+    return base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()  # nosec B303
 
 
 def _fake_modules() -> list:
@@ -241,7 +242,8 @@ def test_the_session_is_what_the_service_will_hold_the_put_to(world):
 
 
 @pytest.mark.parametrize("over, fragment", [
-    ({"md5_base64": hashlib.md5(PDF).hexdigest()}, "HEXADÉCIMALE"),
+    # GCS's content MD5 — an integrity check, not a security hash.
+    ({"md5_base64": hashlib.md5(PDF, usedforsecurity=False).hexdigest()}, "HEXADÉCIMALE"),  # nosec B303
     ({"md5_base64": "A" * 24}, "md5_base64"),
     ({"filename": "script.exe"}, "type de fichier"),
     ({"filename": "a/b.pdf"}, "barre oblique"),

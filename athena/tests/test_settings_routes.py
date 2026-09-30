@@ -159,9 +159,16 @@ def test_every_inline_script_carries_the_csp_nonce(web):
     csp = r.headers["Content-Security-Policy"]
     nonce = re.search(r"'nonce-([^']+)'", csp).group(1)
     body = r.data.decode("utf-8")
-    for tag in re.finditer(r"<script([^>]*)>", body):
+    # Insensible à la casse, et « src » / « type » lus comme ATTRIBUTS : une
+    # balise <SCRIPT> échappait au balayage, et un `data-src=` valait
+    # exemption (CodeQL py/bad-tag-filter, 2026-09-30).
+    blocs = list(re.finditer(r"<script\b([^>]*)>", body, re.IGNORECASE))
+    assert blocs, "aucun bloc <script> lu — le balayage ne prouve rien"
+    for tag in blocs:
         attrs = tag.group(1)
-        if "src=" in attrs or 'type="application/json"' in attrs:
+        if (re.search(r"\ssrc\s*=", attrs, re.IGNORECASE)
+                or re.search(r'\stype\s*=\s*"application/json"', attrs,
+                             re.IGNORECASE)):
             continue
         assert f'nonce="{nonce}"' in attrs, f"bloc inline sans nonce : {attrs[:80]}"
 

@@ -70,8 +70,11 @@ def _capability_leak(tool: str, payload) -> bool:
                    if (tool, k) not in _CAPABILITY_VALUE_ALLOWLIST}
     if write_support.capability_in(scanned):
         return True
-    return "storage.googleapis.com" in json.dumps(
-        scanned, ensure_ascii=False, default=str)
+    # The host as a pattern, dots escaped — the same match as the old
+    # substring test, never narrower: a leak detector must not start
+    # missing what it used to catch.
+    return re.search(r"storage\.googleapis\.com", json.dumps(
+        scanned, ensure_ascii=False, default=str)) is not None
 
 
 def _conforms(tool: str, payload) -> None:
@@ -2613,7 +2616,8 @@ def _upload_world(monkeypatch):
     bucket = tpl_model.storage.bucket()
 
     def md5(data: bytes) -> str:
-        return base64.b64encode(hashlib.md5(data).digest()).decode()
+        # GCS's content MD5 — an integrity check, not a security hash.
+        return base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()  # nosec B303
 
     return fake, ids, bucket, md5
 

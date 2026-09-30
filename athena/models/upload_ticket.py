@@ -911,7 +911,13 @@ def read_staged_bytes(ticket: dict, blob) -> bytes:
     """
     data = blob.download_as_bytes(if_generation_match=blob.generation)
     declared = _canonical_md5(ticket.get("declared_md5_b64"))
-    digest = base64.b64encode(hashlib.md5(data).digest()).decode("ascii")  # nosec B324 — an integrity check against GCS's own MD5, not a security hash
+    # GCS's own content MD5 — an integrity check against the stored object,
+    # never a security hash. Bandit on Python 3.8 (the pinned bandit-action)
+    # reads hashlib.md5 through its B303 blacklist, which ignores
+    # usedforsecurity; on 3.9+ the flag alone satisfies its B324 plugin.
+    digest = base64.b64encode(
+        hashlib.md5(data, usedforsecurity=False).digest()  # nosec B303
+    ).decode("ascii")
     if len(data) != int(ticket.get("declared_size") or -1) \
             or not _same_digest(digest, declared):
         raise StagedBytesChanged()

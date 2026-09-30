@@ -655,13 +655,13 @@ def test_the_dashboard_hearing_labels_take_the_all_day_branch():
     import jinja2
     source = (pathlib.Path(__file__).resolve().parent.parent / "templates"
               / "dashboard" / "index.html").read_text(encoding="utf-8")
-    jinja2.Environment().parse(source)     # the page still compiles
+    jinja2.Environment(autoescape=True).parse(source)   # still compiles
     short = re.search(r"\{% set hday = .*? %\}", source).group(0)
     long_ = re.search(
         r"\{\{ \(h\.start_datetime if h\.all_day else "
         r"\(h\.start_datetime\|to_mtl\)\)\.strftime\('%d %b %Y'\) \}\}",
         source).group(0)
-    env = jinja2.Environment()
+    env = jinja2.Environment(autoescape=True)    # as Flask renders .html
     env.filters["to_mtl"] = to_mtl
     tpl = env.from_string(
         "{% for h in hs %}" + short

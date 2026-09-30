@@ -1096,18 +1096,21 @@ def test_rich_usable_width_read_from_sectpr():
 
 def _load_analyse_seed() -> str:
     """The _ANALYSE_SEED string WITHOUT importing models (whose __init__
-    builds the Firestore client at import): exec only the assignment."""
-    seed_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "models", "note.py",
-    )
-    src = open(seed_path, encoding="utf-8").read()
-    start = src.index("_ANALYSE_SEED")
-    seg = src[start:]
-    end = seg.index('"""', seg.index('"""') + 3) + 3
-    namespace: dict = {}
-    exec(seg[:end], namespace)
-    return namespace["_ANALYSE_SEED"]
+    builds the Firestore client at import): the assignment is found in the
+    module's syntax tree and its literal evaluated — never executed
+    (2026-09-30, Bandit B102; it used to exec the sliced source)."""
+    import ast
+    import pathlib
+
+    seed_path = (pathlib.Path(__file__).resolve().parent.parent
+                 / "models" / "note.py")
+    tree = ast.parse(seed_path.read_text(encoding="utf-8"))
+    (value,) = [
+        node.value for node in tree.body
+        if isinstance(node, ast.Assign)
+        and [getattr(t, "id", None) for t in node.targets] == ["_ANALYSE_SEED"]
+    ]
+    return ast.literal_eval(value)
 
 
 def test_rich_analyse_seed_end_to_end():

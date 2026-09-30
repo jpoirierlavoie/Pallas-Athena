@@ -1390,7 +1390,7 @@ def test_the_agenda_partial_reads_the_series_ceiling_from_the_registry():
     from mcp import disclosure
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(
-        str(_ATHENA / "templates")))
+        str(_ATHENA / "templates")), autoescape=True)   # as Flask renders
     context = disclosure.consent_context(comptabilite_offered=False)
     rendered = " ".join(env.get_template("mcp/families/_agenda.html").render(
         disclosure=context).split())
