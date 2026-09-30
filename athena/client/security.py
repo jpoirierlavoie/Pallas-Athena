@@ -3,10 +3,13 @@
 Deliberately separate from the main service's security.py: the portal has
 its own, tighter CSP (no 'unsafe-eval' — the portal ships no Alpine, all its
 JS is vanilla under nonce; connect-src admits exactly the Firebase Auth and
-GCS-resumable-upload origins), and none of the main service's edge posture
-(origin secret, appspot block, Early Hints) applies to this public host.
+GCS-resumable-upload origins), and no Early Hints. Since 2026-09-30 it does
+carry layers 2 and 3 of the edge defence (:func:`enforce_edge` — the origin
+secret and the appspot block), COPIED rather than imported: this process
+must never import the main service's security.py (nor config.py, nor models).
 """
 
+import hmac
 import secrets
 from typing import Optional
 
@@ -155,7 +158,70 @@ def verify_app_check() -> Optional[Response]:
     return None
 
 
+def _is_appengine_internal_request() -> bool:
+    """Cloud Tasks / cron traffic — the main service's predicate, copied.
+
+    App Engine STRIPS every ``X-AppEngine-*`` header from external traffic,
+    Cloudflare's included, so their mere presence proves an internal
+    dispatch (source 0.1.0.2).
+    """
+    return bool(
+        request.headers.get("X-AppEngine-QueueName")
+        or request.headers.get("X-Appengine-Cron")
+    )
+
+
+def enforce_edge() -> Optional[Response]:
+    """Layers 2 and 3 of the edge defence, on the portal too (2026-09-30).
+
+    The portal shares the app's firewall (Cloudflare ranges only) but, until
+    this date, neither of the main service's two other layers: anyone
+    fronting ``portail-dot-….appspot.com`` with THEIR OWN Cloudflare zone
+    reached it, and ``CF-Connecting-IP`` — the key of every portal rate
+    limit — was theirs to choose. Same rules as the main service:
+
+    * the appspot host is refused (the Host header is spoofable, so this is
+      the weakest layer — but free);
+    * when ``CF_ORIGIN_SECRET`` is set, every request must carry it in
+      ``X-Origin-Auth`` (the zone-wide Transform Rule injects it). Unset or
+      unreadable — ``portail-svc`` not yet granted the accessor — the check
+      is OFF (fail-open, as on the main service) and says so ONCE per
+      process, structured, with the reason;
+    * App Engine's own ``/_ah/`` paths and internal dispatches never transit
+      Cloudflare and are exempt from both.
+
+    Compared as BYTES: ``hmac.compare_digest`` raises on a non-ASCII
+    ``str``, so a forged header carrying one would have been a 500.
+    """
+    if request.path.startswith("/_ah/") or _is_appengine_internal_request():
+        return None
+    host = request.host.split(":", 1)[0].lower().rstrip(".")
+    if host == "appspot.com" or host.endswith(".appspot.com"):
+        abort(403)
+    secret = current_app.config.get("CF_ORIGIN_SECRET", "")
+    if not secret:
+        if (
+            current_app.config.get("ENV") == "production"
+            and "origin_secret_disabled" not in _WARNED_ONCE
+        ):
+            _WARNED_ONCE.add("origin_secret_disabled")
+            reason, error_type = current_app.config.get(
+                "CF_ORIGIN_SECRET_OFF", ("cf_origin_secret_unset", ""))
+            log_security_event(
+                "origin_secret_disabled", "warning",
+                reason=reason or "cf_origin_secret_unset",
+                **({"error_type": error_type} if error_type else {}),
+            )
+        return None
+    supplied = request.headers.get("X-Origin-Auth", "")
+    if not hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8")):
+        abort(403)
+    return None
+
+
 def init_portail_security(app: Flask) -> None:
+    # The edge first: a request the edge refuses reaches no other check.
+    app.before_request(enforce_edge)
     app.before_request(verify_app_check)
     app.after_request(add_security_headers)
 

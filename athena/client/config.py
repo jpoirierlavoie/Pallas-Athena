@@ -16,6 +16,7 @@ time, which the portal's service account must not need.
 
 import os
 from functools import lru_cache
+from typing import NamedTuple
 
 # ── Annexe C ─────────────────────────────────────────────────────────────
 
@@ -158,3 +159,32 @@ def portail_secret_key() -> str:
 def firebase_api_key() -> str:
     """Web API key for the sign-in page (public-by-design, kept out of git)."""
     return _secret("firebase-api-key", "FIREBASE_API_KEY", required=False)
+
+
+class OriginSecret(NamedTuple):
+    """The Cloudflare origin secret, and why the check is off when it is."""
+
+    value: str
+    reason: str = ""        # "" when armed; else a closed code, for the log
+    error_type: str = ""    # the Secret Manager error's CLASS, when unreadable
+
+
+def cf_origin_secret() -> OriginSecret:
+    """The SAME `cf-origin-secret` the main service checks (2026-09-30).
+
+    Optional and fail-OPEN, the main service's policy (config.py): unset —
+    local dev — or unreadable, because `portail-svc` holds no accessor on it
+    yet, the check is off and the reason says which, for the one warning
+    the portal logs per process. Read ONCE, by the factory: arming follows a
+    new instance, never a request. Never stripped — the value is compared
+    byte for byte, and a trailing newline is the documented trap.
+    """
+    if _is_production():
+        try:
+            value = _from_secret_manager("cf-origin-secret")
+        except Exception as exc:
+            return OriginSecret("", "cf_origin_secret_unreadable",
+                                type(exc).__name__)
+    else:
+        value = os.environ.get("CF_ORIGIN_SECRET", "")
+    return OriginSecret(value, "" if value else "cf_origin_secret_unset")

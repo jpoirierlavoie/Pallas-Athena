@@ -937,6 +937,17 @@ done
 #   gcloud secrets add-iam-policy-binding portail-secret-key \
 #     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" \
 #     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
+#
+# `cf-origin-secret` too, for the portal's OWN origin check (since
+# 2026-09-30, client/security.enforce_edge). This grant is what ARMS it:
+# without it the portal reads the secret as unreadable, fails OPEN and logs
+# `origin_secret_disabled` once per instance. Grant it only AFTER the
+# Cloudflare request tracer has shown the zone-wide Transform Rule injecting
+# `X-Origin-Auth` on the portal host — arming first would 403 every client.
+# New instances arm; running ones keep the value they read at startup.
+#   gcloud secrets add-iam-policy-binding cf-origin-secret \
+#     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" \
+#     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
 # The portal's full infrastructure (bucket, named database, queue, nine IAM
 # grants) is not yet in this document — see CLAUDE.md « Portail client » until
 # it is.

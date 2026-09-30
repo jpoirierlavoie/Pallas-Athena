@@ -349,7 +349,9 @@ def _enforce_origin_secret() -> Optional[Response]:
     if is_appengine_internal_request():
         return None
     supplied = request.headers.get("X-Origin-Auth", "")
-    if not hmac.compare_digest(supplied, secret):
+    # As BYTES: `hmac.compare_digest` raises on a non-ASCII `str`, so a
+    # forged header carrying one was a 500 instead of this 403 (2026-09-30).
+    if not hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8")):
         abort(403)
     return None
 
