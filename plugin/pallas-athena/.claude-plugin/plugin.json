@@ -1,0 +1,16 @@
+{
+  "name": "pallas-athena",
+  "description": "Mode d'emploi du connecteur Pallas Athéna : la suite d'appels la plus courte pour chaque demande, d'où vient chaque identifiant et ce que seule l'application fait. Déclare le connecteur.",
+  "author": {
+    "name": "Jason Poirier Lavoie",
+    "email": "jason@poirierlavoie.ca"
+  },
+  "keywords": [
+    "pallas athéna",
+    "gestion de dossiers",
+    "MCP",
+    "connecteur",
+    "cabinet"
+  ],
+  "license": "UNLICENSED"
+}

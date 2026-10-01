@@ -75,3 +75,12 @@ venv/
 # écrit donc dans `athena/competence_analyse/`. Quatre fichiers se sont
 # fait committer sous cette règle qui disait le contraire.
 competence_analyse/
+
+# Sortie de athena/scripts/exporter_plugin_pallas.py — l'archive du greffon
+# claude.ai « pallas-athena » (dist/pallas-athena-<version>.plugin),
+# RECONSTRUCTIBLE depuis plugin/pallas-athena/ et le registre des outils.
+# Même raison que competence_analyse/ : une copie committée dériverait de sa
+# source. Non ancré pour la même raison aussi : le défaut du script écrit à
+# la racine, mais un --sortie relatif lancé depuis athena/ écrirait
+# athena/dist/.
+dist/
