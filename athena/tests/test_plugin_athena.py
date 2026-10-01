@@ -1,7 +1,7 @@
-"""The claude.ai plugin « pallas-athena » (skill 2.0.0) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 1.0.0) — the deploy gate.
 
-``scripts/exporter_plugin_pallas.py`` builds the plugin from its handwritten
-source (``plugin/pallas-athena/`` at the repo root) and the tool registry.
+``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
+source (``plugin/athena/`` at the repo root) and the tool registry.
 This module builds it in memory and in a temp dir, and checks the SHIPPED
 files — what Claude reads — against the registry:
 
@@ -15,7 +15,7 @@ files — what Claude reads — against the registry:
   kernel ends before byte 3 500;
 * no ``{{GEN:…}}`` is left, none of the retired strings is back
   (``mcp__``, the draft tools, tool counts), ``dry_run`` stands only on
-  its Noyau line, ``.mcp.json`` is v1's byte for byte;
+  its Noyau line, ``.mcp.json`` names the connector « Athena »;
 * every recipe carries its fields; the accounting tools are named only in
   ``comptabilite.md`` and in the index's grant section; the index lists
   every tool exactly once;
@@ -48,7 +48,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from mcp import disclosure  # noqa: E402
 from mcp import tools  # noqa: E402
 from mcp.output_schemas import OUTPUT_SCHEMAS  # noqa: E402
-from scripts import exporter_plugin_pallas as ex  # noqa: E402
+from scripts import exporter_plugin_athena as ex  # noqa: E402
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 
@@ -244,9 +244,20 @@ def test_nothing_blocks_delivery(shipped):
     assert ex.problemes(shipped) == []
 
 
-def test_mcp_json_is_v1_byte_for_byte(shipped):
+def test_mcp_json_names_the_athena_connector(shipped):
     assert shipped[ex.MCP_JSON] == ex.MCP_JSON_ATTENDU
-    assert json.loads(shipped[ex.MCP_JSON]) == {"mcpServers": {"Pallas Athena": {}}}
+    assert json.loads(shipped[ex.MCP_JSON]) == {"mcpServers": {"Athena": {}}}
+
+
+def test_what_claude_reads_never_says_pallas(shipped):
+    """The connector is « Athena » in every file Claude reads; only the
+    README, written for the lawyer, names the old ``athena`` plugin."""
+    for path, data in shipped.items():
+        if path == "README.md":
+            continue
+        text = data.decode("utf-8")
+        assert "pallas" not in text.lower(), path
+        assert "Athéna" not in text, path
 
 
 def test_plugin_json_carries_the_version(shipped):
@@ -254,7 +265,7 @@ def test_plugin_json_carries_the_version(shipped):
     assert data["name"] == ex.NOM
     assert data["version"] == ex.VERSION
     assert list(data)[:2] == ["name", "version"]
-    assert ex.nom_archive() == f"pallas-athena-{ex.VERSION}.plugin"
+    assert ex.nom_archive() == f"athena-{ex.VERSION}.plugin"
 
 
 def test_every_budget_names_a_shipped_file():
@@ -308,13 +319,13 @@ def test_a_stray_source_file_is_refused(tmp_path):
     import shutil
     copy = tmp_path / "src"
     shutil.copytree(ex.SOURCE, copy)
-    (copy / "skills" / "pallas-athena" / "notes.md").write_text("x", encoding="utf-8")
+    (copy / "skills" / "athena" / "notes.md").write_text("x", encoding="utf-8")
     with pytest.raises(ex.ErreurDeConstruction):
         ex.construire(copy)
 
 
 def test_exporter_never_imports_models():
-    tree = ast.parse((_ATHENA / "scripts" / "exporter_plugin_pallas.py")
+    tree = ast.parse((_ATHENA / "scripts" / "exporter_plugin_athena.py")
                      .read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
@@ -326,7 +337,7 @@ def test_exporter_never_imports_models():
     # …nor transitively: build in a fresh interpreter and look.
     code = (
         "import sys\n"
-        "from scripts import exporter_plugin_pallas as ex\n"
+        "from scripts import exporter_plugin_athena as ex\n"
         "ex.construire()\n"
         "print(sorted(m for m in sys.modules if m == 'models' or m.startswith(("
         "'models.', 'google.cloud.firestore', 'firebase_admin',"
@@ -446,7 +457,7 @@ def test_linked_files_exist(shipped):
         for span in _SPAN.findall(text):
             if span.endswith(".md") and " " not in span:
                 own = str(here / span)
-                root = f"skills/pallas-athena/{span}"
+                root = f"skills/athena/{span}"
                 if own not in shipped and root not in shipped:
                     missing.append((path, span))
     assert missing == []

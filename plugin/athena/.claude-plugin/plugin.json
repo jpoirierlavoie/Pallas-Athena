@@ -1,0 +1,16 @@
+{
+  "name": "athena",
+  "description": "Mode d'emploi du connecteur Athena : la suite d'appels la plus courte pour chaque demande, d'où vient chaque identifiant et ce que seule l'application fait. Désigne le connecteur Athena par son nom.",
+  "author": {
+    "name": "Jason Poirier Lavoie",
+    "email": "jason@poirierlavoie.ca"
+  },
+  "keywords": [
+    "athena",
+    "gestion de dossiers",
+    "MCP",
+    "connecteur",
+    "cabinet"
+  ],
+  "license": "UNLICENSED"
+}

@@ -1,14 +1,14 @@
-"""Construit le greffon claude.ai « pallas-athena » (compétence 2.0.0)
+"""Construit le greffon claude.ai « athena » (compétence 1.0.0)
 depuis sa source manuscrite et le registre des outils du connecteur.
 
-    python -m scripts.exporter_plugin_pallas [--sortie CHEMIN.plugin]
+    python -m scripts.exporter_plugin_athena [--sortie CHEMIN.plugin]
                                              [--deplie DOSSIER] [--check]
 
-La source vit à la racine du dépôt, dans ``plugin/pallas-athena/``, HORS
+La source vit à la racine du dépôt, dans ``plugin/athena/``, HORS
 d'``athena/`` : elle n'est jamais déployée. Le produit est une archive
-``dist/pallas-athena-<version>.plugin`` (``dist/`` n'est pas versionné) de
+``dist/athena-<version>.plugin`` (``dist/`` n'est pas versionné) de
 même disposition que la 1.3.0 — ``.claude-plugin/plugin.json``,
-``.mcp.json``, ``README.md``, ``skills/pallas-athena/…`` — qu'on téléverse
+``.mcp.json``, ``README.md``, ``skills/athena/…`` — qu'on téléverse
 dans la page des plugins de l'organisation, sur claude.ai.
 
 Pourquoi générer une partie du texte. Tout ce qui peut dériver du code est
@@ -17,7 +17,7 @@ la 1.3.0 recopiait des comptes d'outils, un préfixe et des vocabulaires, et
 les trois étaient faux au moment de la refonte. La source porte donc des
 lignes ``{{GEN:…}}``, seules sur leur ligne, que ce script remplit :
 
-* ``{{GEN:version}}`` — « Compétence 2.0.0 — registre ‹12 hex› », empreinte
+* ``{{GEN:version}}`` — « Compétence 1.0.0 — registre ‹12 hex› », empreinte
   des noms d'outils et de leurs schémas d'entrée : une compétence
   construite contre un autre registre le dit dès sa deuxième ligne ;
 * ``{{GEN:charger}}`` — sous le titre d'une recette, la ligne « Charger »
@@ -46,7 +46,7 @@ Ce script est PUR et LOCAL : il importe ``mcp.tools`` et ``mcp.disclosure``
 réseau ni à la base, et refuse de tourner sous ``ENV=production``, où la
 configuration irait chercher ses secrets. Il refuse aussi de produire une
 archive hors budget ou dont un gabarit reste non rempli : la porte de
-déploiement (``tests/test_plugin_pallas.py``) vérifie le même produit.
+déploiement (``tests/test_plugin_athena.py``) vérifie le même produit.
 """
 
 from __future__ import annotations
@@ -65,23 +65,23 @@ from typing import Iterable, Optional
 
 ATHENA = Path(__file__).resolve().parent.parent
 RACINE = ATHENA.parent
-SOURCE = RACINE / "plugin" / "pallas-athena"
+SOURCE = RACINE / "plugin" / "athena"
 DIST = RACINE / "dist"
 
 sys.path.insert(0, str(ATHENA))
 
-NOM = "pallas-athena"
-VERSION = "2.0.0"
+NOM = "athena"
+VERSION = "1.0.0"
 
-SKILL = "skills/pallas-athena/SKILL.md"
-INDEX = "skills/pallas-athena/references/index-outils.md"
+SKILL = "skills/athena/SKILL.md"
+INDEX = "skills/athena/references/index-outils.md"
 RECETTES = tuple(
-    f"skills/pallas-athena/recettes/{nom}.md"
+    f"skills/athena/recettes/{nom}.md"
     for nom in ("facturation", "dossiers", "notes-documents", "agenda",
                 "reprise", "comptabilite")
 )
-COMPTABILITE = "skills/pallas-athena/recettes/comptabilite.md"
-REPRISE = "skills/pallas-athena/recettes/reprise.md"
+COMPTABILITE = "skills/athena/recettes/comptabilite.md"
+REPRISE = "skills/athena/recettes/reprise.md"
 PLUGIN_JSON = ".claude-plugin/plugin.json"
 MCP_JSON = ".mcp.json"
 README = "README.md"
@@ -92,11 +92,11 @@ SOURCES: tuple[str, ...] = (PLUGIN_JSON, MCP_JSON, README, SKILL, *RECETTES)
 #: Ce que le script ajoute.
 GENERES: tuple[str, ...] = (INDEX,)
 
-#: ``.mcp.json`` déclare le connecteur PAR SON NOM, octet pour octet celui de
-#: la 1.3.0. Une URL masquerait, dans Claude Code, le connecteur claude.ai
+#: ``.mcp.json`` désigne le connecteur PAR SON NOM — « Athena », le nom qu'il
+#: porte dans claude.ai ; les deux doivent être identiques. Une URL masquerait, dans Claude Code, le connecteur claude.ai
 #: sans pouvoir s'authentifier (l'OAuth de production refuse un rappel en
 #: boucle locale).
-MCP_JSON_ATTENDU = b'{\n  "mcpServers": {\n    "Pallas Athena": {}\n  }\n}\n'
+MCP_JSON_ATTENDU = b'{\n  "mcpServers": {\n    "Athena": {}\n  }\n}\n'
 
 #: Plafonds en OCTETS (UTF-8), fichier livré. SKILL.md se charge en entier
 #: quand la compétence se déclenche : à ~3 k jetons, il survit entier à une
@@ -105,10 +105,10 @@ BUDGETS: dict[str, int] = {
     PLUGIN_JSON: 512,
     README: 3_072,
     SKILL: 10_240,
-    "skills/pallas-athena/recettes/facturation.md": 4_096,
-    "skills/pallas-athena/recettes/dossiers.md": 4_096,
-    "skills/pallas-athena/recettes/notes-documents.md": 4_608,
-    "skills/pallas-athena/recettes/agenda.md": 3_584,
+    "skills/athena/recettes/facturation.md": 4_096,
+    "skills/athena/recettes/dossiers.md": 4_096,
+    "skills/athena/recettes/notes-documents.md": 4_608,
+    "skills/athena/recettes/agenda.md": 3_584,
     REPRISE: 2_048,
     COMPTABILITE: 2_560,
     INDEX: 5_120,
@@ -244,7 +244,8 @@ def bloc_seule_application() -> list[str]:
             + ", ".join(sorted(set(hors_noyau) ^ connues)))
     lignes = []
     for cle, (coupe, suite) in SEULE_APPLICATION.items():
-        texte = _texte_sans_balisage(hors_noyau[cle].fr)
+        # Le nom du connecteur, sans accent, comme partout dans le greffon.
+        texte = _texte_sans_balisage(hors_noyau[cle].fr).replace("Athéna", "Athena")
         if coupe:
             texte = texte.split(" — ", 1)[0]
         lignes.append(f"- {texte}{suite}")
@@ -520,7 +521,7 @@ def _plugin_json(texte: str) -> str:
 
 def construire(source: Optional[Path] = None) -> dict[str, bytes]:
     """Les fichiers livrés, ``chemin POSIX → octets``, triés. *source* :
-    la source manuscrite (défaut : ``plugin/pallas-athena`` du dépôt)."""
+    la source manuscrite (défaut : ``plugin/athena`` du dépôt)."""
     source = Path(source if source is not None else SOURCE)
     presents = sorted(
         p.relative_to(source).as_posix()
@@ -559,14 +560,14 @@ def problemes(fichiers: dict[str, bytes]) -> list[str]:
             texte = donnees.decode("utf-8")
             if chemin.startswith("skills/") and "{{GEN:" in texte:
                 erreurs.append(f"{chemin} : gabarit non rempli")
-            lie = chemin.startswith(("skills/pallas-athena/recettes/",
-                                     "skills/pallas-athena/references/"))
+            lie = chemin.startswith(("skills/athena/recettes/",
+                                     "skills/athena/references/"))
             if lie and texte.count("\n") >= LIGNES_MAX:
                 erreurs.append(
                     f"{chemin} : {texte.count(chr(10))} lignes, plafond "
                     f"{LIGNES_MAX - 1}")
     if fichiers.get(MCP_JSON) != MCP_JSON_ATTENDU:
-        erreurs.append(f"{MCP_JSON} : différent de celui de la 1.3.0")
+        erreurs.append(f"{MCP_JSON} : ne désigne pas le connecteur « Athena »")
     skill = fichiers.get(SKILL, b"")
     position = skill.find(("\n" + FIN_DU_NOYAU + "\n").encode("utf-8"))
     if position < 0:
@@ -604,8 +605,8 @@ def nom_archive() -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Construit le greffon claude.ai « pallas-athena » depuis "
-            "plugin/pallas-athena et le registre des outils."
+            "Construit le greffon claude.ai « athena » depuis "
+            "plugin/athena et le registre des outils."
         )
     )
     parser.add_argument(
