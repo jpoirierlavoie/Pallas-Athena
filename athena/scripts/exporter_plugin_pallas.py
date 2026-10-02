@@ -369,12 +369,12 @@ def index_outils() -> str:
         "# Index des outils",
         "",
         f"{ligne_version()}. Généré depuis le registre : ne pas modifier.",
-        "À lire seulement quand aucune recette ne convient ; la description "
-        "de l'outil, lue avant son premier appel, fait foi.",
-        "Entre parenthèses : les entrées requises. R : remplace une valeur "
-        "stockée (`destructiveHint`). C : `idempotency_key` exigée. ≤N : "
-        "plafond de `limit`. Pagination : curseur (`cursor`), offset "
-        "(`offset`), pages (`page_range`).",
+        ("À lire seulement quand aucune recette ne convient ; la description "
+         "de l'outil, lue avant son premier appel, fait foi."),
+        ("Entre parenthèses : les entrées requises. R : remplace une valeur "
+         "stockée (`destructiveHint`). C : `idempotency_key` exigée. ≤N : "
+         "plafond de `limit`. Pagination : curseur (`cursor`), offset "
+         "(`offset`), pages (`page_range`)."),
         "",
         "## Lecture",
         "",
@@ -388,9 +388,9 @@ def index_outils() -> str:
         "",
         "## Grant Comptabilité",
         "",
-        "Visibles seulement sous l'autorisation distincte « Comptabilité », "
-        "que l'autorisation d'écriture ne remplace jamais ; absents, "
-        "renvoyer à l'application.",
+        ("Visibles seulement sous l'autorisation distincte « Comptabilité », "
+         "que l'autorisation d'écriture ne remplace jamais ; absents, "
+         "renvoyer à l'application."),
         "",
     ]
     lignes += [f"- {_jeton_outil(n)}" for n in outils_comptables()]

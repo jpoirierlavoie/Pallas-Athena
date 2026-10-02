@@ -221,7 +221,6 @@ def test_the_receipt_link_is_stored_only_through_its_keyword(store):
 
 
 def test_find_receipt_copies_is_strict(store, monkeypatch):
-    db, _bucket = store
     assert document_model.find_receipt_copies("a/b") == []
 
     class _Boom:
@@ -458,7 +457,6 @@ def test_no_copy_reads_replaced_without_the_receipts_md5(store):
     """A receipt attached before ``receipt_md5`` existed has not been
     replaced since (a replacement writes the field): every copy is the
     current one's, none is listed as replaced."""
-    db, _bucket = store
     _verser()
     state = pj.etat_des_copies(_entry(receipt_md5=None))
     assert state["courante"]["id"] == DOC_ID
@@ -674,9 +672,6 @@ def web(store):
 @pytest.fixture
 def web_rendu(store):
     return _client(_app(templates=True))
-
-
-_STAGING = f"staging/{UID}/{DOC_ID}/Reçu Staples.pdf"
 
 
 def _post_recu(web, bucket, name="Reçu Staples.pdf", data=PDF):
@@ -939,7 +934,6 @@ def _card(html: str) -> str:
 
 def test_the_entry_offers_the_button_only_when_admissible_and_not_filed(
         web_rendu, store):
-    db, _bucket = store
     html = web_rendu.get(f"/administration/{TX}").get_data(as_text=True)
     card = _card(html)
     assert f'action="/administration/{TX}/recu/verser"' in card

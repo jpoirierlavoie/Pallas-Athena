@@ -179,8 +179,8 @@ def test_a_nested_field_is_named_by_its_path_never_bare():
     })
     assert errors == [
         "`days` must be >= 1",
-        "`rows[1].extra` is not a supported argument "
-        "(supported: `hours`, `name`)",
+        ("`rows[1].extra` is not a supported argument "
+         "(supported: `hours`, `name`)"),
         "`rows[1].name` is required",
         "`rows[1].hours` must be <= 24",
         "`rows[2]` must be an object",

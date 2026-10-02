@@ -35,14 +35,24 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
-    import mcp.write_support  # noqa: F401 — its db is patched below
+    import mcp.write_support as write_support  # its db is patched below
     from mcp import disclosure, endpoint
-    from models import concurrency
-    from models import dossier as dossier_model
-    from models import expense as expense_model
-    from models import time_entry as time_entry_model
+    # `import models.x as y`, never `from models import x`: a test below
+    # imports the package itself to patch models.find_by_legacy_ref, and
+    # both forms of import of one module are what CodeQL flags.
+    import models.concurrency as concurrency
+    import models.dossier as dossier_model
+    import models.expense as expense_model
+    import models.time_entry as time_entry_model
 
 from tests._fake_firestore import install  # noqa: E402
+
+# Loaded for its side effect, and named here so the dependency is
+# visible: the fake store is installed on every LOADED module holding a
+# `db` (a sweep of sys.modules), so it must be imported — under the
+# Firestore mock — before a test installs it. Bound to `_`, the name
+# that says « deliberately unused ».
+_ = (write_support,)
 
 _KEYS = itertools.count(1)
 _TIME = "create_time_entries_bulk"

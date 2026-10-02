@@ -21,9 +21,15 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import dossier as _dossier_model  # noqa: F401  (import path)
-    from models import protocol as _protocol_model  # noqa: F401
+    from models import dossier as _dossier_model
+    from models import protocol as _protocol_model
     from scripts import verifier_calendrier_delais as script
+
+# Loaded for their side effect: the script imports both models only inside
+# its functions, so they must already be loaded — under the Firestore mock
+# — when a test calls one. Bound to `_`, the name that says « deliberately
+# unused ».
+_ = (_dossier_model, _protocol_model)
 
 UTC = timezone.utc
 
