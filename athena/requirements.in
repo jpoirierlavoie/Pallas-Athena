@@ -144,11 +144,30 @@ anyio==4.14.2
 urllib3==2.8.0
 # PDF text extraction, added 2026-08-26 for the MCP get_document_text tool
 # (the stdlib cannot read a PDF). Pure Python — no native libs, so App Engine
-# Standard safe. Sole consumer: utils/pdf_text.py, which
-# caps input at models/document.DOCUMENT_TEXT_MAX_BYTES BEFORE any byte is
-# downloaded (pypdf's parse memory runs ~2-3x file size) and isolates each
-# page's extract_text() so one malformed page never kills the call.
-pypdf==6.16.2
+# Standard safe. Sole consumer: utils/pdf_text.py. Its caller,
+# models/document.get_document_bytes, refuses a file above
+# DOCUMENT_TEXT_MAX_BYTES BEFORE any byte is downloaded (pypdf's parse memory
+# runs ~2-3x file size), and pdf_text isolates each page's extract_text() so
+# one malformed page never kills the call.
+# 6.16.2 -> 6.19.0 (2026-10-01) closes CVE-2026-102993 to CVE-2026-103000,
+# eight denial-of-service bugs on a crafted PDF (page labels, indirect-object
+# tokens, font mapping and parsing, FlateDecode, form fields, embedded
+# files). Reachable: a PDF a client sends through the portal, once versed,
+# is parsed by get_document_text, and the font, token and FlateDecode paths
+# lie under extract_text() — memory or CPU exhaustion of the worker serving
+# that call. 6.18.0 moved pypdf's limits into pypdf.Configuration with the
+# SAME defaults, and nothing here overrides them. What the fixes add are
+# caps of their own (64-byte indirect-object ids, ToUnicode tokens, at most
+# 256 /Widths on a simple font, FlateDecode recovery stopped at 5 MB): past
+# one, a malformed page comes back without text and with a
+# page_extraction_failed:<n> warning (at open, the file is refused
+# invalid_pdf). 6.17.0 also logs a WARNING (logger pypdf._cmap) per page for
+# each Type1C font without /ToUnicode, fontTools not being installed: noise
+# in Cloud Logging, the text unchanged, but formatting the font dictionary
+# is now the dominant CPU cost on a crafted file. A filter set on the
+# pypdf._cmap logger itself would remove both (one on the parent "pypdf"
+# logger does not apply: logger filters are not inherited).
+pypdf==6.19.0
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its
 # pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the
