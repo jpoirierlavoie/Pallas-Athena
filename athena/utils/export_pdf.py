@@ -117,7 +117,10 @@ def export_pdf(
         spaceAfter=4,
         textColor=colors.HexColor("#111827"),
     )
-    elements.append(Paragraph(title, title_style))
+    # The subtitle can carry a client's name (the carte-client export):
+    # a lone « < » survives sanitize() and broke reportlab's paragraph
+    # parser — escape both, as the cells and group labels already are.
+    elements.append(Paragraph(escape(title), title_style))
 
     if subtitle:
         sub_style = ParagraphStyle(
@@ -127,7 +130,7 @@ def export_pdf(
             textColor=colors.HexColor("#6B7280"),
             spaceAfter=4,
         )
-        elements.append(Paragraph(subtitle, sub_style))
+        elements.append(Paragraph(escape(subtitle), sub_style))
 
     # Generation timestamp
     now_str = datetime.now().strftime("%d/%m/%Y à %H:%M")
@@ -310,7 +313,10 @@ def export_pdf_grouped(
         spaceAfter=4,
         textColor=colors.HexColor("#111827"),
     )
-    elements.append(Paragraph(title, title_style))
+    # The subtitle can carry a client's name (the carte-client export):
+    # a lone « < » survives sanitize() and broke reportlab's paragraph
+    # parser — escape both, as the cells and group labels already are.
+    elements.append(Paragraph(escape(title), title_style))
 
     if subtitle:
         sub_style = ParagraphStyle(
@@ -320,7 +326,7 @@ def export_pdf_grouped(
             textColor=colors.HexColor("#6B7280"),
             spaceAfter=4,
         )
-        elements.append(Paragraph(subtitle, sub_style))
+        elements.append(Paragraph(escape(subtitle), sub_style))
 
     now_str = datetime.now().strftime("%d/%m/%Y à %H:%M")
     ts_style = ParagraphStyle(

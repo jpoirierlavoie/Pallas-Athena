@@ -104,6 +104,32 @@ def test_export_pdf_grouped_dangling_angle_bracket_does_not_raise():
     assert resp.data.startswith(b"%PDF")
 
 
+def _pdf_text(data: bytes) -> str:
+    import io
+
+    from pypdf import PdfReader
+
+    return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
+
+
+def test_a_lone_angle_bracket_in_the_title_or_subtitle_prints_as_typed():
+    """The carte-client export puts the client's name in the subtitle; a
+    lone « < » survives sanitize() and, unescaped, made reportlab's paragraph
+    parser raise — an uncaught 500 (raised before the build's own try)."""
+    rows = [{"title": "x"}]
+    columns = [("title", "Titre", 1.0)]
+    for build in (
+        lambda **kw: export_pdf(rows, columns, filename="t.pdf", **kw),
+        lambda **kw: export_pdf_grouped([("G", rows)], columns,
+                                         filename="t.pdf", **kw),
+    ):
+        resp = build(title="Carte <client", subtitle="Client : A <B & C")
+        assert resp.status_code == 200
+        text = _pdf_text(resp.data)
+        assert "Carte <client" in text
+        assert "Client : A <B & C" in text
+
+
 # ── PDF font — Noto Serif, vendored TTFs (utils/fonts/) ──────────────────
 #
 # Registration happens at export_pdf module import, so a missing/corrupt TTF
