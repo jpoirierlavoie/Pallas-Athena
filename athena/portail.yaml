@@ -43,6 +43,11 @@ env_variables:
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
+  # google-cloud-storage >= 3.11 starts, on a Client's first blob
+  # operation per bucket, a background GET of the bucket's metadata to
+  # label OpenTelemetry spans — even with its tracing off. Not needed
+  # here, and portail-svc (object-create only) would get a 403 per worker.
+  DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: "true"
   # Étiquettes de ressource Cloud Trace — voir le commentaire d'app.yaml :
   # depuis le SDK OTel 1.42 les détecteurs ne sont chargés QUE si cette
   # variable est définie. Le portail exécute le même utils/tracing_setup.py

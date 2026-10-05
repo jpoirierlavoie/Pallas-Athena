@@ -826,3 +826,41 @@ def test_every_event_name_is_documented(nom_du_type):
     assert not absents, (
         f"{nom_du_type} : non documentés dans OBSERVABILITY.md -> {absents}"
     )
+
+
+# ── Third-party loggers ─────────────────────────────────────────────────────
+
+
+def test_the_storage_extra_bytes_warning_withholds_bucket_and_object_names(caplog):
+    """google-cloud-storage formats the object name — which ends in the
+    client's file name — into this warning; names are not auto-redacted."""
+    from utils import logging_setup
+
+    storage_logger = logging.getLogger("google.cloud.storage.blob")
+    assert logging_setup.GCS_OBJECT_NAME_FILTER in storage_logger.filters
+    with caplog.at_level(logging.WARNING, logger="google.cloud.storage.blob"):
+        storage_logger.warning(
+            "storage: received %d more bytes than requested from GCS for "
+            "bucket %r, object %r",
+            7,
+            "athena-pallas.firebasestorage.app",
+            "users/u/dossiers/d/documents/x/Tremblay c. Lavoie.pdf",
+        )
+    records = [r for r in caplog.records if r.name == "google.cloud.storage.blob"]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "7 more bytes than requested" in message
+    assert "Tremblay" not in message
+    assert "users/" not in message
+    assert "firebasestorage" not in message
+
+
+def test_the_storage_library_still_logs_that_warning_under_the_prefix():
+    """If google-cloud-storage rewords the warning, the filter stops matching
+    and the names leak again: re-check GCS_EXTRA_BYTES_PREFIX then."""
+    import inspect
+
+    from google.cloud.storage import blob
+    from utils import logging_setup
+
+    assert logging_setup.GCS_EXTRA_BYTES_PREFIX in inspect.getsource(blob)

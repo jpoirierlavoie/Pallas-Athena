@@ -396,6 +396,39 @@ def _build_handler(flask_app: Flask) -> logging.Handler:
     return handler
 
 
+# google-cloud-storage ≥ 3.12.1 warns, through logger
+# "google.cloud.storage.blob", when a ranged download returns more bytes than
+# requested — and formats the bucket and the OBJECT name into the message. An
+# object name ends in the client's file name (users/{uid}/dossiers/{id}/
+# documents/{doc}/{filename}, staging/{uid}/{uuid}/{filename}), and the
+# RedactionFilter does not scrub names. This filter keeps the warning (a
+# signal worth having) and its byte count, and withholds both names. It sits
+# on that logger itself, installed at import so both services carry it: a
+# filter on a parent logger would not apply (logger filters are not
+# inherited).
+GCS_EXTRA_BYTES_PREFIX = "storage: received %d more bytes than requested"
+
+
+class _StorageObjectNameFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            isinstance(record.msg, str)
+            and record.msg.startswith(GCS_EXTRA_BYTES_PREFIX)
+            and isinstance(record.args, tuple)
+            and record.args
+        ):
+            record.msg = (
+                GCS_EXTRA_BYTES_PREFIX
+                + " from GCS (bucket and object names withheld)"
+            )
+            record.args = (record.args[0],)
+        return True
+
+
+GCS_OBJECT_NAME_FILTER = _StorageObjectNameFilter()
+logging.getLogger("google.cloud.storage.blob").addFilter(GCS_OBJECT_NAME_FILTER)
+
+
 def init_app(flask_app: Flask) -> None:
     """Configure logging for the Flask app.  Idempotent.
 

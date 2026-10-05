@@ -159,6 +159,11 @@ env_variables:
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
+  # google-cloud-storage >= 3.11 starts, on a Client's first blob
+  # operation per bucket, a background GET of the bucket's metadata to
+  # label OpenTelemetry spans — even with its tracing off. Not needed
+  # here, and portail-svc (object-create only) would get a 403 per worker.
+  DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: "true"
   # Secrets are pulled from Google Cloud Secret Manager at runtime — see
   # config.py. The line below is the INVENTORY, and it is pinned: a test
   # reads the `_secret(...)` calls in config.py and fails if this list
