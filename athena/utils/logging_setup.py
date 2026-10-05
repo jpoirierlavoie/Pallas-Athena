@@ -488,7 +488,7 @@ AuthEvent = Literal[
     "appcheck_failure",
     "rate_limit_hit",
     # « Paramètres → Sécurité » (2026-09-07). Tout s'y joue dans le
-    # navigateur, contre Google : `firebase-admin` 7.4.0 n'a AUCUNE surface
+    # navigateur, contre Google : `firebase-admin` 7.7.0 n'a AUCUNE surface
     # MFA, donc sans ces lignes le serveur n'apprendrait RIEN d'un
     # changement de mot de passe ou de second facteur — et pour un logiciel
     # qui tient des dossiers privilégiés, « quand le facteur a-t-il changé,

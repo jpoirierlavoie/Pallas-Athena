@@ -88,8 +88,17 @@ def jwks_server(rsa_key, monkeypatch):
 @pytest.fixture
 def service(jwks_server):
     # A fresh service per test: the JWKS cache and the cooldown clock live on
-    # its PyJWKClient.
-    return app_check._AppCheckService(types.SimpleNamespace(project_id=PROJECT))
+    # its PyJWKClient. Since firebase-admin 7.7.0 the service also builds, at
+    # construction, the HTTP client of `verify_token(consume=True)` (replay
+    # protection, which the app never asks for) from the app's options and
+    # credential — a real App carries both; the stand-in mimics them, with
+    # no credential, so the client is unauthenticated and never used.
+    stand_in_app = types.SimpleNamespace(
+        project_id=PROJECT,
+        options={},
+        credential=types.SimpleNamespace(get_credential=lambda: None),
+    )
+    return app_check._AppCheckService(stand_in_app)
 
 
 def _claims() -> dict:

@@ -8,9 +8,11 @@ the bucket HOLDS afterwards, and they stay green while the code destroys a
 committed document's bytes. This fake keeps objects with their bytes,
 generation and metadata, and REFUSES what the service refuses.
 
-The API mimicked is ``google-cloud-storage`` 3.10.1 (the exact pin), checked
+The API mimicked is ``google-cloud-storage`` 3.15.0 (the exact pin), checked
 against ``inspect.signature`` of ``google.cloud.storage.blob.Blob`` on
-2026-09-27:
+2026-09-27 (3.10.1) and again on 2026-10-05 (3.15.0 only adds trailing
+optional keywords — ``destination_contexts`` on ``rewrite``/``copy_blob``,
+``filter_`` on ``list_blobs`` — that nothing here passes):
 
 * ``Blob.rewrite(source, token=None, client=None, if_generation_match=None,
   …)`` → ``(token, bytes_rewritten, total_bytes)``. The copy completes in
