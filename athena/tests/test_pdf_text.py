@@ -6,6 +6,7 @@ fixtures are hand-built zips, the docx_fill test style.
 """
 
 import io
+import logging
 import os
 import sys
 import zipfile
@@ -155,6 +156,102 @@ def test_malformed_page_is_isolated_not_fatal(monkeypatch):
     assert [p.has_text for p in result.pages] == [True, False, True]
     assert result.pages_without_text == [2]
     assert result.warnings == ["page_extraction_failed:2"]
+
+
+# ── pypdf's fontTools notice (pypdf ≥ 6.17.0) ──────────────────────────────
+
+def _pdf_with_type1c_font(pages: int) -> bytes:
+    """A Type1 font whose only embedded file is a CFF (/FontFile3 /Subtype
+    /Type1C) and which has no /ToUnicode: what makes pypdf log its fontTools
+    notice on every page that uses the font."""
+    from pypdf import PdfWriter
+    from pypdf.generic import (
+        ArrayObject,
+        DecodedStreamObject,
+        DictionaryObject,
+        NameObject,
+        NumberObject,
+    )
+
+    writer = PdfWriter()
+    font_file = DecodedStreamObject()
+    font_file.set_data(b"\x01\x00\x04\x01")  # never parsed: no fontTools
+    font_file[NameObject("/Subtype")] = NameObject("/Type1C")
+    descriptor = DictionaryObject({
+        NameObject("/Type"): NameObject("/FontDescriptor"),
+        NameObject("/FontName"): NameObject("/ABCDEF+Essai"),
+        NameObject("/FontFile3"): writer._add_object(font_file),
+    })
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/ABCDEF+Essai"),
+        NameObject("/FirstChar"): NumberObject(32),
+        NameObject("/LastChar"): NumberObject(126),
+        NameObject("/Widths"): ArrayObject([NumberObject(500)] * 95),
+        NameObject("/FontDescriptor"): writer._add_object(descriptor),
+    })
+    resources = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({
+            NameObject("/F1"): writer._add_object(font),
+        }),
+    })
+    for number in range(1, pages + 1):
+        page = writer.add_blank_page(612, 792)
+        page[NameObject("/Resources")] = resources
+        content = DecodedStreamObject()
+        content.set_data(f"BT /F1 12 Tf 72 720 Td (Page {number}) Tj ET".encode())
+        page[NameObject("/Contents")] = writer._add_object(content)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def _fonttools_notices(records) -> list:
+    return [
+        r for r in records
+        if r.name == "pypdf._cmap"
+        and str(r.msg).startswith(pdf_text.FONTTOOLS_NOTICE_PREFIX)
+    ]
+
+
+def test_pypdfs_fonttools_notice_is_dropped_before_it_reaches_a_handler(caplog):
+    """The filter sits on « pypdf._cmap » itself; the control proves this
+    fixture really makes pypdf emit the notice, so the assertion cannot pass
+    because the notice was never logged."""
+    data = _pdf_with_type1c_font(pages=2)
+    logger = logging.getLogger("pypdf._cmap")
+    assert pdf_text.FONTTOOLS_NOTICE_FILTER in logger.filters
+
+    logger.removeFilter(pdf_text.FONTTOOLS_NOTICE_FILTER)
+    try:
+        with caplog.at_level(logging.WARNING):
+            unfiltered = extract_pdf_pages(data)
+        assert _fonttools_notices(caplog.records), (
+            "pypdf no longer logs the fontTools notice on this fixture: "
+            "re-check FONTTOOLS_NOTICE_PREFIX against pypdf/_cmap.py"
+        )
+    finally:
+        logger.addFilter(pdf_text.FONTTOOLS_NOTICE_FILTER)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        filtered = extract_pdf_pages(data)
+    assert _fonttools_notices(caplog.records) == []
+    assert [p.text for p in filtered.pages] == [p.text for p in unfiltered.pages]
+    assert filtered.warnings == unfiltered.warnings == []
+
+
+def test_the_filter_lets_every_other_pypdf_diagnostic_through():
+    def record(msg):
+        return logging.LogRecord(
+            "pypdf._cmap", logging.WARNING, __file__, 1, msg, None, None
+        )
+
+    keep = pdf_text.FONTTOOLS_NOTICE_FILTER.filter
+    assert keep(record("Advanced encoding %(enc)s not implemented yet")) is True
+    assert keep(record("Skipping broken line %(line)r")) is True
+    assert keep(record(pdf_text.FONTTOOLS_NOTICE_PREFIX + " … %(ft)s")) is False
 
 
 # ── .docx extraction ────────────────────────────────────────────────────────

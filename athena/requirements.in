@@ -164,9 +164,11 @@ urllib3==2.8.0
 # invalid_pdf). 6.17.0 also logs a WARNING (logger pypdf._cmap) per page for
 # each Type1C font without /ToUnicode, fontTools not being installed: noise
 # in Cloud Logging, the text unchanged, but formatting the font dictionary
-# is now the dominant CPU cost on a crafted file. A filter set on the
-# pypdf._cmap logger itself would remove both (one on the parent "pypdf"
-# logger does not apply: logger filters are not inherited).
+# was the dominant CPU cost on a crafted file. utils/pdf_text.py drops that
+# one message with a filter on the pypdf._cmap logger itself (one on the
+# parent "pypdf" logger would not apply: logger filters are not inherited).
+# Re-check its prefix at every pypdf bump; tests/test_pdf_text.py fails if
+# pypdf stops logging the notice under it.
 pypdf==6.19.0
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its

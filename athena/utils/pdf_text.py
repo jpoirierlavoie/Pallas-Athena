@@ -12,8 +12,11 @@ never kills the call.
 Honesty contract: a scanned page has no text layer, and this module never
 pretends otherwise — it reports ``has_text: False`` and lists the page in
 ``pages_without_text`` so the caller (the MCP get_document_text tool
-fallback, or the connector's model) can decide what to do. There is no OCR
-here and none is implied. Binary content is never returned.
+fallback, or the connector's model) can decide what to do. A page whose
+extraction FAILS (malformed, or past one of pypdf's parser limits) is listed
+the same way, and a ``page_extraction_failed:<n>`` warning is what tells it
+from a scan. There is no OCR here and none is implied. Binary content is
+never returned.
 
 Warnings are machine-stable English tokens (``page_extraction_failed:7``);
 the handler maps outcomes to French. Reasons for an unreadable document:
@@ -23,12 +26,36 @@ the handler maps outcomes to French. Reasons for an unreadable document:
 from __future__ import annotations
 
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Optional
 
 from pypdf import PdfReader
+
+# pypdf ≥ 6.17.0 logs a WARNING through logger "pypdf._cmap", once per page,
+# for every Type1C font that has no /ToUnicode, because fontTools is not
+# installed. The extracted text is the same as before; the line is noise in
+# Cloud Logging, and formatting it (it embeds the whole font dictionary)
+# became the dominant CPU cost of reading a crafted PDF. This filter drops
+# that one message before it is formatted. It sits on "pypdf._cmap" itself:
+# a filter on the parent "pypdf" logger would not apply, because logger
+# filters are not inherited. Every other pypdf diagnostic still goes through.
+# Do not install fontTools to silence it.
+FONTTOOLS_NOTICE_PREFIX = "fontTools is required to fully parse the encoding"
+
+
+class _DropFontToolsNotice(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            isinstance(record.msg, str)
+            and record.msg.startswith(FONTTOOLS_NOTICE_PREFIX)
+        )
+
+
+FONTTOOLS_NOTICE_FILTER = _DropFontToolsNotice()
+logging.getLogger("pypdf._cmap").addFilter(FONTTOOLS_NOTICE_FILTER)
 
 # A single decompressed word/document.xml above this is refused rather than
 # parsed — the docx_fill MAX_SINGLE_XML_BYTES doctrine (repetitive XML

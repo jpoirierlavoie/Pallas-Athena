@@ -38,6 +38,10 @@ Enforced by `RedactionFilter` (CLAUDE.md, Security Rules — "Do not log PII"):
 
 To extend redaction: add the key to `SENSITIVE_KEYS` (a module-level set) — no other change needed.
 
+## Third-party loggers
+
+A library's records (pypdf, google-auth, the OpenTelemetry exporter…) propagate to the single root handler, so the redaction filter above applies to them, and in production they reach Cloud Logging at WARNING and above. They carry no `jsonPayload.event`, so no log-based metric or alert keys on them. ONE message is dropped at its source: since pypdf 6.17.0, logger `pypdf._cmap` warns once per page for every Type1C font without `/ToUnicode` (« fontTools is required to fully parse the encoding of a CFF Type1 font… »). The extracted text is unchanged, and formatting the message (it embeds the whole font dictionary) was the dominant CPU cost of reading a crafted PDF. `utils/pdf_text.py` installs `FONTTOOLS_NOTICE_FILTER` on `pypdf._cmap` ITSELF, because a filter on the parent `pypdf` logger would not apply (logger filters are not inherited). Every other pypdf diagnostic still goes through, and `tests/test_pdf_text.py` proves both halves.
+
 ## Event taxonomy
 
 Each helper emits through a dedicated logger so log-based metrics can filter by `logName`.

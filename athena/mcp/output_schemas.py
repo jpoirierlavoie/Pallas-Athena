@@ -3830,9 +3830,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "text": _str("Extracted text; empty when has_text is "
                                  "false."),
                     "has_text": _bool(
-                        "false = NO text layer on this unit (scan, image "
-                        "page) — never « the page is blank on paper », and "
-                        "nothing was OCR'd."),
+                        "false = NO text on this unit: a scan or image "
+                        "page — never « the page is blank on paper », and "
+                        "nothing was OCR'd — unless a "
+                        "page_extraction_failed:<n> warning names it (a "
+                        "malformed page that could not be read)."),
                     "page_truncated": _bool(
                         "true = this unit alone overflowed the per-call "
                         "ceiling and was cut; its tail is not retrievable "
@@ -3840,16 +3842,22 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 })),
                 "pages_without_text": _arr(
                     _int(),
-                    "Units of THIS response with no text layer — the "
-                    "scanned-document signal (window-scoped, not "
-                    "document-wide)."),
+                    "Units of THIS response without text (window-scoped, "
+                    "not document-wide) — the scanned-document signal, "
+                    "except a unit a page_extraction_failed:<n> warning "
+                    "names, which could not be read."),
                 "truncated": _bool(
                     "true = the requested window was cut short by the "
                     "per-call ceiling."),
                 "next_page": _nint(
                     "Resume here with page_range; null when the document "
                     "is exhausted."),
-                "warnings": _arr(_str(), "Machine-stable tokens."),
+                "warnings": _arr(
+                    _str(),
+                    "Machine-stable tokens: page_extraction_failed:<n> "
+                    "(page n is malformed or past a parser limit and could "
+                    "not be read — listed in pages_without_text, but NOT a "
+                    "scan); first_page_beyond_document:<count>."),
             }),
             _obj({
                 "found": _found(True),
