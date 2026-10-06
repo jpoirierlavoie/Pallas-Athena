@@ -3,9 +3,11 @@
 Run before inspecting the register, and before deploying any change to the
 trust model's rules:
 
-    python -m scripts.verify_trust_integrity
+    python -m scripts.verify_trust_integrity [--revue FICHIER]
 
-Two kinds of findings, and the exit code says which were found:
+Two kinds of findings, and the exit code says which were found (each
+printed with a key; ``--revue`` names the file of findings the lawyer has
+already reviewed — :mod:`scripts.findings_review` says how a review counts):
 
 * an ÉCART (error) is a figure or an invariant the register cannot stand
   on today — a denormalized balance that no longer adds up, a completed
@@ -58,7 +60,9 @@ Checks 5-10 (lot 5a, 2026-09-28):
      set, so the closed reconciliation silently stops re-proving. The clear
      instant is exact when a reconciliation made it (its
      ``completed_date``) or when the clear was the entry's last write
-     (``updated_at`` — a trust entry is written again only when reversed);
+     (``updated_at`` — a trust entry is written again only when reversed,
+     or rectified by ``scripts/rectify_registers``, whose trail in
+     ``revisions`` keeps the ``updated_at`` it replaced: that one is read);
      for a reversed entry it is bracketed by ``created_at`` and
      ``updated_at``, and an undecidable bracket is a NOTE, never a guessed
      écart. Entries born compensée (transfer legs, their pair reversals) are
@@ -124,8 +128,30 @@ Checks 5-10 (lot 5a, 2026-09-28):
      unreadable admin register is an écart too: a check that cannot read
      must say so, never pass. And, as a NOTE (D16 applied to history), a
      linked recette dated BEFORE the fee payment it carries.
+
+Checks 11-12 (2026-10-06 — what an edit outside the application leaves):
+
+ 11. NOTE — a date-only field (``date``, ``cleared_date``) carrying a time of
+     day. The model stores both at midnight UTC on every path, so any other
+     value was written outside it — the Firestore console edits in LOCAL
+     time, and « 2026-09-01 at 7 PM » is stored 2026-09-01T23:00Z. Every
+     reader still takes its UTC day, and the art. 38 sheet orders by day
+     since the same change (``models/trust.register_order``); before it, the
+     sheet sorted on the full timestamp and printed such an entry after the
+     rest of its day, its frozen balance out of place.
+ 12. ÉCART — the numbering. Every number from 1 to the account's counter
+     must be on an entry, and the counter cannot be behind the highest one.
+     The application never deletes a trust entry, so a missing number is an
+     entry deleted outside it: the art. 38 register is incomplete, even when
+     the frozen balances around the gap still add up (a pair that cancelled
+     out) — which is exactly why it needs its own check. The gap is
+     :class:`~scripts.findings_review.Reviewable`: restored from a backup, it
+     disappears; explained instead, the lawyer records the explanation in
+     the review file. A counter behind the highest number would make the
+     next entry reuse a number; that one is never reviewable.
 """
 
+import argparse
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -136,8 +162,13 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import admin_ledger, db, fee_payment, trust
 from models import settings as settings_model
 from models.dossier import get_dossier
+from scripts.findings_review import Reviewable, report
 from tz import to_mtl
 from utils.deadlines import today_mtl
+
+# Every entry the LAST pass of :func:`collect` read, by id — what a finding's
+# review key binds to (:func:`scripts.findings_review.finding_key`).
+_LAST_ENTRIES: dict[str, dict] = {}
 
 # The instant the as-of reconciliation rework was committed (945572a,
 # « Fidéicommis : conciliation rétroactive (as-of) », 2026-07-29 22:37:43
@@ -283,16 +314,30 @@ def _check_reproof(aid: str, by_period: list[dict], problems: list, notes: list)
 # ── check 6 ───────────────────────────────────────────────────────────────
 
 
+def _app_updated_at(tx: dict):
+    """The entry's ``updated_at`` as of its last APPLICATION write.
+
+    A rectification by ``scripts/rectify_registers`` stamps a fresh
+    ``updated_at`` (house rule: a repair regenerates the etag with the
+    stamps), and appends to ``revisions`` the one it replaced — the instant
+    check 6 reads as the clear's. The FIRST script revision holds it; later
+    ones replaced the script's own stamps."""
+    for rev in tx.get("revisions") or []:
+        if isinstance(rev, dict) and rev.get("via") == "script" and rev.get("updated_at_before"):
+            return rev["updated_at_before"]
+    return tx.get("updated_at")
+
+
 def _clear_bracket(tx: dict, recs_by_id: dict) -> tuple[Optional[datetime], Optional[datetime]]:
     """(earliest, latest) instant at which the entry can have been cleared."""
     rid = tx.get("reconciliation_id")
     if rid and rid in recs_by_id:
         completed = _instant(recs_by_id[rid].get("completed_date"))
         return completed, completed
+    updated = _instant(_app_updated_at(tx))
     if not tx.get("reversed_by_id"):
-        updated = _instant(tx.get("updated_at"))
         return updated, updated
-    return _instant(tx.get("created_at")), _instant(tx.get("updated_at"))
+    return _instant(tx.get("created_at")), updated
 
 
 def _check_clearing(
@@ -784,6 +829,79 @@ def _check_fee_payment_linkage(
         )
 
 
+# ── check 11 ──────────────────────────────────────────────────────────────
+
+_DATE_ONLY_FIELDS = (("date", "date de l'écriture"), ("cleared_date", "date de compensation"))
+
+
+def _time_of_day(value) -> Optional[datetime]:
+    """*value* as tz-aware UTC when it is NOT at midnight UTC, else None."""
+    v = _instant(value)
+    if v is None or (v.hour, v.minute, v.second, v.microsecond) == (0, 0, 0, 0):
+        return None
+    return v
+
+
+def _check_date_times(aid: str, txs: list[dict], notes: list) -> None:
+    for tx in txs:
+        for field, label in _DATE_ONLY_FIELDS:
+            v = _time_of_day(tx.get(field))
+            if v is None:
+                continue
+            notes.append(
+                f"{_where(aid, tx)}: {label} enregistrée {v.strftime('%Y-%m-%d %H:%M')} UTC "
+                f"({to_mtl(v).strftime('%Y-%m-%d %H:%M')} à Montréal) — une date seule "
+                f"s'inscrit à minuit UTC : cette valeur a été écrite hors de "
+                f"l'application (la console Firestore saisit en heure locale). "
+                f"L'application la lit partout comme le {v.date()} ; à ramener à "
+                f"minuit de ce jour."
+            )
+
+
+# ── check 12 ──────────────────────────────────────────────────────────────
+
+
+def _number_ranges(numbers: list[int]) -> str:
+    """« 96–97 », « 5, 9–11 »: consecutive runs joined, ascending."""
+    runs: list[list[int]] = []
+    for n in sorted(numbers):
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    return ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in runs)
+
+
+def _check_numbering(aid: str, txs: list[dict], problems: list) -> None:
+    present = {s for s in (tx.get("sequence") for tx in txs) if isinstance(s, int) and s >= 1}
+    try:
+        snap = db.collection(trust.COUNTERS_COLLECTION).document(trust._counter_id(aid)).get()
+        counter = int((snap.to_dict() or {}).get("seq", 0)) if snap.exists else 0
+    except Exception as exc:
+        problems.append(
+            f"compte {aid}: compteur de séquence illisible ({type(exc).__name__}) — "
+            f"la continuité de la numérotation n'a pas été vérifiée"
+        )
+        return
+    highest = max(present) if present else 0
+    if counter < highest:
+        problems.append(
+            f"compte {aid}: compteur de séquence {counter} en deçà du plus haut "
+            f"numéro inscrit ({highest}) — la prochaine écriture réutiliserait un "
+            f"numéro"
+        )
+    missing = sorted(set(range(1, max(counter, highest) + 1)) - present)
+    if missing:
+        problems.append(Reviewable(
+            f"compte {aid}: numéro(s) {_number_ranges(missing)} absent(s) du "
+            f"registre — l'application ne supprime jamais une écriture au "
+            f"fidéicommis : celle-ci l'a été hors de l'application. Le registre "
+            f"de l'art. 38 doit être complet, même quand les soldes figés autour "
+            f"du trou concordent encore ; à rétablir depuis une sauvegarde, ou à "
+            f"expliquer (revue)."
+        ))
+
+
 # ── a stable read ─────────────────────────────────────────────────────────
 
 #: Full passes the run makes before it stops looking for a stable read.
@@ -848,6 +966,7 @@ def collect() -> tuple[list[str], list[str]]:
     """Run every check; return ``(problems, notes)``. Reads only."""
     problems: list[str] = []
     notes: list[str] = []
+    _LAST_ENTRIES.clear()
     today = today_mtl()
     accounts = trust.list_accounts()
     print(f"Comptes en fidéicommis : {len(accounts)}")
@@ -877,6 +996,9 @@ def collect() -> tuple[list[str], list[str]]:
         aid = account["id"]
         txs = _account_transactions(aid)
         print(f"  · {account.get('name', aid)} : {len(txs)} écriture(s)")
+        for tx in txs:
+            if tx.get("id"):
+                _LAST_ENTRIES[tx["id"]] = tx
 
         # 1. Running account balance (balance_after_account) per row.
         running = trust.recompute_running_balances(txs, "journal")
@@ -935,6 +1057,8 @@ def collect() -> tuple[list[str], list[str]]:
         _check_date_order(aid, txs, today, problems)                                # 7
         _check_history_rules(aid, txs, by_period, invoices, problems, notes,
                              payees)                                                # 8
+        _check_date_times(aid, txs, notes)                                          # 11
+        _check_numbering(aid, txs, problems)                                        # 12
 
     # 3. Per (dossier, client): running balance_after_client + the two maps.
     for (did, cid), rows in couple_rows.items():
@@ -986,27 +1110,21 @@ def collect() -> tuple[list[str], list[str]]:
     return problems, notes
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
+    """Run every check and print the findings. *argv* is the command line
+    after the module name; ``None`` (a call from code) means no option."""
+    parser = argparse.ArgumentParser(prog="python -m scripts.verify_trust_integrity")
+    parser.add_argument(
+        "--revue", metavar="FICHIER",
+        help="fichier JSON des constats déjà revus (scripts/findings_review.py)",
+    )
+    args = parser.parse_args(argv if argv is not None else [])
     problems, notes = collect_stable()
-    print()
-    if problems:
-        print(f"❌ {len(problems)} écart(s) détecté(s) :")
-        for p in problems:
-            print(f"   - {p}")
-    else:
-        print("✅ Aucun écart : le registre et les soldes dénormalisés concordent.")
-    if notes:
-        print()
-        print(
-            f"Notes à revoir avec l'avocat ({len(notes)}) — l'historique n'est "
-            f"jamais réécrit ; chaque ligne est une décision, pas une réparation :"
-        )
-        for n in notes:
-            print(f"   - {n}")
-    if problems:
-        return 1
-    return 2 if notes else 0
+    return report(
+        problems, notes, entries=_LAST_ENTRIES, review_path=args.revue,
+        clean_line="✅ Aucun écart : le registre et les soldes dénormalisés concordent.",
+    )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

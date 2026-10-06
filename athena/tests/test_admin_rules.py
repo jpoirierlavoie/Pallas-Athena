@@ -25,8 +25,10 @@ client, ses transactions et la boucle de reprise de ``transactional`` sont
 les vrais ; on relit ce qui est STOCKÉ.
 """
 
+import json
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 from unittest import mock
@@ -651,3 +653,35 @@ def test_le_controle_d_integrite_accepte_un_registre_coherent(fake, monkeypatch,
     code, out = _run_integrity(fake, monkeypatch, capsys)
     assert code == 0, out
     assert "Aucun écart" in out
+
+
+def test_le_controle_d_integrite_note_une_date_qui_porte_une_heure(
+    fake, monkeypatch, capsys, tmp_path
+):
+    """Régression (2026-10-06) — le modèle inscrit toute date à minuit UTC :
+    une heure (la console Firestore saisit en heure locale) est la trace
+    d'une écriture faite hors de l'application, que le script ne voyait pas.
+    Une NOTE — chaque lecteur prend le jour UTC, aucun solde ne bouge —
+    qu'une revue peut reconnaître."""
+    depense, errs = al.create_transaction(_data())
+    assert errs == [], errs
+    path = f"admin_transactions/{depense['id']}"
+    fake.external_write(path, {**fake.peek(path),
+                               "date": datetime(2026, 9, 1, 23, tzinfo=UTC)})
+    code, out = _run_integrity(fake, monkeypatch, capsys)
+    assert code == 2, out
+    line = (f"(écriture {depense['id']}): date de l'écriture enregistrée "
+            f"2026-09-01 23:00 UTC (2026-09-01 19:00 à Montréal)")
+    assert line in out
+    key = re.search(r"\[([0-9a-f]{10})\] [^\n]*" + re.escape(line), out).group(1)
+
+    from scripts import verify_admin_integrity as vai
+
+    review = tmp_path / "revue.json"
+    review.write_text(json.dumps(
+        [{"cle": key, "revu_le": "2026-10-06", "motif": "Date corrigée par l'avocat."}]
+    ), encoding="utf-8")
+    code = vai.main(["--revue", str(review)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "Constats déjà revus (1)" in out

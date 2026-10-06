@@ -27,8 +27,10 @@ dépend de l'horloge murale.
 """
 
 import contextlib
+import json
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 from unittest import mock
@@ -1219,3 +1221,212 @@ def test_chaque_ecriture_des_deux_registres_deplace_le_releve(fake, monkeypatch)
     moved()
     _, errs = trust.complete_reconciliation(rec["id"], [])
     assert errs == [] and moved(), "trust reconciliation completed"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 11, 12 et la revue (2026-10-06) — ce qu'une modification faite hors de
+# l'application laisse au registre
+#
+# Le 2026-10-05, deux traces de la console Firestore étaient au registre du
+# compte général sans qu'aucun contrôle les voie : une date à 23 h UTC (la
+# feuille de l'art. 38 imprimait l'écriture après le reste de sa journée,
+# son solde figé hors de place) et deux numéros manquants (une paire qui
+# s'annulait : tous les soldes concordaient). Et chaque passe répétait les
+# mêmes notes, déjà expliquées par l'avocat.
+# ══════════════════════════════════════════════════════════════════════
+
+_KEY_LINE = re.compile(r"\[([0-9a-f]{10})\] (.*)")
+
+
+def _key_of(out: str, fragment: str) -> str:
+    """The review key printed in front of the one finding naming *fragment*."""
+    keys = [m.group(1) for line in out.splitlines()
+            for m in [_KEY_LINE.search(line)] if m and fragment in m.group(2)]
+    assert len(keys) == 1, (fragment, out)
+    return keys[0]
+
+
+def _review_file(tmp_path, *keys: str) -> str:
+    path = tmp_path / "revue.json"
+    path.write_text(json.dumps([
+        {"cle": k, "revu_le": "2026-10-06", "motif": f"Revu avec l'avocat ({k})."}
+        for k in keys
+    ]), encoding="utf-8")
+    return str(path)
+
+
+def _run_with(capsys, *argv: str) -> tuple[int, str]:
+    code = vti.main(list(argv))
+    return code, capsys.readouterr().out
+
+
+def _seven_pm(y: int, m: int, d: int) -> datetime:
+    """« d, 7 PM » as the console stores it in summer: 23:00 UTC, same day."""
+    return datetime(y, m, d, 23, tzinfo=UTC)
+
+
+def test_la_feuille_de_l_art_38_ordonne_par_jour_puis_par_sequence(fake, monkeypatch):
+    """Régression — une date portant une heure sortait de sa place : la
+    requête trie sur l'horodatage complet, et la feuille imprime le solde
+    FIGÉ de chaque écriture et se clôt sur sa dernière ligne."""
+    _today(monkeypatch, "2026-09-20T16:00:00+00:00")
+    first = _create(amount=10000, date=_d(2026, 9, 10))
+    second = _create(amount=20000, date=_d(2026, 9, 10))
+    third = _create(amount=30000, date=_d(2026, 9, 10))
+    _set(fake, _tx(first["id"]), date=_seven_pm(2026, 9, 10))
+
+    rows, truncated = trust.list_register("acc1", _d(2026, 9, 10), _d(2026, 9, 10))
+    assert not truncated
+    assert [r["id"] for r in rows] == [first["id"], second["id"], third["id"]]
+    # The frozen balances read in the order they were computed, and the
+    # last row — what a one-day sheet closes on — is the day's last entry.
+    assert [r["balance_after_account"] for r in rows] == [10000, 30000, 60000]
+
+
+def test_une_date_qui_porte_une_heure_est_une_note(fake, monkeypatch, capsys):
+    """Le modèle inscrit toute date à minuit UTC : une heure est la trace
+    d'une écriture faite hors de l'application. Note, pas écart — chaque
+    lecteur en prend le jour UTC."""
+    r1, r2, _ = _september(fake, monkeypatch)
+    _set(fake, _tx(r2["id"]), date=_seven_pm(2026, 9, 3))
+    _set(fake, _tx(r1["id"]), cleared_date=_seven_pm(2026, 9, 2))
+    code, out = _run(capsys)
+    assert code == 2, out
+    assert (f"seq 2 (écriture {r2['id']}): date de l'écriture enregistrée "
+            f"2026-09-03 23:00 UTC (2026-09-03 19:00 à Montréal)") in out
+    assert "L'application la lit partout comme le 2026-09-03" in out
+    assert (f"seq 1 (écriture {r1['id']}): date de compensation enregistrée "
+            f"2026-09-02 23:00 UTC") in out
+
+
+def test_un_numero_absent_est_un_ecart_que_la_revue_peut_reconnaitre(
+    fake, monkeypatch, capsys, tmp_path
+):
+    """Régression — l'application ne supprime jamais une écriture au
+    fidéicommis : une paire supprimée hors de l'application, qui s'annulait,
+    laissait tous les soldes concordants, et le script rendait « ✅ »."""
+    _today(monkeypatch, "2026-09-02T16:00:00+00:00")
+    _create(amount=100000, date=_d(2026, 9, 1))
+    wrong = _create(amount=40000, date=_d(2026, 9, 2))
+    reversal, errs = trust.reverse_transaction(wrong["id"], "saisie en double")
+    assert errs == [], errs
+    _today(monkeypatch, "2026-09-20T16:00:00+00:00")
+    _create(amount=5000, date=_d(2026, 9, 3))
+    assert _run(capsys)[0] == 0
+    fake.external_delete(_tx(wrong["id"]))
+    fake.external_delete(_tx(reversal["id"]))
+
+    code, out = _run(capsys)
+    assert code == 1, out
+    gap = "compte acc1: numéro(s) 2–3 absent(s) du registre"
+    assert gap in out
+    assert "stocké" not in out  # every balance still agrees: only the gap speaks
+
+    # Explained by the lawyer, the gap is history: a review acknowledges it.
+    key = _key_of(out, gap)
+    code, out = _run_with(capsys, "--revue", _review_file(tmp_path, key))
+    assert code == 0, out
+    assert "Constats déjà revus (1)" in out
+    assert f"[{key}] {gap}" in out
+    assert "revu le 2026-10-06 — Revu avec l'avocat" in out
+
+
+def test_un_compteur_en_deca_du_plus_haut_numero_est_un_ecart_jamais_revu(
+    fake, monkeypatch, capsys, tmp_path
+):
+    """La prochaine écriture réutiliserait un numéro : un chiffre qui ne
+    concorde pas, jamais de l'historique — une revue qui le nomme est
+    signalée et ignorée."""
+    _september(fake, monkeypatch)
+    _set(fake, "counters/trust-acc1", seq=1)
+    code, out = _run(capsys)
+    assert code == 1, out
+    line = ("compte acc1: compteur de séquence 1 en deçà du plus haut numéro "
+            "inscrit (2)")
+    assert line in out
+    key = _key_of(out, line)
+    code, out = _run_with(capsys, "--revue", _review_file(tmp_path, key))
+    assert code == 1, out
+    assert f"la revue {key} ne s'applique pas" in out
+
+
+def test_une_note_revue_ne_compte_plus_et_revient_si_l_ecriture_change(
+    fake, monkeypatch, capsys, tmp_path
+):
+    """Marquer, jamais cacher : la note revue s'imprime sous « Constats déjà
+    revus » et ne compte plus ; l'écriture modifiée depuis, la clé change,
+    la note revient et la revue devenue orpheline est listée."""
+    _, r2, _ = _september(fake, monkeypatch)
+    _set(fake, _tx(r2["id"]), date=_seven_pm(2026, 9, 3))
+    code, out = _run(capsys)
+    assert code == 2, out
+    key = _key_of(out, f"(écriture {r2['id']}): date de l'écriture")
+    review = _review_file(tmp_path, key)
+
+    code, out = _run_with(capsys, "--revue", review)
+    assert code == 0, out
+    assert "Constats déjà revus (1)" in out
+    assert "Notes à revoir" not in out
+
+    _set(fake, _tx(r2["id"]), description="ajoutée hors de l'application")
+    code, out = _run_with(capsys, "--revue", review)
+    assert code == 2, out
+    assert "Notes à revoir avec l'avocat (1)" in out
+    assert "Revues sans constat correspondant (1)" in out
+    assert key in out.split("Revues sans constat correspondant")[1]
+
+
+@pytest.mark.parametrize("content", [
+    lambda key: "{pas du json",
+    lambda key: json.dumps({"autre": []}),
+    lambda key: json.dumps([{"cle": "zz", "revu_le": "2026-10-06", "motif": "x"}]),
+    lambda key: json.dumps([{"cle": key, "revu_le": "06/10/2026", "motif": "x"}]),
+    lambda key: json.dumps([{"cle": key, "revu_le": "2026-10-06", "motif": "  "}]),
+    # One malformed review voids the whole file, the well-formed one too.
+    lambda key: json.dumps([
+        {"cle": key, "revu_le": "2026-10-06", "motif": "revu"},
+        {"cle": key, "revu_le": "2026-10-06", "motif": "en double"},
+    ]),
+])
+def test_un_fichier_de_revue_mal_forme_est_un_ecart_et_ne_revoit_rien(
+    fake, monkeypatch, capsys, tmp_path, content
+):
+    _, r2, _ = _september(fake, monkeypatch)
+    _set(fake, _tx(r2["id"]), date=_seven_pm(2026, 9, 3))
+    key = _key_of(_run(capsys)[1], "date de l'écriture")
+    path = tmp_path / "revue.json"
+    path.write_text(content(key), encoding="utf-8")
+    code, out = _run_with(capsys, "--revue", str(path))
+    assert code == 1, out
+    assert "aucun constat n'a été tenu pour revu" in out
+    assert "Notes à revoir avec l'avocat (1)" in out
+
+
+def test_un_fichier_de_revue_introuvable_est_un_ecart(fake, monkeypatch, capsys, tmp_path):
+    _september(fake, monkeypatch)
+    code, out = _run_with(capsys, "--revue", str(tmp_path / "absent.json"))
+    assert code == 1, out
+    assert "fichier de revue introuvable" in out
+
+
+def test_une_rectification_par_script_garde_l_instant_de_la_compensation(
+    fake, monkeypatch, capsys
+):
+    """Le contrôle 6 lit ``updated_at`` comme l'instant de la compensation.
+    Une rectification hors modèle le restampille (règle de la maison) ; sans
+    la piste qui garde l'ancien, une compensation faite AVANT la clôture
+    passerait pour faite après — un écart qu'aucune donnée ne porte."""
+    r1, _, _ = _september(fake, monkeypatch)
+    _set(fake, _tx(r1["id"]), updated_at=_at(9, 15), updated_via="script")
+    code, out = _run(capsys)
+    assert code == 1, out
+    assert (f"(écriture {r1['id']}): compensée au 2026-09-02 APRÈS la clôture"
+            in out)
+
+    _set(fake, _tx(r1["id"]), revisions=[{
+        "at": _at(9, 15), "via": "script", "motif": "bénéficiaire rectifié",
+        "changes": {"counterparty": ["Client", "Me Jason Poirier Lavoie"]},
+        "updated_at_before": _at(9, 2),
+    }])
+    code, out = _run(capsys)
+    assert code == 0, out

@@ -3003,6 +3003,13 @@ def list_register(
     reads the whole account to print one month. The ``truncated`` flag is
     returned rather than swallowed: a register that stopped early without
     saying so would read as a complete one. Fails CLOSED (propagates).
+
+    The rows come back in :func:`register_order` — calendar day, then
+    sequence — never in the query's full-timestamp order: the sheet prints
+    each entry's FROZEN ``balance_after_account`` and closes on its last
+    row, so it must list the entries in the order those balances were
+    computed (see :func:`register_order`). When the read is truncated, the
+    ordering applies to the rows read.
     """
     query = db.collection(TRANSACTIONS_COLLECTION).where(
         filter=FieldFilter("account_id", "==", account_id)
@@ -3019,9 +3026,34 @@ def list_register(
         )
     query = query.order_by("date").order_by("sequence")
     rows = [d.to_dict() for d in query.limit(limit + 1).stream()]
-    if len(rows) > limit:
-        return rows[:limit], True
-    return rows, False
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    rows.sort(key=register_order)
+    return rows, truncated
+
+
+def register_order(row: dict) -> tuple:
+    """Sort key of the register as the art. 38 sheet prints it: (calendar
+    day of ``date``, ``sequence``).
+
+    A date-only field is stored at midnight UTC (Architecture Rule 5), so
+    for every entry the model wrote, this is the order of the query that
+    feeds :func:`list_register`. A date written OUTSIDE the model can carry
+    a time of day — the Firestore console edits in local time, and
+    « 2026-09-01 at 7 PM » is stored 2026-09-01T23:00Z — which every reader
+    of the register still reads as its UTC day, 2026-09-01. Sorted on the
+    full timestamp, such an entry moved behind the rest of its day: the
+    balance column of the sheet jumped, and a sheet ending that day closed
+    on the wrong entry's balance. (Seq 106 of the general account, 2026-09-01,
+    is how this was found; ``scripts/verify_trust_integrity`` check 11 lists
+    every such date.) Within a day, the sequence is the order the frozen
+    balances were computed in — exact whenever days are non-decreasing in
+    sequence order, the invariant check 7 of that script holds the register
+    to.
+    """
+    d = _as_utc(row.get("date"))
+    day = d.date() if isinstance(d, datetime) else date.min
+    return (day, int(row.get("sequence") or 0))
 
 
 def _journal_query(account_id: str) -> "firestore.Query":

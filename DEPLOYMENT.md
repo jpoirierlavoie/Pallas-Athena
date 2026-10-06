@@ -3973,6 +3973,27 @@ Notes:
      stops the writes, or the accounting tools, alone any more. A rollback
      past this release brings the switches back with the older version's
      own `app.yaml`, the accounting tools hidden again.
+- **Register findings: keys and reviews (2026-10-06).** Both integrity
+  scripts now print every finding with a key in brackets, and take
+  `--revue FICHIER`, a JSON list of `{"cle", "revu_le", "motif"}` naming the
+  findings the lawyer has reviewed. Keep that file with the signed memo in
+  the trust records, never in this repository (it names entries and his
+  reasons). A reviewed finding still prints, under « Constats déjà revus »,
+  and no longer counts toward the exit code; the key binds the entry's
+  stored document, so an entry changed since brings its finding back (the
+  stale review is listed). A balance that does not add up can never be
+  marked reviewed, and an unreadable file is an écart. New checks, read-only
+  like the rest: trust **11** (a date-only `date` or `cleared_date` carrying
+  a time of day — a NOTE, the trace of an edit outside the application),
+  trust **12** (every number from 1 to the account's counter is on an entry
+  — an ÉCART: the application never deletes a trust entry; a gap may be
+  marked reviewed once explained, a counter behind the highest number
+  never), administration **10** (the same time-of-day NOTE). The art. 38
+  sheet orders its rows by calendar day, then sequence
+  (`models/trust.register_order`): sorted on the full timestamp, an entry a
+  console edit left at 7 PM printed after the rest of its day, its frozen
+  balance out of place. On 2026-10-06 production read: trust exit `1` (the
+  gap 96–97) with 14 notes, administration exit `2` with 4 notes.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

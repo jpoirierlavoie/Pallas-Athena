@@ -39,15 +39,45 @@ module deliberately does not have (balances are computed at read). Checks:
      the ledger balance moved by twice its amount, the first time anyone
      edits it. Run this BEFORE deploying lot 0b; each row it names is a
      decision for the lawyer, never an automatic repair.
+ 10. NOTE (2026-10-06) — a date-only field (``date``, ``cleared_date``)
+     carrying a time of day. The model stores both at midnight UTC on every
+     path; any other value was written outside it (the Firestore console
+     edits in LOCAL time). Every reader takes its UTC day, so no figure
+     moves — a time of day only reorders the entry within its day — but it
+     is the trace of an edit no trail records.
 
-Run:  python -m scripts.verify_admin_integrity
+Exit 1 when an écart is found, 2 when only notes are, 0 when clean. Every
+finding prints with a key; ``--revue FICHIER`` names the findings the
+lawyer has already reviewed (:mod:`scripts.findings_review`).
+
+Run:  python -m scripts.verify_admin_integrity [--revue FICHIER]
 """
 
+import argparse
 import sys
+from datetime import datetime
+from typing import Optional
+
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import admin_ledger as al
 from models import db
+from scripts.findings_review import report
+from tz import to_mtl
+
+# Every entry the last :func:`collect` read, by id — what a finding's review
+# key binds to (:func:`scripts.findings_review.finding_key`).
+_LAST_ENTRIES: dict[str, dict] = {}
+
+_DATE_ONLY_FIELDS = (("date", "date de l'écriture"), ("cleared_date", "date de compensation"))
+
+
+def _time_of_day(value) -> Optional[datetime]:
+    """*value* as tz-aware UTC when it is NOT at midnight UTC, else None."""
+    v = al._as_utc(value)
+    if not isinstance(v, datetime) or (v.hour, v.minute, v.second, v.microsecond) == (0, 0, 0, 0):
+        return None
+    return v
 
 
 def _account_transactions(account_id: str) -> list[dict]:
@@ -60,8 +90,11 @@ def _account_transactions(account_id: str) -> list[dict]:
     ]
 
 
-def main() -> int:
+def collect() -> tuple[list[str], list[str]]:
+    """Run every check; return ``(problems, notes)``. Reads only."""
     problems: list[str] = []
+    notes: list[str] = []
+    _LAST_ENTRIES.clear()
     accounts = al.list_accounts()
     print(f"Comptes d'administration : {len(accounts)}")
 
@@ -74,6 +107,8 @@ def main() -> int:
         all_txs.extend(txs)
         for t in txs:
             by_id[t.get("id", "")] = t
+            if t.get("id"):
+                _LAST_ENTRIES[t["id"]] = t
         print(f"  · {account.get('name', aid)} : {len(txs)} écriture(s)")
 
         # 1. Denormalized ledger balance == Σ admin_delta (status-blind).
@@ -161,6 +196,21 @@ def main() -> int:
         # 7. compensée ⇒ cleared_date.
         if t.get("status") == "compensée" and not t.get("cleared_date"):
             problems.append(f"écriture {tid}: compensée sans cleared_date")
+        # 10. A date-only field carrying a time of day — written outside the
+        # model (NOTE: every reader takes its UTC day, no figure moves).
+        for field, label in _DATE_ONLY_FIELDS:
+            v = _time_of_day(t.get(field))
+            if v is not None:
+                notes.append(
+                    f"compte {t.get('account_id')} seq {t.get('sequence')} "
+                    f"(écriture {tid}): {label} enregistrée "
+                    f"{v.strftime('%Y-%m-%d %H:%M')} UTC "
+                    f"({to_mtl(v).strftime('%Y-%m-%d %H:%M')} à Montréal) — une "
+                    f"date seule s'inscrit à minuit UTC : cette valeur a été "
+                    f"écrite hors de l'application (la console Firestore saisit en "
+                    f"heure locale). L'application la lit partout comme le "
+                    f"{v.date()} ; à ramener à minuit de ce jour."
+                )
         # 3. Reversal pairing.
         rev_id = t.get("reversed_by_id")
         if rev_id:
@@ -241,15 +291,24 @@ def main() -> int:
                 f"2026-08-17; le compte d'opérations est faux de l'écart."
             )
 
-    print()
-    if problems:
-        print(f"❌ {len(problems)} écart(s) détecté(s) :")
-        for p in problems:
-            print(f"   - {p}")
-        return 1
-    print("✅ Aucun écart : le registre d'administration concorde.")
-    return 0
+    return problems, notes
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Run every check and print the findings. *argv* is the command line
+    after the module name; ``None`` (a call from code) means no option."""
+    parser = argparse.ArgumentParser(prog="python -m scripts.verify_admin_integrity")
+    parser.add_argument(
+        "--revue", metavar="FICHIER",
+        help="fichier JSON des constats déjà revus (scripts/findings_review.py)",
+    )
+    args = parser.parse_args(argv if argv is not None else [])
+    problems, notes = collect()
+    return report(
+        problems, notes, entries=_LAST_ENTRIES, review_path=args.revue,
+        clean_line="✅ Aucun écart : le registre d'administration concorde.",
+    )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
