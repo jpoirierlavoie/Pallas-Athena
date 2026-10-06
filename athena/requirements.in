@@ -142,6 +142,13 @@ anyio==4.15.1
 # streaming loop). Its one behaviour change concerns HTTPS forwarding
 # proxies, which nothing here uses. requests 2.33.1 accepts urllib3 < 3.
 urllib3==2.8.0
+# werkzeug arrives only via Flask. 3.1.9 (2026-10) fixes GHSA-g6x2-hccm-hh4m
+# (safe_join accepting Windows device names behind an empty NTFS ADS marker):
+# unreachable — the app never calls safe_join, and App Engine runs Linux. A
+# hygiene bump; of its other fixes, the one on a live path is stricter Basic
+# auth parsing (non-base64 characters refused), which dav/dav_auth.py reads
+# through request.authorization — a well-formed DavX5 header is unaffected.
+werkzeug==3.1.9
 # PDF text extraction, added 2026-08-26 for the MCP get_document_text tool
 # (the stdlib cannot read a PDF). Pure Python — no native libs, so App Engine
 # Standard safe. Sole consumer: utils/pdf_text.py. Its caller,
