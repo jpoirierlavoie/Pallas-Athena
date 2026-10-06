@@ -321,7 +321,10 @@ def test_source_is_line_ending_agnostic(tmp_path):
     shutil.copytree(ex.SOURCE, copy)
     for path in copy.rglob("*"):
         if path.is_file():
-            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+            # Normalized first: a source file already in CRLF (a file git
+            # rewrote under core.autocrlf) would otherwise become « \r\r\n ».
+            data = path.read_bytes().replace(b"\r\n", b"\n")
+            path.write_bytes(data.replace(b"\n", b"\r\n"))
     assert ex.construire(copy) == ex.construire()
 
 
