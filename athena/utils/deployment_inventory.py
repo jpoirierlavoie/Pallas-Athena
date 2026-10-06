@@ -7,8 +7,9 @@ safe to import from a Flask route, from a CLI script, and from a test with no
 credentials — the ``mcp/coverage.py`` precedent.
 
 WHY IT EXISTS. The same facts were kept by hand in several places and drifted,
-which CLAUDE.md predicted in writing before it happened: it names three
-hand-maintained inventories that do not update themselves, one of them being
+which the old CLAUDE.md predicted in writing before it happened (`git show
+abc63b4:CLAUDE.md`): it named three hand-maintained inventories that do not
+update themselves, one of them being
 ``scripts/check_config.py``'s ``_SCAN_FILES``. That list then omitted
 ``portail.yaml`` and ``client/config.py``, both of which carry owner literals —
 not an oversight in kind, but the expected behaviour of a hand-kept list. And
@@ -1036,7 +1037,7 @@ RESOURCES: tuple[Resource, ...] = (
             "le code à chaque lecture ; le TTL n'est que du ramassage. Les "
             "quatre sont d'ailleurs déclarés en `fieldOverrides` dans "
             "firestore.indexes.json, donc le déploiement des index les pose "
-            "déjà : les commandes `ttls update` que CLAUDE.md énumère sont "
+            "déjà : les commandes `ttls update` que DEPLOYMENT.md §11 énumère sont "
             "redondantes (constaté 2026-09-13)"
         ),
     ),

@@ -349,7 +349,7 @@ Recurring calendar series (« séries »). One click here creates or destroys up
 | `event` | Notes |
 |---|---|
 | `series_created` | A series was materialised; `serie_id`, `occurrences` (count), `dossier_id`, `frequence`, `ctag_bumped` (always true — the bump rides inside the write batch). `via: "mcp"` when the connector created it (`create_hearing_series`, lot 1b L7); the web route's lines carry no `via` |
-| `series_deleted` | A chain was deleted from an occurrence onward; `serie_id`, `occurrences` (how many were ACTUALLY destroyed, never how many were asked for), `dossier_id`, `ctag_bumped`. The deletion journal takes ONE `audit_events` row per chain — see the entry in CLAUDE.md for why N rows would evict the practice's whole deletion history |
+| `series_deleted` | A chain was deleted from an occurrence onward; `serie_id`, `occurrences` (how many were ACTUALLY destroyed, never how many were asked for), `dossier_id`, `ctag_bumped`. The deletion journal takes ONE `audit_events` row per chain — see the `models/audit_event.py` docstring for why N rows would evict the practice's whole deletion history |
 | `series_unlinked` | One occurrence was detached and became standalone; `serie_id` (the chain it LEFT), `hearing_id`, `dossier_id`, `ctag_bumped`. `via: "mcp"` when the connector detached it (`update_hearing` with `detach_from_series`, lot 1b L7 — possibly in the same write as a move, so `dossier_id` is the NEW one); the web route's lines carry no `via` |
 
 ### `log_partie_event(event, partie_id, **extra)` — logger `pallas.partie`

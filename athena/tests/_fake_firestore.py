@@ -8,9 +8,9 @@ The suite already carries several ad-hoc fakes (``test_trust.py``,
 re-implements a few client methods by hand, and each of them ACCEPTS what
 the real store refuses: a write staged inside a transaction lands at once,
 ``create()`` overwrites, a precondition is ignored, a nested array is
-stored. CLAUDE.md records what that costs — « un faux Firestore qui accepte
-ce que le vrai magasin refuse ne prouve rien » — and the defect that proved
-it surfaced only on the first real call, after the paid model call.
+stored. That costs something — « un faux Firestore qui accepte ce que le
+vrai magasin refuse ne prouve rien » — and the defect that proved it
+surfaced only on the first real call, after the paid model call.
 
 So this module keeps the REAL ``google.cloud.firestore_v1`` client — real
 ``DocumentReference``, ``Query``, ``WriteBatch``, ``Transaction``,

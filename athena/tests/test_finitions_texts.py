@@ -1,12 +1,13 @@
-"""The texts the finitions corrected (truth-3, truth-5, truth-6, truth-7,
-truth-9) — each once stated something the code no longer does. (truth-4's
-test — the app.yaml comment of the write switch — left on 2026-10-05 with
-the MCP kill switches it read.)
+"""The texts the finitions corrected (truth-3, truth-6, truth-7, truth-9) —
+each once stated something the code no longer does. (truth-4's test — the
+app.yaml comment of the write switch — left on 2026-10-05 with the MCP kill
+switches it read; truth-5's, which read CLAUDE.md's Phase History, left
+with the CLAUDE.md rewrite; truth-9's now pins only the rename the deleted
+gotcha described.)
 
-Docs are read as files: a deploy recipe, an app.yaml comment, a README or a
-Known Gotcha is what an operator or a reader acts on, and each of these
-sent them the wrong way. Every assertion here fails on the texts before the
-finitions.
+Docs are read as files: a deploy recipe, a README or the .env template is
+what an operator or a reader acts on, and each of these sent them the
+wrong way.
 """
 
 import os
@@ -41,15 +42,6 @@ def test_the_lot_2a_train_describes_the_rename_check_the_screen_shows():
     assert "checked against the dossiers its files came from" in text
 
 
-def test_the_phase_history_records_lot_0b_and_the_fixes_of_lot_4():
-    """truth-5: lot 0b's web-visible changes lived only in DEPLOYMENT §15,
-    and the lot 4 entry still said three writes read fail-open."""
-    text = (_REPO / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "### Lot 0b — " in text
-    assert "lisent encore par le `get_dossier` qui échoue ouvert" not in text
-    assert "*Correctifs du lot 4 (2026-09-29)*" in text
-
-
 def test_the_fee_payment_warning_names_the_accounting_tools():
     """truth-6: the issuance warning said a provision applies only by a fee
     payment « inscrit dans l'application »."""
@@ -71,13 +63,10 @@ def test_the_env_example_and_the_readme_never_call_the_accounting_tools_dormant(
     assert "never a payment" in readme and "templates" in readme
 
 
-def test_the_phase_gotcha_names_the_function_that_exists():
+def test_the_phase_o_rename_stays_pinned():
     """truth-9: the Phase-O gotcha named the renamed
-    `_auto_create_tasks_for_steps`; only « ex- » mentions may remain."""
-    text = (_REPO / "CLAUDE.md").read_text(encoding="utf-8")
-    bare = [m.start() for m in re.finditer(r"`_auto_create_tasks_for_steps`", text)
-            if text[max(0, m.start() - 4):m.start()] != "(ex-"]
-    assert bare == []
+    `_auto_create_tasks_for_steps`. The gotcha left with the CLAUDE.md
+    rewrite; the rename it described stays pinned."""
     from models import protocol
     assert hasattr(protocol, "create_linked_tasks")
     assert not hasattr(protocol, "_auto_create_tasks_for_steps")

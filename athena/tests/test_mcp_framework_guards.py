@@ -1071,9 +1071,8 @@ def model_self_bumping(sources: "dict | None" = None) -> set:
     OWN DAV collection inside its write batch — a reference to
     `bump_ctag_in_batch` in its body. Derived, never listed.
 
-    CLAUDE.md's documented exception to « the bump lives in the route » (a
-    batched write puts its bump IN the batch, since commit-then-bump leaves
-    N records DavX5 never re-syncs): `models/hearing.create_hearing_series`
+    The batched writers of CLAUDE.md item 2, which put their bump IN the
+    batch (commit-then-bump leaves N records DavX5 never re-syncs): `models/hearing.create_hearing_series`
     and `delete_series`. A handler reaching ONLY such writers has nothing
     left to bump — bumping again would be a second, pointless sync — so
     the « reaches bump_ctag » half of the guard is satisfied by the model

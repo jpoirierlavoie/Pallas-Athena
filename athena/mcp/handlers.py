@@ -3386,8 +3386,8 @@ _AUTOLINK_MAILTO_RE = re.compile(r"<mailto:([^<>\s]+)>")
 # scan, never a regex (finitions, robustness-2). The pattern it replaces,
 # `<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>`, was QUADRATIC — the class after
 # « @ » also matches « . », so `<a@` + `b.`×n with no closing « > » tried
-# every split point and rescanned the tail: the normalize_email ReDoS of
-# CLAUDE.md, in a new home. Harmless while its callers were capped at 20 000
+# every split point and rescanned the tail: the normalize_email ReDoS
+# (utils/validators.py), in a new home. Harmless while its callers were capped at 20 000
 # characters (~0,8 s); update_note and edit_analyse (99 000) and
 # create_document (60 000) pass far longer text through it — 20 s holding
 # the GIL for one call, every thread of the gunicorn worker frozen.

@@ -60,7 +60,7 @@ was Claude's without trusting any caller to declare it.
 
 When the NOTE is deleted — the decision lot 1 had to take
 ---------------------------------------------------------
-Its revisions are KEPT (lot 1a, step L3; recorded in CLAUDE.md). Firestore
+Its revisions are KEPT (lot 1a, step L3). Firestore
 does not cascade subcollections, so a revision outlives its parent, and
 nothing in the application removes one — the ``documents/{id}/analyses``
 journal doctrine. The « Théorie de la cause » goes further: its deletion

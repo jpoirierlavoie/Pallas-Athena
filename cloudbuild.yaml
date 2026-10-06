@@ -17,8 +17,8 @@ steps:
     dir: 'athena'
 
   # Step 2b: Deploy the « portail » service (portail client L1) — same source
-  # dir, own yaml. MUST come after the default service; requires the L1 infra
-  # checklist (SA portail-svc + IAM) to exist or the deploy fails the build.
+  # dir, own yaml. MUST come after the default service; requires the portal's
+  # service account and IAM (DEPLOYMENT.md §6.9) or the deploy fails the build.
   - name: 'gcr.io/cloud-builders/gcloud'
     args: ['app', 'deploy', 'portail.yaml', '--quiet', '--version=$SHORT_SHA']
     dir: 'athena'

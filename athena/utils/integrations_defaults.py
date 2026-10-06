@@ -119,7 +119,7 @@ def plier(texte: str) -> str:
     Hoisted verbatim from ``utils/graph_calendrier._plier`` (which now
     re-exports this) so the type-map keys are folded by the SAME function the
     predicate folds with. A second implementation here would reproduce the
-    exact trap the accent-folding gotcha documents: « é » precomposed (NFC,
+    accent-folding trap: « é » precomposed (NFC,
     U+00E9) and decomposed (NFD, e + U+0301) are different strings to Python,
     nothing guarantees which form Bookings stored, and a mapping typed with an
     accent would simply never match — silently, on a page that looked like it

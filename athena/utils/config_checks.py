@@ -1,10 +1,10 @@
 """The deployment configuration checks — run them from a CLI or from a route.
 
 Moved out of ``scripts/check_config.py`` so the knowledge is reachable from
-more than a terminal. That coupling was the whole defect: CLAUDE.md records
-that ``scripts/check_config.py`` is the only thing which reports a missing
-``cf-origin-secret``, *and nothing runs it* — so the entire edge-defence layer
-was off for months with nothing signalling it.
+more than a terminal. That coupling was the whole defect: ``scripts/check_config.py`` was the
+only thing which reported a missing ``cf-origin-secret``, *and nothing ran
+it* — so the entire edge-defence layer was off for months with nothing
+signalling it.
 
 The split is three-way and deliberate:
 

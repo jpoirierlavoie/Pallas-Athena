@@ -1316,7 +1316,7 @@ def test_gunicorn_is_documented_as_POSIX_only():
 #
 # La leçon ne porte pas sur le nombre quatre. Un commentaire qui ÉNUMÈRE est
 # un inventaire, et un inventaire tenu à la main dérive — c'est la phrase que
-# ce dépôt écrit lui-même à propos de trois autres listes. On dérive donc les
+# l'ancien CLAUDE.md écrivait à propos de trois autres listes. On dérive donc les
 # noms des appels `_secret(...)` du module de configuration de CHAQUE service,
 # et on exige que le yaml du service les nomme tous.
 

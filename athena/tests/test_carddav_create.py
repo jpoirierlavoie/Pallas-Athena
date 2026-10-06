@@ -7,9 +7,9 @@ bien ``data["id"] = <id de l'URL>``, mais ``create_partie`` fabriquait
 TOUJOURS un nouvel id et un nouvel UID : le contact était rangé sous un id
 que le téléphone n'apprend jamais, chaque GET/PUT ultérieur de son href
 répondait 404, et une copie d'UID différent redescendait au synchro
-suivant — un doublon dans le carnet d'adresses de l'appareil. Le défaut
-que CLAUDE.md décrit comme réparé pour les audiences, et que le lot 0b a
-réparé pour les tâches, survivait pour les contacts.
+suivant — un doublon dans le carnet d'adresses de l'appareil. Le défaut,
+déjà réparé pour les audiences, et que le lot 0b a réparé pour les tâches,
+survivait pour les contacts.
 
 Reproduit ici contre le VRAI client Firestore (``tests/_fake_firestore.py``
 : seul le serveur est faux) et les vraies routes PUT/GET de

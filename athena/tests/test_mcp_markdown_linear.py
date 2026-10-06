@@ -3,8 +3,8 @@
 ``mcp.handlers._normalize_markdown`` rewrote bare-address autolinks with
 ``<([^<>\\s@]+@[^<>\\s@]+\\.[^<>\\s@]+)>`` — QUADRATIC: the class after « @ »
 also matches « . », so ``<a@`` + ``b.``×n with no closing « > » tried every
-split point and rescanned the tail (the ``normalize_email`` ReDoS CLAUDE.md
-records). Harmless at the 20 000 characters its callers were capped at;
+split point and rescanned the tail (the ``normalize_email`` ReDoS fixed in
+``utils/validators.py``). Harmless at the 20 000 characters its callers were capped at;
 ``update_note`` / ``edit_analyse`` (99 000) and ``create_document``
 (60 000) route far longer text through it — measured 20,65 s for 99 000
 characters, the GIL held, every thread of the worker frozen.

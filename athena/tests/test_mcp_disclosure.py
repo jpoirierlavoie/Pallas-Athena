@@ -202,8 +202,9 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # Fixups of lot 3 (invoice numbers): « never reissued » is the YEAR
     # COUNTER's promise, not an absolute one — an imported number is
     # importable again once the voided invoice is deleted in the
-    # application, and so is a past year's counter number (CLAUDE.md, the
-    # D-2 residue). Said without its subject, it was false.
+    # application, and so is a past year's counter number (lot Q's
+    # decision D-2: an import never reads the year counter — pinned by
+    # test_invoice_import). Said without its subject, it was false.
     "never reissued, even once voided",
     "il ne sera jamais réattribué, même si",
     # Fixups of lot 3 (D18, the lawyer's « refuse on a confirmed one »): a

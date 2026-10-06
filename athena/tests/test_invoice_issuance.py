@@ -12,7 +12,7 @@ chacun atteignable depuis le formulaire web :
 2. un dossier sans client, ou dont le client ne se résout plus, donnait une
    facture sans destinataire et une adresse figée VIDE ;
 3. une facture portant la TPS/TVQ s'émettait sous des numéros d'inscription
-   VIDES (CLAUDE.md en recense plus de cinquante) ;
+   VIDES (plus de cinquante) ;
 4. une provision (``retainer_applied``) se déduisait à la création, alors
    qu'elle s'impute après l'envoi par un « paiement d'honoraires » du
    fidéicommis : le même argent compté deux fois.

@@ -3,8 +3,8 @@
 Lifted out of ``scripts/check_config.py``, whose ``Report.emit`` and
 ``Report.section`` called ``print()`` directly. That coupling is what made the
 knowledge in that script unreachable from anywhere but a terminal — and
-CLAUDE.md records the cost: the only thing that reports a missing
-``cf-origin-secret`` is that script, and nothing runs it, so the whole edge
+it cost something: the only thing that reported a missing
+``cf-origin-secret`` was that script, and nothing ran it, so the whole edge
 defence was off for months with nothing signalling it.
 
 So printing moves OUT of accumulation. A ``Report`` collects :class:`Row`

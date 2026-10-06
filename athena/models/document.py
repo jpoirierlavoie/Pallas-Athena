@@ -1094,8 +1094,7 @@ def ingest_blob_as_document(
     """Ingest an EXISTING GCS object as a document via a server-side copy.
 
     The bytes never transit the application — App Engine Standard caps any
-    request AND response at 32 MB (both directions burned us; see the
-    Known Gotchas): validation reads only the blob's metadata and a
+    request AND response at 32 MB (both directions burned us): validation reads only the blob's metadata and a
     512-byte ranged probe, and the copy is a GCS rewrite. Serves the
     Réception versement (source in the quarantine bucket) and the
     direct-to-GCS upload form (source under staging/ in the canonical
@@ -2007,7 +2006,7 @@ def sign_blob_url(blob, query_params: dict[str, str],
     metadata server and lack a local private key. Passing the service
     account email + access token tells the library to sign via the IAM
     signBlob API instead (requires iam.serviceAccountTokenCreator on
-    itself — see CLAUDE.md, IAM requirements). Raises on failure — each
+    itself — see DEPLOYMENT.md §6.4). Raises on failure — each
     caller owns its degradation.
     """
     signing_creds, _ = google.auth.default()

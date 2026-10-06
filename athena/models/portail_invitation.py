@@ -9,8 +9,8 @@ The client targets the named database « portail » through its own lazy
 ``firestore.Client(database=...)`` — deliberately NOT the ``models.db``
 default-database singleton, and deliberately not ``firebase_admin.firestore``
 (whose ``database_id`` support varies by version — spec §5). Lazy so
-importing this module never requires the database to exist: until the ops
-checklist creates it, every function degrades (None / empty / False) and the
+importing this module never requires the database to exist: until
+provisioning creates it (DEPLOYMENT.md §6.9), every function degrades (None / empty / False) and the
 routes show French empty states instead of crashing.
 
 Confidentiality trap (spec §5): every field of an invitation document is

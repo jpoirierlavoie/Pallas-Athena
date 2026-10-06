@@ -368,7 +368,7 @@ def _reaches_the_subcollection(node: ast.AST) -> bool:
 
 
 def test_no_other_module_reaches_the_revisions_subcollection():
-    """Lot 1 took the decision (lot 1a, L3; CLAUDE.md): a note's revisions
+    """Lot 1 took the decision (lot 1a, L3): a note's revisions
     are KEPT when the note is deleted. Nothing but this module may address
     the subcollection, so a purge can only come back as a new, deliberate
     decision — never by accident."""

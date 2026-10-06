@@ -72,9 +72,8 @@ routes the portal host to the second and a `cron.yaml` carrying three jobs.
 This diagram showed one until 2026-09-12, which is how an adopter learns the
 `portail` service exists only when their first CI build fails deploying it.
 Its infrastructure — the least-privilege service account, the quarantine
-bucket, the named Firestore database, the Cloud Tasks queue and nine IAM
-grants — is **not yet written up in this document**; `CLAUDE.md` « Portail
-client » is the authority until it is.
+bucket, the named Firestore database, the Cloud Tasks queue and their IAM
+grants — is §6.9.
 
 ---
 
@@ -399,7 +398,9 @@ the check.
 7. Firebase Auth: create the single user + enroll Phone MFA (§6.5)
 8. Storage bucket **then its rules** (§6.6) — the bucket must exist first
 9. App Check + reCAPTCHA (§6.7)
-10. First deploy + smoke test (§8)
+10. Provision the `portail` service (§6.9 steps 1–5, 7 and 9) — the first CI
+    build deploys it and fails without its service account — then the first
+    deploy + smoke test (§8); §6.9's end-to-end test waits for step 12
 11. Seed reference data (§9)
 12. Cloudflare edge (§7) — DNS cutover, Full (Strict), the firewall, and the
     zone-wide **Transform Rule** that injects `X-Origin-Auth`. Can be prepared
@@ -958,9 +959,8 @@ done
 #   gcloud secrets add-iam-policy-binding cf-origin-secret \
 #     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" \
 #     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
-# The portal's full infrastructure (bucket, named database, queue, nine IAM
-# grants) is not yet in this document — see CLAUDE.md « Portail client » until
-# it is.
+# The portal's other grants (its bucket, named database, queue and project
+# roles) are in §6.9.
 
 # REQUIRED for signed Storage URLs: the runtime SA must be able to sign as ITSELF
 # (iam.signBlob self-impersonation). Without this, document & gabarit uploads and
@@ -1157,6 +1157,120 @@ gcloud logging buckets list --project=$PROJECT
 - Cloud Trace has no equivalent regional-bucket control; traces are
   PII-sanitized (`tracing_setup.py`) and carry IDs/counts only.
 
+### 6.9 The `portail` service (client portal)
+
+The second App Engine service (`athena/portail.yaml`, entrypoint
+`client.wsgi:app`) runs as its own least-privilege service account,
+`portail-svc`, and brings three resources of its own — a quarantine bucket,
+the named Firestore database `portail` and the Cloud Tasks queue `portail` —
+which the main service also uses: it writes the invitations, archives and
+purges the uploads, and handles and re-enqueues the queue's tasks (its grants
+are in step 5). **Steps 1–5 must exist before the first Cloud Build run**:
+the trigger deploys `portail.yaml` second and fails if `portail-svc` does
+not exist or the build's service account cannot act as it (§8). Steps 6
+and 8 land with the Cloudflare edge (§7, §5 step 12), and step 10 runs once
+the first CI build has deployed both services and the host resolves. The
+two APIs it adds (`cloudtasks`, `cloudscheduler`) are already in §6.1's
+block. `python -m scripts.provision --project=$PROJECT` reports each
+resource below by its id — `sa-portail`, `firestore-portail`,
+`seau-quarantaine`, `cycle-de-vie-quarantaine`, `file-portail`,
+`pare-feu-interne` — and writes nothing.
+
+1. **Service account:**
+
+   ```bash
+   gcloud iam service-accounts create portail-svc --project=$PROJECT
+   ```
+
+2. **Named database**, in the App Engine region. Its location is permanent
+   (§5):
+
+   ```bash
+   gcloud firestore databases create --database=portail \
+     --location=northamerica-northeast1 --type=firestore-native --project=$PROJECT
+   ```
+
+3. **Queue**, then the limits `scripts.provision` checks:
+
+   ```bash
+   gcloud tasks queues create portail --location=northamerica-northeast1 --project=$PROJECT
+   gcloud tasks queues update portail --location=northamerica-northeast1 --project=$PROJECT \
+     --max-attempts=10 --min-backoff=10s --max-backoff=600s \
+     --max-concurrent-dispatches=3 --max-dispatches-per-second=5
+   ```
+
+4. **Quarantine bucket** `<project>-portail-quarantaine` (`PORTAIL_BUCKET`,
+   §4.1): in the App Engine region (any other region bills egress on every
+   uploaded byte), uniform bucket-level access on, public access prevention
+   enforced. Give it two lifecycle rules, in the console as in §6.6: delete
+   objects under `submissions/` after 90 days and under `archive/` after 365
+   — the values of `QUARANTINE_LIFECYCLE` in
+   [`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py).
+   Without them a client's privileged files stay in quarantine for ever.
+
+5. **IAM.** Exactly these grants. The portal's are also listed in
+   `portail.yaml`'s header; it gets nothing else — no Graph, no Firestore
+   write, no bucket read.
+
+   | Principal | Role | On |
+   |---|---|---|
+   | `portail-svc` | `roles/storage.objectCreator` | the quarantine bucket |
+   | `portail-svc` | `roles/datastore.viewer`, conditioned on `resource.name.startsWith("projects/<project>/databases/portail")` | the project |
+   | `portail-svc` | `roles/cloudtasks.enqueuer` | the `portail` queue |
+   | `portail-svc` | `roles/appengine.appViewer` | the project |
+   | `portail-svc` | `roles/logging.logWriter`, `roles/cloudtrace.agent` | the project |
+   | `portail-svc` | `roles/secretmanager.secretAccessor` | `portail-secret-key` and `firebase-api-key`; `cf-origin-secret` only after the edge proof (§6.4) |
+   | App Engine default SA | `roles/storage.objectAdmin` | the quarantine bucket |
+   | App Engine default SA | `roles/cloudtasks.enqueuer` (the reconciliation cron re-enqueues) | the `portail` queue |
+   | the SA your Cloud Build trigger runs as | `roles/iam.serviceAccountUser` | `portail-svc` |
+
+   ⚠ **`roles/appengine.appViewer` is not optional.** A task of type
+   `app_engine_http_request` needs `appengine.applications.get`, which
+   `cloudtasks.enqueuer` does not carry. Without it every direct enqueue fails
+   `PERMISSION_DENIED`, the client still gets the confirmation (the envelope
+   is durable), and the lot reaches Réception only through the 15-minute
+   reconciliation — so the failure reads as slowness, not as an error. The
+   main service enqueues too and needs the same permission; on the original
+   deployment its Editor role carries it.
+
+6. **Firewall:** the `0.1.0.2/32` allow of §7 also carries this queue's
+   dispatches. Without it no task reaches the main service.
+
+7. **Firebase Auth and App Check:** enable the **email link** sign-in
+   provider and add the portal host to the authorized domains (§17
+   `firebase-auth`); add the portal host to the reCAPTCHA Enterprise key (§17
+   `app-check`).
+
+8. **Host and edge:** map `portail.<your-domain>` as an App Engine custom
+   domain (`dispatch.yaml` routes it to the service), with a proxied CNAME in
+   Cloudflare under Full (Strict). Put **no** Cloudflare Access application on
+   it — clients reach it publicly — and add a rate-limiting rule of about 120
+   requests per minute per IP. The zone-wide Transform Rule of §7 already
+   covers the host.
+
+9. **Outbound email (Microsoft Graph):** an Entra app registration with the
+   `Mail.Send` application permission and admin consent — plus
+   `Calendars.ReadWrite` for the Bookings sync and the Outlook mirror —, its
+   secret in `graph-client-secret` and its ids in the `GRAPH_*` variables
+   (§4.1, §17 `entra`). ⚠ An application permission granted in Entra is
+   **tenant-wide**: it reaches every mailbox of the organisation. Exchange's
+   RBAC for Applications narrows a permission to chosen mailboxes only when
+   Entra does not also grant it — the two ADD UP, and the scope is decorative
+   while the Entra grant stands (the legacy `ApplicationAccessPolicy` works
+   per application, not per permission). A permission change takes 30 minutes
+   to 2 hours to leave the Exchange cache (`Test-ServicePrincipalAuthorization`
+   verifies it), and Exchange PowerShell accepts only certificate
+   authentication for app-only access, so this administration stays manual.
+
+10. **End-to-end test** with an **alias** of yours — never
+    `AUTHORIZED_USER_EMAIL`, which the portal refuses to invite: invite it
+    from Réception, follow the link, upload a file, and check the
+    acknowledgment email and its copy in the sender's « Éléments envoyés ».
+    Then the outage drill: pause the queue
+    (`gcloud tasks queues pause portail --location=northamerica-northeast1 --project=$PROJECT`),
+    submit again — the client still gets the confirmation — then `resume` it
+    and watch the lot reach Réception.
+
 ---
 
 ## 7. Cloudflare edge
@@ -1196,6 +1310,10 @@ rejects direct access. Set up, in order:
 6. **Early Hints:** enable it (the app emits the `Link` preload headers).
 7. Point `MCP_CANONICAL_ORIGIN` and `AUTHORIZED_USER_EMAIL`'s domain at
    `yourdomain.example`, and update the legal pages / README / SECURITY.
+8. **TLS and HSTS at the edge:** set the minimum TLS version to 1.3, and give
+   the edge's HSTS the same max-age as the origin's (two years, set in
+   `security.py`) so the two never disagree. The portal host also gets its
+   rate-limiting rule (§6.9).
 
 ---
 
@@ -1215,8 +1333,8 @@ one until 2026-09-12. `cloudbuild.yaml` runs the pytest gate, then deploys
 prunes old versions **per service**. Three consequences for a first build:
 
 - **Step 2b fails if `portail-svc` does not exist.** The portal's service
-  account and its IAM must be provisioned before the trigger is ever fired —
-  and that checklist is in `CLAUDE.md` « Portail client », not yet here.
+  account and its IAM must be provisioned before the trigger is ever fired
+  (§6.9).
 - **Step 2d needs `cloudscheduler.googleapis.com`** (§6.1). Without it the
   build fails `SERVICE_DISABLED` *after* three services are already deployed.
 - **`dispatch.yaml` and `cron.yaml` each REPLACE their whole table.** The two
@@ -1692,11 +1810,12 @@ Notes:
       the test contacts (a contact a dossier still names is refused), and
       the scratch template.
   15. *Tell the lawyer* what changed on the web (each lot's « Changements
-      web à annoncer » in CLAUDE.md's Phase History; « Finitions », items
-      4-6), and that the next REAL fee payment is the pilot of the one-
-      transaction fee payment (« The fee payment is ONE transaction », its
-      last paragraph — never a test at trust). The other per-lot device
-      checks (lot 0b items 2-5, lot 1a L2-L4, lot 1b A-D) stay available:
+      web à annoncer » in the Phase History of `git show abc63b4:CLAUDE.md`;
+      « Finitions », items 4-6), and that the next REAL fee payment is the
+      pilot of the one-transaction fee payment (« The fee payment is ONE
+      transaction », its last paragraph — never a test at trust). The
+      other per-lot device checks (lot 0b items 2-5, lot 1a L2-L4, lot 1b
+      A-D) stay available:
       run first the ones he relies on. Watch the first week: the
       finitions' `unexpected` messages and the first void (« Invoice void
       (lot 0b) »). Update BOTH copies of the claude.ai skill `pallas-athena`
@@ -2481,8 +2600,9 @@ Notes:
   tool changes, no Tailwind class, no new secret.
 - **The upload ticket's tools (lot 2A, step T9 — plan D4): `begin_upload` /
   `finalize_upload`.** An MCP-visible change, so it ships inside the lot's
-  consent train (revoke the connector BEFORE pushing, re-add it after, check
-  `tools/list` and the byte budget — CLAUDE.md, plan « Consent train »).
+  consent train (revoke the connector BEFORE pushing, re-add it after — §11 —,
+  then check `tools/list` and the byte budget — the deploy gate's
+  `tests/test_mcp_descriptor_budget.py`).
   Nothing to provision beyond T5 (the `mcp_upload_tickets` TTL and the
   `staging/` lifecycle rule above — verify both are in place first): no
   index, no secret, no Tailwind class. Two prerequisites only the lawyer can
@@ -3275,7 +3395,7 @@ Notes:
      5a's web half goes live (the fee payment in ONE transaction, its
      « Date du dépôt au compte d'administration », the stale-page refusals
      of the administration edit, « Contre-passer » and « Compenser » — tell
-     the lawyer, CLAUDE.md Phase History « Lot 5 »), and nothing of 5b is
+     the lawyer, Phase History « Lot 5 » in `git show abc63b4:CLAUDE.md`), and nothing of 5b is
      reachable: the connector in force still lists **80** tools (31 read,
      49 write), and its `initialize` text says only that accounting tools
      « appear only under the SEPARATE `athena:comptabilite` grant ». The
@@ -3651,8 +3771,8 @@ Notes:
      do not reach Cloud Logging from a script —: keep it.
   2. **Read that output WITH the lawyer, before the push** — after the push
      the first generation, versement or receipt copy that needs a system
-     folder adopts it with no review at all (CLAUDE.md Known Gotchas, « The
-     default folder tree ADOPTS — and LOCKS »). Three kinds of line: « « X »
+     folder adopts it with no review at all (`models/folder.py`: its module
+     docstring and `ensure_system_folder`). Three kinds of line: « « X »
      existant sera le dossier de l'application (ne se renommera plus, ne se
      déplacera plus) » — a folder he made, e.g. a ROOT « Mandat » or
      « Autres », becomes a locked application folder; « « Projets » sera
@@ -3768,9 +3888,9 @@ Notes:
       recreates, at their deterministic ids, every default folder the lawyer
       deleted since, the ordinary ones included (« Transcriptions » he had
       no use for) — prefer `--dossier`.
-  11. **Tell the lawyer** what changed on the web — CLAUDE.md's Phase
-      History, « Arborescence par défaut des dossiers (2026-09-30) »,
-      « Changements web à annoncer ». Watch the first week:
+  11. **Tell the lawyer** what changed on the web — the Phase History of
+      `git show abc63b4:CLAUDE.md`, « Arborescence par défaut des dossiers
+      (2026-09-30) », « Changements web à annoncer ». Watch the first week:
       `default_folder_tree_incomplete`, `generation_failed` with
       `factures_unavailable`, `admin_receipt_filed` refused (OBSERVABILITY.md).
   12. **Update BOTH copies of the claude.ai skill `pallas-athena`** where
@@ -3857,22 +3977,28 @@ Notes:
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
   `uv pip compile requirements.in --python-version 3.13 --universal --generate-hashes -o requirements.txt`
-  (never hand-edit `requirements.txt`). Dependabot proposes weekly bumps; the
-  four delicate subsystems in [CLAUDE.md](CLAUDE.md) should be re-verified after
-  any bump to `icalendar`/`vobject`, `google-*`, or the OpenTelemetry stack.
+  (never hand-edit `requirements.txt`). Dependabot proposes weekly bumps; after
+  any of them, re-run the matching check of [CLAUDE.md](CLAUDE.md)'s Change
+  Impact Assessment (its « Dependency bumps are a silent trigger » paragraph
+  names which bump needs which check). A Dependabot PR on `/athena`
+  regenerates the lock as a Linux-only resolution under the `--universal`
+  header: close it and re-lock the same bump by hand with the command above.
 - **Frontend assets:** if you change Tailwind classes, recompile
   `static/src/app.input.css` → `static/vendor/app.<hash>.css`, then fan the new
   hash out to **five** sites — `templates/base.html`,
   `templates/auth/login.html`, **`client/templates/base.html`**,
   `static/sw.js`'s PRECACHE (bumping `STATIC_CACHE` with it), and the Early
   Hints lists in `security.py` — and delete the old hashed file. Full recipe in
-  [CLAUDE.md](CLAUDE.md) → Tech Stack.
+  [CLAUDE.md](CLAUDE.md) → « Regenerating the stylesheet ».
   ⚠ **This list named four until 2026-09-13, and the one it omitted was
   `client/templates/base.html` — the PORTAL's own base.** Following it left the
   public, client-facing service pointing at a deleted filename served
   `Cache-Control: immutable` for a year: unstyled, for everyone, with no error
   anywhere. A test now pins this list against the files that actually carry the
   hash, so it cannot fall behind again.
+  The App Check bootstrap, `static/vendor/appcheck-boot.<hash>.js`, follows
+  the same rule with its own carriers — `templates/base.html`, `static/sw.js`
+  and `security.py` — and `tests/test_security_headers.py` pins its literal.
 - **Effacement Loi 25 — le clavardage interne est parti (2026-09-02).** Ce
   runbook visait le registre des conversations d'assistant, append-only par
   convention précisément pour que l'effacement reste TECHNIQUEMENT possible
@@ -3936,5 +4062,5 @@ revocation you just made.
 ---
 
 **See also:** [README.md](README.md) · [SECURITY.md](SECURITY.md) ·
-[CLAUDE.md](CLAUDE.md) (developer reference) ·
+[CLAUDE.md](CLAUDE.md) (core principles and specifications) ·
 [OBSERVABILITY.md](athena/OBSERVABILITY.md)

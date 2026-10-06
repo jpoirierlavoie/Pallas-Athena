@@ -34,8 +34,7 @@ The intake-invitation email (L3's trigger (a)) is NOT here: it stays in
 
 Provenance (``updated_via``) comes from the writer's context
 (``models.provenance``) — the request's blueprint or the connector's
-``writing_via`` — never from an argument (Architecture Rule 5's lot-0a
-corollary). Every function returns ``(hearing, errors, report)``: errors
+``writing_via`` — never from an argument (Architecture Rule 7). Every function returns ``(hearing, errors, report)``: errors
 non-empty means NOTHING was WRITTEN, and — on every path but one — that
 Outlook was not called either. The exception is :func:`refuser` when the
 Graph cancellation itself FAILED and the local write then failed too:

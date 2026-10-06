@@ -596,7 +596,7 @@ NO_WEB_FORM: dict[str, str] = {
 # whose web edit form carries expected_etag and whose stale refusal is
 # proved by ITS OWN module's suite, because the form follows that module's
 # refusal convention (a validation error re-renders at 400, where the
-# FormCase harness above expects 200 — CLAUDE.md, routes/admin_ledger). The
+# FormCase harness above expects 200 — routes/admin_ledger). The
 # administration ledger: update_admin_entry rewrites an entry the lawyer's
 # « Modifier » page edits (D9, lot 5a). Held to it: the route hands the
 # submitted version on, the form carries the field, the proof exists.

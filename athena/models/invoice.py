@@ -858,9 +858,8 @@ def issuance_refusals(
       the contact failed);
     * taxes charged under an EMPTY registration number. The numbers are
       snapshotted from the firm profile and never rewritten (there is no
-      update of a money figure on an invoice), and CLAUDE.md records 50+
-      invoices issued with blank numbers before the profile could hold
-      them. Checked per tax, and only when that tax is actually charged: a
+      update of a money figure on an invoice), and 50+ invoices were
+      issued with blank numbers before the profile could hold them. Checked per tax, and only when that tax is actually charged: a
       wholly non-taxable invoice needs neither;
     * a due date before the invoice date.
 

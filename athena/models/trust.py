@@ -1292,8 +1292,8 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
             # the client's trust money, already deducted from
             # amount_due: withdrawing it again as a fee payment counts
             # it twice — silently whenever the residual due still
-            # covers the transfer (the CLAUDE.md « provision » gotcha;
-            # the reprise refused these invoices at both stages).
+            # covers the transfer (the reprise refused these invoices at
+            # both stages).
             # D14, 2026-09-25: refused outright, web and connector alike.
             if int(invoice.get("retainer_applied") or 0) > 0:
                 raise _TxnAbort("facture_avec_provision")

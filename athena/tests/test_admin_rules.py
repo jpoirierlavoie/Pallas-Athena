@@ -554,8 +554,9 @@ def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
     fidéicommis il ne s'affiche qu'en bannière APRÈS le retrait des fonds —
     un nouvel appelant fautif doit tomber ici, avant le déploiement.
 
-    Et les appelants du MOT-CLÉ sont exactement les deux que CLAUDE.md
-    nomme : un troisième doit mettre la documentation à jour en même temps
+    Et les appelants du MOT-CLÉ sont exactement les deux que nomme la
+    docstring de `models/admin_ledger.create_transaction` : un troisième
+    doit la mettre à jour en même temps
     (preuve, aussi, que le balayage voit de vrais appels).
 
     Réécrit délibérément au lot 5a (étape 3) : la route du fidéicommis ne

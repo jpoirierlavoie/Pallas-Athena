@@ -9,8 +9,8 @@ PUT/GET de ``dav/dossier_collections.py`` :
    TOUJOURS un nouvel id et un nouvel UID : la tâche était rangée sous un id
    que le client n'apprend jamais, chaque GET/PUT ultérieur de son href
    répondait 404, et une copie d'UID différent redescendait au synchro
-   suivant (doublon, RELATED-TO de jtx cassé). Le défaut que CLAUDE.md
-   décrit comme réparé pour les audiences survivait pour les tâches.
+   suivant (doublon, RELATED-TO de jtx cassé). Le défaut, déjà
+   réparé pour les audiences, survivait pour les tâches.
 2. **Le suffixe de DESCRIPTION.** ``task_to_vtodo`` ajoute « Dossier: … »
    à la description qu'il émet ; ``vtodo_to_task`` le relisait comme du
    texte. Chaque édition au téléphone ajoutait donc un bloc de plus à la

@@ -3,8 +3,8 @@
 The first DAV tests in the suite. DavX5 fails SILENTLY — a wrong component
 set, a hearing served from two collections, or a missing CTag bump produces
 no error anywhere, so these pin the invariants the deploy gate can actually
-check. What they cannot check is the device itself; see the curl procedure
-in CLAUDE.md.
+check. What they cannot check is the device itself; see CLAUDE.md item 2
+and the DAV checks of DEPLOYMENT.md §15-16.
 """
 
 import os

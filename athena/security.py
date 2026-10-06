@@ -173,7 +173,8 @@ def _add_security_headers(response: Response) -> Response:
 #
 # MAINTENANCE: the hashed filenames here must track the asset names used in
 # base.html / auth/login.html and the PRECACHE list in static/sw.js — the
-# CSS regeneration recipe in CLAUDE.md lists every touch point.
+# full list of carriers is DEPLOYMENT.md §15 « Frontend assets », and the
+# recipe is CLAUDE.md « Regenerating the stylesheet ».
 _EARLY_HINTS_BASE = (
     "</static/vendor/app.3fcfc0de.css>; rel=preload; as=style",
     # Font preloads MUST carry `crossorigin` (fonts are always fetched in CORS

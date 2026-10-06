@@ -1065,8 +1065,8 @@ def ensure_analyse_note(
     and seeded a duplicate over the lawyer's filled analysis. The writer's
     provenance (``created_via``) comes from ``models.provenance``'s context
     — the request's blueprint, or the connector's ``writing_via`` — never
-    from an argument (Architecture Rule 5's lot-0a corollary: a caller never
-    sets it).
+    from an argument: it takes none (Architecture Rule 7 lets a creator
+    name a valid ``created_via``; this one never does).
     """
     try:
         existing = find_analyse_note_strict(dossier_id)

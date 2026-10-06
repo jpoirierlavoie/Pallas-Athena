@@ -4,7 +4,7 @@ Pure Graph glue over ``utils/graph`` — no Firestore, fully unit-testable. The
 sweep itself (diff, counters, cron guard) lives in ``routes/taches_outlook.py``;
 this module owns the event payload, the marker, and the three Graph calls.
 
-Design invariants (see CLAUDE.md → Known Gotchas):
+Design invariants:
 
 - **Firestore-read-only by design.** The hearing ↔ Outlook mapping lives in
   the mirrored event itself (extended property ``MIROIR_PROP_ID``, value
