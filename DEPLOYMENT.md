@@ -3994,6 +3994,36 @@ Notes:
   console edit left at 7 PM printed after the rest of its day, its frozen
   balance out of place. On 2026-10-06 production read: trust exit `1` (the
   gap 96–97) with 14 notes, administration exit `2` with 4 notes.
+- **Rectifying a register entry outside the models (2026-10-06).** The trust
+  register is append-only and a reconciled administration entry is locked,
+  so the application corrects neither a payee typed wrong nor a date's hour.
+  **Never do it in the Firestore console**: the console edits in local time,
+  so a correct date-only value (midnight UTC) shows there as 8 PM the
+  evening before (7 PM in winter) — it LOOKS a day early — and « fixing » it
+  stores an evening hour; the console also lets a creation instant be
+  overwritten, and a document be deleted, with no trail in the application
+  (the Data Access audit log keeps the call for 30 days, never the value it
+  replaced). Point-in-time recovery showed it on administration entries 214
+  and 215: their dates were right before the console edits of 2026-09-30.
+  Instead, from
+  `athena/`, with the environment of « Active gabarits » above (ADC, the
+  variables inline, never `ENV=production`):
+
+  ```bash
+  python -m scripts.rectify_registers PLAN.json               # prints, writes nothing
+  python -m scripts.rectify_registers PLAN.json --appliquer   # writes, all or nothing
+  ```
+
+  The plan (a JSON file kept outside this repository, like the review file)
+  lists changes `{registre, ecriture, champ, avant, apres, motif}`; each
+  states the stored value it expects, so a plan refuses itself when the
+  entry changed since. It reaches only: a trust `counterparty` (on a fee
+  payment, only a name of the firm profile — D23 binds a repair too), a fee
+  payment's `invoice_external_ref`, a `date` or `cleared_date` brought to
+  midnight of the SAME day (never another day), and an administration
+  entry's `created_at` (no later than its `updated_at`). Every document gets
+  the stamps and a `revisions` trail entry, and all of them go in one batch
+  guarded by the time each was read. Run both integrity scripts afterwards.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
