@@ -36,30 +36,28 @@
       courriel du demandeur</strong>.
     </p>
     <p class="text-sm text-gray-500 mb-4">
+      {# 2026-10-05: the administration ledger joined the read access — its
+         read tool lost the separate accounting scope with the writes. #}
       Cet accès inclut les <strong>soldes des fonds détenus en fidéicommis</strong>
       (comptabilité en fidéicommis)&nbsp;: soldes par client et registre des
-      recettes et déboursés. Il n'expose jamais le numéro de compte bancaire ni
-      le transit.
+      recettes et déboursés, ainsi que le <strong>registre
+      d'administration</strong>&nbsp;: les comptes d'opérations et les cartes
+      de crédit, leurs soldes, leur dernière conciliation et leurs écritures.
+      Il n'expose jamais le numéro de compte bancaire ni le transit.
     </p>
     <p class="text-sm text-gray-500 mb-6">
-      {# In number with the boxes actually offered: the accounting box is
-         offered only beside the write one (mcp/oauth._comptabilite_offered),
-         and with neither there is no box to refer to at all. #}
-      {% if params.comptabilite_offered %}Si vous ne cochez aucune des cases
-      ci-dessous, le connecteur ne peut rien créer ni modifier.
-      {%- elif params.write_offered %}Sans la case ci-dessous, le connecteur
-      ne peut rien créer ni modifier.
-      {%- else %}Le connecteur ne pourra rien créer ni modifier.
-      {%- endif %} Vous pouvez révoquer cet accès en tout temps.
+      Sans la case ci-dessous, le connecteur ne peut rien créer ni modifier.
+      Vous pouvez révoquer cet accès en tout temps.
     </p>
 
-    {% if params.write_offered %}
     {# The write block is ASSEMBLED from the disclosure registry
        (mcp/disclosure.py): one partial per write family, in the registry's
-       order, then the « jamais » list — each bullet a NEVER entry, backed by
-       a sweep of the connector's code (tests/test_mcp_disclosure). A lot
-       that adds a family appends a partial and a registry entry; one that
-       lifts a promise deletes its NEVER, and this page follows. #}
+       order — the ACCOUNTING family's among them since 2026-10-05, when its
+       separate box and scope left —, then the « jamais » list — each bullet
+       a NEVER entry, backed by a sweep of the connector's code
+       (tests/test_mcp_disclosure). A lot that adds a family appends a
+       partial and a registry entry; one that lifts a promise deletes its
+       NEVER, and this page follows. #}
     <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
       <p class="font-medium">Écritures (facultatif)</p>
       <p class="mt-1">
@@ -89,57 +87,6 @@
         téléphone via DavX5 — sauf ceux d'un dossier fermé ou archivé.
       </p>
     </div>
-    {% endif %}
-
-    {% if params.comptabilite_offered %}
-    {# Plan lot 5b. Offered only while MCP_WRITE_ENABLED and
-       MCP_COMPTABILITE_ENABLED are both on AND at least one tool carries
-       the athena:comptabilite scope (mcp/oauth._comptabilite_offered).
-       ASSEMBLED like the write block: the ACCOUNTING family's partial (what
-       the box grants, with the D14 rules beside it), the registry's French
-       titles of every tool under the scope (the box can neither describe a
-       tool that does not exist nor omit one that does), and the promises
-       the accounting grant keeps (mcp/disclosure.accounting_nevers — each
-       backed by a sweep or a named test). No nested <div>: the block is one
-       element, and the class strings are the write block's, verbatim (no
-       Tailwind recompile). #}
-    <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-      <p class="font-medium">Comptabilité (facultatif)</p>
-      <p class="mt-1">
-        Une <strong>autorisation distincte</strong> de celle des écritures,
-        qui porte sur les <strong>registres comptables</strong> —
-        fidéicommis et administration. Si vous cochez «&nbsp;Autoriser la
-        comptabilité&nbsp;», ce connecteur pourra inscrire, en votre nom,
-        des opérations <strong>réellement survenues à la banque</strong>&nbsp;:
-      </p>
-      {% for family in disclosure.comptabilite_families %}
-      {% include family.consent_template %}
-      {% endfor %}
-      <p class="mt-3 font-medium">Outils accordés par cette case&nbsp;:</p>
-      <ul class="list-disc list-inside mt-1 space-y-1">
-        {% for title in params.comptabilite_tool_titles %}
-        <li>{{ title }}</li>
-        {% endfor %}
-      </ul>
-      <p class="mt-3 font-medium">Même avec cette case, le connecteur ne peut
-        <strong>jamais</strong>&nbsp;:</p>
-      <ul class="list-disc list-inside mt-1 space-y-1">
-        {% for never in disclosure.comptabilite_nevers %}
-        <li>{{ never }}{% if loop.last %}.{% else %}&nbsp;;{% endif %}</li>
-        {% endfor %}
-      </ul>
-      {# Lot 5, step 5: « Une écriture inscrite par erreur ne s'efface pas :
-         elle se contre-passe » left out the administration entry still
-         editable — corrected, not reversed; the « register_delete » bullet
-         above now says how each register corrects. #}
-      <p class="mt-3">
-        Le connecteur n'efface jamais une écriture. Sans cette case,
-        <strong>aucun</strong> de ces outils n'est accessible, même si vous
-        autorisez les écritures. Et elle ne donne, à elle seule, aucun autre
-        droit d'écriture.
-      </p>
-    </div>
-    {% endif %}
 
     <form method="post" action="/oauth/authorize" class="space-y-6">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -152,9 +99,9 @@
       <input type="hidden" name="state" value="{{ params.state }}">
       <input type="hidden" name="resource" value="{{ params.resource }}">
 
-      {% if params.write_offered %}
-      {# The ONLY path to a write grant. Default unchecked; the server treats
-         an absent field as read-only, so an early submit fails closed. #}
+      {# The ONLY path to a write grant — the accounting tools included.
+         Default unchecked; the server treats an absent field as read-only,
+         so an early submit fails closed. #}
       <label class="flex items-start gap-3 p-4 bg-gray-50 rounded-xl cursor-pointer">
         <input type="checkbox" name="grant_write" value="on"
                class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
@@ -168,29 +115,6 @@
           </span>
         </span>
       </label>
-      {% endif %}
-
-      {% if params.comptabilite_offered %}
-      {# The ONLY path to an accounting grant — its OWN tick, independent of
-         the write box. Default unchecked; the server honours it only while
-         the box is offered (recomputed on the POST), so a forged field is
-         refused whenever this block would not have rendered. #}
-      <label class="flex items-start gap-3 p-4 bg-gray-50 rounded-xl cursor-pointer">
-        <input type="checkbox" name="grant_comptabilite" value="on"
-               class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-        <span class="text-sm text-gray-700">
-          <span class="font-medium">Autoriser la comptabilité (fidéicommis et administration)</span>
-          <span class="block text-gray-500 mt-1">
-            {# Derived: the ACCOUNTING family's clause, then its « jamais »
-               clauses (mcp/disclosure.comptabilite_summary_fr). #}
-            {{ disclosure.comptabilite_summary }} Indépendante de la case
-            des écritures&nbsp;: l'une ne donne jamais
-            l'autre.{% if params.comptabilite_requested %} Le client a
-            demandé cet accès.{% endif %}
-          </span>
-        </span>
-      </label>
-      {% endif %}
 
       <div class="flex gap-3">
         <button type="submit" name="decision" value="allow"

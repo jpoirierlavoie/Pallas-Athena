@@ -29,24 +29,21 @@ contact**, or the item lands in Firestore, shows up in the web UI, and DavX5
 silently never re-syncs it. All writes run through
 ``mcp/write_support.run_write`` (``idempotency_key``).
 
-Three kill switches, nested from the widest to the narrowest:
-
-* ``MCP_ENABLED`` (default on) — when false, every route in both
-  blueprints 404s.
-* ``MCP_WRITE_ENABLED`` (default on) — when false, EVERY write tool
-  disappears from ``tools/list`` and is refused at ``tools/call``, the
-  accounting ones included, and the consent screen offers no write box at
-  all; reads are unaffected.
-* ``MCP_COMPTABILITE_ENABLED`` (default OFF) — when false, the accounting
-  tools (``mcp.tools.ACCOUNTING_TOOLS``, the ``athena:comptabilite``
-  scope) disappear and are refused the same way, and the consent screen
-  does not offer their box. Money is fail-closed: a forgotten variable
-  leaves accounting off. Since plan lot 5b six tools carry the scope —
-  the ACCOUNTING family's five writes and the read ``get_admin_ledger`` —
-  so ``true`` offers the box and, to a token granted it, the tools.
+**No kill switch.** ``MCP_ENABLED``, ``MCP_WRITE_ENABLED`` and
+``MCP_COMPTABILITE_ENABLED`` — and the separate ``athena:comptabilite``
+scope with its consent box — were removed on 2026-10-05, the lawyer's
+decision: the endpoint is always served, and every write tool, the
+ACCOUNTING family's included, is reached by a token holding
+``athena:write`` (the administration ledger's read, ``get_admin_ledger``,
+by ``athena:read``, like the trust reads). What still separates a read
+token from a write one is the ``athena:write`` scope, granted only by the
+consent screen's write box. To stop the connector, revoke every token
+(``python -m scripts.revoke_mcp_tokens``): a write re-reads the live token
+first (``bearer.revalidate_for_write``), so a revoked token stops writing
+at once and stops reading within the bearer cache's five minutes.
 """
 
-from flask import Blueprint, abort, current_app
+from flask import Blueprint
 
 from config import Config
 
@@ -76,22 +73,15 @@ SCOPE_READ: str = "athena:read"
 # consent screen — never from the client's requested `scope` alone, so the
 # page the user read and the grant that is minted can never disagree.
 SCOPE_WRITE: str = "athena:write"
-# The accounting grant (plan decision D1): trust and administration register
-# entries. Its OWN unticked consent box, never implied by athena:write and
-# never implying it — a token holding write alone cannot reach an accounting
-# tool, by construction (required_scope + the tools/list filter + the
-# write-time revalidation all demand THIS scope). Like write, it is added
-# only from the visible checkbox in oauth.authorize_decision, offered only
-# while write AND accounting are switched on AND at least one tool carries
-# the scope (a box that grants nothing would be a false statement), frozen
-# at issuance and copied verbatim across refresh rotation. An RFC 6749
-# scope-token: ASCII, no accent — « comptabilite », not « comptabilité ».
-SCOPE_COMPTABILITE: str = "athena:comptabilite"
 # Advertised in the RFC 8414 / RFC 9728 metadata. Every scope but read gates
 # a write: tests/test_mcp_framework_guards checks WRITE_TOOLS membership
 # against the non-read scopes of THIS tuple, so a scope joins the write gate
 # by being listed here — and a tool declaring an unlisted scope fails it.
-SCOPES_SUPPORTED: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE, SCOPE_COMPTABILITE)
+# (A third scope, « athena:comptabilite », gated the accounting tools behind
+# their own consent box from lot 0a to 2026-10-05; the lawyer removed it —
+# those tools are write tools like the others. A token still carrying the
+# string — none was live at the removal — simply holds an unknown scope.)
+SCOPES_SUPPORTED: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE)
 
 # Token / code lifetimes (seconds).
 ACCESS_TOKEN_TTL: int = 3600
@@ -111,51 +101,6 @@ ALLOWED_BROWSER_ORIGINS: frozenset[str] = frozenset(
 
 mcp_bp = Blueprint("mcp", __name__)
 oauth_bp = Blueprint("mcp_oauth", __name__)
-
-
-def _kill_switch() -> None:
-    """404 every MCP/OAuth route when the MCP_ENABLED kill switch is off."""
-    if not current_app.config.get("MCP_ENABLED", True):
-        from utils.logging_setup import log_mcp_event
-
-        log_mcp_event("mcp_disabled_hit", "refused", reason="kill_switch")
-        abort(404)
-
-
-mcp_bp.before_request(_kill_switch)
-oauth_bp.before_request(_kill_switch)
-
-
-def write_enabled() -> bool:
-    """True when the write tools are live (``MCP_WRITE_ENABLED``).
-
-    The MASTER write switch: it governs every member of
-    ``mcp.tools.WRITE_TOOLS``, the accounting tools included.
-
-    Read through ``current_app.config`` so the switch can be flipped by a
-    redeploy without touching code, and falls back to :class:`Config` when
-    called outside an application context (tests, scripts).
-    """
-    try:
-        return bool(current_app.config.get("MCP_WRITE_ENABLED", Config.MCP_WRITE_ENABLED))
-    except RuntimeError:  # outside an app context
-        return bool(Config.MCP_WRITE_ENABLED)
-
-
-def comptabilite_enabled() -> bool:
-    """True when the accounting tools may be live (``MCP_COMPTABILITE_ENABLED``).
-
-    Necessary, not sufficient: an accounting tool is a write, so it is ALSO
-    off whenever :func:`write_enabled` is false. Same resolution as
-    :func:`write_enabled` — the application config first, :class:`Config`
-    outside an application context — and the same fail-closed default seen
-    from the other side: ``Config`` defaults it to FALSE.
-    """
-    try:
-        return bool(current_app.config.get(
-            "MCP_COMPTABILITE_ENABLED", Config.MCP_COMPTABILITE_ENABLED))
-    except RuntimeError:  # outside an app context
-        return bool(Config.MCP_COMPTABILITE_ENABLED)
 
 
 def register_mcp(app) -> None:

@@ -85,26 +85,14 @@ class Config:
     # Rate limiting
     RATE_LIMIT_LOGIN: str = os.environ.get("RATE_LIMIT_LOGIN", "5 per minute")
 
-    # MCP connector (Phase I) — kill switch + canonical origin.
+    # MCP connector (Phase I) — canonical origin.
     # MCP_CANONICAL_ORIGIN is the OAuth issuer and the base of the RFC 8707
     # resource identifier; it must never be derived from request.host
     # (Host-header trust). Override locally for MCP Inspector testing.
-    MCP_ENABLED: bool = os.environ.get("MCP_ENABLED", "true").lower() == "true"
-    # Second, narrower kill switch: turns EVERY write tool off — the
-    # accounting ones included (they vanish from tools/list, are refused at
-    # tools/call, and the consent screen offers no write box) — without
-    # taking the read-only connector down with them.
-    MCP_WRITE_ENABLED: bool = (
-        os.environ.get("MCP_WRITE_ENABLED", "true").lower() == "true"
-    )
-    # Third, narrowest: the accounting tools (scope athena:comptabilite,
-    # plan lot 5) and their consent box. Defaults to FALSE — the one MCP
-    # switch that does: money is fail-closed, so a variable forgotten in a
-    # yaml leaves accounting OFF rather than on. Since lot 5b six tools
-    # carry the scope; see the arming order in app.yaml.
-    MCP_COMPTABILITE_ENABLED: bool = (
-        os.environ.get("MCP_COMPTABILITE_ENABLED", "false").lower() == "true"
-    )
+    # There is no MCP kill switch: MCP_ENABLED, MCP_WRITE_ENABLED and
+    # MCP_COMPTABILITE_ENABLED were removed on 2026-10-05 (the lawyer's
+    # decision) — the connector, its writes and its accounting tools are
+    # always on. To stop it, revoke the tokens: scripts.revoke_mcp_tokens.
     MCP_CANONICAL_ORIGIN: str = os.environ.get(
         "MCP_CANONICAL_ORIGIN", "https://athena.poirierlavoie.ca"
     ).rstrip("/")

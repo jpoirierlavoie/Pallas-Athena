@@ -1,4 +1,4 @@
-"""Construit le greffon claude.ai « athena » (compétence 1.0.0)
+"""Construit le greffon claude.ai « athena » (compétence 1.1.0)
 depuis sa source manuscrite et le registre des outils du connecteur.
 
     python -m scripts.exporter_plugin_athena [--sortie CHEMIN.plugin]
@@ -17,7 +17,7 @@ la 1.3.0 recopiait des comptes d'outils, un préfixe et des vocabulaires, et
 les trois étaient faux au moment de la refonte. La source porte donc des
 lignes ``{{GEN:…}}``, seules sur leur ligne, que ce script remplit :
 
-* ``{{GEN:version}}`` — « Compétence 1.0.0 — registre ‹12 hex› », empreinte
+* ``{{GEN:version}}`` — « Compétence 1.1.0 — registre ‹12 hex› », empreinte
   des noms d'outils et de leurs schémas d'entrée : une compétence
   construite contre un autre registre le dit dès sa deuxième ligne ;
 * ``{{GEN:charger}}`` — sous le titre d'une recette, la ligne « Charger »
@@ -28,18 +28,21 @@ lignes ``{{GEN:…}}``, seules sur leur ligne, que ce script remplit :
   interdit. Une recette sœur du même fichier que ces lignes citent
   (« D1 pour les parties ») y ajoute ses outils ;
 * ``{{GEN:seule_application}}`` — les promesses du registre
-  (``disclosure.general_nevers()``) que le noyau de sécurité ne porte PAS
+  (``disclosure.NEVERS``) que le noyau de sécurité ne porte PAS
   (``in_core`` faux) : ce sont celles qu'un client qui coupe les
   INSTRUCTIONS à 2 048 caractères perd ;
 * ``{{GEN:limites_reprise}}`` — les propriétés homonymes dont le
   ``maxLength`` diffère d'un outil à l'autre, limitées à celles qu'un outil
   de la recette déclare ;
-* ``{{GEN:outils_comptables}}`` — la ligne « Charger » des outils qui ne
-  paraissent que sous l'autorisation distincte « Comptabilité ».
+* ``{{GEN:outils_comptables}}`` — la ligne « Charger » des registres
+  comptables : la famille ACCOUNTING du registre, précédée de la lecture
+  dont ses écritures tirent leur etag (``get_admin_ledger``).
 
-``references/index-outils.md`` est généré en entier : chaque outil visible
-sous l'autorisation d'écriture, par famille du registre, avec ses entrées
-requises et ses indicateurs ; les outils comptables dans une section à part.
+``references/index-outils.md`` est généré en entier : chaque outil, les
+lectures puis les écritures par famille du registre, avec ses entrées
+requises et ses indicateurs. Une autorisation d'écriture les voit TOUS
+depuis le 2026-10-05, quand l'avocat a retiré l'autorisation distincte
+« Comptabilité » (jusque-là, ses outils avaient leur section à part).
 
 Ce script est PUR et LOCAL : il importe ``mcp.tools`` et ``mcp.disclosure``
 (qui n'importent aucun modèle), jamais ``models`` ; il ne touche ni au
@@ -71,7 +74,7 @@ DIST = RACINE / "dist"
 sys.path.insert(0, str(ATHENA))
 
 NOM = "athena"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 SKILL = "skills/athena/SKILL.md"
 INDEX = "skills/athena/references/index-outils.md"
@@ -177,18 +180,40 @@ def _registre():
     return _REGISTRE
 
 
-def outils_ecriture_visibles() -> list[str]:
-    """Les outils visibles sous l'autorisation d'écriture — lectures et
-    écritures, les comptables exclus —, dans l'ordre du registre."""
-    tools, _ = _registre()
-    return [n for n in tools.TOOLS if n not in tools.ACCOUNTING_TOOLS]
-
-
 def outils_comptables() -> list[str]:
-    """Les outils de l'autorisation distincte « Comptabilité », dans l'ordre
-    du registre."""
-    tools, _ = _registre()
-    return [n for n in tools.TOOLS if n in tools.ACCOUNTING_TOOLS]
+    """Les outils des registres comptables : la famille ACCOUNTING du
+    registre, précédée des lectures dont ses écritures tirent leur etag
+    (``etag_readers`` — ``get_admin_ledger``), dans l'ordre du registre.
+
+    Sans cette lecture, ni ``update_admin_entry`` ni la compensation d'une
+    écriture d'administration ne s'appellent : l'une et l'autre exigent
+    l'etag qu'elle montre. Ce sont des outils ordinaires depuis que l'avocat
+    a retiré l'autorisation distincte « Comptabilité » (2026-10-05) ; la
+    liste reste DÉRIVÉE pour qu'un outil comptable ajouté au registre
+    rejoigne seul la ligne « Charger » de la recette."""
+    tools, disclosure = _registre()
+    famille = next((f for f in disclosure.FAMILIES if f.key == "accounting"),
+                   None)
+    if famille is None or not famille.tools:
+        raise ErreurDeConstruction(
+            "le registre n'a plus de famille « accounting » : revoir "
+            f"{COMPTABILITE} et outils_comptables()")
+    lectures: list[str] = []
+    for nom in famille.tools:
+        for lecteur in tools.TOOLS[nom].get("etag_readers", ()):
+            if lecteur not in tools.TOOLS or lecteur in tools.WRITE_TOOLS:
+                raise ErreurDeConstruction(
+                    f"{nom} tire son etag de « {lecteur} », qui n'est pas "
+                    "un outil de lecture du registre")
+            if lecteur not in lectures:
+                lectures.append(lecteur)
+    if not lectures:
+        # Une ligne sans elle chargerait des écritures qu'on ne peut pas
+        # appeler : refuser plutôt que la perdre en silence.
+        raise ErreurDeConstruction(
+            "la famille ACCOUNTING ne nomme plus la lecture dont ses "
+            "écritures tirent leur etag (etag_readers)")
+    return lectures + list(famille.tools)
 
 
 def empreinte_registre() -> str:
@@ -222,20 +247,29 @@ def _texte_sans_balisage(fragment: str) -> str:
 # du registre s'adresse à l'avocat sur l'écran de consentement (« ci-dessus »,
 # « vous seul ») ; il ne se recopie pas tel quel dans un texte lu par Claude.
 SEULE_APPLICATION = {
-    "trust": (False, " sans l'autorisation distincte « Comptabilité »"),
     "document": (True, ""),
     "template_version": (True, " : chaque version se rétablit dans l'application"),
     "link": (True, ""),
     "active_template": (True, " : l'avocat seul, dans l'application"),
+    # Dites à tout jeton depuis le 2026-10-05 (elles n'accompagnaient que
+    # l'autorisation distincte « Comptabilité », retirée ce jour-là) : la
+    # phrase de clôture de la section renvoie déjà à l'application.
+    "register_setup": (True, ""),
+    "register_transfer": (True, ""),
 }
-# Les autres décrivent un comportement d'outil que sa description porte déjà.
-HORS_SEULE_APPLICATION = ("invoice_sources", "uncancel")
+# Les autres décrivent un comportement d'outil que sa description porte déjà
+# — celles des registres, la description de l'écriture ou de la lecture
+# comptable qui les refuse.
+HORS_SEULE_APPLICATION = (
+    "invoice_sources", "uncancel", "register_delete", "trust_withdrawal",
+    "fee_invoice", "fee_payee", "account_number",
+)
 
 
 def bloc_seule_application() -> list[str]:
     """Les capacités que seule l'application offre, tirées du registre."""
     _, disclosure = _registre()
-    hors_noyau = {n.key: n for n in disclosure.general_nevers() if not n.in_core}
+    hors_noyau = {n.key: n for n in disclosure.NEVERS if not n.in_core}
     connues = set(SEULE_APPLICATION) | set(HORS_SEULE_APPLICATION)
     if set(hors_noyau) != connues:
         raise ErreurDeConstruction(
@@ -252,14 +286,13 @@ def bloc_seule_application() -> list[str]:
     return lignes
 
 
-def _ligne_charger(noms: Iterable[str], note: str = "") -> str:
+def _ligne_charger(noms: Iterable[str]) -> str:
     liste = ", ".join(f"`{n}`" for n in noms)
-    return f"- **Charger**{note} : {liste}"
+    return f"- **Charger** : {liste}"
 
 
 def bloc_outils_comptables() -> list[str]:
-    return [_ligne_charger(outils_comptables(),
-                           " (autorisation Comptabilité seulement)")]
+    return [_ligne_charger(outils_comptables())]
 
 
 def _parcourir(proprietes: dict, parent: str = ""):
@@ -279,11 +312,11 @@ def _parcourir(proprietes: dict, parent: str = ""):
 
 
 def _plafonds_par_propriete() -> dict[str, list[tuple[str, str, int]]]:
-    """``nom → [(outil, chemin_parent, maxLength)]`` sur les outils visibles
-    sous l'autorisation d'écriture."""
+    """``nom → [(outil, chemin_parent, maxLength)]`` sur tous les outils :
+    une autorisation d'écriture les voit tous."""
     tools, _ = _registre()
     table: dict[str, list[tuple[str, str, int]]] = {}
-    for outil in outils_ecriture_visibles():
+    for outil in tools.TOOLS:
         props = tools.TOOLS[outil]["input_schema"].get("properties", {})
         for parent, nom, schema in _parcourir(props):
             if isinstance(schema, dict) and isinstance(schema.get("maxLength"), int):
@@ -364,8 +397,7 @@ def _jeton_outil(nom: str) -> str:
 
 def index_outils() -> str:
     tools, disclosure = _registre()
-    visibles = outils_ecriture_visibles()
-    lectures = [n for n in visibles if n not in tools.WRITE_TOOLS]
+    lectures = [n for n in tools.TOOLS if n not in tools.WRITE_TOOLS]
     lignes = [
         "# Index des outils",
         "",
@@ -382,19 +414,12 @@ def index_outils() -> str:
     ]
     lignes += [f"- {_jeton_outil(n)}" for n in lectures]
     lignes += ["", "## Écriture, par famille", ""]
-    for famille in disclosure.families_for(disclosure.SCOPE_WRITE):
+    # Chaque famille du registre — WRITE_TOOLS en dérive : chaque écriture y
+    # paraît une fois, sous la sienne (ACCOUNTING comprise, depuis que son
+    # autorisation distincte est retirée).
+    for famille in (f for f in disclosure.FAMILIES if f.tools):
         membres = " · ".join(_jeton_outil(n) for n in famille.tools)
         lignes.append(f"- **{famille.label}** : {membres}")
-    lignes += [
-        "",
-        "## Grant Comptabilité",
-        "",
-        ("Visibles seulement sous l'autorisation distincte « Comptabilité », "
-         "que l'autorisation d'écriture ne remplace jamais ; absents, "
-         "renvoyer à l'application."),
-        "",
-    ]
-    lignes += [f"- {_jeton_outil(n)}" for n in outils_comptables()]
     return "\n".join(lignes) + "\n"
 
 

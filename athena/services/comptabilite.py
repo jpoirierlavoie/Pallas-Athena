@@ -22,8 +22,9 @@ an invoice number, an entry's purpose). It writes nothing itself, logs
 nothing the models do not, and never touches ``dav/`` (neither register is
 DAV-exposed).
 
-Since lot 5b the connector's accounting tools (scope ``athena:comptabilite``)
-are its third caller — through the SAME functions, never a copy — and the
+Since lot 5b the connector's accounting tools (write tools under
+``athena:write`` since 2026-10-05; until then their own scope) are its third
+caller — through the SAME functions, never a copy — and the
 strict reads they decide on (an entry, a lock floor, the administration
 register) live at the end of this module.
 
@@ -539,8 +540,8 @@ record_card_payment = enregistrer_paiement_carte
 
 # ── Reads the connector's accounting tools stand on (lot 5b) ───────────────
 #
-# The connector's accounting tools (``mcp/handlers`` — scope
-# ``athena:comptabilite``) read the two registers through THIS module, as they
+# The connector's accounting tools (``mcp/handlers``) read the two
+# registers through THIS module, as they
 # write them through it: one door for the web and the connector. Every read
 # here is STRICT — it raises on a store error — because each one feeds a
 # decision (which account, which lock, which entry): an unreadable register

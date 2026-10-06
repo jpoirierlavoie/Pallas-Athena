@@ -11,7 +11,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-import markupsafe
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,8 +29,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import mcp.disclosure as disclosure
 
-from tests import _dummy_accounting  # noqa: E402
-
 UTC = timezone.utc
 ATHENA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -42,7 +39,6 @@ ORIGIN = "https://athena.poirierlavoie.ca"
 def _make_app(**config) -> Flask:
     app = Flask(__name__, template_folder=os.path.join(ATHENA_DIR, "templates"))
     app.config["SECRET_KEY"] = "test-secret"
-    app.config["MCP_ENABLED"] = True
     app.config["MCP_CANONICAL_ORIGIN"] = ORIGIN
     app.config["ENV"] = "development"
     app.config["RATELIMIT_ENABLED"] = False
@@ -327,12 +323,10 @@ def test_authorization_server_metadata(client):
     assert doc["registration_endpoint"] == f"{ORIGIN}/oauth/register"
     assert doc["code_challenge_methods_supported"] == ["S256"]
     assert doc["token_endpoint_auth_methods_supported"] == ["none"]
-    # The accounting scope is ADVERTISED even while dormant (plan lot 0a):
-    # a client may request it, and the consent screen alone decides whether
-    # it is ever granted — the same rule athena:write has always followed.
-    assert doc["scopes_supported"] == [
-        "athena:read", "athena:write", "athena:comptabilite"
-    ]
+    # Two scopes since 2026-10-05: athena:comptabilite, advertised from plan
+    # lot 0a, left with its consent box — the accounting tools are write
+    # tools like the others, granted by the write box alone.
+    assert doc["scopes_supported"] == ["athena:read", "athena:write"]
 
 
 def test_protected_resource_metadata_both_paths(client):
@@ -344,9 +338,7 @@ def test_protected_resource_metadata_both_paths(client):
         assert doc["resource"] == f"{ORIGIN}/mcp"
         assert doc["authorization_servers"] == [ORIGIN]
         assert doc["bearer_methods_supported"] == ["header"]
-        assert doc["scopes_supported"] == [
-            "athena:read", "athena:write", "athena:comptabilite"
-        ]
+        assert doc["scopes_supported"] == ["athena:read", "athena:write"]
 
 
 # ── Dynamic Client Registration ─────────────────────────────────────────
@@ -454,6 +446,10 @@ def test_authorize_mismatched_redirect_renders_error_page(client, fake):
         # request — it is simply never granted without the consent checkbox
         # (see the grant-rule tests below). A wholly unknown scope still is.
         ({"scope": "athena:admin"}, "invalid_scope"),
+        # So is the accounting scope since it was retired on 2026-10-05,
+        # requested alone (beside athena:read it is dropped — see
+        # test_a_forged_accounting_tick_is_simply_ignored).
+        ({"scope": "athena:comptabilite"}, "invalid_scope"),
         ({"resource": "https://evil.example/mcp"}, "invalid_target"),
     ],
 )
@@ -570,10 +566,22 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "numéro et leur date d'origine" in flat
     assert "tant qu'ils ne sont pas facturés" in flat
     assert "<strong>remplace</strong> la valeur nommée" in flat
-    # And what stays impossible must be said as plainly.
+    # And what stays impossible must be said as plainly. Since 2026-10-05
+    # the accounting tools are write tools like the others: the payment
+    # bullet names the TWO register entries a payment can be — true with
+    # the write box ticked or not —, and what the register tools never do
+    # stands in the same « jamais » list; the « écrire au fidéicommis »
+    # bullet left with the separate grant it was about.
     assert "<strong>Rien ne peut être supprimé</strong>" in flat
-    assert "<strong>paiement</strong>" in flat
-    assert "<strong>fidéicommis</strong>" in flat
+    assert ("inscrire un <strong>paiement</strong> autrement que par une "
+            "écriture aux registres comptables — un encaissement au compte "
+            "d'administration ou un paiement d'honoraires au fidéicommis, qui "
+            "inscrit lui-même le paiement sur la facture") in flat
+    assert "retirer du fidéicommis <strong>en espèces</strong>" in flat
+    assert "<strong>virer des fonds</strong> du fidéicommis" in flat
+    assert "écrire au <strong>fidéicommis</strong>" not in flat
+    assert "toucher au <strong>fidéicommis</strong>" not in flat
+    assert "sauf avec la case" not in flat
     # Lot 3b rewrote these deliberately: issuing a NEW invoice number left
     # the « jamais » list for the BILL family — where the screen says the
     # number is consumed for ever — and the connector voids (update_invoice),
@@ -581,7 +589,13 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "émettre un nouveau numéro de facture" not in flat
     assert "consomme définitivement le prochain numéro" in flat
     assert "marquer envoyée n'envoie rien au client" in flat
-    assert "marquer une facture <strong>payée</strong>" in flat
+    assert ("marquer une facture <strong>payée</strong> par un changement de "
+            "statut — seul un paiement inscrit aux registres comptables le "
+            "fait") in flat
+    # The old bullet ended « seul un encaissement inscrit dans l'application
+    # le fait » — false since the connector records one too (an
+    # encaissement or a trust fee payment, through the write box).
+    assert "seul un encaissement inscrit dans l'application" not in flat
     assert "<strong>envoyer</strong> une facture à qui que ce soit" in flat
     # Lot 3b (the text step): what the lawyer must know before ticking —
     # only a brouillon is corrected, a created invoice freezes its sources
@@ -653,9 +667,26 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "fermer un dossier doit vider sa collection DavX5" not in flat
     assert ("à la vérification d'identité ou à la vérification des conflits"
             not in flat)
+    # 2026-10-05 — the READ paragraph names the administration ledger: its
+    # read tool, get_admin_ledger, lost the separate accounting scope, so
+    # the read grant covers it — said before the write block, where a
+    # read-only grant reads it.
+    ledger = ("ainsi que le <strong>registre d'administration</strong>&nbsp;: "
+              "les comptes d'opérations et les cartes de crédit, leurs soldes, "
+              "leur dernière conciliation et leurs écritures")
+    assert ledger in flat
+    assert flat.index(ledger) < flat.index("Écritures (facultatif)")
+    # The write block and its box render on every consent screen — there is
+    # no switch to hide them — and the page speaks of its ONE box.
+    assert "Écritures (facultatif)" in flat
+    assert "Sans la case ci-dessous, le connecteur ne peut rien créer ni modifier." in flat
+    assert "aucune des cases" not in flat
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)
+    consent_form = body[body.index('<form method="post" action="/oauth/authorize"'):]
+    assert re.findall(r'<input type="checkbox" name="([^"]+)"', consent_form) == [
+        "grant_write"]
 
 
 def _flat(text: str) -> str:
@@ -671,7 +702,13 @@ def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake)
     _, challenge = _pkce_pair()
     _, page = _consent_form(client, client_doc, challenge)
     flat = _flat(page.data.decode("utf-8"))
-    context = disclosure.consent_context(comptabilite_offered=False)
+    context = disclosure.consent_context()
+    # Every family is a write family since 2026-10-05 — ACCOUNTING too, its
+    # separate block gone — and every promise is a bullet of the one list.
+    assert [f.key for f in context["write_families"]] == [
+        f.key for f in disclosure.FAMILIES if f.tools]
+    assert "accounting" in [f.key for f in context["write_families"]]
+    assert len(context["nevers"]) == len(disclosure.NEVERS)
     app = client.application
     with app.app_context():
         for family in context["write_families"]:
@@ -704,9 +741,13 @@ def test_the_write_block_uses_only_compiled_classes(client, fake):
     body = page.data.decode("utf-8")
     start = body.index('<p class="font-medium">Écritures (facultatif)</p>')
     end = body.index("</form>", start)
+    # The span covers every family partial — the ACCOUNTING one included
+    # since its separate block left (2026-10-05) — and the write box.
+    assert "<strong>Inscrire au fidéicommis</strong>" in body[start:end]
     classes = {c for block in re.findall(r'class="([^"]+)"', body[start:end])
                for c in block.split()}
-    assert {"list-disc", "mt-3", "font-medium"} <= classes
+    assert {"list-disc", "mt-3", "font-medium",
+            "text-indigo-600", "focus:ring-indigo-500"} <= classes
     css_path = next(iter(sorted(
         (p for p in os.listdir(os.path.join(ATHENA_DIR, "static", "vendor"))
          if re.fullmatch(r"app\.[0-9a-f]{8}\.css", p))
@@ -728,9 +769,14 @@ def test_unticked_checkbox_grants_read_only(client, fake):
     attacker-modifiable and must never be able to escalate on its own."""
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
-    form, _ = _consent_form(
+    form, page = _consent_form(
         client, client_doc, challenge, scope="athena:read athena:write"
     )
+    # The request only informs the page — it says the client asked, and
+    # pre-ticks nothing; the hidden field stays the read baseline.
+    body = page.data.decode("utf-8")
+    assert "Le client a demandé cet accès." in _flat(body)
+    assert 'name="scope" value="athena:read"' in body
     assert "grant_write" not in form
     code = _code_from(client.post("/oauth/authorize", data=form))
     stored = fake.codes[store.sha256_hex(code)]
@@ -740,7 +786,9 @@ def test_unticked_checkbox_grants_read_only(client, fake):
 def test_ticked_checkbox_grants_read_and_write(client, fake):
     client_doc = _register_client(fake)
     verifier, challenge = _pkce_pair()
-    form, _ = _consent_form(client, client_doc, challenge)
+    form, page = _consent_form(client, client_doc, challenge)
+    # Not requested: the box says nothing of a request.
+    assert "Le client a demandé cet accès" not in _flat(page.data.decode("utf-8"))
     form["grant_write"] = "on"
     code = _code_from(client.post("/oauth/authorize", data=form))
     assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:write"
@@ -761,32 +809,6 @@ def test_write_only_request_still_yields_a_usable_read_scope(client, fake):
     assert fake.codes[store.sha256_hex(code)]["scope"].split() == [
         "athena:read", "athena:write"
     ]
-
-
-def test_write_kill_switch_removes_the_checkbox_and_refuses_the_grant(fake):
-    """MCP_WRITE_ENABLED=false must not merely hide the control."""
-    app = _make_app(MCP_WRITE_ENABLED=False)
-    client = app.test_client()
-    client_doc = _register_client(fake)
-    _login(client)
-    _, challenge = _pkce_pair()
-    page = client.get(
-        "/oauth/authorize", query_string=_authorize_params(client_doc, challenge)
-    )
-    assert 'name="grant_write"' not in page.data.decode("utf-8")
-    # No box on the page, so the line may not point at one « ci-dessous »
-    # (it did until lot 0a); it states the read-only outcome instead.
-    flat = " ".join(page.data.decode("utf-8").split())
-    assert "Le connecteur ne pourra rien créer ni modifier." in flat
-    assert "Sans la case ci-dessous" not in flat
-    assert "aucune des cases" not in flat
-    token_match = re.search(rb'name="csrf_token" value="([^"]+)"', page.data)
-    form = _authorize_params(client_doc, challenge)
-    form["csrf_token"] = token_match.group(1).decode()
-    form["decision"] = "allow"
-    form["grant_write"] = "on"  # forged past the missing control
-    code = _code_from(client.post("/oauth/authorize", data=form))
-    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read"
 
 
 def test_refresh_rotation_never_widens_the_scope(client, fake):
@@ -837,30 +859,14 @@ def test_refresh_rotation_preserves_the_write_grant(client, fake):
     )
 
 
-# ── Accounting grant (athena:comptabilite) ───────────────────────────────
+# ── The accounting tools: in the write block, under the write box ───────
 #
-# Its OWN unticked box, offered only while MCP_WRITE_ENABLED and
-# MCP_COMPTABILITE_ENABLED are on AND at least one tool carries the scope.
-# Since lot 5b six real tools do; the gates are exercised on the real
-# registry, and — where the dispatch or the title must be observed without a
-# register — on the DUMMY accounting tool of tests/_dummy_accounting.py.
-
-_ACCOUNTING_BLOCK_RE = re.compile(
-    r'<div class="[^"]*">\s*<p class="font-medium">Comptabilité \(facultatif\)</p>'
-    r".*?</div>",
-    re.DOTALL,
-)
-_ACCOUNTING_LABEL_RE = re.compile(
-    r'<label[^>]*>\s*<input type="checkbox" name="grant_comptabilite".*?</label>',
-    re.DOTALL,
-)
-
-
-def _accounting_app(monkeypatch, *, tool=True, **config):
-    if tool:
-        _dummy_accounting.register(monkeypatch)
-    config.setdefault("MCP_COMPTABILITE_ENABLED", True)
-    return _make_app(**config).test_client()
+# Until 2026-10-05 the accounting tools had their OWN block, box, scope
+# (athena:comptabilite) and switch. The lawyer removed all four: they are
+# write tools like the others, described by the ACCOUNTING family's partial
+# inside the write block and granted by « Autoriser les écritures » alone.
+# What survives of the separate grant is that nothing can bring it back — a
+# forged tick, a hidden field or a request naming the retired scope.
 
 
 def _granted(client, fake, client_doc, challenge, *, scope="athena:read", **ticks):
@@ -872,61 +878,37 @@ def _granted(client, fake, client_doc, challenge, *, scope="athena:read", **tick
     return fake.codes[store.sha256_hex(code)]["scope"]
 
 
-def test_the_accounting_box_is_absent_while_its_switch_is_off(fake):
-    """REWRITTEN in lot 5b. It read « dormant while no tool carries the
-    scope » — the real registry had none, so the switch ON rendered nothing.
-    Six tools carry it now, and what keeps the box off is the SWITCH, whose
-    default is "false": no block, no box, and a forged tick grants nothing.
-    A scope minted with the switch off would reach the tools the day it is
-    turned on, under a consent screen that never described them."""
-    client = _make_app(MCP_COMPTABILITE_ENABLED=False).test_client()
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    form, page = _consent_form(client, client_doc, challenge)
-    body = page.data.decode("utf-8")
-    flat = " ".join(body.split())
-    assert 'name="grant_comptabilite"' not in body
-    assert "Comptabilité (facultatif)" not in flat
-    assert "Autoriser la comptabilité" not in flat
-    # The page speaks of the ONE box it offers, and forbids trust plainly.
-    assert "Sans la case ci-dessous" in flat
-    assert "aucune des cases" not in flat
-    assert "sauf avec la case" not in flat
-    # Lot 5, step 5: no bullet points to a box this page does not offer.
-    assert "Autoriser la comptabilité" not in flat
-    assert "écrire au <strong>fidéicommis</strong> ou au registre d'administration;" in flat.replace("&nbsp;", "")
-    form["grant_write"] = "on"
-    form["grant_comptabilite"] = "on"          # forged past the missing control
-    code = _code_from(client.post("/oauth/authorize", data=form))
-    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:write"
+def _write_block(body: str) -> str:
+    """The write block as rendered: from its title to the consent form —
+    the family partials, the « jamais » list and the closing paragraph."""
+    start = body.index('<p class="font-medium">Écritures (facultatif)</p>')
+    return body[start:body.index('<form method="post" action="/oauth/authorize"', start)]
 
 
-def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake):
-    """Lot 5b, the real registry with the switch ON: the block is assembled
-    like the write block — the ACCOUNTING family's partial (with the D14
-    rules beside the capability they bound), the French title of EVERY tool
-    under the scope, and the promises the grant keeps — and its label is
-    the derived summary.
+def test_the_write_block_says_what_the_accounting_tools_do_and_never_do(client, fake):
+    """The ACCOUNTING family's partial — the D14 rules beside the capability
+    they bound — sits IN the write block, before its « jamais » list, and
+    the promises the accounting tools keep are bullets of that list: told to
+    everyone who reads « Autoriser les écritures », since that box is what
+    grants them.
 
-    REWRITTEN in lot 5, step 5 (the final « never » set): the block's
-    closing sentence « Une écriture inscrite par erreur ne s'efface pas :
-    elle se contre-passe » is gone — an administration entry still editable
-    is CORRECTED, not reversed —, and the partial now says the reversal is
-    the only correction of a TRUST entry and of an administration entry no
-    longer editable, names every editability condition of the model, and
-    the revision trail's real 25-entry ceiling. The known false claims are
-    scanned on THIS page too (the write-only page already was)."""
-    client = _make_app(MCP_COMPTABILITE_ENABLED=True).test_client()
+    REWRITTEN on 2026-10-05 from the lot 5b test of the separate
+    accounting block. Every fragment of the partial is kept; the block's own
+    intro (« réellement survenues à la banque ») and closing paragraph
+    (« Le connecteur n'efface jamais une écriture. ») left with the block —
+    the « register_delete » bullet says the latter —, and so did the list of
+    tool titles under its box: the write box names capabilities, not tools.
+    The known false claims are scanned on this page as ever."""
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     _, page = _consent_form(client, client_doc, challenge)
     body = page.data.decode("utf-8")
-    block = " ".join(_ACCOUNTING_BLOCK_RE.search(body).group(0).split())
-    for name in sorted(tools.ACCOUNTING_TOOLS):
-        # As Jinja renders it: autoescaped (an apostrophe is &#39;).
-        assert str(markupsafe.escape(tools.TOOLS[name]["title"])) in block, name
+    flat = _flat(body)
+    block = _flat(_write_block(body))
     for fragment in (
-        "réellement survenues à la banque", "art.&nbsp;58",
+        "<strong>Inscrire au fidéicommis</strong>",
+        "réellement survenus à la banque",
+        "art.&nbsp;58",
         "<strong>dans la même opération</strong>",
         "fonds <strong>compensés</strong>",
         "qui n'impute aucune provision",
@@ -934,7 +916,6 @@ def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake
         "date du relevé bancaire",
         "période déjà <strong>conciliée</strong>",
         "marquée comme provenant de Claude",
-        "Le connecteur n'efface jamais une écriture.",
         "c'est la seule correction d'une écriture du fidéicommis, et d'une "
         "écriture d'administration qui n'est plus modifiable",
         # REWRITTEN in the review of lot 5, step 5 (money lens): « et
@@ -951,219 +932,82 @@ def test_the_real_accounting_box_says_what_it_grants_and_what_it_never_does(fake
                  "chaque correction étant conservée",
                  "et jamais contre-passée"):
         assert gone not in block, gone
+    # What the accounting tools never do: the bullets that stood beside the
+    # accounting box until 2026-10-05, now in the write block's one list —
+    # after every family partial, the accounting one included.
+    jamais = block.index("ne peut <strong>jamais</strong> faire")
+    assert block.index("<strong>Inscrire au fidéicommis</strong>") < jamais
+    for key in ("register_delete", "register_setup", "register_transfer",
+                "trust_withdrawal", "fee_invoice", "fee_payee",
+                "account_number"):
+        (never,) = [n for n in disclosure.NEVERS if n.key == key]
+        assert f"<li>{_flat(never.fr)}" in block[jamais:], key
+    # Nothing of the separate grant survives on the page.
+    assert 'name="grant_comptabilite"' not in body
+    assert "Autoriser la comptabilité" not in flat
+    assert "Comptabilité (facultatif)" not in flat
+    assert "autorisation distincte" not in flat
     from tests.test_mcp_disclosure import _false_claims_in
-    assert _false_claims_in(" ".join(body.split())) == []
-    for never in disclosure.accounting_nevers():
-        assert " ".join(never.fr.split()) in block, never.key
-    label = " ".join(_ACCOUNTING_LABEL_RE.search(body).group(0).split())
-    assert " ".join(str(disclosure.comptabilite_summary_fr()).split()) in label
-    # The write block's « jamais » list keeps the GENERAL promises only.
-    write_block = body[:body.index("Comptabilité (facultatif)")]
-    for never in disclosure.accounting_nevers():
-        assert never.fr not in write_block, never.key
+    assert _false_claims_in(flat) == []
 
 
-def test_the_accounting_box_renders_unticked_and_lists_its_tools(fake, monkeypatch):
-    client = _accounting_app(monkeypatch)
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    _, page = _consent_form(client, client_doc, challenge)
-    body = page.data.decode("utf-8")
-    flat = " ".join(body.split())
-    checkbox = re.search(r'<input type="checkbox" name="grant_comptabilite"[^>]*>', body)
-    assert checkbox and "checked" not in checkbox.group(0)
-    assert "Autoriser la comptabilité (fidéicommis et administration)" in flat
-    assert "Comptabilité (facultatif)" in flat
-    # What the box grants is the registry's own list of titles, not prose.
-    assert _dummy_accounting.DUMMY_TITLE in flat
-    assert "l'une ne donne jamais l'autre" in flat
-    # The write box is still there, independent.
-    assert 'name="grant_write"' in body
-    # In number with the boxes, and the two « jamais » the box lifts are
-    # qualified — the page never forbids what it offers two blocks down.
-    # REWRITTEN in lot 5, step 5: the payment bullet names the TWO register
-    # entries a payment can be, and the trust bullet points to the precise
-    # list the accounting block states (it said only « sauf avec la case »).
-    assert "Si vous ne cochez aucune des cases ci-dessous" in flat
-    assert "Sans la case ci-dessous" not in flat
-    assert ("inscrire un <strong>paiement</strong> autrement que par une "
-            "écriture aux registres comptables") in flat
-    assert ("un encaissement au compte d'administration ou un paiement "
-            "d'honoraires au fidéicommis, qui inscrit lui-même le paiement "
-            "sur la facture") in flat
-    assert ("écrire au <strong>fidéicommis</strong> ou au registre "
-            "d'administration sans la case «&nbsp;Autoriser la "
-            "comptabilité&nbsp;» — ce qu'elle-même ne permet jamais est "
-            "énuméré avec elle, plus bas") in flat
-    assert "sauf avec la case" not in flat
-    assert "toucher au <strong>fidéicommis</strong>" not in flat
-    assert "Le client a demandé cet accès" not in _ACCOUNTING_LABEL_RE.search(body).group(0)
-
-
-def test_the_accounting_block_uses_only_compiled_classes(fake, monkeypatch):
-    """A class absent from the compiled artifact silently does not apply,
-    and adding one is the seven-file fan-out of CLAUDE.md item 6: the block
-    reuses the write block's class strings verbatim."""
-    client = _accounting_app(monkeypatch)
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    _, page = _consent_form(client, client_doc, challenge)
-    body = page.data.decode("utf-8")
-    html = _ACCOUNTING_BLOCK_RE.search(body).group(0) + _ACCOUNTING_LABEL_RE.search(body).group(0)
-    classes = {c for block in re.findall(r'class="([^"]+)"', html) for c in block.split()}
-    assert {"bg-amber-50", "text-indigo-600", "focus:ring-indigo-500"} <= classes
-    css_path = next(iter(sorted(
-        (p for p in os.listdir(os.path.join(ATHENA_DIR, "static", "vendor"))
-         if re.fullmatch(r"app\.[0-9a-f]{8}\.css", p))
-    )))
-    with open(os.path.join(ATHENA_DIR, "static", "vendor", css_path), encoding="utf-8") as fh:
-        css = fh.read()
-    absent = []
-    for cls in sorted(classes):
-        needle = "." + re.sub(r"([:./])", r"\\\1", cls)
-        hits = [m.end() for m in re.finditer(re.escape(needle), css)]
-        if not any(i >= len(css) or not (css[i].isalnum() or css[i] in "-_\\")
-                   for i in hits):
-            absent.append(cls)
-    assert not absent, absent
-
-
-def test_ticking_the_accounting_box_alone_grants_read_and_comptabilite(fake, monkeypatch):
-    client = _accounting_app(monkeypatch)
+@pytest.mark.parametrize("requested", [
+    "athena:read", "athena:read athena:comptabilite",
+], ids=["read", "retired_scope_requested"])
+@pytest.mark.parametrize("ticks, minted", [
+    (("grant_comptabilite",), "athena:read"),
+    (("grant_write", "grant_comptabilite"), "athena:read athena:write"),
+], ids=["accounting_tick_alone", "with_the_write_box"])
+def test_a_forged_accounting_tick_is_simply_ignored(
+    client, fake, requested, ticks, minted
+):
+    """The accounting box and its scope left on 2026-10-05: a
+    `grant_comptabilite` field — forged, or posted by a page rendered before
+    the removal —, a hidden `comptabilite_offered`, and a request naming the
+    retired scope beside athena:read are all ignored. The hidden `scope`
+    field stays the read baseline, and the minted scope is exactly it, plus
+    athena:write when — and only when — the write box is ticked."""
     client_doc = _register_client(fake)
     verifier, challenge = _pkce_pair()
-    form, _ = _consent_form(client, client_doc, challenge)
-    form["grant_comptabilite"] = "on"
-    code = _code_from(client.post("/oauth/authorize", data=form))
-    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:comptabilite"
-    body = _exchange(client, client_doc, code, verifier).get_json()
-    assert body["scope"] == "athena:read athena:comptabilite"
-
-
-def test_ticking_both_boxes_grants_all_three_scopes(fake, monkeypatch):
-    client = _accounting_app(monkeypatch)
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    assert _granted(
-        client, fake, client_doc, challenge,
-        grant_write=True, grant_comptabilite=True,
-    ) == "athena:read athena:write athena:comptabilite"
-
-
-def test_the_write_box_never_grants_comptabilite(fake, monkeypatch):
-    """Independent in both directions, even with the accounting box on the
-    page: ticking writes alone yields read + write, nothing more."""
-    client = _accounting_app(monkeypatch)
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    assert _granted(
-        client, fake, client_doc, challenge,
-        scope="athena:read athena:write athena:comptabilite", grant_write=True,
-    ) == "athena:read athena:write"
-
-
-@pytest.mark.parametrize("config", [
-    {"MCP_COMPTABILITE_ENABLED": False},
-    {"MCP_WRITE_ENABLED": False},
-], ids=["accounting_switch_off", "write_switch_off"])
-def test_a_forged_accounting_grant_is_refused_when_the_box_is_not_offered(
-    fake, monkeypatch, config
-):
-    """With a tool under the scope, but a switch off, the box is absent and
-    a forged tick is refused — recomputed on the POST from server state,
-    never read from the (attacker-modifiable) form."""
-    client = _accounting_app(monkeypatch, **config)
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    form, page = _consent_form(client, client_doc, challenge)
-    assert 'name="grant_comptabilite"' not in page.data.decode("utf-8")
-    form["grant_comptabilite"] = "on"
-    form["comptabilite_offered"] = "True"      # a hidden field would change nothing
-    code = _code_from(client.post("/oauth/authorize", data=form))
-    assert "athena:comptabilite" not in fake.codes[store.sha256_hex(code)]["scope"].split()
-
-
-@pytest.mark.parametrize("tool", [False, True], ids=["dormant", "offered"])
-def test_a_client_may_request_comptabilite_but_never_obtains_it_unticked(
-    fake, monkeypatch, tool
-):
-    """Requesting the scope is legitimate (it is advertised) — never
-    `invalid_scope` — and it only ever informs the page: the hidden `scope`
-    field is the READ baseline, and nothing but the tick escalates."""
-    client = _accounting_app(monkeypatch, tool=tool)
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    form, page = _consent_form(client, client_doc, challenge, scope="athena:comptabilite")
-    assert page.status_code == 200
+    form, page = _consent_form(client, client_doc, challenge, scope=requested)
     assert 'name="scope" value="athena:read"' in page.data.decode("utf-8")
-    if tool:
-        label = _ACCOUNTING_LABEL_RE.search(page.data.decode("utf-8")).group(0)
-        assert "Le client a demandé cet accès" in " ".join(label.split())
+    for box in ticks:
+        form[box] = "on"
+    form["comptabilite_offered"] = "True"      # a hidden field changes nothing
     code = _code_from(client.post("/oauth/authorize", data=form))
-    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read"
+    assert fake.codes[store.sha256_hex(code)]["scope"] == minted
+    # And the token the code buys, echoed and STORED (bearer.py reads the
+    # stored scope, not the echo).
+    body = _exchange(client, client_doc, code, verifier).get_json()
+    assert body["scope"] == minted
+    assert fake.tokens[store.sha256_hex(body["access_token"])]["scope"] == minted
 
 
-def _rotate(client, client_doc, refresh_token):
-    return client.post(
-        "/oauth/token",
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_doc["client_id"],
-        },
-    ).get_json()
-
-
-def test_refresh_rotation_preserves_the_comptabilite_grant(fake, monkeypatch):
-    client = _accounting_app(monkeypatch)
-    client_doc = _register_client(fake)
-    verifier, challenge = _pkce_pair()
-    form, _ = _consent_form(client, client_doc, challenge)
-    form["grant_comptabilite"] = "on"
-    code = _code_from(client.post("/oauth/authorize", data=form))
-    first = _exchange(client, client_doc, code, verifier).get_json()
-    rotated = _rotate(client, client_doc, first["refresh_token"])
-    assert rotated["scope"] == "athena:read athena:comptabilite"
-    assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
-        "athena:read athena:comptabilite"
-    )
-
-
-def test_refresh_rotation_never_adds_comptabilite(fake, monkeypatch):
-    """A write family, the accounting box offered on the page it came from:
-    rotation copies the frozen grant verbatim — it never grows into
-    accounting."""
-    client = _accounting_app(monkeypatch)
-    client_doc = _register_client(fake)
-    verifier, challenge = _pkce_pair()
-    form, _ = _consent_form(client, client_doc, challenge)
-    form["grant_write"] = "on"
-    code = _code_from(client.post("/oauth/authorize", data=form))
-    first = _exchange(client, client_doc, code, verifier).get_json()
-    rotated = _rotate(client, client_doc, first["refresh_token"])
-    assert rotated["scope"] == "athena:read athena:write"
-    assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
-        "athena:read athena:write"
-    )
-
-
-def test_the_consent_line_says_whether_accounting_was_granted(fake, monkeypatch, caplog):
+def test_the_consent_line_says_whether_write_was_granted(client, fake, caplog):
+    """The `mcp_consent` line says what the screen granted — athena:write or
+    not — and the scope it minted. Since 2026-10-05 it carries no
+    `comptabilite_granted`, and a forged accounting tick moves neither."""
     import logging
 
-    client = _accounting_app(monkeypatch)
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     seen = []
-    for ticks in ({}, {"grant_comptabilite": True}):
+    for ticks in ({}, {"grant_write": True}, {"grant_comptabilite": True},
+                  {"grant_write": True, "grant_comptabilite": True}):
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="pallas.mcp"):
-            _granted(client, fake, client_doc, challenge, **ticks)
+            stored = _granted(client, fake, client_doc, challenge, **ticks)
         (line,) = [
             r.json_fields for r in caplog.records
             if getattr(r, "json_fields", {}).get("event") == "mcp_consent"
         ]
-        seen.append((line["write_granted"], line["comptabilite_granted"]))
-    assert seen == [(False, False), (False, True)]
+        assert "comptabilite_granted" not in line
+        assert line["scope"] == stored
+        seen.append((line["write_granted"], stored))
+    assert seen == [
+        (False, "athena:read"), (True, "athena:read athena:write"),
+        (False, "athena:read"), (True, "athena:read athena:write"),
+    ]
 
 
 # ── Token endpoint ──────────────────────────────────────────────────────

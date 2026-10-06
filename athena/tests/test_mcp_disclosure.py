@@ -327,6 +327,20 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "jamais les sept dossiers où l'application classe elle-même",
     "seven folders the application files into",
     "« projets » (every generated document)",
+    # 2026-10-05 — the lawyer removed every MCP kill switch and the separate
+    # `athena:comptabilite` scope with its consent box: the accounting writes
+    # are write tools under `athena:write`, the ledger's read an ordinary
+    # read. Each phrasing that stood on a surface naming that separate grant
+    # or box is false now — quoted as it stood (the consent screen's with its
+    # markup), bound to its subject, so a true sentence about the two grants
+    # that remain still passes.
+    "without the separate `athena:comptabilite` grant",   # the « trust » NEVER
+    "under the separate `athena:comptabilite` grant",     # the scope sentence
+    "under their separate grant",                # create_invoice, update_invoice
+    "sous leur autorisation distincte",          # handler texts, IMP-07
+    "autorisation distincte</strong> de celle des écritures",   # consent
+    "autoriser la comptabilité",                 # the box, and bullets naming it
+    "accounting (athena:comptabilite)",          # get_admin_ledger's description
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -360,10 +374,12 @@ KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"(?:[.;)]|$)",
     # Lot 5, step 5 (the final « never » set): under the accounting grant
     # the connector WRITES both registers and a payment exists as a register
-    # entry. Bound to their subject or to the absence of the grant's
-    # qualification, so the true sentences that name the grant still pass
-    # (« Without the separate … grant this connector never records a
-    # payment; under it … »).
+    # entry. Bound to their subject or to the absence of a grant's
+    # qualification, so the true sentences that name a grant still pass
+    # (« Without the `athena:write` grant this connector never records a
+    # payment; under it … » — since 2026-10-05 the one grant that reaches
+    # the accounting writes; the separate one these patterns were written
+    # beside is a false claim above).
     r"(?<!grant )\b(?:this|the) connector never records a payment",
     r"(?<!grant it )\bnever touches trust accounting",
     r"\bconnecteur\b[^.]{0,80}\bn'enregistre aucun paiement",
@@ -410,8 +426,11 @@ def test_the_families_partition_the_write_tools():
 
 
 def test_each_family_scope_is_its_members_declared_scope():
+    # Every family is under athena:write since 2026-10-05, the ACCOUNTING
+    # one included: the lawyer removed its separate athena:comptabilite
+    # scope, so the one write grant reaches every write tool.
     for family in disclosure.FAMILIES:
-        assert family.scope in (mcp.SCOPE_WRITE, mcp.SCOPE_COMPTABILITE), family.key
+        assert family.scope == mcp.SCOPE_WRITE, family.key
         for name in family.tools:
             assert tools.TOOLS[name]["scope"] == family.scope, (family.key, name)
 
@@ -430,41 +449,26 @@ def test_each_family_names_every_member_and_has_its_partial():
 
 
 def test_instructions_name_every_write_tool_and_derive_their_counts():
-    """Two variants since lot 5b, each counting and naming exactly the tools
-    its token can see: the base one (every token without the accounting
-    grant) leaves the ACCOUNTING family and get_admin_ledger out — a model
-    told of a tool it cannot list looks for it — while the variant served to
-    a token holding athena:comptabilite counts and names them all."""
+    """ONE text for every token since 2026-10-05 — the per-token accounting
+    variant left with the separate athena:comptabilite scope. It counts and
+    names every tool a write token can see, the ACCOUNTING family and its
+    read (get_admin_ledger) included, with counts DERIVED from the
+    registry."""
     text = endpoint.INSTRUCTIONS
     assert text == disclosure.build_instructions()
-    visible_writes = tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS
-    for name in visible_writes:
+    for name in tools.WRITE_TOOLS | {"get_admin_ledger"}:
         assert f"`{name}`" in text, name
-    for name in tools.ACCOUNTING_TOOLS:
-        assert f"`{name}`" not in text, name
-    families = [f for f in disclosure.FAMILIES
-                if f.tools and f.scope != mcp.SCOPE_COMPTABILITE]
-    reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS)
+    families = [f for f in disclosure.FAMILIES if f.tools]
+    reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the counts open the index, whose lines follow in family order
     # (the parenthesized label list they replace was a second copy of them).
-    header = (f"TOOLS: {reads} tools read; {len(visible_writes)} write, in "
+    header = (f"TOOLS: {reads} tools read; {len(tools.WRITE_TOOLS)} write, in "
               f"{len(families)} families:")
     assert header in text
     positions = [text.index(f"{family.label}: ") for family in families]
     assert positions == sorted(positions)
     assert positions[0] > text.index(header)
-    assert "ACCOUNTING: " not in text
-
-    full = endpoint.INSTRUCTIONS_COMPTABILITE
-    assert full == disclosure.build_instructions(accounting=True)
-    for name in tools.WRITE_TOOLS | tools.ACCOUNTING_TOOLS:
-        assert f"`{name}`" in full, name
-    every = [f for f in disclosure.FAMILIES if f.tools]
-    assert (
-        f"TOOLS: {len(set(tools.TOOLS) - tools.WRITE_TOOLS)} tools read; "
-        f"{len(tools.WRITE_TOOLS)} write, in {len(every)} families:"
-    ) in full
-    assert "ACCOUNTING: " in full
+    assert "ACCOUNTING: " in text
 
 
 def test_no_count_is_typed_by_hand():
@@ -490,24 +494,18 @@ def test_no_count_is_typed_by_hand():
 
 
 def test_the_instructions_follow_the_registry(monkeypatch):
-    """Fed a registry, the builder reflects it: an accounting tool adds the
-    separate-grant sentence, an etag-accepting tool is named, and the counts
-    move with the registry."""
+    """Fed a registry, the builder reflects it: an etag-accepting tool is
+    named, and the counts move with the registry."""
     registry = dict(tools.TOOLS)
-    # REWRITTEN in lot 5b: this read « athena:comptabilite not in base » —
-    # true while the scope was dormant. Two promises now name the scope in
-    # every variant (payment, invoice_paid — each worded true for every
-    # token); what still follows the registry is the SCOPE SENTENCE.
-    base = disclosure.build_instructions(registry, frozenset(), 50)
-    assert "Accounting tools appear only" not in base
-    with_accounting = disclosure.build_instructions(registry, frozenset({"x"}), 50)
-    assert "`athena:comptabilite`" in with_accounting
-    assert "Accounting tools appear only" in with_accounting
-    assert "never stands in" in with_accounting
-    holding = disclosure.build_instructions(registry, frozenset({"x"}), 50,
-                                            accounting=True)
-    assert "which this authorization holds" in holding
-    assert "Accounting tools appear only" not in holding
+    # REWRITTEN 2026-10-05: the scope sentence followed the registry's
+    # accounting tools (a separate-grant sentence, worded per token) until
+    # the lawyer removed that grant — ONE sentence now, naming the one write
+    # grant, and no text names the scope that left (as this test read while
+    # the scope was dormant, before lot 5b).
+    base = disclosure.build_instructions(registry, 50)
+    assert ("Write tools appear only when the lawyer granted the "
+            "`athena:write` scope.") in base
+    assert "athena:comptabilite" not in base
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the hand-assembled list of every etag-accepting tool (~1 KB)
     # left — the SAFETY CORE states the rule once, and each such tool's own
     # schema declares the argument and names the reads that carry the etag.
@@ -521,11 +519,11 @@ def test_the_instructions_follow_the_registry(monkeypatch):
             props = tools.TOOLS[name]["input_schema"]["properties"]
             assert "expected_etag" in props or "expected_etags" in props, name
     registry["zz_extra_read"] = {"input_schema": {}}
-    grown = disclosure.build_instructions(registry, frozenset(), 50)
+    grown = disclosure.build_instructions(registry, 50)
     assert f"{len(registry) - len(tools.WRITE_TOOLS)} tools read" in grown
     # The reclassifiers' ceiling comes from the registry, never a literal.
     assert "up to 7 rows a call" in disclosure.build_instructions(
-        dict(tools.TOOLS), frozenset(), 7)
+        dict(tools.TOOLS), 7)
 
 
 def test_the_instructions_carry_the_lot_0a_rules():
@@ -539,42 +537,22 @@ def test_the_instructions_carry_the_lot_0a_rules():
     assert "`updated_via`" in text and "`mcp_updated_at`" in text
     assert "the number itself stays on the voided invoice" in (
         tools.TOOLS["import_invoice"]["description"])
-    # REWRITTEN in lot 5b: the scope was dormant and never advertised. Now a
-    # token without it is told only that accounting tools need a separate
-    # grant — never what they do; the promises the grant keeps reach the
-    # tokens holding it.
-    assert tools.ACCOUNTING_TOOLS
-    assert "Accounting tools appear only under the SEPARATE" in text
-    for never in disclosure.accounting_nevers():
-        assert never.en not in text, never.key
-        assert never.en in endpoint.INSTRUCTIONS_COMPTABILITE, never.key
 
 
 def test_the_checkbox_summary_names_every_write_family():
     summary = str(disclosure.write_summary_fr())
-    for family in disclosure.families_for(mcp.SCOPE_WRITE):
-        assert family.checkbox_summary_fr.lower() in summary.lower()
-    assert summary[0].isupper()
-    # The GENERAL promises only (lot 5b): what the accounting grant itself
-    # never does is the accounting box's to say, beside what it grants.
-    for never in disclosure.general_nevers():
-        if never.summary_fr:
-            assert f"jamais {never.summary_fr}" in summary.lower()
-    for never in disclosure.accounting_nevers():
-        if never.summary_fr:
-            assert f"jamais {never.summary_fr}" not in summary.lower(), never.key
-
-
-def test_the_accounting_checkbox_summary_names_its_family_and_its_nevers():
-    """The accounting box's label is derived like the write box's: the
-    ACCOUNTING family's clause, then the promises the grant keeps."""
-    summary = str(disclosure.comptabilite_summary_fr())
-    families = disclosure.families_for(mcp.SCOPE_COMPTABILITE)
-    assert [f.key for f in families] == ["accounting"]
+    families = disclosure.families_for(mcp.SCOPE_WRITE)
+    # Every family since 2026-10-05, the ACCOUNTING one included: the write
+    # box is the one grant that reaches the accounting writes, so its
+    # summary says what they write.
+    assert [f.key for f in families] == [f.key for f in disclosure.FAMILIES]
     for family in families:
         assert family.checkbox_summary_fr.lower() in summary.lower()
     assert summary[0].isupper()
-    for never in disclosure.accounting_nevers():
+    # Every promise that carries a clause — the register tools' own among
+    # them, told beside the one box that grants those tools (until
+    # 2026-10-05 they were the separate accounting box's to say).
+    for never in disclosure.NEVERS:
         if never.summary_fr:
             assert f"jamais {never.summary_fr}" in summary.lower(), never.key
 
@@ -858,11 +836,10 @@ def test_every_never_is_backed_by_a_mechanism_and_speaks_both_languages():
         ), f"{never.key}: a promise nothing enforces"
         # No trailing punctuation: the template adds « ; » / « . ».
         assert not never.fr.rstrip().endswith((";", ".", "&nbsp;;")), never.key
-        # Every promise reaches the tokens it binds (lot 5b): a general one
-        # every token, an accounting one the tokens holding the grant.
-        assert never.en in endpoint.INSTRUCTIONS_COMPTABILITE, never.key
-        if not never.accounting_only:
-            assert never.en in endpoint.INSTRUCTIONS, never.key
+        # Every promise reaches every token — since 2026-10-05 the register
+        # tools' own too, told until then only to a token holding the
+        # separate accounting grant.
+        assert never.en in endpoint.INSTRUCTIONS, never.key
 
 
 def test_the_registry_is_pure():
@@ -941,9 +918,6 @@ def test_no_known_false_claim_in_the_connector_texts():
     ]
     assert offenders == [], offenders
     assert _false_claims_in(endpoint.INSTRUCTIONS) == []
-    # Lot 5, step 5: the text a token holding athena:comptabilite reads was
-    # never scanned — the variant that speaks of money.
-    assert _false_claims_in(endpoint.INSTRUCTIONS_COMPTABILITE) == []
     for name, spec in tools.TOOLS.items():
         assert _false_claims_in(spec["description"]) == [], name
 
@@ -1183,10 +1157,10 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
     """Lot 4b (CONTACTS). A compliance check the connector inscribes is
     PRESUMED — « à confirmer » on the fiche, still OPEN in the coverage
     report, confirmed only by the lawyer — and never written over one he
-    decided or confirmed; a detached mandataire is a LINK. The trust
-    promise stays whole on its own, and the compliance one is backed by
-    code: no connector call confirms, every update_kyc_status names its
-    source, and no write tool takes the stored compliance fields."""
+    decided or confirmed; a detached mandataire is a LINK. The compliance
+    promise is backed by code: no connector call confirms, every
+    update_kyc_status names its source, and no write tool takes the stored
+    compliance fields."""
     contacts = next(f for f in disclosure.FAMILIES if f.key == "contacts")
     assert contacts.tools == ("update_partie_mandataire", "record_kyc_status")
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the index line keeps PRESUMED and « NOT done »; the rest is
@@ -1203,14 +1177,10 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
         tools.TOOLS["update_partie_mandataire"]["description"])
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "trust_identity" not in keys
-    # Lot 5b narrowed it to the tokens WITHOUT the accounting grant — and
-    # says so, so it stays true for every token. REWRITTEN in lot 5, step 5:
-    # « touches » became « writes to » — reading the trust register stays
-    # under athena:read, so the promise is about WRITES.
-    assert keys["trust"].en == (
-        "Without the separate `athena:comptabilite` grant it never writes "
-        "to trust accounting — neither the trust register nor the "
-        "administration ledger.")
+    # Its trust half (« trust ») was DELETED on 2026-10-05 with the
+    # separate accounting grant it named: what the register tools never do
+    # is their own promises (test_the_lot_5_texts_state_the_final_never_set).
+    assert "trust" not in keys
     kyc_never = keys["kyc"]
     assert "confirm_kyc_status" in kyc_never.forbidden
     assert ("update_kyc_status", "source") in kyc_never.required_keywords
@@ -1365,42 +1335,34 @@ def test_review_of_the_lot_4b_text_step():
 
 
 def test_the_lot_5_texts_state_the_final_never_set():
-    """Lot 5, step 5 — the final « never » set. Each assertion fails on the
-    texts of 17fb0d1:
+    """Lot 5, step 5 — the final « never » set, as every token reads it
+    since 2026-10-05 (the lawyer removed the separate accounting grant and
+    its box, and with them the « trust » promise — « never writes to trust
+    accounting without that grant »; the promises told only beside that box
+    are told to every token now):
 
-    * « toucher au fidéicommis » is gone: the general promise is about
-      WRITES (reading stays under athena:read), and beside the accounting
-      box it points to that box's own list instead of a bare « sauf avec la
-      case » that named nothing;
     * a payment exists ONLY as a register entry, and the payment bullet
       names both — the administration encaissement, the trust fee payment;
-    * what stays impossible under the grant is the PRECISE list — no entry
-      deleted (each register's correction said), no reconciliation, no
-      account, no transfer between dossiers, no cash withdrawal, no fee
+    * what stays impossible to the register tools is the PRECISE list — no
+      entry deleted (each register's correction said), no reconciliation,
+      no account, no transfer between dossiers, no cash withdrawal, no fee
       payment on a paper, UNSENT or provision-imputing invoice, no bank
       number — each item its own promise, with its own sweep or test;
     * « the reversal is the only correction » is said of TRUST (and of an
       administration entry no longer editable) — never of every entry,
       beside update_admin_entry, which corrects one;
     * a trust recette or déboursé inscribes nothing at administration: the
-      box's summary says it of the fee payment alone.
+      family's summary says it of the fee payment alone.
     """
     keys = {n.key: n for n in disclosure.NEVERS}
-
-    trust = keys["trust"]
-    for text in (trust.fr, trust.fr_comptabilite, trust.en):
-        assert "toucher" not in text and "touches" not in text
-    assert trust.fr == (
-        "écrire au <strong>fidéicommis</strong> ou au registre "
-        "d'administration")
-    assert "énuméré avec elle, plus bas" in trust.fr_comptabilite
+    assert "trust" not in keys
 
     payment = keys["payment"]
     for fragment in ("autrement que par une écriture aux registres comptables",
                      "un encaissement au compte d'administration",
                      "un paiement d'honoraires au fidéicommis",
                      "inscrit lui-même le paiement sur la facture"):
-        assert fragment in payment.fr_comptabilite, fragment
+        assert fragment in payment.fr, fragment
     # REWRITTEN deliberately (contracts-1 part 2): the promise is a clause
     # of the SAFETY CORE now; the two register entries that record a
     # payment are named by the tools that make them.
@@ -1410,12 +1372,15 @@ def test_the_lot_5_texts_state_the_final_never_set():
         assert "RECORDS A PAYMENT" in tools.TOOLS[name]["description"], name
 
     # « fee_payee » joined on the lawyer's decision D23 (2026-09-29) — the
-    # list is rewritten deliberately, the order kept.
-    assert [n.key for n in disclosure.accounting_nevers()] == [
-        "register_delete", "register_setup", "register_transfer",
-        "trust_withdrawal", "fee_invoice", "fee_payee", "account_number"]
-    listed_fr = " ".join(n.fr for n in disclosure.accounting_nevers())
-    listed_en = " ".join(n.en for n in disclosure.accounting_nevers())
+    # list is rewritten deliberately, the order kept. Rewritten again
+    # 2026-10-05: no longer a list apart (the separate grant's) — the same
+    # promises, in the same order, in the one list every token reads.
+    register = ["register_delete", "register_setup", "register_transfer",
+                "trust_withdrawal", "fee_invoice", "fee_payee", "account_number"]
+    order = [n.key for n in disclosure.NEVERS]
+    assert [k for k in order if k in register] == register
+    listed_fr = " ".join(keys[k].fr for k in register)
+    listed_en = " ".join(keys[k].en for k in register)
     for fr, en in (
         ("<strong>supprimer</strong> une écriture", "never deletes a register entry"),
         ("conciliation</strong>", "reconciliation"),
@@ -1443,6 +1408,8 @@ def test_the_lot_5_texts_state_the_final_never_set():
     assert "une écriture se corrige tant qu'elle reste modifiable" in delete.fr
     assert "a trust entry is corrected only by a reversal" in delete.en
     assert "`update_admin_entry` while editable" in delete.en
+    # 2026-10-05: never « even under the accounting grant » — no such grant.
+    assert delete.en.startswith("It never deletes a register entry:")
     # Each item carries the calls it forbids — split three ways.
     assert set(delete.forbidden) == {"delete_transaction", "delete_card_payment"}
     assert keys["register_transfer"].forbidden == ("create_inter_dossier_transfer",)
@@ -1464,9 +1431,13 @@ def test_the_lot_5_texts_state_the_final_never_set():
     assert keys["fee_payee"].behavioural_test.endswith(
         "test_d23_the_payee_is_the_lawyer_or_his_firm")
 
-    summary = " ".join(str(disclosure.comptabilite_summary_fr()).split())
+    # The write box's summary — the one box that grants the register tools
+    # since 2026-10-05 (until then the accounting box's said this list).
+    summary = " ".join(str(disclosure.write_summary_fr()).split())
     assert summary.endswith(
-        "Jamais de suppression, jamais de conciliation ni de compte, jamais "
+        "Jamais de suppression, jamais de paiement autrement que par une "
+        "écriture aux registres comptables (un encaissement ou un paiement "
+        "d'honoraires), jamais de conciliation ni de compte, jamais "
         "de virement entre dossiers, jamais de retrait en espèces, jamais de "
         "paiement d'honoraires sur une facture papier, non envoyée, qui "
         "impute une provision ou adressée à un autre client, jamais de "
@@ -1484,18 +1455,21 @@ def test_the_lot_5_texts_state_the_final_never_set():
         "administration entry update_admin_entry can no longer edit")
     assert "(its latest 25 kept)" in tools.TOOLS["update_admin_entry"]["description"]
 
-    # The accounting promises reach the tokens holding the grant — and only
-    # them; the general ones reach every token.
-    for never in disclosure.accounting_nevers():
-        assert never.en in endpoint.INSTRUCTIONS_COMPTABILITE, never.key
-        assert never.en not in endpoint.INSTRUCTIONS, never.key
-    assert trust.en in endpoint.INSTRUCTIONS
+    # Every token reads the register promises since 2026-10-05 (until then
+    # only a token holding the separate accounting grant did), and the
+    # payment one in the SAFETY CORE.
+    for k in register:
+        assert keys[k].en in endpoint.INSTRUCTIONS, k
     assert payment.en in endpoint.INSTRUCTIONS
+    assert payment.en in disclosure.safety_core_en()
 
 
 def test_the_lot_5_false_claim_entries_bite_and_spare_the_true_sentences():
     """Non-vacuous both ways: each lot 5 entry catches the phrasing it was
-    written for, and the true sentences that NAME the grant still pass."""
+    written for, and the true sentences that NAME a grant still pass. The
+    two that named the separate accounting grant are false since it left
+    (2026-10-05) — they bite now — and the write grant's own sentence takes
+    their place."""
     for false in (
         "Le fidéicommis est en lecture seule intégrale. Aucun outil n'y écrit.",
         "Le connecteur ne change aucun statut de facture et n'enregistre "
@@ -1504,19 +1478,80 @@ def test_the_lot_5_false_claim_entries_bite_and_spare_the_true_sentences():
         "It never touches trust accounting.",
         "Trust accounting is read-only here.",
         "`reverse_register_entry` is the only correction: a fee payment…",
-    ):
-        assert _false_claims_in(false), false
-    for true in (
-        endpoint.INSTRUCTIONS, endpoint.INSTRUCTIONS_COMPTABILITE,
         "Without the separate `athena:comptabilite` grant this connector "
         "never records a payment; under it, a payment exists only as a "
         "register entry.",
         "Without the separate `athena:comptabilite` grant it never touches "
         "trust accounting.",
+    ):
+        assert _false_claims_in(false), false
+    for true in (
+        endpoint.INSTRUCTIONS,
+        "Without the `athena:write` grant this connector never records a "
+        "payment; under it, a payment exists only as a register entry.",
         "get_trust_balance is read-only.",
         "cet outil n'inscrit aucun paiement",
     ):
         assert not _false_claims_in(true), true
+
+
+def test_the_2026_10_05_false_claim_entries_bite_on_the_texts_that_stood():
+    """The phrasings the removal of the separate accounting grant and its
+    box made false (2026-10-05), each quoted from the surface it stood on
+    before — the consent screen, INSTRUCTIONS, a tool description, a handler
+    text — are caught; the true sentences that replaced them, and the
+    surfaces as they now stand, pass."""
+    for false in (
+        # The consent screen's accounting block and box.
+        "Une <strong>autorisation distincte</strong> de celle des écritures, "
+        "qui porte sur les <strong>registres comptables</strong>",
+        "Si vous cochez «&nbsp;Autoriser la comptabilité&nbsp;», ce "
+        "connecteur pourra inscrire",
+        "Autoriser la comptabilité (fidéicommis et administration)",
+        # The « jamais » bullets shown beside it.
+        "inscrire un <strong>paiement</strong> autrement que par une "
+        "écriture aux registres comptables, avec la case «&nbsp;Autoriser "
+        "la comptabilité&nbsp;»",
+        # INSTRUCTIONS — the « trust » NEVER and both scope sentences.
+        "Without the separate `athena:comptabilite` grant it never writes "
+        "to trust accounting — neither the trust register nor the "
+        "administration ledger.",
+        "Accounting tools appear only under the SEPARATE "
+        "`athena:comptabilite` grant; `athena:write` never stands in for it.",
+        "The accounting tools appear under the SEPARATE `athena:comptabilite` "
+        "grant, which this authorization holds;",
+        # Tool descriptions and handler texts.
+        "ACCOUNTING (athena:comptabilite) — READ. The administration ledger",
+        "a payment is recorded only as an entry of the accounting registers "
+        "(in the application, or with the accounting tools under their "
+        "separate grant), never by this tool.",
+        "contre-passez d'abord l'écriture qui l'a soldée (dans "
+        "l'application, ou par les outils comptables sous leur autorisation "
+        "distincte).",
+    ):
+        assert _false_claims_in(false), false
+    import jinja2
+
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(
+        str(_TEMPLATES)), autoescape=True)   # as Flask renders
+    partial = " ".join(env.get_template("mcp/families/_comptabilite.html")
+                       .render(disclosure=disclosure.consent_context()).split())
+    assert "Inscrire au fidéicommis" in partial          # non-vacuous
+    for true in (
+        endpoint.INSTRUCTIONS,
+        partial,
+        tools.TOOLS["get_admin_ledger"]["description"],
+        tools.TOOLS["create_invoice"]["description"],
+        tools.TOOLS["update_invoice"]["description"],
+        "Write tools appear only when the lawyer granted the `athena:write` "
+        "scope.",
+        # The read paragraph names trust accounting by its French name.
+        "Cet accès inclut les soldes des fonds détenus en fidéicommis "
+        "(comptabilité en fidéicommis)",
+        # Bound to their subject, the entries spare a true use of the words.
+        "L'écriture est une autorisation distincte de la lecture.",
+    ):
+        assert not _false_claims_in(true), true[:80]
 
 
 # ══════════════════════════════════════════════════════════════════════

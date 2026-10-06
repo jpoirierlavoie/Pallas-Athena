@@ -45,6 +45,13 @@ bulk, create_expenses_bulk — 88 tools): 258 382 bytes, the two weighing
 enums included), the largest still `update_partie` at 7 721; for the write
 grant (82 tools, description + inputSchema only): 222 086 bytes.
 
+Measured again 2026-10-05, after the lawyer removed every MCP kill switch and
+the separate `athena:comptabilite` scope (the accounting read is an ordinary
+read, the five accounting writes ordinary writes, and every tool is always
+listed): 258 955 bytes, the six accounting tools 19 680, the largest still
+`update_partie` at 7 721. The write grant now sees all 88 tools (description
++ inputSchema only: ≈ 241 000 bytes).
+
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
 
@@ -60,26 +67,8 @@ os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
 os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
-import pytest
-
 with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
-
-from tests import _dummy_accounting  # noqa: E402
-
-
-@pytest.fixture(autouse=True)
-def _whole_surface(monkeypatch):
-    """Measure the surface with EVERY switch on, whatever this process says.
-
-    `list_tool_descriptors(None)` drops no scope but still applies the kill
-    switches, and MCP_COMPTABILITE_ENABLED defaults to FALSE (money is
-    fail-closed). Without this, every accounting tool (plan lot 5) would be
-    left out of the ceiling — the budget pays for what a fully-granted
-    token is shown, and that includes them.
-    """
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
 
 
 # The plan's target for the whole widened surface (~86 tools), 2026-09-25.
@@ -100,17 +89,17 @@ def _model_visible_bytes() -> dict[str, int]:
     return sizes
 
 
-@pytest.mark.parametrize("with_accounting_tool", [False, True])
-def test_the_measure_covers_every_tool_and_excludes_only_the_output_schema(
-    monkeypatch, with_accounting_tool
-):
-    """The budget must see the whole advertised surface — a tool hidden by a
-    kill switch in this process would escape the ceiling unnoticed. The
-    dummy run proves an accounting tool is measured although its switch
-    defaults to off — the six real ones (lot 5b) included."""
-    if with_accounting_tool:
-        name = _dummy_accounting.register(monkeypatch)
-        assert name in _model_visible_bytes()
+def test_the_measure_covers_every_tool_and_excludes_only_the_output_schema():
+    """The budget must see the whole advertised surface — a tool left out of
+    the measure would escape the ceiling unnoticed. REWRITTEN 2026-10-05: a
+    kill switch could hide a tool from `list_tool_descriptors(None)` (the
+    accounting one defaulted to OFF, so a dummy run proved an accounting
+    tool was measured all the same); the lawyer removed every switch, and
+    the measure holds every tool — pinned here, the six accounting tools
+    named."""
+    sizes = _model_visible_bytes()
+    assert set(sizes) == set(tools.TOOLS)
+    assert tools.ACCOUNTING_WRITE_TOOLS | {"get_admin_ledger"} <= set(sizes)
     descriptors = tools.list_tool_descriptors(None)
     assert {d["name"] for d in descriptors} == set(tools.TOOLS)
     for d in descriptors:
@@ -215,6 +204,14 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
 # checks). »; Claude Code counts characters); the counts header « TOOLS: … »
 # now starts at character 2 046, past the cut; 6 115 / 7 567 UTF-8 bytes
 # (base / accounting), from 6 504 / 7 956 before the lot.
+#
+# 2026-10-05: ONE text for every token. The lawyer removed the separate
+# `athena:comptabilite` scope, and with it the accounting variant
+# (endpoint.INSTRUCTIONS_COMPTABILITE, endpoint.instructions_for) — so the
+# base / comptabilite parametrization below left too, deliberately: every
+# family and every promise is in the one text. Measured: core 1 470
+# characters, head 2 045 (« TOOLS: … » still at character 2 046); 7 284
+# characters, 7 343 UTF-8 bytes.
 INSTRUCTIONS_CAP = 8_000
 _CORE_MARKERS = (
     "SAFETY CORE",
@@ -264,10 +261,11 @@ _CONVENTION_MARKERS = (
 )
 
 
-def _instructions():
+def _instructions() -> str:
+    """The ONE text `initialize` serves to every token (2026-10-05)."""
     with mock.patch("google.cloud.firestore.Client"):
         from mcp import endpoint
-    return endpoint.INSTRUCTIONS, endpoint.INSTRUCTIONS_COMPTABILITE
+    return endpoint.INSTRUCTIONS
 
 
 def _core():
@@ -290,26 +288,29 @@ def test_the_head_limit_is_the_client_s_cut():
 
 
 def test_the_instructions_stay_within_their_budget():
-    """Every token type — the read-only, write and accounting tokens read
-    one of these two texts (endpoint.instructions_for) — within ONE cap."""
-    base, accounting = _instructions()
-    for label, text in (("INSTRUCTIONS", base),
-                        ("INSTRUCTIONS_COMPTABILITE", accounting)):
-        size = len(text.encode("utf-8"))
-        assert size <= INSTRUCTIONS_CAP, (
-            f"{label} weighs {size} bytes, over its {INSTRUCTIONS_CAP}-byte "
-            "budget: it rides every initialize — put the rule in the tool's "
-            "description, and keep the family's index line to its tools")
+    """Every token type — read-only or read + write — reads the ONE text
+    `initialize` serves (endpoint.INSTRUCTIONS, the registry's assembly),
+    within its cap. REWRITTEN 2026-10-05: two texts, the accounting variant
+    for a token holding athena:comptabilite, until the lawyer removed the
+    scope."""
+    from mcp import disclosure
+
+    text = _instructions()
+    assert text == disclosure.build_instructions()
+    size = len(text.encode("utf-8"))
+    assert size <= INSTRUCTIONS_CAP, (
+        f"INSTRUCTIONS weighs {size} bytes, over its {INSTRUCTIONS_CAP}-byte "
+        "budget: it rides every initialize — put the rule in the tool's "
+        "description, and keep the family's index line to its tools")
 
 
-@pytest.mark.parametrize("variant", [0, 1], ids=["base", "comptabilite"])
-def test_the_safety_core_is_the_first_characters_and_complete(variant):
+def test_the_safety_core_is_the_first_characters_and_complete():
     """The core opens the text — its first N characters ARE the core — and
     carries every protocol rule; the CONVENTIONS follow it, then the
     index."""
     from mcp import disclosure
 
-    text = _instructions()[variant]
+    text = _instructions()
     core = _core()
     assert text.startswith(core + " "), "the SAFETY CORE must open the text"
     missing = [m for m in _CORE_MARKERS if m not in core]
@@ -325,19 +326,16 @@ def test_the_safety_core_is_the_first_characters_and_complete(variant):
     assert "idempotency_key` on EVERY write" not in rest
 
 
-@pytest.mark.parametrize("variant", [0, 1], ids=["base", "comptabilite"])
-def test_the_conventions_and_every_core_promise_survive_the_client_s_cut(
-    variant,
-):
+def test_the_conventions_and_every_core_promise_survive_the_client_s_cut():
     """What a client cutting at 2 048 characters reads: the WHOLE safety
     core — every in-core promise, the outbound effect, the protocol — and
-    the whole CONVENTIONS, in both variants. Asserted on the actual first
-    2 048 characters of the served text, not on the pieces' lengths: a
-    reordering that pushed a promise past the cut fails here even if every
-    piece stayed short."""
+    the whole CONVENTIONS, of the one text every token reads. Asserted on
+    the actual first 2 048 characters of the served text, not on the
+    pieces' lengths: a reordering that pushed a promise past the cut fails
+    here even if every piece stayed short."""
     from mcp import disclosure
 
-    text = _instructions()[variant]
+    text = _instructions()
     cut = text[:_head_limit()]
     head = disclosure.instructions_head_en()
     assert len(head) <= _head_limit(), (
@@ -358,18 +356,26 @@ def test_the_conventions_and_every_core_promise_survive_the_client_s_cut(
 
 
 def test_the_core_states_only_promises_true_for_every_token():
-    """The core is the same for every token, so no accounting-only promise
-    may stand in it — the accounting variant states those after the
-    index."""
+    """The core is the same for every token — and since 2026-10-05 so is
+    every promise. REWRITTEN that day: it held every accounting-only promise
+    (told only to a token holding athena:comptabilite) out of the core; the
+    lawyer removed that scope, and those promises became ordinary ones, told
+    to every token after the index. What stays, for every promise: an
+    in-core one is stated in the core, any other is stated once, past the
+    head (where the index and the rest follow), and never in the core."""
     from mcp import disclosure
 
+    text = _instructions()
     core = _core()
+    head_end = len(disclosure.instructions_head_en())
     assert disclosure.core_nevers()
-    for never in disclosure.core_nevers():
-        assert not never.accounting_only, never.key
-        assert never.en in core, never.key
-    for never in disclosure.accounting_nevers():
+    for never in disclosure.NEVERS:
+        if never.in_core:
+            assert never.en in core, never.key
+            continue
         assert never.en not in core, never.key
+        assert text.count(never.en) == 1, never.key
+        assert text.index(never.en) > head_end, never.key
 
 
 def test_each_family_is_one_short_index_line():

@@ -37,7 +37,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.write_support as write_support
 
 from tests._fake_firestore import install as install_fake  # noqa: E402
-from tests import _dummy_accounting  # noqa: E402
 
 UTC = timezone.utc
 ATHENA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +47,6 @@ AUTH = {"Authorization": "Bearer test-token"}
 def _make_app(**config) -> Flask:
     app = Flask(__name__, template_folder=os.path.join(ATHENA_DIR, "templates"))
     app.config["SECRET_KEY"] = "test-secret"
-    app.config["MCP_ENABLED"] = True
     app.config["MCP_CANONICAL_ORIGIN"] = "https://athena.poirierlavoie.ca"
     app.config["ENV"] = "development"
     app.config["RATELIMIT_ENABLED"] = False
@@ -131,20 +129,13 @@ def test_ping(client):
 
 
 def test_get_and_delete_are_405(client):
-    assert client.get("/mcp", headers=AUTH).status_code == 405
-    assert client.delete("/mcp", headers=AUTH).status_code == 405
-
-
-def test_kill_switch_404(monkeypatch):
-    bearer.reset_brake_state()
-    app = _make_app(MCP_ENABLED=False)
-    c = app.test_client()
-    resp = c.post("/mcp", data="{}", content_type="application/json", headers=AUTH)
-    assert resp.status_code == 404
-    # The kill switch covers GET/DELETE too (explicit route, not Flask 405).
-    assert c.get("/mcp", headers=AUTH).status_code == 404
-    assert c.delete("/mcp", headers=AUTH).status_code == 404
-    assert c.get("/.well-known/oauth-authorization-server").status_code == 404
+    # The explicit route, not Flask's automatic 405 (an HTML body, and an
+    # Allow header naming OPTIONS too): no SSE stream, no session to delete.
+    for resp in (client.get("/mcp", headers=AUTH),
+                 client.delete("/mcp", headers=AUTH)):
+        assert resp.status_code == 405
+        assert resp.headers["Allow"] == "POST"
+        assert resp.get_json() == {"error": "method_not_allowed"}
 
 
 # ── Protocol-version header ─────────────────────────────────────────────
@@ -231,7 +222,15 @@ def test_initialize_shape(client):
     assert "brouillon" in instructions
     assert "record a payment outside the accounting registers" in instructions
     assert "DELETE anything" in instructions
-    assert "trust accounting" in instructions
+    # What the accounting tools never do, told to EVERY token since
+    # 2026-10-05 — until then only to a token holding the separate
+    # athena:comptabilite grant, and the « trust » promise (« without the
+    # separate grant it never writes to trust accounting ») left with it.
+    assert "It never deletes a register entry" in instructions
+    assert "It never transfers trust funds between dossiers" in instructions
+    assert "It never withdraws trust funds in cash" in instructions
+    assert "It never shows a bank transit or account number" in instructions
+    assert "trust accounting" not in instructions
     # The repair path must be stated: voiding the invoice releases every
     # source. Saying nothing would leave the model believing an import is
     # irreversible. Rewritten deliberately (lot 3b): the connector voids too
@@ -266,13 +265,18 @@ def test_initialize_shape(client):
     assert "never reopens a closed one — that is `reopen_task`" in instructions
     assert "never silently undoes a cancellation" in instructions
     assert "five families" not in instructions
-    # The families THIS token can see (lot 5b): without athena:comptabilite
-    # the ACCOUNTING family is not counted, only named as a separate grant.
-    families = [f for f in disclosure.FAMILIES
-                if f.tools and f.scope != mcp_pkg.SCOPE_COMPTABILITE]
-    assert f"in {len(families)} families:" in instructions
-    assert "ACCOUNTING: " not in instructions
-    assert "Accounting tools appear only under the SEPARATE" in instructions
+    # ONE text for every token since 2026-10-05: every tool counted, every
+    # family indexed — ACCOUNTING and its read included —, and no word of
+    # the separate accounting grant the lawyer removed (a model told of a
+    # scope that no longer exists would send the lawyer looking for it).
+    families = [f for f in disclosure.FAMILIES if f.tools]
+    reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
+    assert (f"TOOLS: {reads} tools read; {len(tools.WRITE_TOOLS)} write, "
+            f"in {len(families)} families:") in instructions
+    assert "ACCOUNTING: `record_trust_entry`" in instructions
+    assert "`get_admin_ledger`" in instructions
+    assert "athena:comptabilite" not in instructions
+    assert "Accounting tools appear only under" not in instructions
     # The lot 0a write-protocol rules the client model must follow.
     assert "`expected_etag`" in instructions
     assert "do NOT retry" in instructions
@@ -306,12 +310,15 @@ def test_tools_list_hides_write_tools_from_a_read_only_token(client):
     failure brake, so that is an unthrottled refusal loop."""
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools_list = resp.get_json()["result"]["tools"]
-    # The accounting READ (lot 5b) carries athena:comptabilite: a read-only
-    # token does not see it either.
-    assert len(tools_list) == len(
-        set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS)
+    # Exactly the reads — the administration ledger's among them since
+    # 2026-10-05, an ordinary read like the trust reads — and not one write,
+    # the five accounting writes included.
     names = {t["name"] for t in tools_list}
+    assert len(tools_list) == len(names)
+    assert names == set(tools.TOOLS) - tools.WRITE_TOOLS
+    assert "get_admin_ledger" in names
     assert not (names & {"create_note", "append_to_note"})
+    assert not (names & tools.ACCOUNTING_WRITE_TOOLS)
     for tool in tools_list:
         assert tool["annotations"]["readOnlyHint"] is True
         assert tool["annotations"]["openWorldHint"] is False
@@ -355,20 +362,29 @@ def test_tools_list_advertises_write_tools_to_a_write_token(write_client):
     tools_list = _rpc(
         write_client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     ).get_json()["result"]["tools"]
-    # Every tool but the accounting ones: those need athena:comptabilite,
-    # which a write grant never implies (empty set until plan lot 5 — the
-    # dummy-tool tests below prove the subtraction is not vacuous).
-    assert len(tools_list) == len(tools.TOOLS) - len(tools.ACCOUNTING_TOOLS)
+    # Every tool: since 2026-10-05 the accounting writes are write tools
+    # like the others (athena:write), their separate scope gone.
     by_name = {t["name"]: t for t in tools_list}
+    assert len(tools_list) == len(by_name) == len(tools.TOOLS)
+    assert set(by_name) == set(tools.TOOLS)
     for name in ("create_note", "append_to_note"):
         assert by_name[name]["annotations"]["readOnlyHint"] is False
         assert by_name[name]["annotations"]["destructiveHint"] is False
+    for name in tools.ACCOUNTING_WRITE_TOOLS:
+        assert by_name[name]["annotations"]["readOnlyHint"] is False
+    assert by_name["get_admin_ledger"]["annotations"]["readOnlyHint"] is True
 
 
-def test_write_refusal_is_403_with_a_challenge_not_a_200_internal_error(client):
+def test_write_refusal_is_403_with_a_challenge_not_a_200_internal_error(
+    client, monkeypatch
+):
     """endpoint's blanket `except Exception` would turn the refusal into a
     200 isError result, losing the status, the WWW-Authenticate step-up
     signal, and the ability to tell a refusal from a Firestore outage."""
+    def must_not_run(args):
+        pytest.fail("a scope refusal must not reach the handler")
+
+    monkeypatch.setattr(handlers, "create_note", must_not_run)
     resp = _call_write(client)
     assert resp.status_code == 403
     assert resp.get_json()["error"] == "insufficient_scope"
@@ -427,38 +443,49 @@ def test_revoked_token_cannot_write_even_while_the_cache_is_warm(
     assert second.get_json()["error"] == "insufficient_scope"
 
 
-def test_write_kill_switch_refuses_the_call(monkeypatch):
-    bearer.reset_brake_state()
-    doc = {
-        "token_type": "access", "client_id": "client-1",
-        "scope": "athena:read athena:write", "resource": None,
-        "family_id": "fam-1", "revoked": False,
-        "expire_at": datetime.now(UTC) + timedelta(hours=1),
-    }
-    monkeypatch.setattr(store, "get_token", lambda h: dict(doc))
-    monkeypatch.setattr(store, "stamp_token_last_used", lambda h: None)
-    cl = _make_app(MCP_WRITE_ENABLED=False).test_client()
-    listed = _rpc(cl, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    # Le coupe-circuit retire TOUTE la famille d'ecriture, et rien
-    # d'autre : la surface de lecture reste entiere.
-    assert (len(listed.get_json()["result"]["tools"])
-            == len(set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS))
-    body = _call_write(cl, rid=2).get_json()
-    assert body["error"]["code"] == -32602
-    assert "MCP_WRITE_ENABLED" in body["error"]["message"]
-    bearer.reset_brake_state()
-
-
-# ── The accounting scope (athena:comptabilite) ───────────────────────────
+# ── The accounting tools: write tools like the others ───────────────────
 #
-# Every gate below is exercised on the DUMMY accounting tool of
-# tests/_dummy_accounting.py (declared scope, WRITE_TOOLS, ACCOUNTING_TOOLS,
-# a handler resolved by name), so the dispatch is observed without a
-# register; the gates themselves are the real ones. Since lot 5b the six
-# REAL accounting tools sit beside it in every listing, which is why the
-# sets below subtract ACCOUNTING_TOOLS rather than the dummy alone.
+# The five ACCOUNTING writes (trust and administration register entries)
+# sat behind their own scope, athena:comptabilite, and their own kill switch
+# until 2026-10-05, when the lawyer removed both: they are write tools like
+# the others now (athena:write), and the administration ledger's read,
+# get_admin_ledger, an ordinary read (athena:read). Every gate below runs on
+# the REAL tools; a recorder stands in for each handler, so a dispatch is
+# observed without a register behind it.
 
-_ALL_SCOPES = "athena:read athena:write athena:comptabilite"
+# A token still carrying the retired scope string (none was live at the
+# removal) simply holds an unknown scope: it must reach nothing more.
+_RETIRED_SCOPE = "athena:comptabilite"
+
+# Arguments each accounting write's input schema accepts — the schema runs
+# before the handler, so a dispatched call must clear it. Keyed by tool, and
+# checked against ACCOUNTING_WRITE_TOOLS below: a sixth accounting write
+# must come here before the checklist passes.
+_ACCOUNTING_CALLS = {
+    "record_trust_entry": {
+        "account_id": "acc-1", "direction": "recette",
+        "purpose": "dépôt_client", "amount_cents": 100,
+        "date": "2026-10-01", "method": "chèque",
+        "idempotency_key": "cle-comptable-fid-1",
+    },
+    "record_admin_entry": {
+        "account_id": "acc-1", "kind": "dépense", "amount_cents": 100,
+        "date": "2026-10-01", "method": "chèque",
+        "idempotency_key": "cle-comptable-adm-1",
+    },
+    "update_admin_entry": {
+        "tx_id": "tx-1", "expected_etag": "etag-1",
+        "idempotency_key": "cle-comptable-maj-1",
+    },
+    "clear_register_entries": {
+        "register": "admin", "tx_ids": ["tx-1"], "cleared_date": "2026-10-01",
+        "idempotency_key": "cle-comptable-cmp-1",
+    },
+    "reverse_register_entry": {
+        "register": "admin", "tx_id": "tx-1", "reason": "Erreur de saisie",
+        "idempotency_key": "cle-comptable-cp-1",
+    },
+}
 
 
 def _token_doc(scope: str, **over) -> dict:
@@ -473,24 +500,26 @@ def _token_doc(scope: str, **over) -> dict:
 
 
 @pytest.fixture()
-def accounting(monkeypatch):
-    """The dummy accounting tool, and the list of calls its handler saw."""
+def accounting_handlers(monkeypatch):
+    """The five accounting writes' handlers replaced by recorders: the
+    (tool, arguments) pairs prove a call reached its handler, and their
+    absence that a refusal came first."""
     bearer.reset_brake_state()
     calls: list = []
+    for name in tools.ACCOUNTING_WRITE_TOOLS:
+        def recorder(args, _name=name):
+            calls.append((_name, dict(args)))
+            return {"recorded": True}
 
-    def recorder(args):
-        calls.append(dict(args))
-        return {"recorded": True}
-
-    name = _dummy_accounting.register(monkeypatch, handler=recorder)
-    yield name, calls
+        monkeypatch.setattr(handlers, tools.TOOLS[name]["handler"], recorder)
+    yield calls
     bearer.reset_brake_state()
 
 
-def _client_for(monkeypatch, scope: str, **config):
+def _client_for(monkeypatch, scope: str):
     monkeypatch.setattr(store, "get_token", lambda h: _token_doc(scope))
     monkeypatch.setattr(store, "stamp_token_last_used", lambda h: None)
-    return _make_app(**config).test_client()
+    return _make_app().test_client()
 
 
 def _listed(cl) -> set:
@@ -498,207 +527,84 @@ def _listed(cl) -> set:
     return {t["name"] for t in body["result"]["tools"]}
 
 
-def test_a_write_token_neither_sees_nor_reaches_an_accounting_tool(
-    accounting, monkeypatch, caplog
+@pytest.mark.parametrize("scope", ["athena:read", f"athena:read {_RETIRED_SCOPE}"])
+def test_a_read_only_token_neither_sees_nor_reaches_an_accounting_write(
+    accounting_handlers, monkeypatch, caplog, scope
 ):
-    """By construction: athena:write never stands in for athena:comptabilite.
-    Hidden from tools/list, and a direct call is a 403 whose step-up
-    challenge names the scope it lacks — never the write scope it holds."""
-    name, calls = accounting
-    cl = _client_for(
-        monkeypatch, "athena:read athena:write", MCP_COMPTABILITE_ENABLED=True)
+    """Hidden from tools/list, and a direct call is a 403 whose step-up
+    challenge names athena:write — refused before any handler runs, each
+    refusal logged under its tool. The retired accounting string grants
+    nothing: a token carrying it is a read-only token."""
+    cl = _client_for(monkeypatch, scope)
     listed = _listed(cl)
-    assert name not in listed
-    assert listed == set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
+    assert not listed & tools.WRITE_TOOLS
+    assert "get_admin_ledger" in listed
 
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
-        resp = _call(cl, name, _dummy_accounting.call_args())
+        for rid, name in enumerate(sorted(_ACCOUNTING_CALLS), 1):
+            resp = _call(cl, name, _ACCOUNTING_CALLS[name], rid=rid)
+            assert resp.status_code == 403, name
+            assert resp.get_json()["error"] == "insufficient_scope"
+            assert 'scope="athena:write"' in resp.headers["WWW-Authenticate"]
+    assert accounting_handlers == []
+    refused = _events(caplog, "mcp_write_refused")
+    assert [(r["reason"], r["tool"]) for r in refused] == [
+        ("insufficient_scope", name) for name in sorted(_ACCOUNTING_CALLS)]
+
+
+@pytest.mark.parametrize("name", sorted(_ACCOUNTING_CALLS))
+def test_a_write_token_reaches_every_accounting_write(
+    accounting_handlers, monkeypatch, caplog, name
+):
+    """A read + write token lists each accounting write and its call is
+    dispatched to the handler, audited as a write — no other grant
+    needed."""
+    cl = _client_for(monkeypatch, "athena:read athena:write")
+    assert name in _listed(cl)
+    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
+        body = _call(cl, name, _ACCOUNTING_CALLS[name]).get_json()
+    assert body["result"]["isError"] is False
+    assert accounting_handlers == [(name, _ACCOUNTING_CALLS[name])]
+    (write,) = _events(caplog, "mcp_write")
+    assert write["tool"] == name
+    assert not _events(caplog, "mcp_write_refused")
+
+
+@pytest.mark.parametrize("narrowed", ["athena:read", f"athena:read {_RETIRED_SCOPE}"])
+@pytest.mark.parametrize("name", sorted(_ACCOUNTING_CALLS))
+def test_revalidation_stops_an_accounting_write_once_the_live_token_lost_write(
+    accounting_handlers, monkeypatch, caplog, name, narrowed
+):
+    """The write-time revalidation re-reads the LIVE token and demands the
+    tool's scope — athena:write, for the accounting writes as for every
+    write. Warm the success cache with a write grant, then narrow the stored
+    token: the cached scope still lets the call through the gate, so only
+    the revalidation can stop it — and it must, the retired accounting
+    string standing in for nothing."""
+    cl = _client_for(monkeypatch, "athena:read athena:write")
+    first = _call(cl, name, _ACCOUNTING_CALLS[name], rid=1).get_json()
+    assert first["result"]["isError"] is False
+    assert len(accounting_handlers) == 1
+
+    monkeypatch.setattr(store, "get_token", lambda h: _token_doc(narrowed))
+    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
+        resp = _call(cl, name, _ACCOUNTING_CALLS[name], rid=2)
     assert resp.status_code == 403
-    assert resp.get_json()["error"] == "insufficient_scope"
-    assert 'scope="athena:comptabilite"' in resp.headers["WWW-Authenticate"]
-    assert calls == []
+    assert 'scope="athena:write"' in resp.headers["WWW-Authenticate"]
+    assert len(accounting_handlers) == 1                 # the second never ran
+    (auth,) = _events(caplog, "mcp_auth_failure")
+    assert auth["reason"] == "write_revalidation_failed"
+    assert auth["tool"] == name
     (refused,) = _events(caplog, "mcp_write_refused")
     assert refused["reason"] == "insufficient_scope"
     assert refused["tool"] == name
 
 
-def test_the_accounting_switch_hides_and_refuses_even_with_every_scope(
-    accounting, monkeypatch, caplog
-):
-    """MCP_COMPTABILITE_ENABLED=false (its default — pinned in
-    test_mcp_tools): gone from tools/list, refused at tools/call BEFORE the
-    handler, and the refusal names ITS switch — not the write one, which is
-    on. Nothing else moves."""
-    name, calls = accounting
-    cl = _client_for(monkeypatch, _ALL_SCOPES, MCP_COMPTABILITE_ENABLED=False)
-    listed = _listed(cl)
-    assert name not in listed
-    # The whole accounting subset — the real six and the dummy — and
-    # nothing else.
-    assert listed == set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
-
-    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
-        body = _call(cl, name, _dummy_accounting.call_args()).get_json()
-    assert body["error"]["code"] == -32602
-    assert "MCP_COMPTABILITE_ENABLED" in body["error"]["message"]
-    assert "MCP_WRITE_ENABLED" not in body["error"]["message"]
-    assert calls == []
-    (refused,) = _events(caplog, "mcp_write_refused")
-    assert refused["reason"] == "comptabilite_disabled"
-    assert refused["tool"] == name
-
-
-def test_the_write_switch_stops_an_accounting_tool_too(
-    accounting, monkeypatch, caplog
-):
-    """The master switch: writes off → the accounting tool is off even with
-    its own switch on, and the refusal names MCP_WRITE_ENABLED."""
-    name, calls = accounting
-    cl = _client_for(
-        monkeypatch, _ALL_SCOPES,
-        MCP_WRITE_ENABLED=False, MCP_COMPTABILITE_ENABLED=True)
-    assert _listed(cl) == set(tools.TOOLS) - tools.WRITE_TOOLS
-    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
-        body = _call(cl, name, _dummy_accounting.call_args()).get_json()
-    assert body["error"]["code"] == -32602
-    assert "MCP_WRITE_ENABLED" in body["error"]["message"]
-    assert calls == []
-    (refused,) = _events(caplog, "mcp_write_refused")
-    assert refused["reason"] == "write_disabled"
-
-
-def test_an_accounting_grant_reaches_its_tool_and_nothing_else(
-    accounting, monkeypatch
-):
-    """read + comptabilite, both switches on: the accounting tool is listed
-    and dispatched, and NOT ONE general write tool is visible — the two
-    grants are independent in both directions."""
-    name, calls = accounting
-    cl = _client_for(
-        monkeypatch, "athena:read athena:comptabilite",
-        MCP_COMPTABILITE_ENABLED=True)
-    listed = _listed(cl)
-    assert listed == (set(tools.TOOLS) - tools.WRITE_TOOLS) | tools.ACCOUNTING_TOOLS
-    assert name in listed and "get_admin_ledger" in listed
-    body = _call(cl, name, _dummy_accounting.call_args()).get_json()
-    assert body["result"]["isError"] is False
-    assert calls == [_dummy_accounting.call_args()]
-    # And a general write stays out of reach of this grant.
-    resp = _call_write(cl, rid=3)
-    assert resp.status_code == 403
-    assert 'scope="athena:write"' in resp.headers["WWW-Authenticate"]
-
-
-@pytest.mark.parametrize("scope, switch, accounting_text", [
-    ("athena:read athena:comptabilite", True, True),
-    (_ALL_SCOPES, True, True),
-    # The switch off: the token sees no accounting tool, so it is not told
-    # about them either.
-    (_ALL_SCOPES, False, False),
-    ("athena:read athena:write", True, False),
-    ("athena:read", True, False),
-])
-def test_initialize_describes_the_accounting_tools_only_to_a_token_that_sees_them(
-    monkeypatch, scope, switch, accounting_text
-):
-    """Lot 5b: the INSTRUCTIONS are chosen per token — the accounting
-    variant (the ACCOUNTING family, get_admin_ledger, the promises the grant
-    keeps) exactly when the token holds athena:comptabilite AND the switch
-    is on, the one state in which it can list an accounting tool."""
-    bearer.reset_brake_state()
-    cl = _client_for(monkeypatch, scope, MCP_COMPTABILITE_ENABLED=switch)
-    instructions = _initialize(cl, "2025-06-18")["instructions"]
-    expected = (endpoint.INSTRUCTIONS_COMPTABILITE if accounting_text
-                else endpoint.INSTRUCTIONS)
-    assert instructions == expected
-    assert ("`record_trust_entry`" in instructions) is accounting_text
-    assert ("`get_admin_ledger`" in instructions) is accounting_text
-    bearer.reset_brake_state()
-
-
-# Lot 5, step 5 — the numbers the lawyer reads off `tools/list` in the
-# train (DEPLOYMENT.md §15 « Lot 5 »), LITERAL on purpose: every other
-# assertion of this module derives its set from the registry, and a derived
-# check passes whatever the registry holds. 88 = 32 reads + 56 writes
-# (86 → 88 on 2026-09-30, deliberately: the two bulk creators
-# create_time_entries_bulk / create_expenses_bulk, under athena:write); the
-# six accounting tools (the read get_admin_ledger and the five ACCOUNTING
-# writes) appear ONLY to a token holding athena:comptabilite while
-# MCP_COMPTABILITE_ENABLED is on — and the five writes only while
-# MCP_WRITE_ENABLED is on too (the master switch).
-@pytest.mark.parametrize("scope, write_on, compta_on, expected", [
-    ("athena:read", True, True, 31),
-    ("athena:read athena:write", True, True, 82),
-    (_ALL_SCOPES, True, True, 88),
-    (_ALL_SCOPES, True, False, 82),
-    ("athena:read athena:comptabilite", True, True, 37),
-    ("athena:read athena:comptabilite", True, False, 31),
-    (_ALL_SCOPES, False, True, 32),
-    (_ALL_SCOPES, False, False, 31),
-])
-def test_tools_list_counts_per_token_are_the_train_s_checklist(
-    monkeypatch, scope, write_on, compta_on, expected
-):
-    bearer.reset_brake_state()
-    assert len(tools.TOOLS) == 88 and len(tools.ACCOUNTING_TOOLS) == 6
-    cl = _client_for(monkeypatch, scope, MCP_WRITE_ENABLED=write_on,
-                     MCP_COMPTABILITE_ENABLED=compta_on)
-    listed = _listed(cl)
-    assert len(listed) == expected
-    sees_accounting = "athena:comptabilite" in scope and compta_on
-    assert ("get_admin_ledger" in listed) is sees_accounting
-    assert (listed >= tools.ACCOUNTING_WRITE_TOOLS) is (sees_accounting and write_on)
-    if not sees_accounting:
-        assert not listed & tools.ACCOUNTING_TOOLS
-    bearer.reset_brake_state()
-
-
-def test_exactly_the_six_accounting_tools_hide_behind_scope_and_switch(monkeypatch):
-    """The same token, the accounting switch flipped: the difference is the
-    six accounting tools, by name — nothing else appears or vanishes."""
-    bearer.reset_brake_state()
-    on = _listed(_client_for(monkeypatch, _ALL_SCOPES, MCP_COMPTABILITE_ENABLED=True))
-    off = _listed(_client_for(monkeypatch, _ALL_SCOPES, MCP_COMPTABILITE_ENABLED=False))
-    assert on - off == {
-        "get_admin_ledger", "record_trust_entry", "record_admin_entry",
-        "update_admin_entry", "clear_register_entries", "reverse_register_entry",
-    }
-    assert off <= on
-    bearer.reset_brake_state()
-
-
-def test_revalidation_demands_the_accounting_scope_not_the_write_one(
-    accounting, monkeypatch, caplog
-):
-    """The write-time revalidation re-reads the LIVE token and demands the
-    tool's OWN scope. Warm the success cache with an accounting grant, then
-    narrow the stored token to read + write: the cached scope would still
-    let the call through the gate, so only the revalidation can stop it —
-    and it must, because athena:write does not stand in for comptabilite."""
-    name, calls = accounting
-    cl = _client_for(
-        monkeypatch, "athena:read athena:comptabilite",
-        MCP_COMPTABILITE_ENABLED=True)
-    first = _call(cl, name, _dummy_accounting.call_args(), rid=1).get_json()
-    assert first["result"]["isError"] is False
-    assert len(calls) == 1
-
-    monkeypatch.setattr(
-        store, "get_token", lambda h: _token_doc("athena:read athena:write"))
-    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
-        resp = _call(cl, name, _dummy_accounting.call_args(), rid=2)
-    assert resp.status_code == 403
-    assert 'scope="athena:comptabilite"' in resp.headers["WWW-Authenticate"]
-    assert len(calls) == 1                       # the second never ran
-    (auth,) = _events(caplog, "mcp_auth_failure")
-    assert auth["reason"] == "write_revalidation_failed"
-    assert auth["tool"] == name
-
-
 def test_revalidate_for_write_checks_the_scope_it_is_given(monkeypatch):
     """Unit view of the same rule: the function is handed the tool's scope
     and checks THAT one against the live document — a token carrying every
-    other scope is refused."""
+    other scope is refused. Every write's scope is athena:write since
+    2026-10-05, and the retired accounting string never stands in for it."""
     from flask import g
 
     app = _make_app()
@@ -707,16 +613,77 @@ def test_revalidate_for_write_checks_the_scope_it_is_given(monkeypatch):
     with app.test_request_context("/mcp"):
         g.mcp_token_hash = "h" * 64
         with pytest.raises(bearer.ScopeRequired) as exc:
-            bearer.revalidate_for_write("athena:comptabilite", "zz_test")
-        assert exc.value.scope == "athena:comptabilite"
+            bearer.revalidate_for_write("test:other", "zz_test")
+        assert exc.value.scope == "test:other"
         assert exc.value.tool == "zz_test"
+        bearer.revalidate_for_write("athena:write", "record_trust_entry")  # passes
         bearer.revalidate_for_write("athena:write", "create_note")  # passes
 
     monkeypatch.setattr(
-        store, "get_token", lambda h: _token_doc(_ALL_SCOPES))
+        store, "get_token", lambda h: _token_doc(f"athena:read {_RETIRED_SCOPE}"))
     with app.test_request_context("/mcp"):
         g.mcp_token_hash = "h" * 64
-        bearer.revalidate_for_write("athena:comptabilite", "zz_test")  # passes
+        with pytest.raises(bearer.ScopeRequired) as exc:
+            bearer.revalidate_for_write("athena:write", "record_trust_entry")
+        assert exc.value.scope == "athena:write"
+        assert exc.value.tool == "record_trust_entry"
+
+
+@pytest.mark.parametrize("scope", [
+    "athena:read", "athena:read athena:write", f"athena:read {_RETIRED_SCOPE}",
+])
+def test_initialize_tells_every_token_the_same_instructions(monkeypatch, scope):
+    """ONE text for every token since 2026-10-05: the per-token accounting
+    variant left with the athena:comptabilite scope. Every token is told of
+    the ACCOUNTING family and the administration ledger's read — a
+    read-only one too, as it always was of every other write family, under
+    the sentence that says when write tools appear."""
+    bearer.reset_brake_state()
+    cl = _client_for(monkeypatch, scope)
+    instructions = _initialize(cl, "2025-06-18")["instructions"]
+    assert instructions == endpoint.INSTRUCTIONS
+    assert "ACCOUNTING: `record_trust_entry`" in instructions
+    assert "`get_admin_ledger`" in instructions
+    assert ("Write tools appear only when the lawyer granted the "
+            "`athena:write` scope.") in instructions
+    bearer.reset_brake_state()
+
+
+# The numbers the lawyer reads off `tools/list` in the deploy train
+# (DEPLOYMENT.md §15), LITERAL on purpose: every other assertion of this
+# module derives its set from the registry, and a derived check passes
+# whatever the registry holds. 88 = 32 reads + 56 writes (86 → 88 on
+# 2026-09-30, deliberately: the two bulk creators create_time_entries_bulk /
+# create_expenses_bulk). Since 2026-10-05 — the separate accounting scope
+# and every MCP kill switch removed — there are two token shapes: a
+# read-only token lists the 32 reads, get_admin_ledger among them; a
+# read + write token lists all 88, the five ACCOUNTING writes among them. A
+# token still carrying the retired accounting string lists no more.
+@pytest.mark.parametrize("scope, expected", [
+    ("athena:read", 32),
+    ("athena:read athena:write", 88),
+    (f"athena:read {_RETIRED_SCOPE}", 32),
+    (f"athena:read athena:write {_RETIRED_SCOPE}", 88),
+])
+def test_tools_list_counts_per_token_are_the_train_s_checklist(
+    monkeypatch, scope, expected
+):
+    bearer.reset_brake_state()
+    assert len(tools.TOOLS) == 88 and len(tools.WRITE_TOOLS) == 56
+    # The five accounting writes, by name — the set the recorder tests above
+    # dispatch, every one of them.
+    assert tools.ACCOUNTING_WRITE_TOOLS == set(_ACCOUNTING_CALLS) == {
+        "record_trust_entry", "record_admin_entry", "update_admin_entry",
+        "clear_register_entries", "reverse_register_entry",
+    }
+    listed = _listed(_client_for(monkeypatch, scope))
+    assert len(listed) == expected
+    assert "get_admin_ledger" in listed
+    writes = "athena:write" in scope.split()
+    assert (listed >= tools.ACCOUNTING_WRITE_TOOLS) is writes
+    if not writes:
+        assert not listed & tools.WRITE_TOOLS
+    bearer.reset_brake_state()
 
 
 def test_tools_call_unknown_tool(client):
@@ -1366,10 +1333,16 @@ def test_every_refusal_reason_is_a_stable_code_and_documented():
     # one is how a message fragment ends up in a log field.
     assert not found["non_literal"], found["non_literal"]
     reasons = found["raised"] | found["logged"] | {tools.DEFAULT_REFUSAL_REASON}
-    # Non-vacuous: the sweep must see every path this commit wires.
+    # Non-vacuous: the sweep must see every path this commit wires — each of
+    # its three sources at least once (the endpoint's literal log line, its
+    # `_log_write_refused`, a ToolArgumentError). The two switch refusals
+    # (`write_disabled`, `comptabilite_disabled`) left with the switches on
+    # 2026-10-05; two refusals of the write protocol stand in — the
+    # in-flight key and the stale etag INSTRUCTIONS tell the model about.
+    assert found["logged"] >= {"insufficient_scope", "schema_invalid"}
     assert reasons >= {
-        "insufficient_scope", "write_disabled", "comptabilite_disabled",
-        "schema_invalid", "argument_refused", "idempotency_conflict",
+        "insufficient_scope", "schema_invalid", "argument_refused",
+        "idempotency_conflict", "idempotency_in_flight", "stale_etag",
     }, reasons
     bad = sorted(r for r in reasons if not _REASON_CODE.match(str(r)))
     assert not bad, bad

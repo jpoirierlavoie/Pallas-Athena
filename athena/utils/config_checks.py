@@ -116,14 +116,14 @@ def check_runtime_env(rpt: Report, is_prod: bool) -> None:
     else:
         rpt.emit(OK, "REQUIRE_MFA=true", var="REQUIRE_MFA")
 
-    if os.environ.get("MCP_ENABLED", "true").lower() == "true":
-        if not os.environ.get("MCP_CANONICAL_ORIGIN", "") and is_prod:
-            rpt.emit(
-                WARN,
-                "MCP_ENABLED=true but MCP_CANONICAL_ORIGIN is unset (defaults "
-                "to the owner's domain in config.py)",
-                var="MCP_CANONICAL_ORIGIN",
-            )
+    # The connector is always served (its kill switches left on 2026-10-05).
+    if not os.environ.get("MCP_CANONICAL_ORIGIN", "") and is_prod:
+        rpt.emit(
+            WARN,
+            "MCP_CANONICAL_ORIGIN is unset (defaults to the owner's domain "
+            "in config.py)",
+            var="MCP_CANONICAL_ORIGIN",
+        )
 
 
 # ── 2. Secret Manager ────────────────────────────────────────────────────

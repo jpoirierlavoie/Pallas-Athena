@@ -1,5 +1,7 @@
-"""The texts the finitions corrected (truth-3, truth-4, truth-5, truth-6,
-truth-7, truth-9) — each once stated something the code no longer does.
+"""The texts the finitions corrected (truth-3, truth-5, truth-6, truth-7,
+truth-9) — each once stated something the code no longer does. (truth-4's
+test — the app.yaml comment of the write switch — left on 2026-10-05 with
+the MCP kill switches it read.)
 
 Docs are read as files: a deploy recipe, an app.yaml comment, a README or a
 Known Gotcha is what an operator or a reader acts on, and each of these
@@ -39,22 +41,6 @@ def test_the_lot_2a_train_describes_the_rename_check_the_screen_shows():
     assert "checked against the dossiers its files came from" in text
 
 
-def test_the_write_switch_never_claims_to_turn_the_accounting_read_off(monkeypatch):
-    """truth-4: app.yaml said « accounting is off whatever this says » with
-    MCP_WRITE_ENABLED false; the accounting READ answers to its own switch
-    alone — and the code says so."""
-    # Comment lines joined: the « # » markers dropped.
-    yaml = " ".join(_flat(_ATHENA / "app.yaml").replace(" # ", " ").split())
-    assert "accounting is off whatever this says" not in yaml
-    assert "answers to THIS switch alone" in yaml
-    assert "A read tool is never switched off here" not in (
-        tools.unavailable_reason.__doc__ or "")
-    monkeypatch.setattr(tools, "write_enabled", lambda: False)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
-    assert tools.unavailable_reason("get_admin_ledger") is None
-    assert tools.unavailable_reason("record_admin_entry") == tools.WRITE_SWITCH
-
-
 def test_the_phase_history_records_lot_0b_and_the_fixes_of_lot_4():
     """truth-5: lot 0b's web-visible changes lived only in DEPLOYMENT §15,
     and the lot 4 entry still said three writes read fail-open."""
@@ -72,15 +58,16 @@ def test_the_fee_payment_warning_names_the_accounting_tools():
     assert "d'honoraires » inscrit au fidéicommis — dans l'application, ou" in src
 
 
-def test_the_env_example_and_the_readme_describe_the_live_accounting_scope():
-    """truth-7: the accounting scope carries six tools since lot 5b — never
-    « dormant » — and there are more than 22 write tools."""
+def test_the_env_example_and_the_readme_never_call_the_accounting_tools_dormant():
+    """truth-7: the accounting tools are live since lot 5b — never
+    « dormant » — and there are more than 22 write tools. (Its pin of « six
+    accounting tools » — the separate scope's count in .env.example — left
+    with that scope and its switch on 2026-10-05.)"""
     env = _flat(_REPO / ".env.example")
     readme = _flat(_REPO / "README.md")
     assert "the 22 write tools" not in env
     assert "dormant until a tool carries" not in env
     assert "dormant until a tool carries it" not in readme
-    assert "six accounting tools" in env
     assert "never a payment" in readme and "templates" in readme
 
 
@@ -131,13 +118,17 @@ def test_d19_the_manual_train_is_stated_as_the_only_control():
 
 
 def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
-    """D22 (2026-09-29): the branch is pushed ONCE, under one consent train;
-    the accounting switch flips later, after a supervised pilot. §15 carries
-    ONE ordered runbook for it, ahead of the per-lot sections it references
-    — and its order is the one that avoids an outage or a silent grant:
-    the designation and the index BEFORE the push, the revocation before
-    the push, the push with the accounting switch off, the re-consent and
-    80 tools, and only later 86. Fails on 75efb45."""
+    """D22 (2026-09-29): the branch is pushed ONCE, under one consent train.
+    §15 carries ONE ordered runbook for it, ahead of the per-lot sections it
+    references — and its order is the one that avoids an outage or a silent
+    grant: the designation and the index BEFORE the push, the revocation
+    before the push, the push, the re-consent and 80 tools. Fails on
+    75efb45.
+
+    REWRITTEN 2026-10-05: the pins of the switch values at the push and of
+    the later accounting train (its arming, its 86 tools, its pilot, the
+    emergency switches) left with the MCP kill switches and the separate
+    accounting scope — the lawyer's decision."""
     text = _flat(_REPO / "DEPLOYMENT.md")
     runbook = _section_15(text)
     head = "**Déploiement unique (D22) — the whole MCP write-expansion program"
@@ -155,7 +146,6 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
         "`f69663e`",
         "python -m scripts.revoke_mcp_tokens",
         "*ONE push of the merged branch to `main`*",
-        '`MCP_WRITE_ENABLED: "true"` and `MCP_COMPTABILITE_ENABLED: "false"`',
         "*Re-add the connector and READ the new screen before ticking",
         "**80** tools (31 read, 49 write)",
         "*DavX5, on the wire then on the device*",
@@ -164,10 +154,6 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
         "*Word opens every generated document WITHOUT repair*",
         "*The upload ticket, once*",
         "*No invoice number burned*",
-        '`MCP_COMPTABILITE_ENABLED: "true"` in `app.yaml`, and deploy',
-        "**86** tools (32 read, 54 write)",
-        "The supervised pilot on a TEST administration account",
-        "**Emergency switches**",
     ]
     positions = [body.index(fragment) for fragment in ordered]
     for (a, pa), (b, pb) in zip(zip(ordered, positions),
@@ -181,10 +167,13 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
     # SHIPPED IT. REWRITTEN deliberately (2026-09-30): the bulk creators
     # came after the D22 push, under their own train (« Bulk creators »,
     # pinned below) — the runbook of a past release keeps its counts, and
-    # the registry minus what came after must still match them.
+    # the registry minus what came after must still match them. Rewritten
+    # again 2026-10-05: what a write token did not see THEN — the six tools
+    # of the separate accounting scope — is named here, the registry no
+    # longer carrying that scope.
     after_d22 = _AFTER_D22
     assert after_d22 <= tools.WRITE_TOOLS
-    visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS - after_d22
+    visible = set(tools.TOOLS) - _ACCOUNTING_SCOPE_UNTIL_2026_10_05 - after_d22
     assert len(visible) == 80 and len(visible & tools.WRITE_TOOLS) == 49
     assert len(set(tools.TOOLS) - after_d22) == 86
     assert len(tools.WRITE_TOOLS - after_d22) == 54
@@ -192,6 +181,13 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
 
 # The write tools shipped AFTER the D22 release, each under its own train.
 _AFTER_D22 = frozenset({"create_time_entries_bulk", "create_expenses_bulk"})
+
+# The six tools the separate `athena:comptabilite` scope carried from lot 5b
+# until 2026-10-05, when the lawyer removed it: the ACCOUNTING family's five
+# writes and its read. A past release's runbook counts what a token saw THEN
+# — a write token without that scope saw none of the six.
+_ACCOUNTING_SCOPE_UNTIL_2026_10_05 = (
+    tools.ACCOUNTING_WRITE_TOOLS | {"get_admin_ledger"})
 
 
 def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts():
@@ -205,7 +201,10 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
             "`create_expenses_bulk`")
     assert head in runbook
     body = runbook[runbook.index(head):runbook.index("**Cold starts:**")]
-    visible = set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
+    # What a write token saw AT THAT RELEASE: the separate accounting scope
+    # still held six tools back (removed 2026-10-05 — a write token sees
+    # them all since; the runbook of a past release keeps its counts).
+    visible = set(tools.TOOLS) - _ACCOUNTING_SCOPE_UNTIL_2026_10_05
     reads = len(visible - tools.WRITE_TOOLS)
     writes = len(visible & tools.WRITE_TOOLS)
     all_reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
@@ -245,8 +244,9 @@ def test_review_e3_the_accounting_index_line_says_what_its_tools_say():
     accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
     assert "what the bank shows" not in accounting.instructions_en
     assert "movements that HAPPENED at the bank" in accounting.instructions_en
-    assert "movements that HAPPENED at the bank" in (
-        endpoint.INSTRUCTIONS_COMPTABILITE)
+    # The ONE text every token reads since 2026-10-05 (the accounting
+    # variant left with the separate scope).
+    assert "movements that HAPPENED at the bank" in endpoint.INSTRUCTIONS
     for name in ("record_trust_entry", "record_admin_entry"):
         assert "HAPPENED" in tools.TOOLS[name]["description"], name
     deployment = _flat(_REPO / "DEPLOYMENT.md")
@@ -266,7 +266,8 @@ def test_review_e3_the_d22_runbook_writes_only_what_it_says():
     head = "**Déploiement unique (D22) — the whole MCP write-expansion program"
     body = runbook[runbook.index(head):runbook.index("**Storage identity (lot 0a")]
     assert "the re-consents into step 7." not in body
-    assert "lot 5's arming, revocation and re-consent are steps 16 and 17" in body
+    # (Its positive half — lot 5's re-consent as step 17 — pinned the later
+    # accounting train, obsolete since the switches left on 2026-10-05.)
     assert "on TWO test dossiers" in body
     step_9 = body[body.index("*DavX5, on the wire then on the device*"):
                   body.index("*A phone edit*")]
@@ -312,8 +313,11 @@ def test_final_check_the_finitions_and_lot_5_texts_follow_the_d22_runbook():
 
     head = "**Déploiement unique (D22) — the whole MCP write-expansion program"
     body = runbook[runbook.index(head):runbook.index("**Storage identity (lot 0a")]
-    step_15 = body[body.index("*Tell the lawyer*"):
-                   body.index("**Later — the accounting switch")]
+    # Step 15 ends where the later accounting train began — a heading the
+    # removal of that train (2026-10-05) may take with it: then the runbook
+    # ends there.
+    end = body.find("**Later — the accounting switch")
+    step_15 = body[body.index("*Tell the lawyer*"):end if end != -1 else len(body)]
     assert "python -m scripts.exporter_competence_analyse" in step_15
     assert "« Analyse documentaire »" in step_15
 

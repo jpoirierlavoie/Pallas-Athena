@@ -1,8 +1,9 @@
-{# Family ACCOUNTING (mcp/disclosure.FAMILIES, key "accounting") — lot 5b,
-   scope athena:comptabilite: record_trust_entry, record_admin_entry,
-   update_admin_entry, clear_register_entries, reverse_register_entry, and
-   the read get_admin_ledger. Rendered inside the accounting block only
-   (consent.html), which renders only while its box is offered. The D14
+{# Family ACCOUNTING (mcp/disclosure.FAMILIES, key "accounting") — lot 5b:
+   record_trust_entry, record_admin_entry, update_admin_entry,
+   clear_register_entries, reverse_register_entry. Rendered inside the WRITE
+   block since 2026-10-05, when the lawyer removed the separate
+   athena:comptabilite scope, its box and its switch; the read
+   get_admin_ledger moved to the read paragraph of consent.html. The D14
    rules are stated HERE, beside the capability they bound — each one is the
    MODEL's (models/trust, models/admin_ledger, models/fee_payment), so the
    application refuses exactly what this screen says the connector cannot
@@ -22,11 +23,6 @@
    or your firm as the firm profile names them; an entry's objet agrees with
    its sens — each the model's rule, web included. #}
 <p class="mt-3">
-  <strong>Lire</strong> le registre d'administration&nbsp;: les comptes
-  d'opérations et les cartes de crédit, leurs soldes, leur dernière
-  conciliation et leurs écritures.
-</p>
-<p class="mt-2">
   <strong>Inscrire au fidéicommis</strong> des recettes et des déboursés
   réellement survenus à la banque, à leur date, leur objet concordant avec
   leur sens. Un déboursé ne puise que

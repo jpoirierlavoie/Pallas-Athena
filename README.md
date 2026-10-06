@@ -27,17 +27,20 @@ GST/QST, hearings, tasks, case protocols, notes, procedural documents, and
 - **Gabarits** — user-managed Word templates filled from case data
 - **DavX5 sync** (CardDAV / CalDAV / VTODO / VJOURNAL) and an **MCP connector**
   exposing data to Claude — read-only by default. Writes need the
-  `athena:write` grant: notes, tasks, events, time, disbursements, contacts
-  and their representations and compliance inscriptions, dossiers with
-  their status and party links, corrections, reclassifications, imports,
-  document analysis, the agenda (editing tasks, notes, events and the
-  théorie de la cause, reopening a task, the case protocol, recurring
-  series, deciding a Bookings request), files and Word projects, templates,
-  and invoices (create, draft edits, status, void) — never a deletion, and
-  never a payment: a payment exists only as a register entry, under the
-  separate `athena:comptabilite` grant (six tools, off unless
-  `MCP_COMPTABILITE_ENABLED` is true). Each grant is ticked on the consent
-  screen
+  `athena:write` grant, ticked on the consent screen: notes, tasks, events,
+  time, disbursements, contacts and their representations and compliance
+  inscriptions, dossiers with their status and party links, corrections,
+  reclassifications, imports, document analysis, the agenda (editing tasks,
+  notes, events and the théorie de la cause, reopening a task, the case
+  protocol, recurring series, deciding a Bookings request), files and Word
+  projects, templates, invoices (create, draft edits, status, void), and
+  the trust and administration registers (an entry recorded, cleared or
+  reversed; an administration entry corrected while it stays editable) —
+  never a deletion, and never a payment other than as a register entry (an
+  administration encaissement or a trust fee payment, which writes the
+  payment onto its invoice). There is no kill switch: to stop the
+  connector, revoke its tokens —
+  `cd athena && python -m scripts.revoke_mcp_tokens`
 
 ## Tech stack
 

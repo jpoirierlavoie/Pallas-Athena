@@ -1,4 +1,4 @@
-"""The claude.ai plugin « athena » (skill 1.0.0) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 1.1.0) — the deploy gate.
 
 ``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
 source (``plugin/athena/`` at the repo root) and the tool registry.
@@ -16,9 +16,11 @@ files — what Claude reads — against the registry:
 * no ``{{GEN:…}}`` is left, none of the retired strings is back
   (``mcp__``, the draft tools, tool counts), ``dry_run`` stands only on
   its Noyau line, ``.mcp.json`` names the connector « Athena »;
-* every recipe carries its fields; the accounting tools are named only in
-  ``comptabilite.md`` and in the index's grant section; the index lists
-  every tool exactly once;
+* every recipe carries its fields; a Charger line is the recipe's own
+  calls, except the registers recipe's, which the registry writes (the
+  read the accounting writes take their etag from, then the ACCOUNTING
+  family); the index lists every tool exactly once — the reads, then each
+  write on its own family's line;
 * the build is deterministic, ``--check`` sees drift, and the exporter
   never imports ``models``.
 
@@ -266,6 +268,14 @@ def test_plugin_json_carries_the_version(shipped):
     assert data["version"] == ex.VERSION
     assert list(data)[:2] == ["name", "version"]
     assert ex.nom_archive() == f"athena-{ex.VERSION}.plugin"
+
+
+def test_readme_names_the_version_it_documents(shipped):
+    """The README is handwritten: its title and the archive its recipe
+    builds follow ``VERSION``, or a bump leaves them behind."""
+    readme = shipped[ex.README].decode("utf-8")
+    assert readme.startswith(f"# Athena — plugin {ex.VERSION}\n")
+    assert ex.nom_archive() in readme
 
 
 def test_every_budget_names_a_shipped_file():
@@ -526,11 +536,28 @@ def test_every_recipe_carries_its_fields(shipped):
     assert count >= 4 + len(ex.RECETTES)
 
 
+def _registry_charger_recipes() -> set:
+    """``(path, heading)`` of the recipes whose Charger line the REGISTRY
+    writes — ``{{GEN:outils_comptables}}`` in their source — rather than
+    their own calls."""
+    found = set()
+    for path in (ex.SKILL, *ex.RECETTES):
+        heading = None
+        for line in ex._lire_texte(ex.SOURCE / path).split("\n"):
+            if line.startswith("#"):
+                heading = line
+            elif line == "{{GEN:outils_comptables}}":
+                found.add((path, heading))
+    return found
+
+
 def test_charger_lines_are_the_recipe_calls(shipped):
     """A Charger line lists exactly the tools the recipe's Déclencheur and
     Appels lines name, plus those of a sister recipe they cite (« D1 pour
     les parties ») — never one only its Arrêt or À éviter line names, which
-    are the calls to AVOID."""
+    are the calls to AVOID. The registers recipe's line is the registry's
+    (next test); it must still load every tool its own lines call."""
+    from_registry = _registry_charger_recipes()
     by_file = {}
     for path, heading, body in _recipes(shipped):
         called = " ".join(line for line in body
@@ -544,16 +571,14 @@ def test_charger_lines_are_the_recipe_calls(shipped):
         rid = re.match(r"#+ ((?:Doc|[RFDNA])\d+)\b", heading)
         by_file.setdefault(path, []).append(
             (heading, rid.group(1) if rid else "", own, called,
-             re.findall(r"`([^`]+)`", charger), charger))
+             re.findall(r"`([^`]+)`", charger)))
     problems = []
     for path, recipes in by_file.items():
-        own_of = {rid: own for _, rid, own, _, _, _ in recipes if rid}
-        for heading, rid, own, called, names, charger in recipes:
-            if "Comptabilité" in charger:
-                # The accounting grant's own line: generated from the
-                # registry, and its tools appear in no Appels on purpose.
-                assert path == ex.COMPTABILITE
-                assert names == ex.outils_comptables()
+        own_of = {rid: own for _, rid, own, _, _ in recipes if rid}
+        for heading, rid, own, called, names in recipes:
+            if (path, heading) in from_registry:
+                problems += [(path, heading, f"{tool} called, not loaded")
+                             for tool in own if tool not in names]
                 continue
             allowed = list(own)
             for other, tools_of in own_of.items():
@@ -566,6 +591,25 @@ def test_charger_lines_are_the_recipe_calls(shipped):
     assert problems == []
 
 
+def test_registers_recipe_loads_the_accounting_family(shipped):
+    """The registers recipe's Charger line is DERIVED from the registry: the
+    read the accounting writes take their etag from, then the ACCOUNTING
+    family in its order. Ordinary tools since 2026-10-05 — a write token
+    sees them all —, so the line is a plain Charger line, and an accounting
+    tool the registry adds joins it with no edit to the recipe."""
+    recipes = _registry_charger_recipes()
+    assert len(recipes) == 1
+    ((path, heading),) = recipes
+    assert path == ex.COMPTABILITE
+    family = next(f for f in disclosure.FAMILIES if f.key == "accounting")
+    expected = ["get_admin_ledger", *family.tools]
+    assert tools.ACCOUNTING_WRITE_TOOLS <= set(expected)
+    assert ex.outils_comptables() == expected
+    lines = shipped[path].decode("utf-8").split("\n")
+    assert lines[lines.index(heading) + 1] == (
+        "- **Charger** : " + ", ".join(f"`{name}`" for name in expected))
+
+
 def test_pinned_verbs_cover_the_registry():
     """A new verb joins the pin, so a later rename of its tool is caught."""
     assert {name.split("_", 1)[0] for name in tools.TOOLS} <= _PINNED_VERBS
@@ -575,13 +619,14 @@ def test_seule_application_is_the_registry_off_core(shipped):
     """Every off-core promise is classified (a new one fails the build), the
     selected ones are shipped, and the consent screen's deixis is gone."""
     text = shipped[ex.SKILL].decode("utf-8")
-    off_core = {n.key for n in disclosure.general_nevers() if not n.in_core}
+    off_core = {n.key for n in disclosure.NEVERS if not n.in_core}
     assert off_core == set(ex.SEULE_APPLICATION) | set(ex.HORS_SEULE_APPLICATION)
+    assert not set(ex.SEULE_APPLICATION) & set(ex.HORS_SEULE_APPLICATION)
     lines = ex.bloc_seule_application()
     assert len(lines) == len(ex.SEULE_APPLICATION)
     for line in lines:
         assert f"{line}\n" in text
-    for never in disclosure.general_nevers():
+    for never in disclosure.NEVERS:
         if never.in_core:
             assert ex._texte_sans_balisage(never.fr) not in text
     assert "<strong>" not in text and "&nbsp;" not in text
@@ -589,33 +634,24 @@ def test_seule_application_is_the_registry_off_core(shipped):
         assert deixis not in text
 
 
-def test_accounting_tools_only_in_their_two_places(shipped):
-    accounting = sorted(tools.ACCOUNTING_TOOLS)
-    assert accounting
-    pattern = re.compile(r"(?<![a-z0-9_])(" + "|".join(accounting) + r")(?![a-z0-9_])")
-    stray = []
-    for path, text in _md_texts(shipped).items():
-        if path == ex.COMPTABILITE:
-            continue
-        if path == ex.INDEX:
-            head, _, _ = text.partition("\n## Grant Comptabilité\n")
-            stray += [(path, m.group(1)) for m in pattern.finditer(head)]
-            continue
-        stray += [(path, m.group(1)) for m in pattern.finditer(text)]
-    assert stray == []
-
-
 def test_index_lists_every_tool_exactly_once(shipped):
+    """Two sections and nothing else: every read once under « Lecture », in
+    the registry's order; every write once, on its own family's line."""
     text = shipped[ex.INDEX].decode("utf-8")
     listed = [m.group(1) for m in re.finditer(r"`([a-z][a-z0-9_]*)[(`]", text)
               if m.group(1) in tools.TOOLS]
     assert sorted(listed) == sorted(tools.TOOLS)
-    head, _, grant = text.partition("\n## Grant Comptabilité\n")
-    assert grant
-    for name in tools.ACCOUNTING_TOOLS:
-        assert f"`{name}" in grant
-    for family in disclosure.families_for(disclosure.SCOPE_WRITE):
-        assert f"**{family.label}**" in head
+    assert re.findall(r"^## .*$", text, re.M) == [
+        "## Lecture", "## Écriture, par famille"]
+    reads, _, writes = text.partition("\n## Écriture, par famille\n")
+    assert re.findall(r"^- `([a-z][a-z0-9_]*)[(`]", reads, re.M) == [
+        name for name in tools.TOOLS if name not in tools.WRITE_TOOLS]
+    for family in disclosure.FAMILIES:
+        if not family.tools:
+            continue
+        line = next(row for row in writes.split("\n")
+                    if row.startswith(f"- **{family.label}** : "))
+        assert re.findall(r"`([a-z][a-z0-9_]*)[(`]", line) == list(family.tools)
 
 
 def test_index_flags_match_the_registry(shipped):
@@ -665,6 +701,30 @@ def test_charger_ignores_the_calls_to_avoid():
     )
     out = ex.remplir("x.md", source)
     assert "- **Charger** : `get_agenda`\n" in out
+
+
+def test_registers_charger_never_loses_its_read_in_silence(monkeypatch):
+    """No etag reader left, a write named as one, or no ACCOUNTING family:
+    the build refuses rather than ship a registers line that loads writes
+    nothing can call (or loads a write as if it were the read)."""
+    original = tools.TOOLS
+    writes = sorted(tools.ACCOUNTING_WRITE_TOOLS)
+    monkeypatch.setattr(tools, "TOOLS", {
+        name: ({k: v for k, v in spec.items() if k != "etag_readers"}
+               if name in tools.ACCOUNTING_WRITE_TOOLS else spec)
+        for name, spec in original.items()})
+    with pytest.raises(ex.ErreurDeConstruction):
+        ex.outils_comptables()
+    reader_of = next(n for n in writes if original[n].get("etag_readers"))
+    monkeypatch.setattr(tools, "TOOLS", {
+        **original, reader_of: {**original[reader_of], "etag_readers": (writes[0],)}})
+    with pytest.raises(ex.ErreurDeConstruction):
+        ex.outils_comptables()
+    monkeypatch.setattr(tools, "TOOLS", original)
+    monkeypatch.setattr(disclosure, "FAMILIES", tuple(
+        f for f in disclosure.FAMILIES if f.key != "accounting"))
+    with pytest.raises(ex.ErreurDeConstruction):
+        ex.outils_comptables()
 
 
 def test_version_digest_tracks_the_registry(monkeypatch):

@@ -19,7 +19,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
 
 from pagination import decode_cursor, encode_cursor
-from tests import _dummy_accounting  # noqa: E402
 from tz import MTL
 
 
@@ -511,9 +510,10 @@ def test_write_tools_set_is_pinned():
         # Lot 4b — CONTACTS : les mandataires d'un contact, et la
         # verification de conformite INSCRITE comme presumee (D7).
         "update_partie_mandataire", "record_kyc_status",
-        # Lot 5b — COMPTABILITE, sous le scope distinct athena:comptabilite :
-        # inscrire au fideicommis (paiement d'honoraires atomique compris) et
-        # au registre d'administration, corriger une ecriture d'administration
+        # Lot 5b — COMPTABILITE (sous athena:write depuis le 2026-10-05, le
+        # scope distinct athena:comptabilite retire) : inscrire au
+        # fideicommis (paiement d'honoraires atomique compris) et au
+        # registre d'administration, corriger une ecriture d'administration
         # modifiable, compenser a la date du releve, contre-passer.
         "record_trust_entry", "record_admin_entry", "update_admin_entry",
         "clear_register_entries", "reverse_register_entry",
@@ -577,12 +577,9 @@ def test_edit_tools_set_is_pinned():
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 
 
-def test_annotations_split_both_directions(monkeypatch):
-    # Every switch ON: list_tool_descriptors() still applies the kill
-    # switches, and MCP_COMPTABILITE_ENABLED defaults to FALSE — an
-    # accounting tool (plan lot 5) must have its hints checked here too.
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+def test_annotations_split_both_directions():
+    # No kill switch since 2026-10-05: list_tool_descriptors() lists every
+    # tool, the accounting ones included, so every hint is checked here.
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
     # Derive : le garde-fou du compte vit a test_registry_shape, une
     # seule fois. Deux copies, c'est une copie qui derive.
@@ -616,160 +613,73 @@ def test_annotations_split_both_directions(monkeypatch):
 
 
 def _expected_scope(name: str) -> str:
-    if name in tools.ACCOUNTING_TOOLS:
-        return "athena:comptabilite"
     if name in tools.WRITE_TOOLS:
         return "athena:write"
     return "athena:read"
 
 
-@pytest.mark.parametrize("with_accounting_tool", [False, True])
-def test_required_scope_defaults_to_read_never_write(monkeypatch, with_accounting_tool):
-    """A write needs the scope it DECLARES — athena:write, or
-    athena:comptabilite for an accounting tool, and NEVER athena:write for
-    that one — while everything else needs read. The binary read/write
-    split this test used to pin ended the day the third scope existed; the
-    dummy run proves the accounting branch is not vacuous while no real
-    tool carries the scope (plan lot 5)."""
-    if with_accounting_tool:
-        name = _dummy_accounting.register(monkeypatch)
-        assert tools.required_scope(name) == "athena:comptabilite"
+def test_required_scope_defaults_to_read_never_write():
+    """A write needs athena:write — the accounting writes included — while
+    everything else needs read, get_admin_ledger included. REWRITTEN
+    2026-10-05 back to the binary read/write split: from lot 0a an
+    accounting tool needed athena:comptabilite instead (the ledger's read
+    too), until the lawyer removed that scope."""
     for name in tools.TOOLS:
         assert tools.required_scope(name) == _expected_scope(name), name
+    for name in tools.ACCOUNTING_WRITE_TOOLS:
+        assert tools.required_scope(name) == "athena:write", name
+    assert tools.required_scope("get_admin_ledger") == "athena:read"
 
 
-@pytest.mark.parametrize("with_accounting_tool", [False, True])
-def test_list_tool_descriptors_filters_by_scope(monkeypatch, with_accounting_tool):
+def test_list_tool_descriptors_filters_by_scope():
     """Each grant shows exactly its own tools — equalities, not supersets:
-    a superset check could not tell a write token that ALSO sees the
-    accounting tools from one that does not. Both switches on, so the
-    arithmetic is about scopes alone (the switches have their own tests)."""
-    if with_accounting_tool:
-        dummy = _dummy_accounting.register(monkeypatch)
-        assert dummy in tools.ACCOUNTING_TOOLS
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+    a superset check could not tell a read token that ALSO sees a write
+    from one that does not. The filter is by each tool's OWN scope, so
+    athena:write alone shows the writes alone. REWRITTEN 2026-10-05: the
+    accounting tools stood under their own scope (athena:comptabilite) and
+    switch until the lawyer removed both — the ledger's read is an ordinary
+    read now, the five accounting writes ordinary writes."""
 
     def listed(*scopes: str) -> set:
         return {d["name"] for d in tools.list_tool_descriptors(frozenset(scopes))}
 
-    # The accounting READ (get_admin_ledger, lot 5b) is not a read under
-    # athena:read: it carries the accounting scope for the data it shows.
-    reads = set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS
-    writes = tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS
+    reads = set(tools.TOOLS) - tools.WRITE_TOOLS
+    assert "get_admin_ledger" in reads
+    assert tools.ACCOUNTING_WRITE_TOOLS <= tools.WRITE_TOOLS
     assert listed("athena:read") == reads
-    assert listed("athena:read", "athena:write") == reads | writes
-    assert listed("athena:read", "athena:comptabilite") == (
-        reads | tools.ACCOUNTING_TOOLS
-    )
-    assert listed("athena:read", "athena:write", "athena:comptabilite") == set(tools.TOOLS)
-    if with_accounting_tool:
-        assert dummy not in listed("athena:read", "athena:write")
+    assert listed("athena:write") == set(tools.WRITE_TOOLS)
+    assert listed("athena:read", "athena:write") == set(tools.TOOLS)
+    # A scope string that gates no tool — the removed athena:comptabilite
+    # among them — adds nothing to what a grant shows.
+    assert listed("athena:read", "athena:comptabilite") == reads
+    assert listed("athena:comptabilite") == set()
 
 
-def test_the_accounting_tools_are_derived_and_pinned():
-    """ACCOUNTING_TOOLS is the set of tools DECLARING the scope — never a
-    hand list. REWRITTEN in lot 5b, on purpose and in the same commit as
-    the consent block that describes them: it pinned the set EMPTY while
-    the scope shipped dormant (« no tool may land under it before the model
-    fixes it relies on »), and asserted every member a write.
+def test_the_accounting_writes_are_derived_and_pinned():
+    """ACCOUNTING_WRITE_TOOLS is the ACCOUNTING family of mcp/disclosure —
+    never a hand list — pinned here by NAME: a sixth register write must
+    not ship unnoticed. REWRITTEN 2026-10-05: it pinned ACCOUNTING_TOOLS,
+    the tools DECLARING athena:comptabilite — the five writes and one READ,
+    get_admin_ledger, which carried that scope for the data it showed. The
+    lawyer removed the scope (and every MCP kill switch), and that set with
+    it: the five writes are ordinary writes under athena:write, each still
+    DEMANDING its idempotency_key, and the ledger's read an ordinary read
+    under athena:read, outside the set."""
+    from mcp import disclosure
 
-    Both halves moved. The set is now pinned by NAME — a sixth accounting
-    tool must not ship unnoticed, since the consent box's text is written
-    for these. And one member is a READ, get_admin_ledger: the
-    administration ledger is not under athena:read, so its reader carries
-    the scope of the data it shows. Every other member is a write, in
-    WRITE_TOOLS, so the write protocol, the write audit, the write-time
-    revalidation and the master switch reach it by construction."""
-    derived = {n for n, s in tools.TOOLS.items() if s.get("scope") == "athena:comptabilite"}
-    assert tools.ACCOUNTING_TOOLS == derived
-    assert tools.ACCOUNTING_TOOLS == frozenset({
-        "get_admin_ledger",
+    (family,) = [f for f in disclosure.FAMILIES if f.key == "accounting"]
+    assert family.scope == "athena:write"
+    assert tools.ACCOUNTING_WRITE_TOOLS == frozenset(family.tools)
+    assert tools.ACCOUNTING_WRITE_TOOLS == frozenset({
         "record_trust_entry", "record_admin_entry", "update_admin_entry",
         "clear_register_entries", "reverse_register_entry",
     })
-    assert tools.ACCOUNTING_TOOLS - tools.WRITE_TOOLS == {"get_admin_ledger"}
-    assert tools.ACCOUNTING_WRITE_TOOLS == tools.ACCOUNTING_TOOLS & tools.WRITE_TOOLS
     assert tools.ACCOUNTING_WRITE_TOOLS <= tools.WRITE_TOOLS
-
-
-def test_the_accounting_switch_defaults_to_off():
-    """Money is fail-closed: a variable forgotten in a yaml must leave
-    accounting OFF. The one MCP switch whose default is "false"."""
-    import pathlib
-    import re
-
-    source = (pathlib.Path(tools.__file__).resolve().parents[1] / "config.py").read_text(
-        encoding="utf-8"
-    )
-    assert re.search(
-        r'os\.environ\.get\(\s*"MCP_COMPTABILITE_ENABLED",\s*"false"\s*\)', source
-    ), "Config.MCP_COMPTABILITE_ENABLED must default to \"false\""
-    from config import Config
-
-    if "MCP_COMPTABILITE_ENABLED" not in os.environ:
-        # Computed at import from that same default; outside an app
-        # context the package reads it from Config.
-        assert Config.MCP_COMPTABILITE_ENABLED is False
-        assert tools.comptabilite_enabled() is False
-
-
-def test_the_accounting_switch_hides_an_accounting_tool_even_with_the_scope(monkeypatch):
-    """MCP_COMPTABILITE_ENABLED=false removes the tool from tools/list for a
-    token holding EVERY scope, refuses it at the gate, and names ITS switch;
-    it touches nothing else."""
-    name = _dummy_accounting.register(monkeypatch)
-    everything = frozenset({"athena:read", "athena:write", "athena:comptabilite"})
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: False)
-    assert tools.tool_available(name) is False
-    assert tools.unavailable_reason(name) == "MCP_COMPTABILITE_ENABLED"
-    shown = {d["name"] for d in tools.list_tool_descriptors(everything)}
-    assert name not in shown
-    # Only the accounting subset moves — the real one (lot 5b), its read
-    # included, and the dummy: every other tool stays available.
-    assert name in tools.ACCOUNTING_TOOLS
-    assert shown == set(tools.TOOLS) - tools.ACCOUNTING_TOOLS
-    for other in tools.ACCOUNTING_TOOLS:
-        assert tools.unavailable_reason(other) == "MCP_COMPTABILITE_ENABLED", other
-    for other in set(tools.TOOLS) - tools.ACCOUNTING_TOOLS:
-        assert tools.unavailable_reason(other) is None, other
-
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
-    assert tools.tool_available(name) is True
-    assert tools.unavailable_reason(name) is None
-    assert name in {d["name"] for d in tools.list_tool_descriptors(everything)}
-
-
-def test_the_write_switch_is_the_master_over_accounting(monkeypatch):
-    """An accounting tool is a write: MCP_WRITE_ENABLED=false stops it even
-    with its own switch on, and the refusal names the MASTER — the switch
-    that is off and without which nothing brings it back. Both off → still
-    the master."""
-    name = _dummy_accounting.register(monkeypatch)
-    monkeypatch.setattr(tools, "write_enabled", lambda: False)
-    for accounting_on in (True, False):
-        monkeypatch.setattr(tools, "comptabilite_enabled", lambda v=accounting_on: v)
-        assert tools.tool_available(name) is False
-        assert tools.unavailable_reason(name) == "MCP_WRITE_ENABLED"
-
-
-def test_a_write_grant_never_reaches_an_accounting_tool(monkeypatch):
-    """By construction, not by convention: the tool's scope is
-    athena:comptabilite, athena:write never stands in for it, and a
-    read+write token is not shown it. Advertised with the write annotations
-    (it IS a write) to the grant that may call it."""
-    name = _dummy_accounting.register(monkeypatch)
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
-    assert tools.required_scope(name) == "athena:comptabilite"
-    write_grant = frozenset({"athena:read", "athena:write"})
-    assert name not in {d["name"] for d in tools.list_tool_descriptors(write_grant)}
-    grant = frozenset({"athena:read", "athena:comptabilite"})
-    (desc,) = [d for d in tools.list_tool_descriptors(grant) if d["name"] == name]
-    assert desc["annotations"]["readOnlyHint"] is False
-    assert desc["annotations"]["title"] == _dummy_accounting.DUMMY_TITLE
+    for name in tools.ACCOUNTING_WRITE_TOOLS:
+        assert tools.TOOLS[name].get("scope") == "athena:write", name
+        assert tools.TOOLS[name].get("idempotency") == tools.IDEMPOTENCY_REQUIRED, name
+    assert "get_admin_ledger" not in tools.WRITE_TOOLS
+    assert tools.TOOLS["get_admin_ledger"].get("scope", "athena:read") == "athena:read"
 
 
 def test_write_schemas_are_bounded_and_track_the_model():
@@ -801,10 +711,10 @@ def test_write_schemas_are_bounded_and_track_the_model():
 
 def test_every_write_tool_carries_the_write_protocol():
     """Generic invariants over WRITE_TOOLS — they hold for any FUTURE write
-    tool without naming it: a WRITE scope (athena:write, or
-    athena:comptabilite exactly for the accounting subset) + the
-    idempotency_key protocol property, and no identity-injection fields
-    addressable.
+    tool without naming it: the write scope athena:write (the accounting
+    writes included since 2026-10-05, when the lawyer removed their
+    separate athena:comptabilite) + the idempotency_key protocol property,
+    and no identity-injection fields addressable.
 
     `dry_run` was REMOVED from the protocol on 2026-08-27, so the assertion
     is now the INVERSE one: no write tool may declare it. Paired with
@@ -815,11 +725,7 @@ def test_every_write_tool_carries_the_write_protocol():
     for name in tools.WRITE_TOOLS:
         schema = tools.TOOLS[name]["input_schema"]
         props = schema["properties"]
-        expected_scope = (
-            "athena:comptabilite" if name in tools.ACCOUNTING_TOOLS
-            else "athena:write"
-        )
-        assert tools.TOOLS[name].get("scope") == expected_scope, name
+        assert tools.TOOLS[name].get("scope") == "athena:write", name
         assert "dry_run" not in props, name
         assert schema.get("additionalProperties") is False, name
         assert "idempotency_key" in props, name
@@ -837,27 +743,6 @@ def test_a_write_tool_refuses_a_dry_run_argument():
         schema = tools.TOOLS[name]["input_schema"]
         errors = tools.validate_args(schema, {"dry_run": True})
         assert any("dry_run" in e for e in errors), name
-
-
-@pytest.mark.parametrize("with_accounting_tool", [False, True])
-def test_kill_switch_covers_every_write_tool(monkeypatch, with_accounting_tool):
-    """MCP_WRITE_ENABLED=false must hide/refuse the WHOLE write surface —
-    derived from WRITE_TOOLS membership, so a new tool is covered by
-    construction; this pins that derivation. The accounting tools are part
-    of that surface: with one registered and its own switch ON, the master
-    still stops it."""
-    if with_accounting_tool:
-        _dummy_accounting.register(monkeypatch)
-    # The accounting switch ON in both runs: the accounting READ
-    # (get_admin_ledger, lot 5b) answers to that switch alone, and the point
-    # here is that the write master leaves every read standing.
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
-    monkeypatch.setattr(tools, "write_enabled", lambda: False)
-    for name in tools.WRITE_TOOLS:
-        assert tools.tool_available(name) is False, name
-        assert tools.unavailable_reason(name) == "MCP_WRITE_ENABLED", name
-    for name in set(tools.TOOLS) - tools.WRITE_TOOLS:
-        assert tools.tool_available(name) is True, name
 
 
 def test_min_length_rejects_whitespace_only():
@@ -4571,7 +4456,7 @@ def test_a_ctag_failure_still_reports_the_write_as_committed(ct, monkeypatch):
     assert any("Ne pas réessayer" in w for w in payload["warnings"])
 
 
-def test_idempotent_writes_are_declared_per_tool(monkeypatch):
+def test_idempotent_writes_are_declared_per_tool():
     """The hint is what a client uses to decide whether a retry is safe:
     every creator appends again, while these write nothing when the state
     they ask for is already the stored one. It was `complete_task` alone
@@ -4579,10 +4464,8 @@ def test_idempotent_writes_are_declared_per_tool(monkeypatch):
     stored code first and skips the write — which is exactly what makes a
     reclassification pass over a year of history safe to re-run.
 
-    Both switches ON (lot 5b): the accounting switch defaults to OFF, and a
-    descriptor it hides would otherwise leave its hint unchecked."""
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+    No kill switch hides a descriptor since 2026-10-05, so every write's
+    hint — the accounting ones included — is checked."""
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
     for name in tools.WRITE_TOOLS:
         expected = name in _IDEMPOTENT_WRITES

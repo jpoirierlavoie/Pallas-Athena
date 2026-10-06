@@ -1,4 +1,4 @@
-# Athena — plugin 1.0.0
+# Athena — plugin 1.1.0
 
 Une compétence qui apprend à Claude à se servir du connecteur Athena **avec le moins
 d'appels possible** : d'où vient chaque identifiant, la suite d'appels la plus courte pour
@@ -31,7 +31,7 @@ remplissent à la construction; ne jamais les écrire à la main.
 ```
 cd athena
 python -m pytest tests/test_plugin_athena.py -q   # la porte, d'abord
-python -m scripts.exporter_plugin_athena           # → ../dist/athena-1.0.0.plugin (racine du dépôt)
+python -m scripts.exporter_plugin_athena           # → ../dist/athena-1.1.0.plugin (racine du dépôt)
 python -m scripts.exporter_plugin_athena --check   # diffère-t-il de la dernière construction ?
 python -m scripts.exporter_plugin_athena --deplie ../dist/deplie   # et les fichiers, à relire
 ```

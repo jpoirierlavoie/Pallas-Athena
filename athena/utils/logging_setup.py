@@ -649,7 +649,6 @@ McpEvent = Literal[
     "mcp_brake_engaged",
     "mcp_initialize",
     "mcp_tool_call",
-    "mcp_disabled_hit",
     # Write tools (Phase L). IDs and counts only — a note's title and body
     # are privileged legal work product and are NEVER logged (RedactionFilter
     # does not auto-scrub titles or free text).
@@ -1028,7 +1027,8 @@ def log_mcp_event(
 
     Failures and refusals default to ``WARNING``, successes to ``INFO``.
     ``reason`` carries a short machine-stable string ("invalid_grant",
-    "kill_switch", "invalid_token") — never a token, code, or verifier.
+    "insufficient_scope", "invalid_token") — never a token, code, or
+    verifier.
     Only non-``None`` optional fields are included so log-based metrics
     filtering on, e.g., ``tool`` don't pick up structurally-empty records.
     """

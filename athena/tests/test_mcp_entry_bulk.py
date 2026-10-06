@@ -141,7 +141,7 @@ def test_the_ceiling_is_the_models_own():
 
 
 @pytest.mark.parametrize("tool", [_TIME, _EXPENSE])
-def test_the_key_is_required_and_the_hints_are_a_creator_s(tool, monkeypatch):
+def test_the_key_is_required_and_the_hints_are_a_creator_s(tool):
     spec = tools.TOOLS[tool]
     assert spec["idempotency"] == tools.IDEMPOTENCY_REQUIRED
     assert spec["input_schema"]["required"] == ["entries", "idempotency_key"]
@@ -152,7 +152,6 @@ def test_the_key_is_required_and_the_hints_are_a_creator_s(tool, monkeypatch):
     assert tool in tools.WRITE_TOOLS and tool not in tools.EDIT_TOOLS
     create = next(f for f in disclosure.FAMILIES if f.key == "create")
     assert tool in create.tools
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
     (d,) = [d for d in tools.list_tool_descriptors(None) if d["name"] == tool]
     ann = d["annotations"]
     # Additive — it replaces nothing — and NOT idempotent: a second call
@@ -181,8 +180,7 @@ def test_the_instructions_and_the_consent_name_them_with_their_ceiling():
     text = endpoint.INSTRUCTIONS
     assert "`create_time_entries_bulk`" in text and "`create_expenses_bulk`" in text
     assert f"up to {tools.ENTRY_BULK_MAX} rows, ALL OR NOTHING" in text
-    assert disclosure.consent_context(comptabilite_offered=False)[
-        "entry_bulk_max"] == tools.ENTRY_BULK_MAX
+    assert disclosure.consent_context()["entry_bulk_max"] == tools.ENTRY_BULK_MAX
     assert "par lots" in disclosure.write_summary_fr()
 
 

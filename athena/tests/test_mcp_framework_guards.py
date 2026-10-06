@@ -29,10 +29,10 @@ What each guard buys:
     ``dav_synced`` and reaches ``bump_ctag``, and a tool that declares them
     really writes such a record — the design's hand-kept ``writes`` list,
     derived from the handlers' call closure instead;
-(g) every tool under ``athena:comptabilite`` is a write that DEMANDS an
-    ``idempotency_key`` (policy ``required``, listed in its schema) — armed
-    now, vacuous on the real registry until plan lot 5, proven on a planted
-    one and on the dummy the scope tests register;
+(g) every ACCOUNTING write (``ACCOUNTING_WRITE_TOOLS``, the family of
+    mcp/disclosure) is a write under ``athena:write`` that DEMANDS an
+    ``idempotency_key`` (policy ``required``, listed in its schema) —
+    proven on the real registry and on a planted one;
 (i) no write output declares a property that would persist privileged
     content or a capability URL into the `mcp_idempotency` replay cache, and
     no output at all declares a signed-URL or storage-path property;
@@ -65,8 +65,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import mcp.write_support as write_support
     from mcp.output_schemas import OUTPUT_SCHEMAS
-
-from tests import _dummy_accounting  # noqa: E402
 
 _TESTS_DIR = pathlib.Path(__file__).resolve().parent
 
@@ -291,33 +289,37 @@ def test_no_read_handler_calls_run_write():
 
 
 def _write_scopes() -> set:
-    """Every scope that gates a write. Derived from the package: the plan's
-    `athena:comptabilite` joins by being defined, not by editing this test."""
+    """Every scope that gates a write. Derived from the package: a scope
+    joins by being listed in SCOPES_SUPPORTED, not by editing this test
+    (`athena:comptabilite` did, from lot 0a until the lawyer removed it on
+    2026-10-05 — `athena:write` is the one left)."""
     return {s for s in mcp.SCOPES_SUPPORTED if s != mcp.SCOPE_READ}
 
 
 def test_write_membership_and_write_scope_are_the_same_fact():
-    """REWRITTEN in lot 5b. It read « every tool under a non-read scope is a
-    write » — true until get_admin_ledger, the one READ that carries
-    athena:comptabilite (the administration ledger is not under
-    athena:read). The fact survives in its two exact halves: athena:write
-    is carried by writes and only writes, and every write carries a write
-    scope; and a tool under neither write scope is a read gated by
-    athena:read. The accounting read is the one allowed exception, and
-    (g) below proves it carries no write protocol at all."""
-    write_scoped = {
-        n for n, spec in tools.TOOLS.items() if spec.get("scope") == mcp.SCOPE_WRITE
+    """REWRITTEN 2026-10-05, back to the whole fact. Lot 5b had split it in
+    two halves around get_admin_ledger, the one READ that carried
+    athena:comptabilite; the lawyer removed that scope, and the ledger's
+    read is an ordinary read since. The fact, whole again: the non-read
+    scopes gate exactly WRITE_TOOLS — each of them at least one tool, as
+    SCOPES_SUPPORTED's own rule says (every scope but read gates a write)
+    —, every write declares athena:write, and every read declares no scope
+    (or athena:read), get_admin_ledger included."""
+    by_scope = {
+        n for n, spec in tools.TOOLS.items() if spec.get("scope") in _write_scopes()
     }
-    assert write_scoped <= set(tools.WRITE_TOOLS)
-    assert write_scoped | tools.ACCOUNTING_WRITE_TOOLS == set(tools.WRITE_TOOLS)
-    by_scope = {n for n, spec in tools.TOOLS.items() if spec.get("scope") in _write_scopes()}
-    assert by_scope - set(tools.WRITE_TOOLS) <= tools.ACCOUNTING_TOOLS
+    assert by_scope == set(tools.WRITE_TOOLS)
+    for scope in _write_scopes():
+        assert any(spec.get("scope") == scope for spec in tools.TOOLS.values()), scope
     for name in tools.WRITE_TOOLS:
-        assert tools.required_scope(name) != mcp.SCOPE_READ, name
-    for name in set(tools.TOOLS) - tools.WRITE_TOOLS - tools.ACCOUNTING_TOOLS:
+        assert tools.TOOLS[name].get("scope") == mcp.SCOPE_WRITE, name
+        assert tools.required_scope(name) == mcp.SCOPE_WRITE, name
+    for name in set(tools.TOOLS) - tools.WRITE_TOOLS:
+        assert tools.TOOLS[name].get("scope", mcp.SCOPE_READ) == mcp.SCOPE_READ, name
         assert tools.required_scope(name) == mcp.SCOPE_READ, name
-    for name in tools.ACCOUNTING_TOOLS - tools.WRITE_TOOLS:
-        assert tools.required_scope(name) == mcp.SCOPE_COMPTABILITE, name
+    assert "get_admin_ledger" in tools.TOOLS
+    assert "get_admin_ledger" not in tools.WRITE_TOOLS
+    assert tools.required_scope("get_admin_ledger") == mcp.SCOPE_READ
 
 
 def test_every_declared_scope_is_advertised():
@@ -391,25 +393,26 @@ def test_the_key_s_description_says_what_its_policy_does():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# (g) Accounting: its own scope, and a key it DEMANDS
+# (g) Accounting: a key it DEMANDS
 # ══════════════════════════════════════════════════════════════════════
 #
 # Plan decision D1 + rule 7. The trust and administration registers are
 # append-only — a mistake is corrected by a reversal, never erased — so a
 # money write retried without a key is a SECOND entry that no tool can take
-# back. Every WRITE under athena:comptabilite must therefore demand an
-# `idempotency_key` (policy `required`, so the store fails CLOSED) and list
-# it in its schema's `required`.
+# back. Every ACCOUNTING write must therefore demand an `idempotency_key`
+# (policy `required`, so the store fails CLOSED) and list it in its schema's
+# `required`.
 #
-# Lot 5b gave the scope its first tools — five writes and ONE read,
-# get_admin_ledger (the administration ledger is not under athena:read). A
-# tool under the scope that is NOT in WRITE_TOOLS used to be a violation
-# outright (« it would slip past the write gate »); it is now allowed only
-# as a PROVEN read: it declares no idempotency policy, its schema carries no
-# `idempotency_key`, and no annotation claims it writes. A write that
-# forgot to join WRITE_TOOLS carries the write protocol, and is caught by
-# exactly those three checks. (test_no_read_handler_calls_run_write, above,
-# is the fourth: its handler never opens the write protocol.)
+# REWRITTEN 2026-10-05. From lot 0a the ACCOUNTING tools stood under their
+# OWN scope, athena:comptabilite, and this guard read its set from that
+# scope: a tool declaring it had to be in ACCOUNTING_TOOLS, and one member,
+# get_admin_ledger, was allowed outside WRITE_TOOLS as a PROVEN read. The
+# lawyer removed that scope (and every MCP kill switch): the five writes are
+# ordinary writes under athena:write, the ledger's read an ordinary read,
+# both held by (b) above. What stays is the money rule, read from the
+# family the writes belong to — ACCOUNTING_WRITE_TOOLS — and the scope each
+# must declare: an accounting write left without its `scope` would default
+# to athena:read, callable by a read-only token.
 #
 # The rule lives in ONE pure function, proven below on a planted registry,
 # so each clause is shown to catch what it claims.
@@ -418,27 +421,16 @@ def test_the_key_s_description_says_what_its_policy_does():
 def accounting_violations(registry: dict, accounting_tools, write_tools) -> list[str]:
     """Every breach of the accounting contract in *registry*."""
     out: list[str] = []
-    for name, spec in sorted(registry.items()):
-        declared = spec.get("scope") == mcp.SCOPE_COMPTABILITE
-        if declared is not (name in accounting_tools):
-            out.append(
-                f"{name}: ACCOUNTING_TOOLS membership contradicts its declared scope")
-        if not declared:
+    for name in sorted(accounting_tools):
+        spec = registry.get(name)
+        if spec is None:
+            out.append(f"{name}: an accounting tool missing from the registry")
             continue
         if name not in write_tools:
-            # The accounting READ (lot 5b): allowed only while nothing about
-            # it says « write » — the write protocol is what a write that
-            # escaped WRITE_TOOLS would still be carrying.
-            props = spec["input_schema"].get("properties", {})
-            annotations = spec.get("annotations") or {}
-            if (
-                spec.get("idempotency") is not None
-                or "idempotency_key" in props
-                or annotations.get("readOnlyHint") is False
-            ):
-                out.append(
-                    f"{name}: an accounting tool outside WRITE_TOOLS escapes the write gate")
-            continue
+            out.append(
+                f"{name}: an accounting tool outside WRITE_TOOLS escapes the write gate")
+        if spec.get("scope") != mcp.SCOPE_WRITE:
+            out.append(f"{name}: an accounting tool must declare athena:write")
         if spec.get("idempotency") != tools.IDEMPOTENCY_REQUIRED:
             out.append(
                 f"{name}: an accounting tool must declare idempotency 'required'")
@@ -449,29 +441,24 @@ def accounting_violations(registry: dict, accounting_tools, write_tools) -> list
 
 
 def test_the_real_registry_honours_the_accounting_contract():
+    # Anchors, not an inventory (the set is pinned by name in
+    # test_mcp_tools): the guard is not vacuous on the real registry.
+    assert {"record_trust_entry", "record_admin_entry"} <= tools.ACCOUNTING_WRITE_TOOLS
     assert accounting_violations(
-        tools.TOOLS, tools.ACCOUNTING_TOOLS, tools.WRITE_TOOLS) == []
-
-
-def test_the_dummy_accounting_tool_honours_the_contract(monkeypatch):
-    """The dummy the scope tests register (tests/_dummy_accounting.py) is
-    shaped like a lot-5 tool. Were it not, those tests would prove the
-    gates on a tool that could never ship."""
-    name = _dummy_accounting.register(monkeypatch)
-    assert name in tools.ACCOUNTING_TOOLS
-    assert accounting_violations(
-        tools.TOOLS, tools.ACCOUNTING_TOOLS, tools.WRITE_TOOLS) == []
+        tools.TOOLS, tools.ACCOUNTING_WRITE_TOOLS, tools.WRITE_TOOLS) == []
 
 
 def _planted_accounting(**spec_over) -> dict:
+    """A one-tool world. An override set to None DROPS the key — a scope
+    left undeclared is how a write would default to athena:read."""
     spec = {
-        "scope": mcp.SCOPE_COMPTABILITE,
+        "scope": mcp.SCOPE_WRITE,
         "idempotency": tools.IDEMPOTENCY_REQUIRED,
         "input_schema": {"type": "object", "properties": {},
                          "required": ["idempotency_key"]},
     }
     spec.update(spec_over)
-    return {"record_x": spec}
+    return {"record_x": {k: v for k, v in spec.items() if v is not None}}
 
 
 @pytest.mark.parametrize("over, sets, fragment", [
@@ -480,19 +467,20 @@ def _planted_accounting(**spec_over) -> dict:
     ({"idempotency": None}, None, "idempotency 'required'"),
     ({"input_schema": {"type": "object", "properties": {}, "required": []}},
      None, "idempotency_key in required"),
-    # A write that forgot WRITE_TOOLS still carries the write protocol.
+    # A write that forgot WRITE_TOOLS escapes the write gate…
     ({}, {"write": frozenset()}, "escapes the write gate"),
-    ({"input_schema": {"type": "object", "properties": {"idempotency_key": {}},
-                       "required": []}, "idempotency": None},
-     {"write": frozenset()}, "escapes the write gate"),
-    ({"idempotency": None, "annotations": {"readOnlyHint": False},
-      "input_schema": {"type": "object", "properties": {}}},
-     {"write": frozenset()}, "escapes the write gate"),
-    # …while a genuine accounting READ (get_admin_ledger's shape) is clean.
+    # …and so does a member with no write protocol at all: the READ
+    # exception (get_admin_ledger's shape under athena:comptabilite) left
+    # with that scope on 2026-10-05.
     ({"idempotency": None, "input_schema": {"type": "object", "properties": {}}},
-     {"write": frozenset()}, None),
-    ({}, {"accounting": frozenset()}, "contradicts its declared scope"),
-    ({"scope": mcp.SCOPE_WRITE}, None, "contradicts its declared scope"),
+     {"write": frozenset()}, "escapes the write gate"),
+    # A scope left undeclared defaults to athena:read — a read-only token
+    # could call a money write —, and a read scope says so outright.
+    ({"scope": None}, None, "must declare athena:write"),
+    ({"scope": mcp.SCOPE_READ}, None, "must declare athena:write"),
+    # The set names a tool the registry does not hold.
+    ({}, {"accounting": frozenset({"record_x", "record_y"})},
+     "missing from the registry"),
 ])
 def test_the_accounting_guard_catches_what_it_claims(over, sets, fragment):
     registry = _planted_accounting(**over)
@@ -654,20 +642,20 @@ def test_annotation_overrides_touch_only_the_idempotency_hint():
             )
 
 
-@pytest.mark.parametrize("with_accounting_tool", [False, True])
-def test_the_advertised_safety_hints_follow_the_registry(monkeypatch, with_accounting_tool):
-    """Every switch ON: `list_tool_descriptors(None)` drops no scope but
-    still applies the kill switches, and MCP_COMPTABILITE_ENABLED defaults
-    to FALSE — so without this an accounting tool (plan lot 5) would have
-    its hints go unchecked in silence, and a money write advertised
-    `readOnlyHint: true` would pass. The equality makes any hiding loud; the
-    dummy run proves the accounting subset is really enumerated."""
-    if with_accounting_tool:
-        _dummy_accounting.register(monkeypatch)
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
-    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+def test_the_advertised_safety_hints_follow_the_registry():
+    """`list_tool_descriptors(None)` drops no scope and — since 2026-10-05,
+    when the lawyer removed every MCP kill switch — hides no tool. (Until
+    then this test turned every switch on, and registered a dummy to prove
+    the accounting subset was enumerated: the accounting switch defaulted to
+    OFF, and a money write advertised `readOnlyHint: true` would have passed
+    in silence.) The equality makes any hiding loud; the accounting tools
+    are anchored by name."""
     descriptors = tools.list_tool_descriptors(None)
     assert {d["name"] for d in descriptors} == set(tools.TOOLS)
+    by_name = {d["name"]: d for d in descriptors}
+    for name in tools.ACCOUNTING_WRITE_TOOLS:
+        assert by_name[name]["annotations"]["readOnlyHint"] is False, name
+    assert by_name["get_admin_ledger"]["annotations"]["readOnlyHint"] is True
     for d in descriptors:
         ann = d["annotations"]
         is_write = d["name"] in tools.WRITE_TOOLS

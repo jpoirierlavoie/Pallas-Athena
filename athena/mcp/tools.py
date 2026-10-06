@@ -3,11 +3,10 @@
 The registry maps tool names to their metadata and handler name (resolved
 lazily against :mod:`mcp.handlers` to avoid a circular import). Every tool
 is read-only (``readOnlyHint``) **except the members of** :data:`WRITE_TOOLS`,
-which require the ``athena:write`` scope — or, for the accounting writes,
-the separate ``athena:comptabilite`` scope. :data:`ACCOUNTING_TOOLS` (every
-tool declaring that scope, since plan lot 5b) holds those writes AND the one
-accounting read, ``get_admin_ledger``: a read, but of data ``athena:read``
-does not cover. Every schema sets ``additionalProperties: false``.
+which require the ``athena:write`` scope — the accounting writes
+(:data:`ACCOUNTING_WRITE_TOOLS`) included since 2026-10-05, when the lawyer
+removed their separate ``athena:comptabilite`` scope and every MCP kill
+switch. Every schema sets ``additionalProperties: false``.
 """
 
 import json
@@ -15,13 +14,7 @@ import re
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
-from mcp import (
-    SCOPE_COMPTABILITE,
-    SCOPE_READ,
-    SCOPE_WRITE,
-    comptabilite_enabled,
-    write_enabled,
-)
+from mcp import SCOPE_READ, SCOPE_WRITE
 from mcp import coverage, disclosure
 from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
@@ -1781,7 +1774,7 @@ def _substitutions_prop(*, expected_required: bool) -> dict:
     }
 
 
-# ── Lot 5b — ACCOUNTING (scope athena:comptabilite) ──────────────────────
+# ── Lot 5b — ACCOUNTING (scope athena:write since 2026-10-05) ────────────
 # Hand-copied from models.trust / models.admin_ledger (importing a model here
 # would build the Firestore client at load); tests/test_mcp_accounting.py
 # pins each against its source, so none can drift.
@@ -4765,8 +4758,8 @@ TOOLS: dict[str, dict] = {
             "The invoice lands in BROUILLON; only the lawyer attests it was "
             "sent (update_invoice to envoyée at his word, or the "
             "application), and a payment is recorded only as an entry of the accounting "
-            "registers (in the application, or with the accounting tools "
-            "under their separate grant), never by this tool. Billing the "
+            "registers (in the application, or with the accounting tools: "
+            "record_admin_entry, record_trust_entry), never by this tool. Billing the "
             "sources freezes them: nothing here can modify "
             "them afterwards except their litigation phase "
             "(set_time_entry_phase / set_expense_phase) until the invoice is "
@@ -4960,9 +4953,9 @@ TOOLS: dict[str, dict] = {
             "once the lawyer deletes the voided invoice in the application); "
             "REFUSED "
             "while a payment stands (reverse its register entry first — in "
-            "the application, or with the accounting tools under their "
-            "separate grant). Never payée: only a payment recorded in the "
-            "accounting registers pays an invoice."
+            "the application, or with reverse_register_entry). Never payée: "
+            "only a payment recorded in the accounting registers pays an "
+            "invoice."
         ),
         "input_schema": {
             "type": "object",
@@ -6672,16 +6665,18 @@ TOOLS: dict[str, dict] = {
         "concurrency": CONCURRENCY_OPTIONAL,
         "etag_readers": _TEMPLATE_ETAG_READERS,
     },
-    # ── Lot 5b — ACCOUNTING, scope athena:comptabilite ─────────────────
+    # ── Lot 5b — ACCOUNTING ────────────────────────────────────────────
     # The six tools of plan decision D1, every one through
-    # services/comptabilite — the door the two web registers use. The READ
-    # carries the scope for the data it shows (the administration ledger is
-    # not under athena:read); the five writes demand an idempotency_key
-    # (a register entry is never deleted: a duplicate is for ever).
+    # services/comptabilite — the door the two web registers use. Since
+    # 2026-10-05 the READ is an ordinary read (athena:read, like the trust
+    # reads) and the five writes ordinary writes (athena:write): the lawyer
+    # removed their separate scope and switch. The writes demand an
+    # idempotency_key (a register entry is never deleted: a duplicate is for
+    # ever).
     "get_admin_ledger": {
         "title": "Registre d'administration",
         "description": (
-            "ACCOUNTING (athena:comptabilite) — READ. The administration "
+            "ACCOUNTING — READ. The administration "
             "ledger: every operations account and corporate card — its "
             "balance, its lock floor (the last completed reconciliation: "
             "nothing dated on or before it moves) and its reconciliation "
@@ -6717,7 +6712,6 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "get_admin_ledger",
-        "scope": SCOPE_COMPTABILITE,
     },
     "record_trust_entry": {
         "title": "Inscrire une écriture au fidéicommis",
@@ -6805,7 +6799,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "record_trust_entry",
-        "scope": SCOPE_COMPTABILITE,
+        "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
@@ -6888,7 +6882,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "record_admin_entry",
-        "scope": SCOPE_COMPTABILITE,
+        "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
@@ -6946,7 +6940,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "update_admin_entry",
-        "scope": SCOPE_COMPTABILITE,
+        "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_REQUIRED,
         "etag_readers": _ADMIN_ETAG_READERS,
@@ -7012,7 +7006,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "clear_register_entries",
-        "scope": SCOPE_COMPTABILITE,
+        "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
@@ -7073,7 +7067,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "reverse_register_entry",
-        "scope": SCOPE_COMPTABILITE,
+        "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
@@ -7114,87 +7108,35 @@ def _describe_required_keys(registry: dict) -> None:
 _describe_required_keys(TOOLS)
 
 
-# The accounting tools (plan decision D1): trust and administration register
-# entries, behind their OWN scope and their own kill switch. DERIVED from the
-# declared scope, never listed by hand — a tool joins by declaring
-# ``"scope": SCOPE_COMPTABILITE``, which is also what gates it at
-# tools/call. Since plan lot 5b: five WRITES — each also a member of
-# WRITE_TOOLS (the ACCOUNTING family of mcp/disclosure), so the write
-# protocol, the write audit, the write-time token revalidation and the master
-# switch MCP_WRITE_ENABLED reach it by construction — and ONE read,
-# get_admin_ledger, which carries the scope for the data it shows (the
-# administration ledger is not under athena:read) and, a read, is untouched
-# by the write switch. tests/test_mcp_framework_guards pins that split.
-ACCOUNTING_TOOLS: frozenset[str] = frozenset(
-    name for name, spec in TOOLS.items()
-    if spec.get("scope") == SCOPE_COMPTABILITE
+# The accounting WRITES (plan decision D1): trust and administration register
+# entries — the ACCOUNTING family of mcp/disclosure, DERIVED from it, never
+# listed by hand. Ordinary write tools since 2026-10-05 (scope athena:write,
+# no switch of their own); the set survives because the write protocol hooks
+# their replay (mcp/handlers registers their persistence hooks) and the reach
+# test (tests/test_mcp_accounting) pins that no OTHER tool reaches a register
+# writer.
+ACCOUNTING_WRITE_TOOLS: frozenset[str] = frozenset(
+    name for family in disclosure.FAMILIES if family.key == "accounting"
+    for name in family.tools
 )
-# The accounting WRITES alone — the subset the write protocol runs.
-ACCOUNTING_WRITE_TOOLS: frozenset[str] = ACCOUNTING_TOOLS & WRITE_TOOLS
-
-# The kill switches a tool can be off under, by their environment names —
-# what the tools/call refusal says, so the operator reads the variable to
-# flip rather than a paraphrase of it.
-WRITE_SWITCH = "MCP_WRITE_ENABLED"
-COMPTABILITE_SWITCH = "MCP_COMPTABILITE_ENABLED"
 
 
 def required_scope(name: str) -> str:
-    """Scope a tool needs. Unlisted tools default to read — never to write.
-
-    An accounting tool needs ``athena:comptabilite`` and ONLY that (plus the
-    read baseline every /mcp call demands): ``athena:write`` does not stand
-    in for it, so a token granted writes alone never reaches one.
-    """
+    """Scope a tool needs. Unlisted tools default to read — never to write."""
     return TOOLS[name].get("scope", SCOPE_READ)
-
-
-def unavailable_reason(name: str) -> Optional[str]:
-    """The kill switch that keeps *name* off, or ``None`` when it is live.
-
-    Two switches, nested. ``MCP_WRITE_ENABLED`` is the master of the
-    WRITES: it governs every write, accounting included, and it is the one
-    NAMED when both are off — it is off, and no other change will bring the
-    tool back while it stays off. ``MCP_COMPTABILITE_ENABLED`` governs the
-    accounting subset alone — its READ too: ``get_admin_ledger`` is switched
-    off here by that switch, and ONLY by it (writes off, it stays live). No
-    other read tool is ever switched off here (``MCP_ENABLED`` 404s the
-    whole endpoint instead, upstream of any tool).
-    """
-    if name in WRITE_TOOLS and not write_enabled():
-        return WRITE_SWITCH
-    if name in ACCOUNTING_TOOLS and not comptabilite_enabled():
-        return COMPTABILITE_SWITCH
-    return None
-
-
-def tool_available(name: str) -> bool:
-    """False when a kill switch keeps *name* off (see :func:`unavailable_reason`).
-
-    The tools/list filter reads this, and the tools/call gate reads
-    :func:`unavailable_reason` — the same decision, so a tool is never
-    advertised yet refused, nor hidden yet callable.
-    """
-    return unavailable_reason(name) is None
 
 
 def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict]:
     """Registry entries in MCP tools/list wire format, filtered by scope.
 
-    A read-only connection must not see the write tools, nor a write
-    connection the accounting tools: advertising them would have the client
-    model call one and take a 403 on every attempt, and ``_forbidden`` does
-    not feed the failure brake — an unthrottled refusal loop. The filter is
-    by each tool's OWN scope, so the two grants are independent: read +
-    comptabilite shows the reads and the accounting tools, and nothing of
-    athena:write. ``granted=None`` means "no scope filtering" (tests, docs)
-    — the kill switches still apply.
+    A read-only connection must not see the write tools: advertising them
+    would have the client model call one and take a 403 on every attempt,
+    and ``_forbidden`` does not feed the failure brake — an unthrottled
+    refusal loop. ``granted=None`` means "no scope filtering" (tests, docs).
     """
     scopes = granted if granted is not None else None
     out = []
     for name, spec in TOOLS.items():
-        if not tool_available(name):
-            continue
         if scopes is not None and required_scope(name) not in scopes:
             continue
         annotations = dict(

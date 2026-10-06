@@ -4367,7 +4367,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                  "replaced_version", "leak_scan", "scrubbed_properties",
                  "name_check", "warnings", "idempotent_replay"]),
 
-    # ── Lot 5b — ACCOUNTING (athena:comptabilite) ─────────────────────────
+    # ── Lot 5b — ACCOUNTING ───────────────────────────────────────────────
     "get_admin_ledger": _obj({
         "accounts": _arr(_admin_account_row(),
                          "Every administration account, even filtered."),

@@ -74,8 +74,9 @@ leaving an array, the contact staying, and a reopened dossier's DAV
 tombstones are sync bookkeeping, not records —, no handler writes a
 payment itself and no invoice is ever marked « payée » by a status change
 (``mcp.disclosure.NEVERS`` — the sweep would catch a handler reaching a
-payment writer). Since lot 5b a payment exists only as a REGISTER entry,
-under the separate ``athena:comptabilite`` grant: an administration
+payment writer). Since lot 5b a payment exists only as a REGISTER entry
+(under ``athena:write`` since 2026-10-05, when the lawyer removed the
+separate ``athena:comptabilite`` grant): an administration
 encaissement or a trust fee payment, whose model writes the invoice's
 payment in the entry's own transaction (which may turn the invoice payée)
 — the ACCOUNTING handlers reach it through ``services/comptabilite``
@@ -5003,8 +5004,8 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
         "annulez la facture (update_invoice avec status « annulée », ou "
         "dans l'application), possible tant qu'aucun paiement n'y est "
         "inscrit — sinon, contre-passez d'abord son écriture au registre "
-        "(dans l'application, ou par les outils comptables sous leur "
-        "autorisation distincte) ; ses "
+        "(dans l'application, ou par les outils comptables : "
+        "reverse_register_entry) ; ses "
         "entrées et déboursés redeviennent alors modifiables, et son "
         "numéro, lui, reste attaché à la facture annulée."
     )
@@ -6555,8 +6556,9 @@ def _import_invoice_impl(args: dict) -> dict:
             "été envoyée (update_invoice, brouillon → envoyée, sur sa parole, "
             "ou dans l'application) ; ensuite seulement, inscrivez le "
             "paiement à sa date historique aux registres comptables — dans "
-            "l'application, ou par les outils comptables sous leur "
-            "autorisation distincte ; cet outil n'inscrit aucun paiement —, "
+            "l'application, ou par les outils comptables "
+            "(record_admin_entry, record_trust_entry) ; cet outil "
+            "n'inscrit aucun paiement —, "
             "sinon le « Journal des honoraires » l'imprime avec 0 $ reçu.",
         ],
     }
@@ -6792,7 +6794,7 @@ def _issuance_warnings(dossier: dict, data: dict) -> list[str]:
             "ce dossier. Aucune provision n'est déduite de la facture : une "
             "provision s'applique APRÈS l'envoi, par un « paiement "
             "d'honoraires » inscrit au fidéicommis — dans l'application, ou "
-            "par les outils comptables sous leur autorisation distincte."
+            "par les outils comptables (record_trust_entry)."
         )
     if dossier.get("status") in ("fermé", "archivé"):
         out.append(
@@ -7092,8 +7094,8 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
                 "Cette facture est « payée ». Le connecteur ne rouvre pas "
                 "une facture payée : si un encaissement l'a soldée, "
                 "contre-passez son écriture au registre (dans "
-                "l'application, ou par les outils comptables sous leur "
-                "autorisation distincte) — elle se rouvrira d'elle-même."
+                "l'application, ou par les outils comptables : "
+                "reverse_register_entry) — elle se rouvrira d'elle-même."
             )
         elif current == "annulée":
             message = "Cette facture est annulée : son statut ne change plus."
@@ -7174,7 +7176,7 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
         raise ToolArgumentError(
             "Cette facture est payée : contre-passez d'abord l'écriture "
             "qui l'a soldée (dans l'application, ou par les outils "
-            "comptables sous leur autorisation distincte). Rien n'a été "
+            "comptables : reverse_register_entry). Rien n'a été "
             "annulé.", reason="invoice_refused")
     wanted = _stale_invoice(args, invoice)
     report, errors = invoice_model.void_invoice_report(
@@ -17049,13 +17051,14 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ACCOUNTING — lot 5b, scope athena:comptabilite (plan D1, D2, D14, D16)
+# ACCOUNTING — lot 5b (plan D1, D2, D14, D16); athena:write since 2026-10-05
 # ════════════════════════════════════════════════════════════════════════
 #
 # Six tools over the two registers, every one through services/comptabilite —
 # the door routes/trust.py and routes/admin_ledger.py use — never a model
-# writer directly (the « trust » promise's reach test pins that no OTHER tool
-# reaches one). The rules stay the MODELS': the lock floor, the Montréal
+# writer directly (a derived reach test,
+# tests/test_mcp_accounting.py::test_only_the_accounting_tools_reach_a_register_writer,
+# pins that no OTHER tool reaches one). The rules stay the MODELS': the lock floor, the Montréal
 # clock, arts. 57/58/59, the provision refusal, the ONE transaction of a fee
 # payment and of an encaissement's payment. What a handler adds is what it
 # always adds: it resolves every id first, strictly (an unreadable register
@@ -17332,7 +17335,7 @@ def _fee_payee(given: str, method: str) -> tuple[str, Optional[str]]:
     return payee, None
 
 
-# ── get_admin_ledger (READ, athena:comptabilite) ────────────────────────
+# ── get_admin_ledger (READ, athena:read since 2026-10-05) ───────────────
 
 
 def _admin_account_row(a: dict) -> dict:

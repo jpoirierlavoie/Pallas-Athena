@@ -1,7 +1,9 @@
 """Le connecteur tient la comptabilité — lot 5b (plan D1, D2, D14, D16).
 
-Six outils sous le scope DISTINCT ``athena:comptabilite`` (et son propre
-interrupteur, ``MCP_COMPTABILITE_ENABLED``, faux par défaut) :
+Six outils — cinq écritures sous ``athena:write``, une lecture sous
+``athena:read`` — depuis le 2026-10-05, où l'avocat a retiré leur scope
+distinct ``athena:comptabilite`` et son interrupteur
+``MCP_COMPTABILITE_ENABLED`` :
 
 * ``get_admin_ledger`` — la LECTURE du registre d'administration ;
 * ``record_trust_entry`` — une écriture au fidéicommis, dont le paiement
@@ -17,10 +19,11 @@ interrupteur, ``MCP_COMPTABILITE_ENABLED``, faux par défaut) :
 Tout passe par les VRAIS gestionnaires, le VRAI service
 (``services/comptabilite``, la porte des routes web) et les VRAIS modèles
 au-dessus du faux Firestore partagé : on relit ce qui est STOCKÉ. Plus les
-trois tests comportementaux que trois promesses du registre
-(``mcp/disclosure.NEVERS``) nomment, les deux preuves de la carte des
-formulaires web (``tests/test_edit_conflict_web.TRANSITIONS``), et une
-conformité d'``outputSchema`` par outil et par branche.
+tests comportementaux que les promesses du registre
+(``mcp/disclosure.NEVERS``) nomment, la preuve dérivée que seules les
+écritures comptables atteignent un écrivain de registre, les deux preuves
+de la carte des formulaires web (``tests/test_edit_conflict_web.TRANSITIONS``),
+et une conformité d'``outputSchema`` par outil et par branche.
 """
 
 import ast
@@ -281,13 +284,30 @@ def test_the_connector_never_records_a_transfer_nor_a_correction_by_itself():
 
 
 def test_the_accounting_writes_demand_their_key_and_their_scope():
+    """REWRITTEN 2026-10-05: the lawyer removed the separate
+    ``athena:comptabilite`` scope — the five accounting writes are write
+    tools under ``athena:write``, the ledger's read an ordinary read under
+    ``athena:read`` (like the trust reads). A read-only token still never
+    sees nor reaches a register write."""
+    assert len(tools.ACCOUNTING_WRITE_TOOLS) == 5
     for name in tools.ACCOUNTING_WRITE_TOOLS:
         spec = tools.TOOLS[name]
-        assert spec["scope"] == "athena:comptabilite", name
+        assert spec["scope"] == "athena:write", name
+        assert tools.required_scope(name) == "athena:write", name
+        assert name in tools.WRITE_TOOLS, name
         assert spec["idempotency"] == tools.IDEMPOTENCY_REQUIRED, name
         assert "idempotency_key" in spec["input_schema"]["required"], name
-    assert tools.TOOLS["get_admin_ledger"]["scope"] == "athena:comptabilite"
+    assert "scope" not in tools.TOOLS["get_admin_ledger"]
+    assert tools.required_scope("get_admin_ledger") == "athena:read"
+    assert "get_admin_ledger" not in tools.WRITE_TOOLS
     assert "idempotency" not in tools.TOOLS["get_admin_ledger"]
+    read_only = {d["name"] for d in tools.list_tool_descriptors(
+        frozenset({"athena:read"}))}
+    assert "get_admin_ledger" in read_only
+    assert not read_only & tools.ACCOUNTING_WRITE_TOOLS
+    write = {d["name"] for d in tools.list_tool_descriptors(
+        frozenset({"athena:read", "athena:write"}))}
+    assert tools.ACCOUNTING_WRITE_TOOLS | {"get_admin_ledger"} <= write
 
 
 def test_the_write_protocol_names_every_required_tool():
@@ -1245,11 +1265,11 @@ def _every_accounting_payload(fake) -> list:
                           card_account_id="card1"))
     payloads.append(handlers.get_admin_ledger({}))
     payloads.append(handlers.get_admin_ledger({"account_id": "ops1"}))
-    # Review of lot 5, step 5 (money lens): the promise is shown to an
-    # accounting token for the WHOLE connector, and the train (DEPLOYMENT.md
-    # §15 « Lot 5 », step 5) checks get_trust_snapshot by hand — the two
-    # trust reads carry the seeded account's transit and last 4 digits
-    # neither, on the real store.
+    # Review of lot 5, step 5 (money lens): the promise is shown (to every
+    # token since 2026-10-05) for the WHOLE connector, and the train
+    # (DEPLOYMENT.md §15 « Lot 5 », step 5) checks get_trust_snapshot by
+    # hand — the two trust reads carry the seeded account's transit and
+    # last 4 digits neither, on the real store.
     payloads.append(handlers.get_trust_snapshot({}))
     payloads.append(handlers.list_trust_transactions({"account_id": "acc1"}))
     payloads.append(_call("reverse_register_entry", register="trust",
@@ -1855,19 +1875,23 @@ def _service_source(name: str) -> str:
 
 
 def test_only_the_accounting_tools_reach_a_register_writer():
-    """The « trust » promise (mcp/disclosure): without the accounting grant
-    the connector never touches the trust register nor the administration
-    ledger. Backed by derivation: the tools whose handler reaches a register
-    WRITER — directly, or through services/comptabilite — are exactly the
-    accounting writes, every one of which demands athena:comptabilite; the
-    accounting READ reaches none."""
+    """No tool but the five accounting writes ever writes to the trust
+    register or the administration ledger. Backed by derivation: the tools
+    whose handler reaches a register WRITER — directly, or through
+    services/comptabilite — are exactly the accounting writes, every one a
+    write tool demanding athena:write (so the write protocol and the
+    live-token revalidation reach each one, and a read-only token none);
+    the accounting READ reaches none. (Until 2026-10-05 this backed the
+    « trust » promise — « never without the separate accounting grant » —,
+    deleted with that grant.)"""
     source = pathlib.Path(handlers.__file__).read_text(encoding="utf-8")
     reached = register_writers_reached(source, _service_source, tools.TOOLS)
     writers = {t for t, found in reached.items() if found}
     assert writers == set(tools.ACCOUNTING_WRITE_TOOLS), sorted(writers)
     assert reached["get_admin_ledger"] == set()
     for tool in writers:
-        assert tools.required_scope(tool) == "athena:comptabilite", tool
+        assert tool in tools.WRITE_TOOLS, tool
+        assert tools.required_scope(tool) == "athena:write", tool
     # Non-vacuous: the walker sees the composite and the plain paths.
     assert {("fee_payment", "create_fee_payment"),
             ("trust", "create_transaction")} <= reached["record_trust_entry"]

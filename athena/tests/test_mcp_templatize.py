@@ -1033,8 +1033,7 @@ def test_the_registry_declares_a_read_and_a_create():
         "scrub_properties": False})
 
 
-def test_the_preview_is_advertised_read_only(monkeypatch):
-    monkeypatch.setattr(tools, "write_enabled", lambda: True)
+def test_the_preview_is_advertised_read_only():
     descriptor = next(d for d in tools.list_tool_descriptors(None)
                       if d["name"] == "preview_templatize")
     assert descriptor["annotations"]["readOnlyHint"] is True

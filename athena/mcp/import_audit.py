@@ -258,7 +258,8 @@ def _facture_importee_encore_au_brouillon(ctx: dict) -> Optional[str]:
         "l'encaissement inscrit au "
         "registre d'administration à sa date historique — le seul endroit "
         "d'où un paiement s'inscrit, dans l'application ou par les outils "
-        "comptables du connecteur sous leur autorisation distincte —, le "
+        "comptables du connecteur (record_admin_entry, record_trust_entry) "
+        "—, le "
         "« Journal des honoraires » les imprime avec 0 $ reçu et le total en "
         "solde, et le sommaire du dossier lit « payé 0 »."
     )

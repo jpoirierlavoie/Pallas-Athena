@@ -53,7 +53,7 @@ from typing import Optional
 
 from markupsafe import Markup
 
-from mcp import SCOPE_COMPTABILITE, SCOPE_WRITE
+from mcp import SCOPE_WRITE
 
 
 @dataclass(frozen=True)
@@ -64,8 +64,8 @@ class Family:
     key: str
     #: The heading INSTRUCTIONS use (« CREATE: … »).
     label: str
-    #: The scope every member declares (``athena:write`` or
-    #: ``athena:comptabilite``).
+    #: The scope every member declares — ``athena:write`` for every family
+    #: since 2026-10-05, when the lawyer removed ``athena:comptabilite``.
     scope: str
     #: The member tools, in the order the texts name them.
     tools: tuple[str, ...]
@@ -111,29 +111,19 @@ class Never:
     #: ``path::test_name`` of the behavioural test backing a promise no
     #: sweep can express. The disclosure test checks that it exists.
     behavioural_test: str = ""
-    #: The bullet to show INSTEAD while the accounting box is on the same
-    #: page — the screen never forbids, two blocks up, what it offers two
-    #: blocks down.
-    fr_comptabilite: str = ""
     #: A short « jamais … » clause for the checkbox summary, when this
     #: promise belongs there.
     summary_fr: str = ""
-    #: The write checkbox's clause INSTEAD while the accounting box is on
-    #: the same page (the « payment » clause: the write box never records
-    #: one, the accounting box does).
-    summary_fr_comptabilite: str = ""
     #: Stated in the SAFETY CORE, within the first 2 048 characters of
     #: INSTRUCTIONS (``HEAD_LIMIT``; finitions, contracts-1): the promises
-    #: a client that cuts the field must still read. Only a general promise
-    #: (never an ``accounting_only`` one — the core is the same for every
-    #: token).
+    #: a client that cuts the field must still read.
     in_core: bool = False
-    #: A promise about what the ACCOUNTING grant never does (lot 5b): its
-    #: bullet stands in the accounting block of the consent screen — not the
-    #: write block's list — and its sentence in the INSTRUCTIONS of a token
-    #: holding ``athena:comptabilite`` only. Its sweep is global all the
-    #: same: no connector module or reached service may express it.
-    accounting_only: bool = False
+    # (Until 2026-10-05 a promise could also be ``accounting_only`` — shown
+    # beside the separate accounting box and told only to a token holding
+    # ``athena:comptabilite`` — and carry ``fr_comptabilite`` /
+    # ``summary_fr_comptabilite`` variants for the screen that offered that
+    # box. The lawyer removed the scope: every promise is now told to every
+    # token, in one list.)
 
 
 # ── The write families ──────────────────────────────────────────────────
@@ -398,14 +388,13 @@ FAMILIES: tuple[Family, ...] = (
             "lawyer confirms it."
         ),
     ),
-    # Lot 5b — ACCOUNTING, the one family under athena:comptabilite (plan
-    # D1, D2, D14, D16). Its OWN consent box, never implied by athena:write
-    # and never implying it; INSTRUCTIONS carry this index line only for a
-    # token holding the scope (build_instructions(accounting=True)).
+    # Lot 5b — ACCOUNTING (plan D1, D2, D14, D16). Under its own scope,
+    # athena:comptabilite, and its own consent box until 2026-10-05, when
+    # the lawyer removed both: a write family like the others since.
     Family(
         key="accounting",
         label="ACCOUNTING",
-        scope=SCOPE_COMPTABILITE,
+        scope=SCOPE_WRITE,
         tools=(
             "record_trust_entry", "record_admin_entry", "update_admin_entry",
             "clear_register_entries", "reverse_register_entry",
@@ -460,13 +449,14 @@ TOOL_CODE_MODULES: frozenset[str] = frozenset({
 # The register writers NO tool may reach, whatever its scope (lot 5b): the
 # reconciliations, the accounts, the inter-dossier transfer and the receipt
 # stay the lawyer's, in the application. Named here rather than by module:
-# the connector reads and — under athena:comptabilite — writes the registers
-# through services/comptabilite, so importing the models is legitimate;
-# calling one of these is not. (Until lot 5b the list also held the entry
-# writers — create/update/clear/reverse, the card payment — and backed a
-# promise that NO tool touched the registers; the ACCOUNTING family reaches
-# those now, and what keeps them away from every other tool is the derived
-# reach test the « trust » promise names.) Lot 5, step 5 split the one list
+# the connector reads and writes the registers through
+# services/comptabilite, so importing the models is legitimate; calling one
+# of these is not. (Until lot 5b the list also held the entry writers —
+# create/update/clear/reverse, the card payment — and backed a promise that
+# NO tool touched the registers; the ACCOUNTING family reaches those now,
+# and what keeps them away from every other tool is a derived reach test,
+# tests/test_mcp_accounting.py::
+# test_only_the_accounting_tools_reach_a_register_writer.) Lot 5, step 5 split the one list
 # three ways — deleting an entry, the reconciliations and accounts, the
 # inter-dossier transfer —, each the forbidden calls of its OWN promise, so
 # the screen states each impossibility where its sweep backs it.
@@ -513,24 +503,22 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="payment",
-        fr="inscrire ou encaisser un <strong>paiement</strong>",
         # Lot 5, step 5: « sauf par une écriture aux registres » named no
         # entry. A payment exists as exactly TWO register entries, and the
-        # screen now names both — and says who writes it onto the invoice.
-        fr_comptabilite=(
+        # screen names both — and says who writes it onto the invoice.
+        # 2026-10-05: the accounting tools are write tools like the others
+        # (the separate grant left), so this wording — until then the
+        # variant shown beside the accounting box — is the only one.
+        fr=(
             "inscrire un <strong>paiement</strong> autrement que par une "
-            "écriture aux registres comptables, avec la case «&nbsp;Autoriser "
-            "la comptabilité&nbsp;» — un encaissement au compte "
+            "écriture aux registres comptables — un encaissement au compte "
             "d'administration ou un paiement d'honoraires au fidéicommis, "
             "qui inscrit lui-même le paiement sur la facture"
         ),
-        # Lot 5b made the old sentence true for a token WITHOUT the
-        # accounting grant only: under it, an encaissement or a trust fee
-        # payment records a payment — written by the REGISTER, in the
-        # entry's own transaction. The clause (a SAFETY CORE clause since
-        # contracts-1, part 2) is true for every token: without the grant
-        # nothing records a payment, and under it only a register entry does
-        # — record_trust_entry and record_admin_entry name which.
+        # A SAFETY CORE clause since contracts-1, part 2: only a register
+        # entry records a payment — written by the REGISTER, in the entry's
+        # own transaction; record_trust_entry and record_admin_entry name
+        # which.
         en=(
             "record a payment outside the accounting registers"
         ),
@@ -546,12 +534,9 @@ NEVERS: tuple[Never, ...] = (
         forbidden=("record_payment", "payment_updates", "projeter_paiement",
                    "reduire_paiement"),
         forbidden_modules=("services.encaissements",),
-        summary_fr="de paiement",
-        summary_fr_comptabilite=(
-            "de paiement (seule la case «&nbsp;Autoriser la "
-            "comptabilité&nbsp;» en inscrit, et seulement par une écriture "
-            "aux registres&nbsp;: un encaissement ou un paiement "
-            "d'honoraires)"
+        summary_fr=(
+            "de paiement autrement que par une écriture aux registres "
+            "comptables (un encaissement ou un paiement d'honoraires)"
         ),
     ),
     # Lot 3b (BILL) falsified two promises and DELETED them: « it never
@@ -577,14 +562,9 @@ NEVERS: tuple[Never, ...] = (
     Never(
         key="invoice_paid",
         fr=(
-            "marquer une facture <strong>payée</strong> — seul un "
-            "encaissement inscrit dans l'application le fait"
-        ),
-        fr_comptabilite=(
             "marquer une facture <strong>payée</strong> par un changement de "
-            "statut — seul un paiement inscrit aux registres le fait, dans "
-            "l'application ou avec la case «&nbsp;Autoriser la "
-            "comptabilité&nbsp;»"
+            "statut — seul un paiement inscrit aux registres comptables le "
+            "fait"
         ),
         en=(
             "mark an invoice payée by a status change"
@@ -629,42 +609,12 @@ NEVERS: tuple[Never, ...] = (
     # « never touches identity verification or conflict checks ». The trust
     # half stays whole; what stays true of the compliance half is its own
     # promise below (« kyc »).
-    Never(
-        key="trust",
-        # Lot 5, step 5 (the final « never » set): « toucher au fidéicommis »
-        # was replaced. Reading stays under athena:read (the balances, the
-        # register, the snapshot), so « toucher » overstated a promise about
-        # WRITES; and beside the accounting box a bare « (sauf avec la
-        # case …) » named nothing of what that box still forbids. What
-        # stays impossible under it is now a precise list, each item its
-        # own promise below (accounting_only), and this bullet points to it.
-        fr=(
-            "écrire au <strong>fidéicommis</strong> ou au registre "
-            "d'administration"
-        ),
-        fr_comptabilite=(
-            "écrire au <strong>fidéicommis</strong> ou au registre "
-            "d'administration sans la case «&nbsp;Autoriser la "
-            "comptabilité&nbsp;» — ce qu'elle-même ne permet jamais est "
-            "énuméré avec elle, plus bas"
-        ),
-        # Lot 5b: true for a token WITHOUT the accounting grant — and said
-        # so. The register writers the ACCOUNTING family reaches (through
-        # services/comptabilite) left the global sweep; what backs the
-        # promise now is DERIVED: no tool outside ACCOUNTING_TOOLS reaches a
-        # register writer, and every one of those demands the scope. The
-        # writers no tool may EVER reach are the accounting-only promises
-        # below (« register_delete », « register_setup », « register_transfer »).
-        en=(
-            "Without the separate `athena:comptabilite` grant it never "
-            "writes to trust accounting — neither the trust register nor the "
-            "administration ledger."
-        ),
-        behavioural_test=(
-            "tests/test_mcp_accounting.py::"
-            "test_only_the_accounting_tools_reach_a_register_writer"
-        ),
-    ),
+    # 2026-10-05 DELETED « trust » — « without the separate
+    # athena:comptabilite grant it never writes to trust accounting »: the
+    # lawyer removed that grant, and the ACCOUNTING family is a write family
+    # like the others. What the register tools still never do is the precise
+    # list below (« register_delete » … « account_number »), told to every
+    # token now.
     Never(
         key="kyc",
         # D7: a check the connector inscribes is PRESUMED — the model stamps
@@ -902,10 +852,11 @@ NEVERS: tuple[Never, ...] = (
         ),
         forbidden=("set_active_template", "clear_active_template"),
     ),
-    # ── Lot 5 — what the ACCOUNTING grant itself never does ─────────────
-    # Shown in the accounting block of the consent screen and in the
-    # INSTRUCTIONS of a token holding the scope (``accounting_only``); swept
-    # over every connector module and reached service all the same.
+    # ── Lot 5 — what the ACCOUNTING tools never do ───────────────────────
+    # Until 2026-10-05 shown only beside the separate accounting box and
+    # told only to a token holding athena:comptabilite (``accounting_only``);
+    # the lawyer removed that scope, so every token is told them now. Swept
+    # over every connector module and reached service, as ever.
     #
     # Step 5 made this the FINAL set, the precise list that replaced
     # « toucher au fidéicommis » (plan D1, D14): no entry deleted — the
@@ -928,16 +879,15 @@ NEVERS: tuple[Never, ...] = (
             "reste modifiable, puis par une contre-passation"
         ),
         en=(
-            "Even under the accounting grant it never deletes a register "
-            "entry: a trust entry is corrected only by a reversal (both kept "
-            "for good), an administration entry with `update_admin_entry` "
-            "while editable, by a reversal afterwards."
+            "It never deletes a register entry: a trust entry is corrected "
+            "only by a reversal (both kept for good), an administration "
+            "entry with `update_admin_entry` while editable, by a reversal "
+            "afterwards."
         ),
         # The registers' deleters, named beside the « delete » promise's
         # pattern (which matches them too): a promise about ENTRIES keeps
         # its own sweep.
         forbidden=_REGISTER_DELETERS,
-        accounting_only=True,
     ),
     Never(
         key="register_setup",
@@ -954,7 +904,6 @@ NEVERS: tuple[Never, ...] = (
         ),
         forbidden=_REGISTER_SETUP_WRITERS,
         summary_fr="de conciliation ni de compte",
-        accounting_only=True,
     ),
     Never(
         key="register_transfer",
@@ -977,7 +926,6 @@ NEVERS: tuple[Never, ...] = (
             "test_a_transfer_between_dossiers_is_never_reversed_here"
         ),
         summary_fr="de virement entre dossiers",
-        accounting_only=True,
     ),
     Never(
         key="trust_withdrawal",
@@ -998,7 +946,6 @@ NEVERS: tuple[Never, ...] = (
             "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
         ),
         summary_fr="de retrait en espèces",
-        accounting_only=True,
     ),
     Never(
         key="fee_invoice",
@@ -1036,7 +983,6 @@ NEVERS: tuple[Never, ...] = (
             "de paiement d'honoraires sur une facture papier, non envoyée, "
             "qui impute une provision ou adressée à un autre client"
         ),
-        accounting_only=True,
     ),
     # Decision D23 (2026-09-29, art. 58 — « chèque tiré à l'ordre de
     # l'avocat »): the payee of a fee payment is the lawyer or his firm, as
@@ -1059,7 +1005,6 @@ NEVERS: tuple[Never, ...] = (
             "test_d23_the_payee_is_the_lawyer_or_his_firm"
         ),
         summary_fr="de paiement d'honoraires à l'ordre d'un autre que vous ou votre cabinet",
-        accounting_only=True,
     ),
     Never(
         key="account_number",
@@ -1072,7 +1017,6 @@ NEVERS: tuple[Never, ...] = (
             "tests/test_mcp_accounting.py::"
             "test_no_accounting_payload_ever_carries_a_transit_or_account_number"
         ),
-        accounting_only=True,
     ),
 )
 
@@ -1096,22 +1040,9 @@ def families_for(scope: str) -> tuple[Family, ...]:
     return tuple(f for f in FAMILIES if f.scope == scope and f.tools)
 
 
-def _never_fr(never: Never, comptabilite_offered: bool) -> Markup:
-    text = never.fr_comptabilite if (comptabilite_offered and never.fr_comptabilite) else never.fr
+def _never_fr(never: Never) -> Markup:
     # Static constants of this module, never request data: safe to mark.
-    return Markup(text)  # nosec B704 — module constant, no user input
-
-
-def general_nevers() -> tuple[Never, ...]:
-    """The promises every token is told — the write block's « jamais »
-    list and every INSTRUCTIONS."""
-    return tuple(n for n in NEVERS if not n.accounting_only)
-
-
-def accounting_nevers() -> tuple[Never, ...]:
-    """What the ACCOUNTING grant itself never does — its block's list, and
-    the INSTRUCTIONS of a token holding ``athena:comptabilite``."""
-    return tuple(n for n in NEVERS if n.accounting_only)
+    return Markup(never.fr)  # nosec B704 — module constant, no user input
 
 
 def _summary(clauses: list[str], nevers: list[str]) -> Markup:
@@ -1122,45 +1053,25 @@ def _summary(clauses: list[str], nevers: list[str]) -> Markup:
     return Markup(body)  # nosec B704 — module constants, no user input
 
 
-def write_summary_fr(*, comptabilite_offered: bool = False) -> Markup:
+def write_summary_fr() -> Markup:
     """The write checkbox's summary: every write family's clause, then the
-    short « jamais » clauses — derived, so it names exactly what is granted.
-    While the accounting box is on the same page a clause may say, beside
-    the write box, what only the accounting box does (the payment)."""
-    nevers = [
-        (n.summary_fr_comptabilite if comptabilite_offered
-         and n.summary_fr_comptabilite else n.summary_fr)
-        for n in general_nevers() if n.summary_fr
-    ]
+    short « jamais » clauses — derived, so it names exactly what is granted."""
+    nevers = [n.summary_fr for n in NEVERS if n.summary_fr]
     return _summary([f.checkbox_summary_fr for f in families_for(SCOPE_WRITE)],
                     nevers)
 
 
-def comptabilite_summary_fr() -> Markup:
-    """The accounting checkbox's summary, derived the same way: its
-    family's clause, then « jamais » — nothing deleted, and the
-    accounting-only promises that carry a clause."""
-    nevers = [n.summary_fr for n in NEVERS
-              if n.summary_fr and (n.key == "delete" or n.accounting_only)]
-    return _summary(
-        [f.checkbox_summary_fr for f in families_for(SCOPE_COMPTABILITE)],
-        nevers)
-
-
-def consent_context(*, comptabilite_offered: bool) -> dict:
+def consent_context() -> dict:
     """What ``templates/mcp/consent.html`` renders from the registry.
 
-    ``write_families`` are included, in order, inside the write block;
-    ``nevers`` are the bullets of its « jamais » list — with the accounting
-    variant of a bullet while the accounting box is on the same page;
-    ``write_summary`` is the grant checkbox's summary. The accounting block
-    (rendered only while its box is offered) gets the same three:
-    ``comptabilite_families``, ``comptabilite_nevers`` (the promises the
-    accounting grant keeps) and ``comptabilite_summary``. ``phase_bulk_max``
-    is the reclassifiers' batch ceiling, ``entry_bulk_max`` the bulk
-    creators' and ``series_max`` a series' occurrence ceiling
-    (utils/recurrence), all read from the registry; ``register_clear_max``
-    is a clearing's batch ceiling.
+    ``write_families`` are included, in order, inside the write block —
+    the ACCOUNTING family's among them since 2026-10-05, when its separate
+    box left; ``nevers`` are the bullets of its « jamais » list (every
+    promise, one list); ``write_summary`` is the grant checkbox's summary.
+    ``phase_bulk_max`` is the reclassifiers' batch ceiling,
+    ``entry_bulk_max`` the bulk creators' and ``series_max`` a series'
+    occurrence ceiling (utils/recurrence), all read from the registry;
+    ``register_clear_max`` is a clearing's batch ceiling.
     """
     from mcp import tools as _tools  # lazy: mcp.tools imports this module
 
@@ -1170,12 +1081,8 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
         "series_max": _tools._SERIES_MAX,
         "register_clear_max": _tools.REGISTER_CLEAR_MAX,
         "write_families": families_for(SCOPE_WRITE),
-        "comptabilite_families": families_for(SCOPE_COMPTABILITE),
-        "nevers": [_never_fr(n, comptabilite_offered) for n in general_nevers()],
-        "comptabilite_nevers": [_never_fr(n, True) for n in accounting_nevers()],
-        "write_summary": write_summary_fr(
-            comptabilite_offered=comptabilite_offered),
-        "comptabilite_summary": comptabilite_summary_fr(),
+        "nevers": [_never_fr(n) for n in NEVERS],
+        "write_summary": write_summary_fr(),
     }
 
 
@@ -1277,12 +1184,12 @@ _READ_CONTENT_EN = (
 
 def core_nevers() -> tuple[Never, ...]:
     """The promises the SAFETY CORE states (``in_core``)."""
-    return tuple(n for n in general_nevers() if n.in_core)
+    return tuple(n for n in NEVERS if n.in_core)
 
 
 def safety_core_en() -> str:
     """The SAFETY CORE — the first thing INSTRUCTIONS say, identical for
-    every token (it states general promises only)."""
+    every token."""
     nevers = "; ".join(n.en for n in core_nevers())
     return " ".join((
         _CORE_LEAD_EN,
@@ -1306,10 +1213,8 @@ def instructions_head_en() -> str:
 
 def build_instructions(
     registry: Optional[dict] = None,
-    accounting_tools: Optional[frozenset] = None,
     phase_bulk_max: Optional[int] = None,
     *,
-    accounting: bool = False,
     entry_bulk_max: Optional[int] = None,
 ) -> str:
     """The ``initialize`` instructions, assembled from the registry.
@@ -1324,22 +1229,15 @@ def build_instructions(
     tests; by default the live registry is read (lazily: ``mcp.tools``
     imports this module).
 
-    *accounting* — the variant for a token holding ``athena:comptabilite``
-    (plan lot 5b): only it counts and indexes the accounting tools (the
-    ACCOUNTING family and ``get_admin_ledger``) and states the promises the
-    accounting grant keeps. Every other token is told only that such tools
-    exist under a separate grant — its text never describes a tool it
-    cannot see. The core and the general promises read the same in both
-    variants: each is worded to be true for every token.
+    ONE text for every token since 2026-10-05: the variant a token holding
+    ``athena:comptabilite`` read (the ACCOUNTING family, its read and the
+    promises that grant kept) left with the scope — every family and every
+    promise is in it.
     """
-    if (registry is None or accounting_tools is None or phase_bulk_max is None
-            or entry_bulk_max is None):
+    if registry is None or phase_bulk_max is None or entry_bulk_max is None:
         from mcp import tools as _tools
 
         registry = _tools.TOOLS if registry is None else registry
-        accounting_tools = (
-            _tools.ACCOUNTING_TOOLS if accounting_tools is None else accounting_tools
-        )
         phase_bulk_max = (
             _tools.PHASE_BULK_MAX if phase_bulk_max is None else phase_bulk_max
         )
@@ -1347,13 +1245,9 @@ def build_instructions(
             _tools.ENTRY_BULK_MAX if entry_bulk_max is None else entry_bulk_max
         )
 
-    hidden = frozenset() if accounting else frozenset(accounting_tools)
-    writes = write_tools() - hidden
-    families = [
-        f for f in FAMILIES
-        if f.tools and (accounting or f.scope != SCOPE_COMPTABILITE)
-    ]
-    reads = len([n for n in registry if n not in write_tools() and n not in hidden])
+    writes = write_tools()
+    families = [f for f in FAMILIES if f.tools]
+    reads = len([n for n in registry if n not in writes])
     parts = [
         instructions_head_en(),
         f"TOOLS: {reads} tools read; {len(writes)} write, in "
@@ -1366,25 +1260,9 @@ def build_instructions(
                 phase_bulk_max=phase_bulk_max, entry_bulk_max=entry_bulk_max)
         )
     parts.append(_READ_CONTENT_EN)
-
-    scope = (
+    parts.append(
         "Write tools appear only when the lawyer granted the `athena:write` "
         "scope."
     )
-    if accounting:
-        scope += (
-            " The accounting tools appear under the SEPARATE "
-            "`athena:comptabilite` grant, which this authorization holds; "
-            "`athena:write` never stands in for it."
-        )
-    elif accounting_tools:
-        scope += (
-            " Accounting tools appear only under the SEPARATE "
-            "`athena:comptabilite` grant; `athena:write` never stands in "
-            "for it."
-        )
-    parts.append(scope)
-    parts.extend(n.en for n in general_nevers() if not n.in_core)
-    if accounting:
-        parts.extend(n.en for n in accounting_nevers())
+    parts.extend(n.en for n in NEVERS if not n.in_core)
     return " ".join(parts)

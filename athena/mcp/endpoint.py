@@ -13,9 +13,7 @@ from flask import Response, jsonify, request
 
 from mcp import (
     DEFAULT_PROTOCOL_VERSION,
-    SCOPE_COMPTABILITE,
     SUPPORTED_PROTOCOL_VERSIONS,
-    comptabilite_enabled,
     mcp_bp,
 )
 from mcp import disclosure, jsonrpc, tools
@@ -36,27 +34,9 @@ from utils.tracing_setup import span
 # the « never » statements are derived, so a lot that adds a family or lifts
 # a promise changes the registry and this text follows. Recopied by hand,
 # the counts went stale twice and the undo path stated a falsehood (« frees
-# the number »).
+# the number »). ONE text for every token since 2026-10-05: the per-token
+# accounting variant left with the athena:comptabilite scope.
 INSTRUCTIONS = disclosure.build_instructions()
-# The variant a token holding athena:comptabilite reads (plan lot 5b): the
-# ACCOUNTING family, its read, and the promises the accounting grant keeps.
-# Every other token — the accounting switch off included — reads
-# INSTRUCTIONS, which describes no tool it cannot see.
-INSTRUCTIONS_COMPTABILITE = disclosure.build_instructions(accounting=True)
-
-
-def instructions_for(scopes) -> str:
-    """The INSTRUCTIONS of a token holding *scopes*: the accounting variant
-    only while the token holds the scope AND the accounting switch is on —
-    the one state in which it can see an accounting tool. With
-    ``MCP_WRITE_ENABLED`` off that tool is the READ ``get_admin_ledger``
-    alone, and the variant's ACCOUNTING paragraph still describes the five
-    writes the master switch hides — as both variants describe every other
-    write family whatever the write switch says (the texts are chosen by
-    scope, never re-assembled per switch)."""
-    if SCOPE_COMPTABILITE in (scopes or ()) and comptabilite_enabled():
-        return INSTRUCTIONS_COMPTABILITE
-    return INSTRUCTIONS
 
 
 SERVER_INFO = {
@@ -89,9 +69,8 @@ def _protocol_version() -> tuple[Optional[str], Optional[Response]]:
 def mcp_method_not_allowed() -> Response:
     """No SSE stream (GET), no sessions to delete (DELETE) — §9.1.
 
-    Registered explicitly (rather than relying on Flask's automatic 405)
-    so the blueprint's kill-switch before_request also covers these
-    methods with a 404 when MCP_ENABLED is off.
+    Registered explicitly rather than relying on Flask's automatic 405, so
+    the answer carries ``Allow: POST`` and the JSON error body.
     """
     resp = jsonify({"error": "method_not_allowed"})
     resp.status_code = 405
@@ -186,7 +165,7 @@ def _initialize(params: dict) -> dict:
         "protocolVersion": negotiated,
         "capabilities": {"tools": {"listChanged": False}},
         "serverInfo": dict(SERVER_INFO),
-        "instructions": instructions_for(granted_scopes()),
+        "instructions": INSTRUCTIONS,
     }
 
 
@@ -224,38 +203,14 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
 
     # Authorization BEFORE argument validation and before any handler runs,
     # so a refused write never touches the model layer.
-    # The refusal names the switch that is actually OFF — the master write
-    # switch, or the accounting one — so the operator reading it flips the
-    # right variable. Two literal reason codes, never a computed one (the
-    # refusal-reason sweep in test_mcp_jsonrpc reads them from the source).
-    switch = tools.unavailable_reason(name)
-    if switch == tools.COMPTABILITE_SWITCH:
-        log_mcp_event(
-            "mcp_write_refused", "refused", tool=name,
-            reason="comptabilite_disabled",
-        )
-        raise jsonrpc.JsonRpcError(
-            jsonrpc.INVALID_PARAMS,
-            "Accounting tools are disabled on this server "
-            f"({tools.COMPTABILITE_SWITCH}).",
-        )
-    if switch is not None:
-        log_mcp_event(
-            "mcp_write_refused", "refused", tool=name, reason="write_disabled"
-        )
-        raise jsonrpc.JsonRpcError(
-            jsonrpc.INVALID_PARAMS,
-            f"Write tools are disabled on this server ({switch}).",
-        )
     needed = tools.required_scope(name)
     if needed not in granted_scopes():
         raise ScopeRequired(needed, name)
     if name in tools.WRITE_TOOLS:
         # Re-read the live token: the bearer success cache is a read-path
         # optimization and must not let a revoked token mutate the file.
-        # `needed` is the tool's OWN scope — athena:comptabilite for an
-        # accounting tool — so the live token must still carry THAT one;
-        # athena:write never stands in for it.
+        # `needed` is the tool's own scope (athena:write for every write),
+        # so the live token must still carry it.
         revalidate_for_write(needed, name)
 
     arguments = params.get("arguments")
