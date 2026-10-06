@@ -32,7 +32,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from scripts import rectify_registers as rr
     from scripts import verify_trust_integrity as vti
 
-from tests._accounting_history import FEE_PAYEE  # noqa: E402
+from tests._accounting_history import FEE_PAYEE, legacy_fee_entry  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 
 UTC = timezone.utc
@@ -310,6 +310,85 @@ def test_un_plan_applique_se_relance_sans_rien_ecrire(fake, monkeypatch, capsys,
     assert "déjà fait" in out
     assert "Rien à écrire" in out
     assert fake.peek(f"trust_transactions/{entry['id']}") == applied
+
+
+def test_un_paiement_a_un_tiers_se_reclasse_en_debourse_a_un_tiers(
+    fake, monkeypatch, capsys, tmp_path
+):
+    """Décision de l'avocat (2026-10-06, séquences 28 et 42) — les honoraires
+    d'une avocate-conseil, facturés au client comme débours et payés
+    directement du fidéicommis, avaient été inscrits « Paiement
+    d'honoraires » : deux notes pour toujours (bénéficiaire hors du profil —
+    D23 —, aucune recette au compte d'opérations — D-4). Reclassée,
+    l'écriture dit vrai et les deux notes tombent ; la référence de la
+    facture qu'elle a réglée reste sur la fiche."""
+    _today(monkeypatch, "2026-09-20T16:00:00+00:00")
+    deposit = _deposit(amount=100000, date=_d(2026, 9, 1))
+    _, errs = trust.clear_transaction(deposit["id"], _d(2026, 9, 2))
+    assert errs == [], errs
+    fee = legacy_fee_entry({
+        "account_id": "acc1", "amount": 75000, "method": "virement",
+        "counterparty": "Me Ines Benadda", "dossier_id": "dos1", "client_id": "c1",
+        "date": _d(2026, 9, 3), "invoice_external_ref": "257701-01",
+        "description": "", "reference": "",
+    })
+    path = f"trust_transactions/{fee['id']}"
+    # Written before the D-4 rule, as the two production entries were.
+    _set(fake, f"trust_transactions/{deposit['id']}", created_at=_at(7, 1), updated_at=_at(7, 2))
+    _set(fake, path, created_at=_at(7, 18), updated_at=_at(7, 18))
+    code = vti.main()
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "bénéficiaire n'est ni l'avocat ni son cabinet" in out
+    assert "sans aucune recette d'administration" in out
+
+    plan = _plan(tmp_path, _change("fideicommis", fee["id"], "purpose",
+                                   trust.FEE_PAYMENT_PURPOSE, "déboursé_tiers",
+                                   motif="Honoraires de l'avocate-conseil payés directement."))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 0, out
+    stored = fake.peek(path)
+    assert stored["purpose"] == "déboursé_tiers"
+    assert stored["invoice_external_ref"] == "257701-01"
+    assert stored["counterparty"] == "Me Ines Benadda"
+    assert stored["revisions"][-1]["changes"] == {
+        "purpose": [trust.FEE_PAYMENT_PURPOSE, "déboursé_tiers"]}
+    code = vti.main()
+    assert code == 0, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("target, linked, said", [
+    ("déboursé_tiers", True, "une recette du registre d'administration y est liée (n° 9)"),
+    ("remise_client", False, "seulement en « Déboursé à un tiers »"),
+])
+def test_la_reclassification_est_refusee_hors_de_son_cas(
+    fake, capsys, tmp_path, target, linked, said
+):
+    """Une recette liée au registre d'administration dit que l'argent est
+    allé au cabinet : c'était bien un paiement d'honoraires, et le
+    reclasser rendrait cette recette orpheline. Et aucun autre objet."""
+    fee = _fee_payment_doc(fake, "Me Ines Benadda")
+    if linked:
+        fake.seed("admin_transactions/rec1", {
+            "id": "rec1", "account_id": "ops1", "sequence": 9,
+            "kind": "encaissement_facture", "direction": "recette", "amount": 50000,
+            "trust_transaction_id": fee, "status": "compensée", "date": _d(2026, 6, 1),
+        })
+    plan = _plan(tmp_path, _change("fideicommis", fee, "purpose",
+                                   trust.FEE_PAYMENT_PURPOSE, target))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 1, out
+    assert said in out
+    assert fake.peek(f"trust_transactions/{fee}")["purpose"] == trust.FEE_PAYMENT_PURPOSE
+
+
+def test_seul_un_paiement_d_honoraires_se_reclasse(fake, monkeypatch, capsys, tmp_path):
+    entry = _closed_september(fake, monkeypatch)
+    plan = _plan(tmp_path, _change("fideicommis", entry["id"], "purpose",
+                                   "dépôt_client", "déboursé_tiers"))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 1, out
+    assert "seul un « Paiement d'honoraires » se reclasse" in out
 
 
 def test_une_ecriture_modifiee_avant_le_lot_fait_tout_echouer(

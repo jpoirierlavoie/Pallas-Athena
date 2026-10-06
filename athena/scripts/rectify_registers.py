@@ -34,7 +34,16 @@ What it can change — anything else refuses the whole plan:
   ``invoice_external_ref`` on a fee payment that links no Athéna invoice;
   ``date`` and ``cleared_date``, only to midnight UTC of the SAME UTC day —
   a normalization: the frozen balances, the backdating guard and every
-  reconciliation rest on the day, never on the hour;
+  reconciliation rest on the day, never on the hour; ``purpose``, only from
+  « Paiement d'honoraires » to « Déboursé à un tiers » — a withdrawal that
+  paid a third party (a colleague's fees billed to the client as a
+  disbursement), recorded as the lawyer's own fees. Only on a déboursé that
+  links no Athéna invoice, is neither reversed nor annulled, and that NO
+  administration entry is linked to (read strictly): a linked recette means
+  the money did reach the firm, and reclassifying it would orphan that
+  recette. The invoice reference is kept — the entry page shows it as
+  « Facture (externe) », the invoice the payment settled — although the
+  create path drops it on that objet; nothing reads it there as a rule;
 * administration (``administration``): ``date`` and ``cleared_date`` under
   the same rule; ``created_at``, to an instant no later than the entry's own
   ``updated_at`` — to put back the creation instant a console edit replaced
@@ -82,9 +91,12 @@ REGISTERS = {
     "administration": admin_ledger.TRANSACTIONS_COLLECTION,
 }
 FIELDS = {
-    "fideicommis": ("counterparty", "invoice_external_ref", "date", "cleared_date"),
+    "fideicommis": ("counterparty", "invoice_external_ref", "date", "cleared_date", "purpose"),
     "administration": ("date", "cleared_date", "created_at"),
 }
+#: The one reclassification the tool performs (see the module docstring).
+RECLASSIFY_FROM = trust.FEE_PAYMENT_PURPOSE
+RECLASSIFY_TO = "déboursé_tiers"
 _DAY_FIELDS = ("date", "cleared_date")
 _TEXT_MAX = 2000
 _REF_MAX = 200
@@ -196,6 +208,27 @@ def _check_text(value, limit: int, what: str) -> str:
     return value
 
 
+def _check_reclassification(doc: dict, entry_id: str, apres, where: str) -> None:
+    """« Paiement d'honoraires » → « Déboursé à un tiers », and nothing else."""
+    if doc.get("purpose") != RECLASSIFY_FROM or apres != RECLASSIFY_TO:
+        raise PlanRefused(
+            f"{where} : seul un « {trust.PURPOSE_LABELS[RECLASSIFY_FROM]} » se reclasse "
+            f"ici, et seulement en « {trust.PURPOSE_LABELS[RECLASSIFY_TO]} »")
+    if doc.get("direction") != trust.PURPOSE_DIRECTIONS[RECLASSIFY_TO]:
+        raise PlanRefused(f"{where} : un « {trust.PURPOSE_LABELS[RECLASSIFY_TO]} » est un déboursé")
+    if doc.get("invoice_id"):
+        raise PlanRefused(f"{where} : l'écriture paie une facture d'Athéna — ce paiement "
+                          f"est celui des honoraires de l'avocat")
+    if doc.get("reversed_by_id") or doc.get("reverses_id") or doc.get("status") == "annulée":
+        raise PlanRefused(f"{where} : une écriture contre-passée ou annulée ne se reclasse pas")
+    linked = admin_ledger.list_by_trust_transaction(entry_id)
+    if linked:
+        seqs = ", ".join(str(r.get("sequence")) for r in linked)
+        raise PlanRefused(
+            f"{where} : une recette du registre d'administration y est liée (n° {seqs}) — "
+            f"l'argent est allé au cabinet : ce n'était pas un déboursé à un tiers")
+
+
 def resolve(items: list[dict], plan_motif: str) -> tuple[list[Change], dict]:
     """Every change judged against the stored document, read strictly.
 
@@ -275,6 +308,10 @@ def resolve(items: list[dict], plan_motif: str) -> tuple[list[Change], dict]:
                         f"l'avocat ou son cabinet, tels que les nomme le profil du "
                         f"cabinet ({', '.join(payees) or 'aucun nom'}) — D23, art. 58")
                 after = canonical
+        elif field == "purpose":
+            after = apres
+            if stored != after:
+                _check_reclassification(doc, entry_id, apres, where)
         else:  # invoice_external_ref
             after = _check_text(apres, _REF_MAX, where)
             if doc.get("purpose") != trust.FEE_PAYMENT_PURPOSE or doc.get("invoice_id"):
