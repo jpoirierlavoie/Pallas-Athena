@@ -1,4 +1,4 @@
-# Athena — plugin 1.1.0
+# Athena — plugin 1.1.1
 
 Une compétence qui apprend à Claude à se servir du connecteur Athena **avec le moins
 d'appels possible** : d'où vient chaque identifiant, la suite d'appels la plus courte pour
@@ -23,7 +23,7 @@ outils : le serveur les envoie, et la tête de ses INSTRUCTIONS porte le noyau d
 - **Complément Excel et Toolbox** : désactiver le connecteur — en 30 jours, 149 de leurs 168
   chargements n'ont été suivis d'aucun appel.
 
-## Reconstruire et téléverser
+## Reconstruire et livrer
 
 La source vit ici, hors d'`athena/` : elle n'est jamais déployée. Les lignes `{{GEN:…}}` se
 remplissent à la construction; ne jamais les écrire à la main.
@@ -31,13 +31,15 @@ remplissent à la construction; ne jamais les écrire à la main.
 ```
 cd athena
 python -m pytest tests/test_plugin_athena.py -q   # la porte, d'abord
-python -m scripts.exporter_plugin_athena           # → ../dist/athena-1.1.0.plugin (racine du dépôt)
-python -m scripts.exporter_plugin_athena --check   # diffère-t-il de la dernière construction ?
-python -m scripts.exporter_plugin_athena --deplie ../dist/deplie   # et les fichiers, à relire
+python -m scripts.exporter_plugin_athena           # → ../dist/athena-1.1.1.plugin (non versionné)
+rm -rf ../../athena-plugin/plugins/athena
+python -m scripts.exporter_plugin_athena --deplie ../../athena-plugin/plugins/athena
 ```
 
-`dist/` n'est pas versionné. Téléverser le `.plugin` dans la page des plugins de
-l'organisation, sur claude.ai (compte propriétaire), à la place de la version précédente.
+Puis, dans ce miroir (GitHub `jpoirierlavoie/athena-plugin`) : reporter la version dans
+`.claude-plugin/marketplace.json`, valider, pousser. claude.ai s'y synchronise (réglage de
+l'organisation), puis Claude Code : rien à téléverser. Une version GitHub portant l'archive
+reste facultative (point de téléchargement).
 
 ## Ce qui le protège
 
@@ -45,5 +47,5 @@ l'organisation, sur claude.ai (compte propriétaire), à la place de la version 
 se périme (outil ou paramètre renommé, valeur retirée) ou qu'un budget casse ; il vérifie aussi
 l'en-tête, les termes retirés, `.mcp.json` et les champs de chaque recette. `--check` compare une
 reconstruction à l'archive de `dist/` : s'il échoue (ou qu'aucune archive n'existe), la source ou
-le connecteur ont changé — reconstruire et téléverser. Un changement du registre qui ne touche
+le connecteur ont changé — reconstruire et livrer. Un changement du registre qui ne touche
 que les parties générées laisse le test vert : `--check` le voit.

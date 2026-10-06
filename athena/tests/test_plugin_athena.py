@@ -1,4 +1,4 @@
-"""The claude.ai plugin « athena » (skill 1.1.0) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 1.1.1) — the deploy gate.
 
 ``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
 source (``plugin/athena/`` at the repo root) and the tool registry.
@@ -27,7 +27,8 @@ files — what Claude reads — against the registry:
 It fails when a citation goes stale (a tool or parameter renamed, an enum
 value removed) or a budget breaks. A registry change that alters only the
 generated parts — the index, the version line — leaves it green:
-``--check`` is what says the uploaded archive is out of date.
+``--check`` is what says the last build (the one pushed to the mirror
+claude.ai syncs from) is out of date.
 """
 
 import ast

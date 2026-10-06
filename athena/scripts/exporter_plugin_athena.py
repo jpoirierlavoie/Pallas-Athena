@@ -1,4 +1,4 @@
-"""Construit le greffon claude.ai « athena » (compétence 1.1.0)
+"""Construit le greffon claude.ai « athena » (compétence 1.1.1)
 depuis sa source manuscrite et le registre des outils du connecteur.
 
     python -m scripts.exporter_plugin_athena [--sortie CHEMIN.plugin]
@@ -8,8 +8,10 @@ La source vit à la racine du dépôt, dans ``plugin/athena/``, HORS
 d'``athena/`` : elle n'est jamais déployée. Le produit est une archive
 ``dist/athena-<version>.plugin`` (``dist/`` n'est pas versionné) de
 même disposition que la 1.3.0 — ``.claude-plugin/plugin.json``,
-``.mcp.json``, ``README.md``, ``skills/athena/…`` — qu'on téléverse
-dans la page des plugins de l'organisation, sur claude.ai.
+``.mcp.json``, ``README.md``, ``skills/athena/…`` — que ``--deplie``
+écrit aussi dans le miroir ``athena-plugin`` (``plugins/athena``). Ce
+dépôt GitHub poussé, claude.ai s'y synchronise (réglage de
+l'organisation), puis Claude Code : rien ne se téléverse à la main.
 
 Pourquoi générer une partie du texte. Tout ce qui peut dériver du code est
 DÉRIVÉ du registre (``mcp.tools``, ``mcp.disclosure``) plutôt que recopié :
@@ -17,7 +19,7 @@ la 1.3.0 recopiait des comptes d'outils, un préfixe et des vocabulaires, et
 les trois étaient faux au moment de la refonte. La source porte donc des
 lignes ``{{GEN:…}}``, seules sur leur ligne, que ce script remplit :
 
-* ``{{GEN:version}}`` — « Compétence 1.1.0 — registre ‹12 hex› », empreinte
+* ``{{GEN:version}}`` — « Compétence 1.1.1 — registre ‹12 hex› », empreinte
   des noms d'outils et de leurs schémas d'entrée : une compétence
   construite contre un autre registre le dit dès sa deuxième ligne ;
 * ``{{GEN:charger}}`` — sous le titre d'une recette, la ligne « Charger »
@@ -74,7 +76,7 @@ DIST = RACINE / "dist"
 sys.path.insert(0, str(ATHENA))
 
 NOM = "athena"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 SKILL = "skills/athena/SKILL.md"
 INDEX = "skills/athena/references/index-outils.md"
@@ -642,7 +644,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--deplie",
         default="",
-        help="Dossier où écrire aussi les fichiers livrés, pour les relire.",
+        help=("Dossier où écrire aussi les fichiers livrés : le miroir "
+              "(../../athena-plugin/plugins/athena, l'ancienne copie retirée "
+              "d'abord), ou un dossier à relire."),
     )
     parser.add_argument(
         "--check",
@@ -700,7 +704,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             | {n for n in set(existante) & set(fichiers) if existante[n] != fichiers[n]}
         )
         print(f"\nPÉRIMÉ : {sortie} diffère d'une reconstruction — "
-              "reconstruire et téléverser. Membres en cause :")
+              "reconstruire, déplier dans le miroir et pousser. "
+              "Membres en cause :")
         for nom in differents:
             print(f"  • {nom}")
         return 1
@@ -721,9 +726,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Fichiers dépliés : {racine}")
 
     print(
-        "\nÀ faire sur claude.ai (compte propriétaire) : téléverser l'archive "
-        "dans la page\ndes plugins de l'organisation, à la place de la "
-        "version précédente."
+        "\nPour livrer : déplier dans le miroir athena-plugin (--deplie), y "
+        "reporter la\nversion dans .claude-plugin/marketplace.json, valider "
+        "et pousser — claude.ai se\nsynchronise sur ce dépôt GitHub. Rien à "
+        "téléverser."
     )
     return 0
 

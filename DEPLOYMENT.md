@@ -3836,10 +3836,18 @@ Notes:
      **1.1.0** with this release — its accounting recipe
      (`skills/athena/recettes/comptabilite.md`) no longer says the tools
      exist only under a separate « Comptabilité » authorization: rebuild it
-     (`python -m scripts.exporter_plugin_athena`), publish it to the mirror
-     repository `athena-plugin`, and re-upload the archive in claude.ai,
-     the same day. The skill `pallas-athena` it replaced is removed, never
-     updated.
+     and unpack it into the mirror repository `athena-plugin` (from
+     `athena/`, the old copy removed first: `python -m
+     scripts.exporter_plugin_athena --deplie
+     ../../athena-plugin/plugins/athena`), bump the version in the mirror's
+     `.claude-plugin/marketplace.json`, commit and push it, the same day.
+     That push IS the delivery: claude.ai syncs the plugin from that GitHub
+     repository (`jpoirierlavoie/athena-plugin` — an organization setting),
+     and Claude Code from claude.ai; nothing is uploaded by hand, and a
+     GitHub release carrying the archive is optional (a download point).
+     The plugin's own README still said to upload the archive: 1.1.1, the
+     same day, says this instead. The skill `pallas-athena` it replaced is
+     removed, never updated.
   6. *The break-glass, from now on*: `python -m scripts.revoke_mcp_tokens`
      (« Emergency switches », in « Déploiement unique (D22) ») — nothing
      stops the writes, or the accounting tools, alone any more. A rollback
