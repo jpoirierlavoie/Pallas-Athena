@@ -39,6 +39,21 @@ ledger runs negative; the « Solde dû » shown is the positive owed amount), a
 card payment or refund a ``recette``. The account TYPE decides display only
 (labels + the statement-sign conversion at reconciliation).
 
+Four kinds stand OUTSIDE the firm's results (the lawyer's spec of
+2026-10-07): his own drawings and contributions (``prélèvement``,
+``apport`` — a sole practitioner's equity, never an expense nor a revenue)
+and the firm's money moving to or from an account outside this ledger
+(``virement_interne_sortant`` / ``virement_interne_entrant`` — the trust
+account, a savings account). They move the balance, clear and reconcile
+like any entry; they carry no category, no invoice and no tax split (the
+model writes the canonical one on every write: net = amount on a déboursé,
+zeros on a recette); and no revenue, expense or TPS/TVQ total counts them.
+``results_statement`` is the one authority for those totals,
+``owner_equity`` for the « Avoir de l'avocat » figures. A payment between
+two accounts OF this ledger stays ``paiement_carte`` (two linked legs), and
+fees taken from trust stay the trust register's fee payment: neither is
+ever a virement interne.
+
 The first section is the pure, Firestore-free layer: the delta/display
 arithmetic, the TPS/TVQ ventilation (incl. ``extract_taxes_from_gross``) and
 the running-balance computation. It carries the test suite
@@ -107,15 +122,64 @@ VALID_KINDS = (
     "encaissement_facture",
     "recette_autre",
     "dépense",
+    "prélèvement",
+    "apport",
+    "virement_interne_sortant",
+    "virement_interne_entrant",
     "paiement_carte",
     "correction",
 )
 REVERSAL_KIND = "correction"
+# The kinds outside the firm's results (module docstring): the lawyer's own
+# money, and the firm's money moving to or from an account outside this
+# ledger. ``kind`` « prélèvement » is the lawyer's DRAWING — never the
+# method « prélèvement » (a pre-authorized debit), a different field.
+OWNER_KINDS = ("prélèvement", "apport")
+INTERNAL_TRANSFER_KINDS = ("virement_interne_sortant", "virement_interne_entrant")
+NON_RESULT_KINDS = OWNER_KINDS + INTERNAL_TRANSFER_KINDS
+# The results statement's ALLOW-list (``results_statement``): every kind not
+# named here stays out of every revenue, expense and tax total — the four
+# above, and a card payment (a transfer between two accounts of this
+# ledger). A correction counts as the kind it reverses.
+REVENUE_KINDS = ("encaissement_facture", "recette_autre")
+EXPENSE_KINDS = ("dépense",)
 # The only kinds the create form (and an edit) may carry.
-_SIMPLE_KINDS = ("encaissement_facture", "recette_autre", "dépense")
+_SIMPLE_KINDS = ("encaissement_facture", "recette_autre", "dépense") + NON_RESULT_KINDS
 # The only kinds an EDIT may keep or become (invoice-linked entries are
 # reverse-only — see ``_entry_lock_reason``).
-_EDITABLE_KINDS = ("recette_autre", "dépense")
+_EDITABLE_KINDS = ("recette_autre", "dépense") + NON_RESULT_KINDS
+# The passages an edit may make between kinds (spec of 2026-10-07, §2.2):
+# within ONE sign — the bank movement's direction is a fact, only its nature
+# was misjudged — plus the historical dépense <-> recette_autre switch, which
+# predates the four natures and re-derives the sign (pinned by tests). Any
+# other change of kind is ``changement_de_sens``. Judged only when the kind
+# changes: a direction named alone stays ``sens_incohérent``.
+KIND_MOVES = {
+    "dépense": ("prélèvement", "virement_interne_sortant", "recette_autre"),
+    "prélèvement": ("dépense", "virement_interne_sortant"),
+    "virement_interne_sortant": ("dépense", "prélèvement"),
+    "recette_autre": ("apport", "virement_interne_entrant", "dépense"),
+    "apport": ("recette_autre", "virement_interne_entrant"),
+    "virement_interne_entrant": ("recette_autre", "apport"),
+}
+# The web form shows the two virement codes as ONE « Virement interne »
+# with a « Sens » select; this value is the form's, never stored.
+INTERNAL_TRANSFER_FORM_KIND = "virement_interne"
+INTERNAL_TRANSFER_FORM_LABEL = "Virement interne"
+INTERNAL_TRANSFER_KIND_BY_SENS = {
+    "sortant": "virement_interne_sortant",
+    "entrant": "virement_interne_entrant",
+}
+INTERNAL_TRANSFER_SENS_LABELS = {
+    "sortant": "Sortant — vers un autre compte",
+    "entrant": "Entrant — d'un autre compte",
+}
+# The create form's « Type » choices, in display order (a card payment has
+# its own form).
+FORM_KINDS = (
+    "dépense", "recette_autre", "encaissement_facture",
+    "prélèvement", "apport", INTERNAL_TRANSFER_FORM_KIND,
+)
 # The sign of a simple kind is IMPLIED, never chosen. Until lot 0b only the
 # web route derived it (its form has no « Sens » select); the model checked
 # encaissement ⇒ recette and dépense ⇒ déboursé but NOT recette_autre, so a
@@ -130,7 +194,27 @@ _KIND_DIRECTION = {
     "encaissement_facture": "recette",
     "recette_autre": "recette",
     "dépense": "déboursé",
+    "prélèvement": "déboursé",
+    "apport": "recette",
+    "virement_interne_sortant": "déboursé",
+    "virement_interne_entrant": "recette",
 }
+
+
+def kind_move_allowed(old_kind: str, new_kind: str) -> bool:
+    """May an edit move an entry from *old_kind* to *new_kind*
+    (``KIND_MOVES``)? Keeping the kind is always allowed."""
+    return old_kind == new_kind or new_kind in KIND_MOVES.get(old_kind, ())
+
+
+def form_kind(kind: str) -> tuple[str, str]:
+    """``(form_kind, sens)`` of a stored kind — the inverse of the form's
+    « Virement interne » + « Sens » mapping; ``sens`` is ``""`` for every
+    other kind."""
+    for sens, code in INTERNAL_TRANSFER_KIND_BY_SENS.items():
+        if kind == code:
+            return INTERNAL_TRANSFER_FORM_KIND, sens
+    return kind, ""
 
 VALID_METHODS = (
     "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant", "autre",
@@ -186,6 +270,10 @@ KIND_LABELS = {
     "encaissement_facture": "Encaissement de facture",
     "recette_autre": "Autre recette",
     "dépense": "Dépense",
+    "prélèvement": "Prélèvement de l'avocat",
+    "apport": "Apport de l'avocat",
+    "virement_interne_sortant": "Virement interne (sortant)",
+    "virement_interne_entrant": "Virement interne (entrant)",
     "paiement_carte": "Paiement de carte",
     "correction": "Correction",
 }
@@ -348,6 +436,110 @@ def running_balances(txs: list[dict], opening: int = 0) -> list[int]:
     return out
 
 
+def canonical_ventilation(kind: str, direction: str, amount: int) -> Optional[dict]:
+    """The split a kind of ``NON_RESULT_KINDS`` always carries — no tax
+    claimed: ``net = amount`` on a déboursé (the blank-déboursé default),
+    zeros on a recette — or ``None`` for any other kind. Written by the
+    model on EVERY write of those kinds, so a stored split never decides an
+    edit (CLAUDE.md « a new rule judges only the fields a write carries »)."""
+    if kind not in NON_RESULT_KINDS:
+        return None
+    if direction == "déboursé":
+        return {"net_amount": int(amount), "gst_amount": 0, "qst_amount": 0}
+    return {"net_amount": 0, "gst_amount": 0, "qst_amount": 0}
+
+
+def owner_equity(rows: list[dict]) -> dict:
+    """The « Avoir de l'avocat » of *rows*, in cents: his ``contributions``
+    (apports), his ``drawings`` (prélèvements) and ``net`` =
+    contributions − drawings (negative when he drew more than he put in).
+
+    Status-blind like the ledger (an annulée pair nets out). A correction
+    counts against the kind it reverses, with the opposite sign, in its own
+    period: its ``reverses_kind``, stamped on every reversal since
+    2026-10-07, else the kind of its original when the original is among
+    *rows* (a reversal made by an older release — a rollback — carries no
+    stamp). An unstamped correction whose original lies outside *rows* is
+    left out, never guessed: before the stamp, no reversal could reverse
+    one of these two kinds unless such a rollback happened, which the
+    runbook tells the lawyer never to do (DEPLOYMENT.md, 2026-10-07)."""
+    by_id = {r.get("id"): r for r in rows if r.get("id")}
+    contributions = drawings = 0
+    for r in rows:
+        kind = r.get("kind")
+        amount = int(r.get("amount") or 0)
+        if kind == REVERSAL_KIND:
+            kind = (r.get("reverses_kind")
+                    or (by_id.get(r.get("reverses_id")) or {}).get("kind"))
+            amount = -amount
+        if kind == "apport":
+            contributions += amount
+        elif kind == "prélèvement":
+            drawings += amount
+    return {"contributions": contributions, "drawings": drawings,
+            "net": contributions - drawings}
+
+
+class UnresolvedCorrection(Exception):
+    """A correction whose reversed entry is neither stamped
+    (``reverses_kind``) nor among the rows given — a results statement
+    cannot say whether it is revenue, an expense or neither."""
+
+
+def results_statement(rows: list[dict]) -> dict:
+    """The results statement of *rows*, in cents — the ONE authority for
+    what counts as the firm's revenue, expenses and input taxes (spec of
+    2026-10-07, §2.4).
+
+    An ALLOW-list: ``revenue`` sums the ``REVENUE_KINDS`` by kind;
+    ``expenses`` / ``expenses_net`` sum the ``EXPENSE_KINDS`` by category,
+    gross amount and net; ``gst`` / ``qst`` are the TPS/TVQ paid on them.
+    Every other kind — ``NON_RESULT_KINDS``, a card payment — counts in no
+    total. Status-blind, like ``admin_delta``: an annulée pair nets out, and
+    a cleared entry reversed later nets with its correction.
+
+    A correction counts as the entry it reverses, with the opposite sign: by
+    its ``reverses_kind`` when stamped, else by its original found through
+    ``reverses_id`` among *rows* — a reversal lives on its original's
+    account, so a whole account's journal resolves every one. An
+    unresolvable correction RAISES :class:`UnresolvedCorrection`: a total
+    built on an unknown is never reported."""
+    by_id = {r.get("id"): r for r in rows if r.get("id")}
+    revenue = {k: 0 for k in REVENUE_KINDS}
+    expenses: dict = {}
+    expenses_net: dict = {}
+    gst = qst = 0
+    for r in rows:
+        kind = r.get("kind")
+        sign = 1
+        if kind == REVERSAL_KIND:
+            sign = -1
+            kind = r.get("reverses_kind") or ""
+            if not kind:
+                original = by_id.get(r.get("reverses_id"))
+                if original is None:
+                    raise UnresolvedCorrection(r.get("id") or "")
+                kind = original.get("kind") or ""
+        if kind in REVENUE_KINDS:
+            revenue[kind] += sign * int(r.get("amount") or 0)
+        elif kind in EXPENSE_KINDS:
+            category = r.get("category") or ""
+            expenses[category] = expenses.get(category, 0) + sign * int(r.get("amount") or 0)
+            expenses_net[category] = (expenses_net.get(category, 0)
+                                      + sign * int(r.get("net_amount") or 0))
+            gst += sign * int(r.get("gst_amount") or 0)
+            qst += sign * int(r.get("qst_amount") or 0)
+    return {
+        "revenue": revenue,
+        "expenses": expenses,
+        "expenses_net": expenses_net,
+        "gst": gst,
+        "qst": qst,
+        "total_revenue": sum(revenue.values()),
+        "total_expenses": sum(expenses.values()),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Firestore data-access layer. Fails CLOSED everywhere: a read failure during
 # a mutation aborts it; list views propagate errors to the route.
@@ -410,21 +602,62 @@ def _uncertain_create(
     return None, [CREATE_OUTCOME_UNCERTAIN]
 
 
+def _kinds_named(kinds) -> str:
+    """« A », « B » et « C » — the labels of *kinds*, for a refusal that must
+    say which (derived: a kind added to its source names itself)."""
+    names = [f"« {KIND_LABELS[k]} »" for k in kinds]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " et " + names[-1]
+
+
+def _kinds_of(direction: str, among=None) -> str:
+    """The labels of the simple kinds whose sign is *direction*
+    (``_KIND_DIRECTION``), optionally only those in *among*."""
+    return _kinds_named([k for k, d in _KIND_DIRECTION.items()
+                         if d == direction and (among is None or k in among)])
+
+
 # Machine-stable abort reason → French user message.
 _ABORT_MESSAGES = {
     "compte_introuvable": "Compte d'administration introuvable.",
     "compte_fermé": "Ce compte est fermé.",
     "montant_invalide": "Le montant doit être un nombre entier de cents positif.",
     "direction_invalide": "Le sens de l'opération est invalide.",
+    # Derived from the kinds' own maps (the trust twin's ``_purposes_of``
+    # discipline): a kind that joins them names itself in these refusals.
     "sens_incohérent": (
-        "Le sens de l'opération contredit son type : une dépense est un "
-        "déboursé, une autre recette et un encaissement de facture sont des "
-        "recettes. Le sens découle du type — changez le type, jamais le sens."
+        "Le sens de l'opération contredit son type : "
+        + _kinds_of("déboursé") + " sont des déboursés ; "
+        + _kinds_of("recette") + " sont des recettes. Le sens découle du "
+        "type — changez le type, jamais le sens."
     ),
     "type_invalide": "Le type d'opération est invalide.",
     "type_non_modifiable": (
         "Le type de cette écriture ne peut pas être modifié. Corrigez par une "
         "contre-passation puis une nouvelle écriture."
+    ),
+    "changement_de_sens": (
+        "Ce changement de type inverserait le sens de l'opération : "
+        + _kinds_of("déboursé", _EDITABLE_KINDS) + " sont des déboursés ; "
+        + _kinds_of("recette", _EDITABLE_KINDS) + " sont des recettes. "
+        "Supprimez l'écriture (ou contre-passez-la) puis inscrivez la bonne."
+    ),
+    "catégorie_interdite": (
+        "Les natures " + _kinds_named(NON_RESULT_KINDS) + " ne portent pas "
+        "de catégorie : elles n'entrent dans aucun total de revenus ni de "
+        "dépenses."
+    ),
+    "ventilation_interdite": (
+        "Les natures " + _kinds_named(NON_RESULT_KINDS) + " ne se ventilent "
+        "pas : elles ne portent ni TPS ni TVQ."
+    ),
+    "facture_interdite": (
+        "Les natures " + _kinds_named(NON_RESULT_KINDS) + " ne paient aucune "
+        "facture : le paiement d'une facture est un « "
+        + KIND_LABELS["encaissement_facture"] + " »."
+    ),
+    "dossier_interdit": (
+        "Les natures " + _kinds_named(OWNER_KINDS) + " ne se rattachent à "
+        "aucun dossier : retirez d'abord le lien au dossier (dossier_id vide)."
     ),
     "mode_invalide": "Le mode est invalide.",
     "catégorie_invalide": "La catégorie de dépense est invalide.",
@@ -870,6 +1103,30 @@ def _build_transaction_doc(
     }
 
 
+def _supplied(value) -> bool:
+    """Did the caller actually send *value*? The web form's neutralized keys
+    (``None``, ``''``, ``0``) are absences."""
+    return value not in (None, "", 0)
+
+
+def _nature_refusal(kind: str, supplied: dict) -> Optional[str]:
+    """Why the fields a write CARRIES refuse a kind of ``NON_RESULT_KINDS``
+    — ``None`` when they do not. Judged on the caller's own keys (the data a
+    create receives, the ``clean`` an edit receives), never on the merged
+    record: a stored category or split belongs to what the entry was."""
+    if kind not in NON_RESULT_KINDS:
+        return None
+    if _supplied(supplied.get("category")):
+        return "catégorie_interdite"
+    if any(_supplied(supplied.get(k)) for k in ("net_amount", "gst_amount", "qst_amount")):
+        return "ventilation_interdite"
+    if _supplied(supplied.get("invoice_id")):
+        return "facture_interdite"
+    if kind in OWNER_KINDS and _supplied(supplied.get("dossier_id")):
+        return "dossier_interdit"
+    return None
+
+
 def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
     """No-read guards shared by create and update: vocabulary membership,
     the kind-implied direction, category presence, ventilation, date sanity.
@@ -919,6 +1176,14 @@ def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
         # evening must not refuse a date that is still « today ».
         return None, "date_future"
 
+    # The four natures outside the results carry the canonical split on
+    # every write — a split the caller sent was refused by
+    # ``_nature_refusal`` already, and a STORED one (the dépense an entry
+    # was, or an earlier amount) never decides an edit.
+    canonical = canonical_ventilation(kind, direction, amount)
+    if canonical is not None:
+        return canonical, None
+
     ventilation, reason = validate_ventilation(
         direction, amount,
         clean.get("net_amount"), clean.get("gst_amount"), clean.get("qst_amount"),
@@ -950,6 +1215,9 @@ def _prepare_create(
         return None, "lien_fideicommis_réservé", clean
     if not clean.get("account_id"):
         return None, "compte_introuvable", clean
+    reason = _nature_refusal(clean.get("kind") or "", clean)
+    if reason:
+        return None, reason, clean
     ventilation, reason = _validate_business(clean)
     if reason:
         return None, reason, clean
@@ -1332,7 +1600,9 @@ def _amount_changes_without_ventilation(
         return False
     if not isinstance(new_amount, int) or isinstance(new_amount, bool) or new_amount <= 0:
         return False
-    if merged.get("direction") != "déboursé":
+    # Only a dépense carries a split of its own: the four natures outside
+    # the results get theirs from ``canonical_ventilation`` on every write.
+    if merged.get("direction") != "déboursé" or merged.get("kind") != "dépense":
         return False
     return not any(k in clean for k in ("net_amount", "gst_amount", "qst_amount"))
 
@@ -1346,9 +1616,14 @@ def update_transaction(
     The lock predicate (``_entry_lock_reason``) is re-read inside the
     transaction; the account's ``ledger_balance`` is adjusted by
     ``delta_new - delta_old``; the change lands in the entry's bounded
-    ``revisions`` trail. ``kind`` may only move between the two simple
-    kinds — an invoice-linked, card-payment or correction entry never
-    reaches here (locked).
+    ``revisions`` trail. ``kind`` moves only along ``KIND_MOVES`` (within
+    one sign, plus the historical dépense <-> recette_autre switch) — an
+    invoice-linked, card-payment or correction entry never reaches here
+    (locked). A kind of ``NON_RESULT_KINDS`` refuses the category, split,
+    invoice and (prélèvement, apport) dossier the CALLER sends
+    (``_nature_refusal``), drops the stored category and takes the
+    canonical split; a dossier left on an entry that becomes a prélèvement
+    or an apport refuses until the caller clears it (``dossier_id`` empty).
 
     ``expected_etag`` (lot 5a, D9) — the etag of the version the caller
     read (the web edit form's hidden field). It is the FIRST check inside
@@ -1414,6 +1689,21 @@ def update_transaction(
         if merged.get("kind") not in _EDITABLE_KINDS or existing.get("kind") not in _EDITABLE_KINDS:
             if merged.get("kind") != existing.get("kind"):
                 raise _TxnAbort("type_non_modifiable")
+        # ... and along KIND_MOVES. Judged on the kind PAIR, only when the
+        # kind changes: a direction named alone still reaches
+        # _validate_business, whose answer is « sens_incohérent ».
+        if (merged.get("kind") != existing.get("kind")
+                and not kind_move_allowed(existing.get("kind"), merged.get("kind"))):
+            raise _TxnAbort("changement_de_sens")
+        # The four natures outside the results: the fields the caller SENT
+        # first, then a dossier left on an entry that becomes the lawyer's
+        # own money (cleared by sending ``dossier_id`` empty — the web form
+        # always does).
+        reason = _nature_refusal(merged.get("kind") or "", clean)
+        if reason:
+            raise _TxnAbort(reason)
+        if merged.get("kind") in OWNER_KINDS and merged.get("dossier_id"):
+            raise _TxnAbort("dossier_interdit")
 
         # A kind named without a direction carries its implied sign: turning
         # a dépense into an « Autre recette » used to keep the stored
@@ -1949,15 +2239,20 @@ def _stage_reverse_legs(
         info["delta"] += admin_delta(rev_dir, amount)
 
         rev_id = str(uuid.uuid4())
+        # Only a dépense hands its category and split to its correction (the
+        # tax columns net a reversed expense to zero). Any other kind carries
+        # none of its own — a prélèvement's canonical net = amount, copied,
+        # would print as a negative net on the journal.
+        expense = leg.get("kind") == "dépense"
         reversal = _build_transaction_doc(
             tx_id=rev_id, account_id=aid, sequence=info["seq"], date_value=rd,
             direction=rev_dir, kind=REVERSAL_KIND, amount=amount,
             method=leg.get("method", ""), counterparty=leg.get("counterparty", ""),
-            category=leg.get("category"),
+            category=leg.get("category") if expense else None,
             ventilation={
-                "net_amount": int(leg.get("net_amount", 0)),
-                "gst_amount": int(leg.get("gst_amount", 0)),
-                "qst_amount": int(leg.get("qst_amount", 0)),
+                "net_amount": int(leg.get("net_amount", 0)) if expense else 0,
+                "gst_amount": int(leg.get("gst_amount", 0)) if expense else 0,
+                "qst_amount": int(leg.get("qst_amount", 0)) if expense else 0,
             },
             description=reason,
             reference=leg.get("reference", ""),
@@ -1969,6 +2264,9 @@ def _stage_reverse_legs(
         )
         reversal["dossier_file_number"] = leg.get("dossier_file_number", "")
         reversal["dossier_title"] = leg.get("dossier_title", "")
+        # The kind this correction reverses — what ``results_statement`` and
+        # ``owner_equity`` count it as, whatever period its original fell in.
+        reversal["reverses_kind"] = leg.get("kind", "")
         reversals.append(reversal)
         orig_updates.append((leg, orig_new_status, rev_id))
 

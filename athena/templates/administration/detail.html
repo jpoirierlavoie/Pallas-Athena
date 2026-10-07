@@ -70,7 +70,7 @@
   <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-3 text-sm">
     <div class="grid grid-cols-2 gap-3">
       <div><p class="text-xs text-gray-500">Date</p><p class="text-gray-900">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '—' }}</p></div>
-      <div><p class="text-xs text-gray-500">Type</p><p class="text-gray-900">{{ kind_labels.get(entry.kind, entry.kind) }}</p></div>
+      <div><p class="text-xs text-gray-500">Type</p><p class="text-gray-900">{% if kind_badges.get(entry.kind) %}<span class="text-xs px-2 py-0.5 rounded-full {{ kind_badges[entry.kind] }}">{{ kind_labels.get(entry.kind, entry.kind) }}</span>{% else %}{{ kind_labels.get(entry.kind, entry.kind) }}{% endif %}</p></div>
       <div><p class="text-xs text-gray-500">Montant</p><p class="text-gray-900 font-medium">{{ entry.amount | cents_fr }}</p></div>
       <div><p class="text-xs text-gray-500">Mode</p><p class="text-gray-900">{{ method_labels.get(entry.method, entry.method) }}</p></div>
       <div><p class="text-xs text-gray-500">Sens</p><p class="text-gray-900">{{ direction_labels_for(account.account_type if account else 'opérations').get(entry.direction, entry.direction) }}</p></div>
@@ -104,11 +104,14 @@
     {% endif %}
 
     {% if entry.revisions %}
+    {# Chaque révision dit QUI (via) et, quand elle en porte un, POURQUOI :
+       le motif d'une rectification ou d'un reclassement par script (fil
+       {at, via, motif, changes}) — mot pour mot, jamais résumé. #}
     <details class="pt-3 border-t border-gray-100">
       <summary class="text-xs text-gray-500 cursor-pointer">Révisions ({{ entry.revisions | length }})</summary>
       <ul class="mt-2 space-y-1 text-xs text-gray-600">
         {% for rev in entry.revisions | reverse %}
-        <li>{{ (rev.at | to_mtl).strftime('%Y-%m-%d %H:%M') if rev.at and rev.at.strftime is defined else '' }} — {{ rev.changes.keys() | join(', ') }}{% if rev.via == 'mcp' %} · par Claude{% endif %}</li>
+        <li>{{ (rev.at | to_mtl).strftime('%Y-%m-%d %H:%M') if rev.at and rev.at.strftime is defined else '' }} — {{ (rev.changes or {}).keys() | join(', ') }}{% if rev.via == 'mcp' %} · par Claude{% elif rev.via == 'script' %} · par script{% endif %}{% if rev.motif %} — {{ rev.motif }}{% endif %}</li>
         {% endfor %}
       </ul>
     </details>

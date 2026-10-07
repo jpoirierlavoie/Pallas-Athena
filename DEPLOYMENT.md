@@ -4024,6 +4024,45 @@ Notes:
   entry's `created_at` (no later than its `updated_at`). Every document gets
   the stamps and a `revisions` trail entry, and all of them go in one batch
   guarded by the time each was read. Run both integrity scripts afterwards.
+- **Administration natures outside the results (2026-10-07).** The
+  administration ledger gains four kinds: the lawyer's `prélèvement` and
+  `apport` (a sole practitioner's own money) and `virement_interne_sortant`
+  / `virement_interne_entrant` (the firm's money to or from an account
+  outside the ledger — the trust account, a savings account). They move,
+  clear and reconcile like any entry, carry no category, no invoice and no
+  tax split, and no revenue, expense or TPS/TVQ total counts them
+  (`admin_ledger.results_statement`, the one authority; `owner_equity` for
+  the « Avoir de l'avocat » block of the journal header, the account page
+  and the PDF journal). The web form shows ONE « Virement interne » with a
+  « Sens »; the CSV export gains a « Nature » column. The connector's
+  `record_admin_entry`, `update_admin_entry` and `get_admin_ledger` know the
+  four kinds (an edit moves only within one sign, plus the older
+  dépense ↔ autre recette switch) — still 88 tools, no new output key. No
+  index, no dependency, no Tailwind recompile (the badges reuse compiled
+  classes), no DAV account re-add. `verify_admin_integrity` gains check 11
+  (an unknown kind, or one of the four carrying a category, a tax, an
+  invoice, a trust link, or a dossier on a prélèvement or an apport) and
+  check 4 compares the two card legs' UTC days. In order:
+  1. *Before the push*: both integrity scripts, read-only, from this
+     release's checkout — a guard for the deploy. The reclassification's
+     own baseline is the run made just before its `--appliquer`.
+  2. *The push — without the §11 train, by the lawyer's explicit choice
+     (2026-10-07)*: the token in force reaches the four kinds and the new
+     passages the moment the deploy lands. Running the §11 train at any
+     time puts the grant back in step with the consent text, which now
+     names the four kinds.
+  3. *The claude.ai plugin « athena »* moves to **1.2.0** (its accounting
+     recipe names the kinds, and the registry fingerprint changed): rebuild
+     it, unpack it into the mirror repository `athena-plugin` (the old copy
+     removed first), bump the mirror's `.claude-plugin/marketplace.json`,
+     commit and push it the same day.
+  4. *Then, and only once this release serves*, the reclassification below.
+     A rollback after it restores the data FIRST (`--restaurer`), then the
+     code: the older code refuses to edit the four kinds (`type_invalide`)
+     and shows their raw codes. Under the older code, never REVERSE an entry
+     of the four kinds recorded since this release: its reversal would copy
+     the split and stamp no `reverses_kind`. Delete it while it is unlocked,
+     or wait for the roll-forward; check 11 names such a reversal after it.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

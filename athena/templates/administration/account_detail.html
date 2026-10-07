@@ -23,6 +23,36 @@
     <div><p class="text-xs text-gray-500">Statut</p><p class="text-gray-900">{{ account_status_labels.get(account.status, account.status) }}</p></div>
   </div>
 
+  {# L'« Avoir de l'avocat » de l'année civile en cours (du 1er janvier à
+     aujourd'hui, calendrier de Montréal — routes/admin_ledger
+     ._avoir_annee_civile). Une lecture en échec dit « indisponible »,
+     jamais 0 ; une lecture tronquée n'affiche rien plutôt qu'un chiffre
+     partiel. #}
+  {% if avoir %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <p class="text-xs text-gray-500 mb-2">Avoir de l'avocat — {{ avoir_period }}</p>
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      <div>
+        <p class="text-xs text-gray-500">Apports</p>
+        <p class="text-lg font-semibold text-gray-900">{{ avoir.contributions | cents_fr }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500">Prélèvements</p>
+        <p class="text-lg font-semibold text-gray-900">{{ avoir.drawings | cents_fr }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500">Solde net</p>
+        <p class="text-lg font-semibold text-gray-900">{{ avoir.net | cents_fr }}</p>
+      </div>
+    </div>
+  </div>
+  {% elif avoir_indisponible %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <p class="text-xs text-gray-500 mb-2">Avoir de l'avocat — {{ avoir_period }}</p>
+    <p class="text-sm text-gray-500">Avoir indisponible : le registre de ce compte n'a pas pu être lu. Réessayez dans un instant.</p>
+  </div>
+  {% endif %}
+
   <div class="flex items-center justify-between mb-2">
     <h2 class="text-sm font-semibold text-gray-900">Conciliations</h2>
     {% if account.status != 'fermé' %}

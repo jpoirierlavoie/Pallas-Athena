@@ -1790,14 +1790,27 @@ _TRUST_ENTRY_PURPOSES = [
     "remise_client", "déboursé_tiers", "intérêts", "frais_bancaires", "autre",
 ]
 _TRUST_METHODS = ["chèque", "virement", "traite", "dépôt_direct", "comptant"]
-# models.admin_ledger: the kinds a create may carry (paiement_carte through
-# its own two-leg writer), the two an edit may move between, and every kind
-# a row may show (correction: minted by a reversal only).
-_ADMIN_ENTRY_KINDS = ["dépense", "recette_autre", "encaissement_facture", "paiement_carte"]
-_ADMIN_EDIT_KINDS = ["dépense", "recette_autre"]
+# models.admin_ledger: the kinds a create may carry (VALID_KINDS but the
+# correction; paiement_carte through its own two-leg writer), the kinds an
+# edit may keep or become (_EDITABLE_KINDS — a change of kind moves only
+# along KIND_MOVES, the model's table, which the handler repeats through
+# services/comptabilite), and every kind a row may show, in VALID_KINDS
+# order (correction: minted by a reversal only). Since 2026-10-07 the four
+# kinds outside the firm's results (NON_RESULT_KINDS: the lawyer's
+# prélèvement and apport, a virement interne either way) are in all three.
+_ADMIN_ENTRY_KINDS = [
+    "dépense", "recette_autre", "encaissement_facture", "prélèvement",
+    "apport", "virement_interne_sortant", "virement_interne_entrant",
+    "paiement_carte",
+]
+_ADMIN_EDIT_KINDS = [
+    "dépense", "recette_autre", "prélèvement", "apport",
+    "virement_interne_sortant", "virement_interne_entrant",
+]
 _ADMIN_KINDS = [
-    "encaissement_facture", "recette_autre", "dépense", "paiement_carte",
-    "correction",
+    "encaissement_facture", "recette_autre", "dépense", "prélèvement",
+    "apport", "virement_interne_sortant", "virement_interne_entrant",
+    "paiement_carte", "correction",
 ]
 _ADMIN_METHODS = [
     "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant",
@@ -6686,7 +6699,17 @@ TOOLS: dict[str, dict] = {
             "window to see older ones. Each row carries its `etag` "
             "(update_admin_entry) and whether it is `locked` and why. A "
             "running balance is given only for ONE account read without a "
-            "kind, status or category filter."
+            "kind, status or category filter. A revenue, expense or TPS/TVQ "
+            "total counts only encaissement_facture and recette_autre "
+            "(revenue) and dépense (expenses — a row's net, TPS and TVQ "
+            "mean something only on a dépense or its correction), a "
+            "correction counting as the entry it reverses (`reverses_id`), "
+            "sign inverted. Never in any such total: prélèvement (the "
+            "lawyer's DRAWING — not the method « prélèvement », a "
+            "pre-authorized debit), apport (money he puts in), "
+            "virement_interne_sortant / virement_interne_entrant (to or "
+            "from an account outside this ledger) and paiement_carte "
+            "(between two accounts of this ledger)."
         ),
         "input_schema": {
             "type": "object",
@@ -6821,7 +6844,21 @@ TOOLS: dict[str, dict] = {
             "the SAME transaction, up to its balance, which may turn it "
             "payée (an operations account only; the dossier is the "
             "invoice's) —, paiement_carte (pays the card `card_account_id` "
-            "FROM the operations account `account_id`: two linked entries). "
+            "FROM the operations account `account_id`: two linked entries; "
+            "paying a card of this ledger is always this, never a virement "
+            "interne). Four kinds stand OUTSIDE the firm's results — no "
+            "`category`, `ventilation`, invoice nor supplier invoice; the "
+            "ledger writes their split itself, no TPS/TVQ: prélèvement (a "
+            "déboursé: the lawyer's DRAWING — never the method "
+            "« prélèvement », a pre-authorized debit) and apport (a recette: "
+            "money the lawyer puts in), neither ever with a dossier; "
+            "virement_interne_sortant / virement_interne_entrant (money "
+            "moving to / from an account OUTSIDE this ledger — the trust "
+            "account, a savings account — named as `counterparty`; a "
+            "dossier allowed). Fees drawn from trust are never a virement "
+            "interne: record_trust_entry purpose virement_honoraires records "
+            "them, this ledger's recette included. These four and "
+            "paiement_carte enter no revenue, expense or tax total. "
             "`already_cleared_date` records it born compensée at that "
             "statement date. Corrected with update_admin_entry while still "
             "editable, otherwise only by reversal; never deleted here. "
@@ -6836,7 +6873,10 @@ TOOLS: dict[str, dict] = {
                 ),
                 "kind": {
                     "type": "string", "enum": _ADMIN_ENTRY_KINDS,
-                    "description": "What happened; it decides the sign.",
+                    "description": (
+                        "What happened; it decides the sign. prélèvement is "
+                        "the lawyer's drawing, never a pre-authorized debit."
+                    ),
                 },
                 "amount_cents": _money_arg(
                     "Integer cents, > 0 — taxes included for a dépense."
@@ -6844,7 +6884,10 @@ TOOLS: dict[str, dict] = {
                 "date": _date("Day it happened, YYYY-MM-DD."),
                 "method": {
                     "type": "string", "enum": _ADMIN_METHODS,
-                    "description": "How the money moved.",
+                    "description": (
+                        "How the money moved — « prélèvement » here is a "
+                        "pre-authorized debit, whatever the kind."
+                    ),
                 },
                 "category": {
                     "type": "string", "enum": _ADMIN_CATEGORIES,
@@ -6860,15 +6903,22 @@ TOOLS: dict[str, dict] = {
                     "(get_admin_ledger)."
                 ),
                 "dossier_id": _id(
-                    "dépense / recette_autre only: an optional dossier link."
+                    "dépense, recette_autre or a virement interne only: an "
+                    "optional dossier link — never on a prélèvement or an "
+                    "apport."
                 ),
                 "supplier_invoice_ref": {
                     "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
-                    "description": "The supplier's own invoice number.",
+                    "description": (
+                        "dépense / recette_autre only: the supplier's own "
+                        "invoice number."
+                    ),
                 },
                 **_register_text_props(
                     "Required, except on a paiement_carte, which takes none "
-                    "(its two accounts name each other)."
+                    "(its two accounts name each other). On a virement "
+                    "interne, the other account (« Compte en fidéicommis », "
+                    "a savings account)."
                 ),
                 "already_cleared_date": _date(
                     "The bank statement date, YYYY-MM-DD, when the movement "
@@ -6906,10 +6956,21 @@ TOOLS: dict[str, dict] = {
             "entry: en circulation, "
             "after the last completed reconciliation, linked to no invoice, "
             "fee payment or card payment, part of no reversal — anything "
-            "else is corrected by reverse_register_entry. `kind` moves only "
-            "between dépense and recette_autre (its sign follows). Changing "
-            "a dépense's amount, or making an entry a dépense, REQUIRES "
-            "`ventilation`. idempotency_key REQUIRED."
+            "else is corrected by reverse_register_entry. A new `kind` keeps "
+            "the bank movement's sign: dépense, prélèvement and "
+            "virement_interne_sortant (déboursés) move among themselves, "
+            "recette_autre, apport and virement_interne_entrant (recettes) "
+            "among themselves; across signs only dépense <-> recette_autre, "
+            "the sign following. Any other change of sign is refused: "
+            "reverse the entry, then record the right one. Changing a "
+            "dépense's amount, or making an entry a dépense, REQUIRES "
+            "`ventilation` (the latter `category` too). Net, TPS and TVQ "
+            "mean something only on a dépense: no other kind takes "
+            "`category` or `ventilation` (the four outside the results get "
+            "the ledger's own split, no TPS/TVQ, whatever their amount). A "
+            "prélèvement or an apport never carries a dossier: making a "
+            "linked entry one requires `dossier_id` \"\". idempotency_key "
+            "REQUIRED."
         ),
         "input_schema": {
             "type": "object",
@@ -6918,16 +6979,25 @@ TOOLS: dict[str, dict] = {
                 **_expected_etag_prop(_ADMIN_ETAG_READERS),
                 "date": _date("New date, YYYY-MM-DD."),
                 "kind": {"type": "string", "enum": _ADMIN_EDIT_KINDS,
-                         "description": "New kind; its sign follows."},
+                         "description": (
+                             "New kind, of the same sign (or dépense <-> "
+                             "recette_autre, its sign following)."
+                         )},
                 "amount_cents": _money_arg("New amount, integer cents."),
                 "method": {"type": "string", "enum": _ADMIN_METHODS,
-                           "description": "New method."},
+                           "description": (
+                               "New method — « prélèvement » is a "
+                               "pre-authorized debit, not the kind."
+                           )},
                 "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
                              "description": "New dépense category."},
                 **_ventilation_props(),
                 "dossier_id": {
                     "type": "string", "maxLength": 64,
-                    "description": "New dossier link; '' removes it.",
+                    "description": (
+                        "New dossier link; '' removes it — never one on a "
+                        "prélèvement or an apport."
+                    ),
                 },
                 "supplier_invoice_ref": {
                     "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,

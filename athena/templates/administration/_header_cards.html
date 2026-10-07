@@ -3,7 +3,10 @@
    seule région qu'un changement de filtre HTMX échange, et un changement de
    COMPTE laisserait sinon les chiffres de l'ancien compte au-dessus du
    registre du nouveau (la classe de bogue des liens d'export, 2026-08-11).
-   Args : account, header. #}
+   Args : account, header — dont header.avoir (l'« Avoir de l'avocat » de
+   la période, models/admin_ledger.owner_equity ; None quand le registre
+   lu est tronqué : rien ne s'affiche plutôt qu'un chiffre partiel) et
+   header.avoir_period. #}
 <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
   <div class="bg-white rounded-xl border border-gray-200 p-4">
     <p class="text-xs text-gray-500">{{ header.balance_label }}</p>
@@ -24,6 +27,30 @@
     <p class="text-lg font-semibold text-gray-900">{{ header.last_reconciliation_date.strftime('%Y-%m-%d') if header.last_reconciliation_date else '—' }}</p>
   </div>
 </div>
+{% if header.avoir %}
+{# Hors de tout total de revenus, de dépenses ou de taxes : l'argent que
+   l'avocat a mis dans le cabinet (apports) ou en a tiré (prélèvements),
+   pour la période du registre — jamais les filtres de contenu. Deux
+   colonnes à 375 px, trois dès sm (un montant à six chiffres déborderait
+   d'un tiers d'écran). #}
+<div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+  <p class="text-xs text-gray-500 mb-2">Avoir de l'avocat — {{ header.avoir_period }}</p>
+  <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div>
+      <p class="text-xs text-gray-500">Apports</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.avoir.contributions | cents_fr }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500">Prélèvements</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.avoir.drawings | cents_fr }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500">Solde net</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.avoir.net | cents_fr }}</p>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% if header.reconciliation_overdue %}
 <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
   Conciliation en retard — plus de 30 jours depuis la dernière fin de mois conciliée.

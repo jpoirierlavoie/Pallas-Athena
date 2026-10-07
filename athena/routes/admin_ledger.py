@@ -15,6 +15,13 @@ through ``services/comptabilite`` (lot 5a, step 3) — the ONE orchestration
 the connector will share — and « déjà compensée » is a single create, born
 compensée, never create-then-clear.
 
+The four natures outside the firm's results (2026-10-07,
+``models/admin_ledger.NON_RESULT_KINDS``) ride the same form: the lawyer's
+« Prélèvement » and « Apport », and one « Virement interne » whose « Sens »
+names the stored kind. The journal header (for its period), the account
+page (for the calendar year) and the PDF show his « Avoir de l'avocat »
+(``owner_equity``) — only over a register read whole.
+
 All @login_required, French UI, standard POST+redirect with inline error
 boxes + HTTP 400. The receipt API endpoints exchange small JSON control
 messages only — the bytes go browser→GCS (32 MB platform cap doctrine).
@@ -71,7 +78,11 @@ from models.dossier import get_dossier
 from security import safe_internal_redirect
 from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
-from utils.logging_setup import log_admin_ledger_event, log_unexpected
+from utils.logging_setup import (
+    log_admin_ledger_event,
+    log_unexpected,
+    sanitize_log_value,
+)
 from utils import storage_identity
 from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input
@@ -80,9 +91,23 @@ logger = logging.getLogger(__name__)
 
 admin_bp = Blueprint("admin_ledger", __name__, url_prefix="/administration")
 
-# The form has no « Sens » select, and the route no longer derives one: the
-# MODEL implies the direction from the kind (models/admin_ledger
-# ._KIND_DIRECTION, lot 0b). One rule, wherever the call comes from.
+# The route never derives a direction, and never reads a posted
+# « direction »: the MODEL implies it from the kind (models/admin_ledger
+# ._KIND_DIRECTION, lot 0b). One rule, wherever the call comes from. The
+# form's one « Sens » select (``sens_virement``) belongs to its « Virement
+# interne » choice and names WHICH of the two stored kinds the entry is
+# (virement_interne_sortant / _entrant) — a kind, whose sign the model then
+# derives like any other (``_entry_form_data``).
+_SENS_REQUIS = "Indiquez le sens du virement interne : sortant ou entrant."
+
+# The badge the four natures outside the results wear in the journal and on
+# the fiche. Literal class strings, every one already in the compiled
+# stylesheet (CLAUDE.md item 6 — routes/ is in its scan set), pinned by
+# tests/test_admin_natures_web.py.
+_KIND_BADGES = {
+    **{kind: "bg-purple-100 text-purple-700" for kind in al.OWNER_KINDS},
+    **{kind: "bg-teal-100 text-teal-700" for kind in al.INTERNAL_TRANSFER_KINDS},
+}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -103,6 +128,7 @@ _parse_cents = parse_cents_or_none
 def _labels() -> dict:
     return {
         "kind_labels": KIND_LABELS,
+        "kind_badges": _KIND_BADGES,
         "method_labels": METHOD_LABELS,
         "direction_labels": DIRECTION_LABELS,
         "category_labels": ADMIN_CATEGORY_LABELS,
@@ -224,6 +250,12 @@ def journal():
         category = None
 
     rows, truncated = al.list_register(account_id, date_from, date_to)
+    # The « Avoir de l'avocat » of the PERIOD (models/admin_ledger
+    # .owner_equity), taken BEFORE the content filters — a Type, Statut or
+    # Catégorie filter changes what the table shows, never what the lawyer
+    # put in or drew — and only from a COMPLETE read: over a truncated
+    # register it would be a partial figure passing for a whole one.
+    avoir = None if truncated else al.owner_equity(rows)
     if status:
         rows = [r for r in rows if r.get("status") == status]
     if kind:
@@ -252,8 +284,14 @@ def journal():
             show_solde = False
             opening = None
 
+    # The header carries the avoir: the rows partial re-emits it out of band
+    # (#admin-header), so a filter or account change never leaves the
+    # previous period's or account's figures above the register.
+    header = _account_header(account)
+    header["avoir"] = avoir
+    header["avoir_period"] = _journal_period_label(date_from, date_to)
     ctx = dict(
-        accounts=accounts, account=account, rows=rows, header=_account_header(account),
+        accounts=accounts, account=account, rows=rows, header=header,
         opening=opening, truncated=truncated, show_solde=show_solde,
         filters={"status": status or "", "kind": kind or "", "category": category or "",
                  "date_from": request.args.get("date_from", ""),
@@ -269,9 +307,27 @@ def journal():
 
 
 def _entry_form_data() -> dict:
+    """The entry form, as the data the service receives.
+
+    « Virement interne » + its « Sens » select (``sens_virement``) become the
+    stored kind (``INTERNAL_TRANSFER_KIND_BY_SENS``). A missing or unknown
+    sens leaves the form's own value (``INTERNAL_TRANSFER_FORM_KIND``), which
+    no model call ever receives: both routes refuse it first (``_SENS_REQUIS``).
+
+    The four natures outside the results carry no category, no split, no
+    invoice — and a prélèvement or an apport no dossier. Their fields stay
+    hidden (and disabled) in the form, but a stale value the browser still
+    posts (no Alpine, a dossier picked before the Type changed) is
+    NEUTRALIZED here, its key KEPT: the model judges only what a write
+    carries and reads these empties as absent, while a present empty
+    ``dossier_id`` is what clears a dossier left on an entry that becomes
+    the lawyer's own money (``dossier_interdit`` otherwise)."""
     f = request.form
     kind = f.get("kind", "").strip()
-    return {
+    if kind == al.INTERNAL_TRANSFER_FORM_KIND:
+        kind = al.INTERNAL_TRANSFER_KIND_BY_SENS.get(
+            f.get("sens_virement", "").strip(), kind)
+    data = {
         "account_id": f.get("account_id", "").strip(),
         "kind": kind,
         "amount": _parse_cents(f.get("amount", "")),
@@ -288,17 +344,92 @@ def _entry_form_data() -> dict:
         "description": f.get("description", "").strip(),
         "date": _parse_date(f.get("date", "")),
     }
+    if kind in al.NON_RESULT_KINDS:
+        data.update(category="", net_amount=None, gst_amount=None,
+                    qst_amount=None, invoice_id="")
+        if kind in al.OWNER_KINDS:
+            data["dossier_id"] = None
+    return data
+
+
+def _refuse_sens_requis(account_id: str, tx_id: str = "") -> list[str]:
+    """« Virement interne » posted without a valid sens: nothing is written.
+    The typed refusal line the model's own refusals use (OBSERVABILITY.md),
+    ids and the machine reason only."""
+    log_admin_ledger_event(
+        "admin_transaction_refused", "refused",
+        transaction_id=tx_id or None,
+        account_id=sanitize_log_value(account_id) if account_id else None,
+        reason="sens_requis",
+    )
+    return [_SENS_REQUIS]
+
+
+def _kind_choices(mode: str, stored_kind: str) -> tuple[list, list]:
+    """The form's « Type » and « Sens » options, ``[(value, label)]`` —
+    derived from the model's vocabulary, never restated here.
+
+    A create offers ``FORM_KINDS`` and both sens. An edit offers the stored
+    kind and the passages ``KIND_MOVES`` permits from it (the model refuses
+    any other, ``changement_de_sens``) in the form's values — the two
+    virement codes are ONE « Virement interne » — and, for the virement,
+    only the sens those passages keep: the bank movement's direction is a
+    fact, only its nature changes."""
+    sens_order = list(al.INTERNAL_TRANSFER_KIND_BY_SENS)
+    if mode == "edit":
+        kinds: list[str] = []
+        sens: list[str] = []
+        for kind in (stored_kind,) + tuple(al.KIND_MOVES.get(stored_kind, ())):
+            value, kind_sens = al.form_kind(kind)
+            if value and value not in kinds:
+                kinds.append(value)
+            if kind_sens and kind_sens not in sens:
+                sens.append(kind_sens)
+        known = list(al.FORM_KINDS)
+        kinds.sort(key=lambda k: known.index(k) if k in known else len(known))
+        sens.sort(key=sens_order.index)
+    else:
+        kinds, sens = list(al.FORM_KINDS), sens_order
+    return (
+        [(k, al.INTERNAL_TRANSFER_FORM_LABEL if k == al.INTERNAL_TRANSFER_FORM_KIND
+          else KIND_LABELS.get(k, k)) for k in kinds],
+        [(s, al.INTERNAL_TRANSFER_SENS_LABELS[s]) for s in sens],
+    )
 
 
 def _form_context(entry, errors: list[str], mode: str = "create",
-                  conflict=None) -> dict:
+                  conflict=None, *, stored_kind: str = "") -> dict:
+    """The entry form's context. *entry* is what the form shows — the stored
+    entry, or what a refused POST sent; *stored_kind* (an edit) is the kind
+    on file, which alone decides the passages offered (default: the entry's
+    own kind)."""
     dossier = None
     if entry and entry.get("dossier_id"):
         dossier = get_dossier(entry["dossier_id"])
+    if mode == "edit" and not stored_kind:
+        stored_kind = (entry or {}).get("kind") or ""
+    kind_choices, sens_choices = _kind_choices(mode, stored_kind)
+    # The stored code → the form's « Type » value and « Sens », for the edit
+    # and for the re-render of a refused POST (« virement_interne » with no
+    # sens comes back as itself, its sens blank).
+    kind_value, sens_value = al.form_kind((entry or {}).get("kind") or "")
+    if kind_value not in {value for value, _label in kind_choices}:
+        # An empty or forged kind (a hand-made POST) never reaches the
+        # select: the kind on file for an edit, the first choice otherwise.
+        kind_value, sens_value = (al.form_kind(stored_kind) if mode == "edit"
+                                  else (kind_choices[0][0], ""))
+    sens_values = [value for value, _label in sens_choices]
+    if sens_value not in sens_values:
+        sens_value = ""
+    if not sens_value and len(sens_values) == 1:
+        # The one sens a passage keeps is a fact, not a choice.
+        sens_value = sens_values[0]
     return dict(
         accounts=al.list_accounts(status="actif"), entry=entry, dossier=dossier,
         mode=mode, errors=errors, conflict=conflict,
         factures=_factures_impayees() if mode == "create" else [],
+        kind_choices=kind_choices, sens_choices=sens_choices,
+        form_kind_value=kind_value, form_sens_value=sens_value,
         **_labels(),
     )
 
@@ -315,6 +446,11 @@ def entry_new():
 @login_required
 def entry_create():
     data = _entry_form_data()
+    if data["kind"] == al.INTERNAL_TRANSFER_FORM_KIND:
+        return render_template(
+            "administration/form.html",
+            **_form_context(data, _refuse_sens_requis(data["account_id"])),
+        ), 400
     # « Déjà compensée » — born compensée at the entry's own date, in the
     # SAME commit (lot 5a): the old create-then-clear could half-fail and
     # leave the entry « en circulation » under a banner. An encaissement's
@@ -403,9 +539,14 @@ def entry_edit(tx_id: str):
     data = _entry_form_data()
     data.pop("account_id", None)  # immutable on edit
     data.pop("invoice_id", None)  # linkage is create-only
-    errors = comptabilite.modifier_ecriture_administration(
-        tx_id, data, expected_etag=expected,
-    )["errors"]
+    if data["kind"] == al.INTERNAL_TRANSFER_FORM_KIND:
+        # Nothing reaches the model; the refusal below re-renders with the
+        # SUBMITTED etag, like any validation error.
+        errors = _refuse_sens_requis(entry.get("account_id") or "", tx_id)
+    else:
+        errors = comptabilite.modifier_ecriture_administration(
+            tx_id, data, expected_etag=expected,
+        )["errors"]
     if not errors:
         return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
 
@@ -431,7 +572,10 @@ def entry_edit(tx_id: str):
     base = current if (conflict and current) else entry
     merged = {**base, **{k: v for k, v in data.items() if v is not None}}
     merged["etag"] = etag
-    context = _form_context(merged, errors, mode="edit", conflict=conflict)
+    # The passages offered follow the kind ON FILE (the next save is judged
+    # against it), the selection what was submitted.
+    context = _form_context(merged, errors, mode="edit", conflict=conflict,
+                            stored_kind=base.get("kind") or "")
     # A stale re-render answers 200 like every edit form's (plan rule 11);
     # a validation refusal keeps this module's 400.
     return render_template("administration/form.html", **context), (
@@ -905,6 +1049,29 @@ def account_new():
     return redirect(url_for("admin_ledger.account_detail", account_id=account["id"]))
 
 
+def _avoir_annee_civile(account_id: str) -> dict:
+    """The account's « Avoir de l'avocat » for the calendar year to date —
+    Jan 1 to today, on Montréal's calendar (``today_mtl``). Three outcomes,
+    never confused: ``avoir`` (a complete read), ``avoir_indisponible`` (the
+    read failed — shown as such, never as zero) and neither (a truncated
+    read: a partial figure is not shown)."""
+    today = today_mtl()
+    jan1 = datetime(today.year, 1, 1, tzinfo=timezone.utc)
+    end = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    out = {"avoir": None, "avoir_indisponible": False,
+           "avoir_period": _journal_period_label(jan1, end)}
+    try:
+        rows, truncated = al.list_register(account_id, jan1, end)
+    except Exception:
+        log_unexpected("admin: owner-equity register read failed",
+                       account_id=account_id)
+        out["avoir_indisponible"] = True
+        return out
+    if not truncated:
+        out["avoir"] = al.owner_equity(rows)
+    return out
+
+
 @admin_bp.route("/comptes/<account_id>")
 @login_required
 def account_detail(account_id: str):
@@ -914,7 +1081,8 @@ def account_detail(account_id: str):
     return render_template(
         "administration/account_detail.html", account=account,
         header=_account_header(account),
-        reconciliations=al.list_reconciliations(account_id), **_labels(),
+        reconciliations=al.list_reconciliations(account_id),
+        **_avoir_annee_civile(account["id"]), **_labels(),
     )
 
 
@@ -1042,6 +1210,10 @@ def reconciliation_abandon(rec_id: str):
 _CSV_COLUMNS = [
     ("date", "Date"),
     ("counterparty", "Fournisseur / Source"),
+    # The entry's kind (KIND_LABELS): a prélèvement, an apport or a
+    # virement interne carries no category, and a book of account must
+    # still say what each line is.
+    ("nature", "Nature"),
     ("categorie", "Catégorie"),
     ("supplier_invoice_ref", "N° facture fournisseur"),
     ("n_ref", "N/Réf"),
@@ -1098,6 +1270,7 @@ def _export_rows(txs: list[dict], soldes) -> list[dict]:
         out.append({
             "date": s,
             "counterparty": tx.get("counterparty", ""),
+            "nature": KIND_LABELS.get(tx.get("kind", ""), tx.get("kind", "")),
             "categorie": ADMIN_CATEGORY_LABELS.get(tx.get("category") or "", ""),
             "supplier_invoice_ref": tx.get("supplier_invoice_ref", ""),
             "n_ref": tx.get("dossier_file_number", ""),
@@ -1222,11 +1395,12 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     from utils.admin_journal_pdf import build_admin_journal_pdf
 
     notices: list[str] = []
+    read = True
     try:
         txs, truncated = al.list_register(account_id, date_from=date_from, date_to=date_to)
     except Exception:
         log_unexpected("admin register read failed")
-        txs, truncated = [], False
+        txs, truncated, read = [], False, False
         notices.append(
             "AVERTISSEMENT : les inscriptions n'ont pas pu être lues. Ce "
             "document ne contient AUCUNE inscription — cela ne signifie "
@@ -1273,7 +1447,11 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
         rows.append({
             "date": d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "",
             "counterparty": objet,
-            "categorie": ADMIN_CATEGORY_LABELS.get(tx.get("category") or "", ""),
+            # The sheet has no « Type » column (COLUMNS is pinned): a row
+            # with no category — a recette, a card payment, a prélèvement,
+            # an apport, a virement interne — says its nature there.
+            "categorie": (ADMIN_CATEGORY_LABELS.get(tx.get("category") or "", "")
+                          or KIND_LABELS.get(tx.get("kind", ""), tx.get("kind", ""))),
             "facture": tx.get("supplier_invoice_ref", "") or tx.get("invoice_number", ""),
             "mode": METHOD_LABELS.get(tx.get("method", ""), tx.get("method", "")),
             "net": net,
@@ -1291,6 +1469,11 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     # tax credits on a purchase that was reversed.
     tps_total = sum(r["tps"] or 0 for r in rows)
     tvq_total = sum(r["tvq"] or 0 for r in rows)
+    # The « Avoir de l'avocat » line — printed only over a register read
+    # whole: a failed read prints no inscriptions, and a truncated one would
+    # understate the figure. The Recette/Déboursé totals above stay
+    # inclusive (report + recettes − déboursés = solde).
+    avoir = al.owner_equity(txs) if read and not truncated else None
 
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     log_admin_ledger_event("admin_export", format="pdf", account_id=account_id,
@@ -1305,4 +1488,5 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
         tps_total=tps_total,
         tvq_total=tvq_total,
         notices=notices,
+        avoir=avoir,
     )

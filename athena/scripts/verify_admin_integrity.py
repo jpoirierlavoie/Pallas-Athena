@@ -8,7 +8,9 @@ module deliberately does not have (balances are computed at read). Checks:
   3. reversal pairing: symmetric links, equal amounts, opposite directions,
      coherent status algebra;
   4. card-payment legs: symmetric links, one déboursé on an « opérations »
-     account + one recette on a « carte_crédit » account, equal amounts;
+     account + one recette on a « carte_crédit » account, equal amounts,
+     both legs ``paiement_carte`` and on the same UTC DAY (one payment, one
+     date — a time of day stays check 10's note);
   5. sequences unique per account, counter >= max;
   6. every COMPLETED reconciliation still re-proves at its period_end (the
      lock's ongoing warranty — book_as_of + outstanding − in_transit vs the
@@ -31,8 +33,8 @@ module deliberately does not have (balances are computed at read). Checks:
      reversed rows citing an invoice voided and deleted since (the normal
      reverse → void → delete path) are not « orphans ».
   9. the direction of every SIMPLE kind is the one its kind implies
-     (``models/admin_ledger._KIND_DIRECTION`` — dépense ⇒ déboursé, autre
-     recette and encaissement ⇒ recette). Since lot 0b the model derives the
+     (``models/admin_ledger._KIND_DIRECTION``, the one source of that map).
+     Since lot 0b the model derives the
      direction and refuses a contradicting one, and a web edit — which
      always names the kind — RE-DERIVES it: an « Autre recette » stored as a
      déboursé by an older direct model call would have its sign flipped, and
@@ -45,6 +47,17 @@ module deliberately does not have (balances are computed at read). Checks:
      edits in LOCAL time). Every reader takes its UTC day, so no figure
      moves — a time of day only reorders the entry within its day — but it
      is the trace of an edit no trail records.
+ 11. (2026-10-07) every kind is one the register knows — an unknown kind is
+     named, never skipped — and the four natures outside the results
+     (``admin_ledger.NON_RESULT_KINDS``: the lawyer's prélèvement and apport,
+     the internal transfers) carry what their model writes: no category,
+     the canonical split (``canonical_ventilation`` — no TPS, no TVQ), no
+     invoice, no trust link, and no dossier on a prélèvement or an apport.
+     A correction reversing one of them carries no category and no split at
+     all (net included): either would leak into the journal's totals. What
+     a correction reverses is its ``reverses_kind`` stamp, else its
+     original's kind (a reversal by an older release carries no stamp); a
+     stamp that contradicts the original is named too.
 
 Exit 1 when an écart is found, 2 when only notes are, 0 when clean. Every
 finding prints with a key; ``--revue FICHIER`` names the findings the
@@ -240,6 +253,64 @@ def collect() -> tuple[list[str], list[str]]:
                     problems.append(f"écriture {tid}: montants de jambes inégaux")
                 if other.get("direction") == t.get("direction"):
                     problems.append(f"écriture {tid}: jambes de carte de même sens")
+                if other.get("kind") != "paiement_carte":
+                    problems.append(
+                        f"écriture {tid}: l'autre jambe ({other.get('id')}) n'est "
+                        f"pas un paiement de carte"
+                    )
+                # The UTC DAY, as every reader takes it: a time of day on one
+                # leg is check 10's note, not a second date.
+                day, other_day = al._as_utc(t.get("date")), al._as_utc(other.get("date"))
+                if (isinstance(day, datetime) and isinstance(other_day, datetime)
+                        and day.date() != other_day.date()):
+                    problems.append(
+                        f"écriture {tid}: jambes de carte à des jours différents "
+                        f"({day.date()} et {other_day.date()}) — un paiement, "
+                        f"une date"
+                    )
+        # 11. A kind the register knows; the four natures outside the
+        # results carry what their model writes (see the docstring).
+        kind = t.get("kind") or ""
+        if kind not in al.VALID_KINDS:
+            problems.append(f"écriture {tid}: type « {kind or '(vide)'} » inconnu du registre")
+        elif kind in al.NON_RESULT_KINDS:
+            label = al.KIND_LABELS[kind]
+            if t.get("category"):
+                problems.append(f"écriture {tid}: {label} portant une catégorie ({t.get('category')})")
+            split = {k: int(t.get(k) or 0) for k in ("net_amount", "gst_amount", "qst_amount")}
+            canonical = al.canonical_ventilation(
+                kind, t.get("direction", ""), int(t.get("amount", 0)))
+            if split != canonical:
+                problems.append(
+                    f"écriture {tid}: {label} ventilé {split['net_amount']}+"
+                    f"{split['gst_amount']}+{split['qst_amount']} — cette nature ne "
+                    f"porte ni TPS ni TVQ"
+                )
+            if t.get("invoice_id"):
+                problems.append(f"écriture {tid}: {label} liée à une facture")
+            if t.get("trust_transaction_id"):
+                problems.append(f"écriture {tid}: {label} liée au fidéicommis")
+            if kind in al.OWNER_KINDS and t.get("dossier_id"):
+                problems.append(f"écriture {tid}: {label} rattaché à un dossier")
+        elif kind == al.REVERSAL_KIND:
+            # What the correction reverses: its stamp, else its original's
+            # kind (a reversal by an older release carries no stamp).
+            original = by_id.get(t.get("reverses_id") or "")
+            stamped = t.get("reverses_kind")
+            if stamped and original is not None and original.get("kind") != stamped:
+                problems.append(
+                    f"écriture {tid}: contre-passation notée « {stamped} », "
+                    f"l'écriture qu'elle contre-passe est « {original.get('kind')} »"
+                )
+            reversed_kind = stamped or (original or {}).get("kind")
+            if reversed_kind in al.NON_RESULT_KINDS and (
+                    t.get("category")
+                    or any(int(t.get(k) or 0) for k in ("net_amount", "gst_amount", "qst_amount"))):
+                problems.append(
+                    f"écriture {tid}: contre-passation d'un « "
+                    f"{al.KIND_LABELS[reversed_kind]} » portant une catégorie "
+                    f"ou une ventilation — elle fausserait les totaux du journal"
+                )
         # 8. Lot P cumulative — on ne retient ici que les factures CITÉES par
         # le registre ; les autres sont balayées plus bas, car une facture
         # payée SANS écriture est exactement le trou que ce contrôle a manqué.

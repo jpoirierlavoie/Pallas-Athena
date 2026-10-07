@@ -434,10 +434,12 @@ def compenser_fideicommis(tx_ids: list, cleared_date) -> dict:
 
 
 def enregistrer_ecriture_administration(data: dict, *, cleared_date=None) -> dict:
-    """An administration entry — a dépense, another recette, or an
-    encaissement (whose payment lands on its invoice in the entry's own
-    commit). ``cleared_date`` — « déjà compensée »: born compensée in the
-    SAME commit (never create-then-clear)."""
+    """An administration entry — a dépense, another recette, an encaissement
+    (whose payment lands on its invoice in the entry's own commit), or one
+    of the four natures outside the results (the lawyer's prélèvement or
+    apport, an internal transfer in or out). ``cleared_date`` — « déjà
+    compensée »: born compensée in the SAME commit (never
+    create-then-clear)."""
     report: dict = {}
     entry, errors = al.create_transaction(data, cleared_date=cleared_date,
                                           _report_out=report)
@@ -566,6 +568,20 @@ TRUST_PURPOSE_LABELS: dict = dict(trust.PURPOSE_LABELS)
 #: ``objet_sens_incohérent`` for every caller), which the connector repeats
 #: naming its arguments and the integrity script measures on the history.
 TRUST_PURPOSE_DIRECTIONS: dict = dict(trust.PURPOSE_DIRECTIONS)
+#: The administration ledger's rules for its four natures outside the
+#: results (``admin_ledger.NON_RESULT_KINDS``), which the connector repeats
+#: naming its own arguments — the model refuses them for every caller: the
+#: passages an edit may make between kinds, and the two kinds (the lawyer's
+#: own money) that never carry a dossier.
+ADMIN_KIND_MOVES: dict = {k: tuple(v) for k, v in al.KIND_MOVES.items()}
+ADMIN_NON_RESULT_KINDS: tuple = tuple(al.NON_RESULT_KINDS)
+ADMIN_OWNER_KINDS: tuple = tuple(al.OWNER_KINDS)
+
+
+def passage_de_nature_permis(old_kind: str, new_kind: str) -> bool:
+    """May an edit move an administration entry from *old_kind* to
+    *new_kind*? The model's own rule (``admin_ledger.kind_move_allowed``)."""
+    return al.kind_move_allowed(old_kind, new_kind)
 
 
 def ventiler_montant(gross: int) -> tuple[int, int, int]:

@@ -698,8 +698,11 @@ def _admin_rows_by_trust_link(problems: list) -> Optional[tuple[dict, list]]:
         link = row.get("trust_transaction_id")
         if link:
             by_link[link].append(row)
+        # A fee payment's manual recette is revenue: one of the model's
+        # REVENUE_KINDS (the one source). The lawyer's apport and an
+        # internal transfer from trust never stand for a fee payment.
         elif (row.get("direction") == "recette"
-              and row.get("kind") in ("encaissement_facture", "recette_autre")
+              and row.get("kind") in admin_ledger.REVENUE_KINDS
               and _admin_standing(row)):
             unlinked.append(row)
     return by_link, unlinked

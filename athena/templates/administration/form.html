@@ -30,13 +30,18 @@
   <form method="post"
         action="{% if mode == 'edit' %}{{ url_for('admin_ledger.entry_edit', tx_id=entry.id) }}{% else %}{{ url_for('admin_ledger.entry_create') }}{% endif %}"
         x-data="{
-          kind: '{{ (entry.kind if entry and entry.kind else 'dépense') }}',
-          accountType: 'opérations',
-          dossierId: '{{ (entry.dossier_id if entry else '') or '' }}',
           {# |jsattr est OBLIGATOIRE : un titre avec apostrophe (« L'Heureux »)
              interpolé cru casserait tout le x-data (l'attribut HTML décode
              &#39; AVANT qu'Alpine n'évalue) — et sous 'unsafe-eval', c'est
-             une injection d'expression. Le motif des formulaires frères. #}
+             une injection d'expression. Le motif des formulaires frères.
+             Le type, le sens et le dossier d'un POST refusé reviennent ici :
+             une valeur forgée y voyagerait crue. La route calcule le type et
+             le sens du formulaire (_form_context : « Virement interne » +
+             son sens pour les deux types stockés). #}
+          kind: {{ form_kind_value | jsattr }},
+          sens: {{ form_sens_value | jsattr }},
+          accountType: 'opérations',
+          dossierId: {{ ((entry.dossier_id if entry else '') or '') | jsattr }},
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
           dossierOpen: false
         }"
@@ -63,20 +68,28 @@
 
     <div class="grid grid-cols-2 gap-4">
       <div>
-        {# Le Sens est IMPLIQUÉ par le type (encaissement/autre recette →
-           recette ; dépense → déboursé) — pas de sélecteur Sens. #}
+        {# Le Sens est IMPLIQUÉ par le type (models/admin_ledger._KIND_DIRECTION) :
+           dépense, prélèvement → déboursé ; encaissement, autre recette,
+           apport → recette. Seul « Virement interne » demande son sens
+           (sens_virement, ci-dessous), qui choisit l'un des DEUX types
+           stockés — sortant ou entrant — et le modèle en dérive le signe
+           comme pour tout autre type. Aucun champ « direction » : la route
+           n'en lit jamais. Les options viennent de la route (_kind_choices :
+           FORM_KINDS à la création, les passages de KIND_MOVES en
+           modification). #}
         <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
         {# Le passage à « encaissement » vide le dossier choisi : sur un
            encaissement, la FACTURE détermine le dossier (le modèle l'impose
-           aussi — ceinture et bretelles). #}
+           aussi — ceinture et bretelles). Un prélèvement ou un apport ne le
+           vide PAS : le champ caché est désactivé (jamais envoyé) et la
+           route l'écarte, de sorte qu'un retour au type précédent rend le
+           dossier intact au lieu de l'effacer en silence. #}
         <select name="kind" required x-model="kind"
                 @change="if (kind === 'encaissement_facture') { dossierId = ''; dossierDisplay = ''; }"
                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-          <option value="dépense">Dépense</option>
-          <option value="recette_autre">Autre recette</option>
-          {% if mode != 'edit' %}
-          <option value="encaissement_facture" :disabled="accountType === 'carte_crédit'">Encaissement de facture</option>
-          {% endif %}
+          {% for value, label in kind_choices %}
+          <option value="{{ value }}"{% if value == form_kind_value %} selected{% endif %}{% if value == 'encaissement_facture' %} :disabled="accountType === 'carte_crédit'"{% endif %}>{{ label }}</option>
+          {% endfor %}
         </select>
       </div>
       <div>
@@ -86,6 +99,26 @@
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
       </div>
     </div>
+
+    {# ── Sens d'un virement interne — désactivé (donc non soumis) pour tout
+       autre type. Sans sens valide, la route refuse (400) et n'écrit rien.
+       En modification, seuls les sens que permettent les passages du type
+       enregistré sont offerts (le sens d'un mouvement bancaire est un fait,
+       seule sa nature change). #}
+    {% if sens_choices %}
+    <div x-show="kind === 'virement_interne'" x-cloak>
+      <label for="sens-virement" class="block text-sm font-medium text-gray-700 mb-1">Sens du virement</label>
+      <select id="sens-virement" name="sens_virement" x-model="sens"
+              :disabled="kind !== 'virement_interne'" :required="kind === 'virement_interne'"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        {% if sens_choices | length > 1 %}<option value="">Choisir le sens…</option>{% endif %}
+        {% for value, label in sens_choices %}
+        <option value="{{ value }}"{% if value == form_sens_value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-500 mt-1">Un virement interne relie ce compte à un compte hors de ce registre — le fidéicommis, un compte d'épargne. Le paiement de la carte de crédit est un <a href="{{ url_for('admin_ledger.card_payment') }}" class="text-indigo-600 hover:underline">« Paiement de carte »</a>, jamais un virement interne ; des honoraires tirés du fidéicommis s'inscrivent au registre du fidéicommis (paiement d'honoraires).</p>
+    </div>
+    {% endif %}
 
     <div class="grid grid-cols-2 gap-4">
       <div>
@@ -107,9 +140,15 @@
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">Payeur / Fournisseur</label>
+      {# Un virement interne nomme le COMPTE de l'autre côté, hors de ce
+         registre (le fidéicommis, un compte d'épargne) — jamais un
+         fournisseur. Le texte rendu suit le type initial ; Alpine le suit
+         ensuite. #}
+      <label class="block text-sm font-medium text-gray-700 mb-1"
+             x-text="kind === 'virement_interne' ? 'Compte de contrepartie' : 'Payeur / Fournisseur'">{% if form_kind_value == 'virement_interne' %}Compte de contrepartie{% else %}Payeur / Fournisseur{% endif %}</label>
       <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
-             placeholder="Ex. : Bell Canada, Immeubles X, client…"
+             placeholder="{% if form_kind_value == 'virement_interne' %}Ex. : Compte en fidéicommis{% else %}Ex. : Bell Canada, Immeubles X, client…{% endif %}"
+             :placeholder="kind === 'virement_interne' ? 'Ex. : Compte en fidéicommis' : 'Ex. : Bell Canada, Immeubles X, client…'"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
     </div>
 
@@ -120,7 +159,7 @@
     <div x-show="kind === 'encaissement_facture'" x-cloak class="p-3 border border-gray-200 rounded-xl space-y-2">
       <label class="block text-sm font-medium text-gray-700">Facture encaissée</label>
       {% if factures %}
-      <select name="invoice_id"
+      <select name="invoice_id" :disabled="kind !== 'encaissement_facture'"
               @change="var o = $event.target.selectedOptions[0]; if (o &amp;&amp; o.dataset.solde) { document.getElementById('montant-input').value = (parseInt(o.dataset.solde, 10) / 100).toFixed(2).replace('.', ','); }"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         <option value="">Choisir la facture…</option>
@@ -135,12 +174,18 @@
     </div>
     {% endif %}
 
-    {# ── Champs propres à une dépense ─────────────────────────────────── #}
+    {# ── Champs propres à une dépense ───────────────────────────────────
+       La catégorie et la ventilation sont DÉSACTIVÉES hors d'une dépense :
+       non soumises, elles ne peuvent rien porter de périmé vers un autre
+       type (la route les neutralise aussi pour les quatre natures hors
+       résultats). PAS le n° de facture fournisseur : la route en envoie
+       toujours la clé, et un champ désactivé — donc vide — effacerait le
+       numéro enregistré d'une écriture dont seule la nature change. #}
     <div x-show="kind === 'dépense'" x-cloak class="space-y-4">
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
-          <select name="category" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          <select name="category" :disabled="kind !== 'dépense'" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
             <option value="">Choisir…</option>
             {% for c in valid_categories %}
             <option value="{{ c }}" {% if entry and entry.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>
@@ -153,6 +198,7 @@
         </div>
       </div>
 
+      <fieldset class="min-w-0" :disabled="kind !== 'dépense'">
       <div class="p-3 border border-gray-200 rounded-xl space-y-3">
         <div class="flex items-center justify-between">
           <p class="text-xs font-medium text-gray-500">Ventilation des taxes <span class="font-normal">(vide = aucune TPS/TVQ réclamée)</span></p>
@@ -169,13 +215,17 @@
         </div>
         <p class="text-xs text-gray-500">Net + TPS + TVQ doit égaler le montant. Les champs restent modifiables — pourboires, articles exonérés et TPS partielle existent.</p>
       </div>
+      </fieldset>
     </div>
 
     {# ── Dossier (facultatif — un huissier se rattache à un dossier, le loyer
-       non). Pour un encaissement, le dossier vient de la facture. #}
-    <div x-show="kind !== 'encaissement_facture'" x-cloak class="relative" @click.outside="dossierOpen = false">
+       non). Pour un encaissement, le dossier vient de la facture. Un
+       prélèvement ou un apport de l'avocat n'en porte aucun : le bloc est
+       masqué et son champ désactivé. Un virement interne peut en porter
+       un. #}
+    <div x-show="kind !== 'encaissement_facture' &amp;&amp; kind !== 'prélèvement' &amp;&amp; kind !== 'apport'" x-cloak class="relative" @click.outside="dossierOpen = false">
       <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(facultatif)</span></label>
-      <input type="hidden" name="dossier_id" :value="dossierId">
+      <input type="hidden" name="dossier_id" :value="dossierId" :disabled="kind === 'prélèvement' || kind === 'apport'">
       {# name="q" is load-bearing : hx-include="this" sérialise l'élément par
          son nom — sans lui, dossier_search ne reçoit aucune requête. #}
       <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
@@ -201,7 +251,7 @@
     {% if mode != 'edit' %}
     <label class="flex items-center gap-2 text-sm text-gray-700">
       <input type="checkbox" name="deja_compensee" value="1" class="rounded border-gray-300">
-      Déjà compensée <span class="text-gray-400">(figure déjà au relevé — un virement instantané, un prélèvement)</span>
+      Déjà compensée <span class="text-gray-400">(figure déjà au relevé — un virement instantané, un prélèvement préautorisé)</span>
     </label>
     {% endif %}
 

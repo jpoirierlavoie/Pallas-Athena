@@ -342,6 +342,13 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "autorisation distincte</strong> de celle des écritures",   # consent
     "autoriser la comptabilité",                 # the box, and bullets naming it
     "accounting (athena:comptabilite)",          # get_admin_ledger's description
+    # 2026-10-07 — the administration ledger's four kinds outside the firm's
+    # results (the lawyer's prélèvement and apport, a virement interne
+    # either way): an edit moves an entry's kind within its sign along
+    # models/admin_ledger.KIND_MOVES, and between dépense and recette_autre
+    # as before. update_admin_entry's sentence that confined it to those
+    # two, quoted as it stood (backticks included).
+    "`kind` moves only between dépense and recette_autre",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -1552,6 +1559,130 @@ def test_the_2026_10_05_false_claim_entries_bite_on_the_texts_that_stood():
         # Bound to their subject, the entries spare a true use of the words.
         "L'écriture est une autorisation distincte de la lecture.",
     ):
+        assert not _false_claims_in(true), true[:80]
+
+
+def test_the_2026_10_07_texts_name_the_four_natures_outside_the_results():
+    """2026-10-07 — the administration ledger's four kinds outside the
+    firm's results (models/admin_ledger.NON_RESULT_KINDS: the lawyer's
+    prélèvement and apport, a virement interne either way). The consent
+    partial and the write box's summary name them for the lawyer, beside
+    the fragments pinned before them; the three ledger tools' descriptions
+    name every kind their enums take (DERIVED), what the natures refuse,
+    which passages an edit may make, the movements that are never a
+    virement interne, and every kind no revenue, expense or tax total
+    counts (DERIVED from the model's allow-list); and the sentence that
+    confined a change of kind to dépense and recette_autre bites on the
+    text it stood in, while every text that replaced it passes."""
+    import jinja2
+
+    with mock.patch("google.cloud.firestore.Client"):
+        from models import admin_ledger as al
+
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(
+        str(_TEMPLATES)), autoescape=True)   # as Flask renders
+    partial = " ".join(env.get_template("mcp/families/_comptabilite.html")
+                       .render(disclosure=disclosure.consent_context()).split())
+    for fragment in (
+        "vos <strong>prélèvements</strong> et vos <strong>apports</strong>",
+        "<strong>virements internes</strong> vers ou depuis un compte hors "
+        "de ce registre (le compte en fidéicommis, un compte d'épargne)",
+        "ces trois dernières natures n'entrent dans aucun total de revenus, "
+        "de dépenses ni de TPS/TVQ",
+        "elles ne portent ni catégorie, ni ventilation, ni facture, et un "
+        "prélèvement ou un apport ne se rattache à aucun dossier",
+        # Guidance, qualified to a card OF THIS LEDGER (review fix: an
+        # unqualified « jamais » promised what no code refuses, and was
+        # false for the lawyer's own card, a prélèvement).
+        "Le paiement d'une carte de crédit de ce registre depuis le compte "
+        "d'opérations s'inscrit en paiement de carte, et des honoraires tirés "
+        "du fidéicommis en paiement d'honoraires au fidéicommis — non en "
+        "virement interne",
+        "sans en inverser le sens, sauf d'une dépense à une autre recette "
+        "ou l'inverse",
+        # Kept from the texts before them.
+        "ni contre-passée ni elle-même une contre-passation",
+        "(les 25 dernières conservées)",
+    ):
+        assert fragment in partial, fragment
+
+    accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
+    summary = accounting.checkbox_summary_fr
+    for fragment in (
+        "des paiements de carte, vos prélèvements et vos apports, et des "
+        "virements internes vers ou depuis un compte hors de ce registre",
+        "des recettes et des déboursés, et des paiements d'honoraires — "
+        "dont chacun inscrit",
+    ):
+        assert fragment in summary, fragment
+    assert summary.lower() in str(disclosure.write_summary_fr()).lower()
+
+    record = tools.TOOLS["record_admin_entry"]["description"]
+    update = tools.TOOLS["update_admin_entry"]["description"]
+    ledger = tools.TOOLS["get_admin_ledger"]["description"]
+    for kind in tools._ADMIN_ENTRY_KINDS:
+        assert kind in record, kind
+    for kind in tools._ADMIN_EDIT_KINDS:
+        assert kind in update, kind
+    for fragment in (
+        "the lawyer's DRAWING — never the method « prélèvement », a "
+        "pre-authorized debit",
+        "no `category`, `ventilation`, invoice nor supplier invoice",
+        "neither ever with a dossier",
+        "an account OUTSIDE this ledger — the trust account, a savings "
+        "account — named as `counterparty`",
+        "paying a card of this ledger is always this, never a virement "
+        "interne",
+        "Fees drawn from trust are never a virement interne: "
+        "record_trust_entry purpose virement_honoraires records them",
+        "These four and paiement_carte enter no revenue, expense or tax "
+        "total.",
+    ):
+        assert fragment in record, fragment
+    # The descriptions say « four » in prose (« Four kinds stand OUTSIDE… »,
+    # « These four… », « the four outside the results… »): pinned to the
+    # model's source, so a fifth kind fails here on the prose (review fix).
+    assert len(al.NON_RESULT_KINDS) == 4
+    for fragment in (
+        "A new `kind` keeps the bank movement's sign",
+        "across signs only dépense <-> recette_autre",
+        "reverse the entry, then record the right one",
+        "Net, TPS and TVQ mean something only on a dépense",
+        "requires `dossier_id` \"\"",
+    ):
+        assert fragment in update, fragment
+    # The passages the description states ARE the model's table: within
+    # one sign every move — each sign's kinds named in the enum's order —,
+    # across signs only dépense <-> recette_autre.
+    by_sign: dict[str, list] = {}
+    for kind in tools._ADMIN_EDIT_KINDS:
+        by_sign.setdefault(al._KIND_DIRECTION[kind], []).append(kind)
+    for sign, plural in (("déboursé", "déboursés"), ("recette", "recettes")):
+        kinds = by_sign[sign]
+        assert (", ".join(kinds[:-1]) + f" and {kinds[-1]} ({plural})") in update
+        for a in kinds:
+            for b in kinds:
+                assert al.kind_move_allowed(a, b), (a, b)
+    across = {(a, b) for a in tools._ADMIN_EDIT_KINDS
+              for b in tools._ADMIN_EDIT_KINDS
+              if al._KIND_DIRECTION[a] != al._KIND_DIRECTION[b]
+              and al.kind_move_allowed(a, b)}
+    assert across == {("dépense", "recette_autre"), ("recette_autre", "dépense")}
+    outside = (set(al.VALID_KINDS) - set(al.REVENUE_KINDS)
+               - set(al.EXPENSE_KINDS) - {al.REVERSAL_KIND})
+    assert set(al.NON_RESULT_KINDS) | {"paiement_carte"} == outside
+    never = ledger[ledger.index("Never in any such total"):]
+    for kind in sorted(outside):
+        assert kind in never, kind
+    for kind in al.REVENUE_KINDS + al.EXPENSE_KINDS:
+        assert kind not in never, kind
+    assert "net, TPS and TVQ mean something only on a dépense" in ledger
+    assert "not the method « prélèvement »" in ledger
+
+    retired = ("`kind` moves only between dépense and recette_autre (its "
+               "sign follows).")
+    assert _false_claims_in(retired)
+    for true in (partial, summary, record, update, ledger):
         assert not _false_claims_in(true), true[:80]
 
 

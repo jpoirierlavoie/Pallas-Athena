@@ -17692,6 +17692,15 @@ def _record_trust_entry_impl(args: dict) -> dict:
 
 _ADMIN_COMMON_ARGS = {"account_id", "kind", "amount_cents", "date", "method",
                       "idempotency_key"}
+# The arguments each kind takes beyond the common ones — any other is
+# REFUSED, never ignored (_refuse_foreign_args) — and the one source of what
+# _record_admin_entry_impl reads: each optional link is read only when its
+# kind's set holds it. The four kinds outside the firm's results (2026-10-07:
+# the lawyer's prélèvement and apport, a virement interne either way) take
+# no category, ventilation, invoice nor supplier invoice — the model writes
+# their split itself (admin_ledger.canonical_ventilation) — and only a
+# virement interne may name a dossier: the lawyer's own money never does
+# (admin_ledger._nature_refusal, refused here naming the argument).
 _ADMIN_KIND_ARGS = {
     "dépense": {"category", "ventilation", "net_cents", "gst_cents",
                 "qst_cents", "dossier_id", "supplier_invoice_ref",
@@ -17701,12 +17710,24 @@ _ADMIN_KIND_ARGS = {
                       "reference", "description", "already_cleared_date"},
     "encaissement_facture": {"invoice_id", "counterparty", "reference",
                              "description", "already_cleared_date"},
+    "prélèvement": {"counterparty", "reference", "description",
+                    "already_cleared_date"},
+    "apport": {"counterparty", "reference", "description",
+               "already_cleared_date"},
+    "virement_interne_sortant": {"dossier_id", "counterparty", "reference",
+                                 "description", "already_cleared_date"},
+    "virement_interne_entrant": {"dossier_id", "counterparty", "reference",
+                                 "description", "already_cleared_date"},
     "paiement_carte": {"card_account_id", "reference", "description"},
 }
 _KIND_WHAT = {
     "dépense": "une dépense",
     "recette_autre": "une autre recette",
     "encaissement_facture": "un encaissement de facture",
+    "prélèvement": "un prélèvement de l'avocat",
+    "apport": "un apport de l'avocat",
+    "virement_interne_sortant": "un virement interne",
+    "virement_interne_entrant": "un virement interne",
     "paiement_carte": "un paiement de carte",
 }
 
@@ -17766,8 +17787,8 @@ def record_admin_entry(args: dict) -> dict:
 
 def _record_admin_entry_impl(args: dict) -> dict:
     kind = args.get("kind") or ""
-    _refuse_foreign_args(args, _ADMIN_COMMON_ARGS | _ADMIN_KIND_ARGS[kind],
-                         _KIND_WHAT[kind])
+    allowed = _ADMIN_KIND_ARGS[kind]
+    _refuse_foreign_args(args, _ADMIN_COMMON_ARGS | allowed, _KIND_WHAT[kind])
     amount = int(args["amount_cents"])
     day = _write_date(args, "date", required=True)
     _not_future(day, "date")
@@ -17808,7 +17829,9 @@ def _record_admin_entry_impl(args: dict) -> dict:
     if not counterparty:
         raise ToolArgumentError(
             "`counterparty` est requis : le payeur ou le fournisseur, comme "
-            "le document bancaire le nomme.")
+            "le document bancaire le nomme — pour un virement interne, "
+            "l'autre compte (« Compte en fidéicommis », un compte "
+            "d'épargne).")
     cleared = _write_date(args, "already_cleared_date", required=False)
     if cleared is not None:
         _not_future(cleared, "already_cleared_date")
@@ -17826,9 +17849,13 @@ def _record_admin_entry_impl(args: dict) -> dict:
         "reference": reference,
         "description": description,
     }
-    if kind in ("dépense", "recette_autre"):
+    # Each optional link under its OWN membership test: the kind's argument
+    # set is the one source of what it may carry (a virement interne names
+    # a dossier but no supplier invoice; the lawyer's own money, neither).
+    if "supplier_invoice_ref" in allowed:
         data["supplier_invoice_ref"] = _register_text(
             args, "supplier_invoice_ref", REGISTER_REFERENCE_MAX_CHARS)
+    if "dossier_id" in allowed:
         dossier_id = (args.get("dossier_id") or "").strip()
         if dossier_id:
             _read_dossier_strict(dossier_id)
@@ -17898,6 +17925,25 @@ _ADMIN_EDIT_KEYS = ("date", "kind", "amount_cents", "method", "category",
                     "reference", "description")
 
 
+def _kind_move_refusal(before: str, after: str) -> str:
+    """The refusal of an edit moving an entry from kind *before* to *after*
+    across signs — the model's ``changement_de_sens``, said with the kinds
+    the entry MAY become (the service's copy of the model's table, so the
+    two never disagree) and the connector's way out."""
+    labels = comptabilite_service.ADMIN_KIND_LABELS
+    options = [f"`{k}` (« {labels.get(k, k)} »)"
+               for k in comptabilite_service.ADMIN_KIND_MOVES.get(before, ())]
+    listed = (", ".join(options[:-1]) + " ou " + options[-1]
+              if len(options) > 1 else "".join(options))
+    return (
+        f"`kind` : une écriture « {labels.get(before, before)} » ne peut pas "
+        f"devenir « {labels.get(after, after)} » — ce passage inverserait le "
+        f"sens de l'opération. Elle peut devenir {listed}. Sinon, "
+        "contre-passez-la (reverse_register_entry, register « admin »), "
+        "puis inscrivez la bonne écriture (record_admin_entry). Rien n'a été "
+        "écrit.")
+
+
 def update_admin_entry(args: dict) -> dict:
     return run_write("update_admin_entry", args,
                      lambda: _update_admin_entry_impl(args))
@@ -17948,12 +17994,34 @@ def _update_admin_entry_impl(args: dict) -> dict:
         if key in args:
             data[key] = _register_text(args, key, limit)
     if "dossier_id" in args:
-        dossier_id = str(args.get("dossier_id") or "").strip()
-        if dossier_id:
-            _read_dossier_strict(dossier_id)
-        data["dossier_id"] = dossier_id or None
+        data["dossier_id"] = str(args.get("dossier_id") or "").strip() or None
 
-    kind_after = data.get("kind", existing.get("kind"))
+    kind_before = existing.get("kind") or ""
+    kind_after = data.get("kind", kind_before)
+    # The model's passages between kinds (admin_ledger.KIND_MOVES, through
+    # the service), repeated before it so the refusal names `kind` and the
+    # connector's own way out — a reversal, then the right entry (the
+    # model's text offers a deletion the connector never makes). Judged only
+    # for a kind the table governs: any other kind is locked above.
+    if (kind_before in comptabilite_service.ADMIN_KIND_MOVES
+            and not comptabilite_service.passage_de_nature_permis(
+                kind_before, kind_after)):
+        raise ToolArgumentError(_kind_move_refusal(kind_before, kind_after),
+                                reason="accounting_refused")
+    # The lawyer's own money never carries a dossier (the model refuses it
+    # too) — judged on the entry as it WILL be: the dossier the call sends,
+    # or the one the entry keeps. Before the dossier's read: its existence
+    # is not the question.
+    if (kind_after in comptabilite_service.ADMIN_OWNER_KINDS
+            and data.get("dossier_id", existing.get("dossier_id"))):
+        what = _KIND_WHAT.get(kind_after, kind_after)
+        raise ToolArgumentError(
+            f"{what[:1].upper()}{what[1:]} ne se rattache à aucun dossier : "
+            "envoyez `dossier_id` vide (\"\"), qui retire le lien. Rien n'a "
+            "été écrit.", reason="accounting_refused")
+    if data.get("dossier_id"):
+        _read_dossier_strict(data["dossier_id"])
+
     amount_after = data.get("amount", int(existing.get("amount") or 0))
     if kind_after == "dépense":
         category = args.get("category") or existing.get("category")
@@ -17982,7 +18050,9 @@ def _update_admin_entry_impl(args: dict) -> dict:
         if stray:
             raise ToolArgumentError(
                 ", ".join(f"`{k}`" for k in stray) + " ne vaut que pour une "
-                "dépense : une recette ne porte ni catégorie ni ventilation.")
+                "dépense : une autre recette, un prélèvement ou un apport de "
+                "l'avocat et un virement interne ne portent ni catégorie ni "
+                "ventilation.")
 
     report = comptabilite_service.modifier_ecriture_administration(
         tx_id, data, expected_etag=wanted)

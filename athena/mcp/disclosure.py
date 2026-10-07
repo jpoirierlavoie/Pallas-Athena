@@ -404,7 +404,10 @@ FAMILIES: tuple[Family, ...] = (
         # d'honoraires — chacun inscrit … la recette au compte
         # d'administration » bound « chacun » to all three, and a trust
         # recette or déboursé inscribes nothing at administration. Only the
-        # fee payment does.
+        # fee payment does. 2026-10-07: the administration ledger's four
+        # kinds outside the firm's results (models/admin_ledger
+        # .NON_RESULT_KINDS) — the lawyer's prélèvement and apport, a
+        # virement interne either way — are named beside the others.
         checkbox_summary_fr=(
             "inscrire au fidéicommis des recettes et des déboursés, et des "
             "paiements d'honoraires — dont chacun inscrit, dans la même "
@@ -412,10 +415,11 @@ FAMILIES: tuple[Family, ...] = (
             "paiement sur la facture —, inscrire au compte "
             "d'administration des dépenses, d'autres recettes, des "
             "encaissements de facture (qui inscrivent le paiement sur la "
-            "facture) et des paiements de carte, corriger une écriture "
-            "d'administration tant qu'elle reste modifiable, compenser des "
-            "écritures à la date du relevé bancaire et contre-passer une "
-            "écriture"
+            "facture), des paiements de carte, vos prélèvements et vos "
+            "apports, et des virements internes vers ou depuis un compte "
+            "hors de ce registre, corriger une écriture d'administration "
+            "tant qu'elle reste modifiable, compenser des écritures à la "
+            "date du relevé bancaire et contre-passer une écriture"
         ),
         # The writers' own rule, verbatim (review of E3): the index line once
         # read « what the bank shows », which excludes a cheque just written
