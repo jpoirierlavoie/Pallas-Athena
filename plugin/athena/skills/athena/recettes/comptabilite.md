@@ -9,7 +9,7 @@
 
 ## Écrire aux registres : fidéicommis, administration
 {{GEN:outils_comptables}}
-- **Déclencheur** : « inscris le dépôt », « paie la facture depuis le fidéicommis », « le client a payé la facture », « inscris la dépense du cabinet », « compense ces chèques ».
+- **Déclencheur** : « inscris le dépôt », « paie la facture depuis le fidéicommis », « le client a payé la facture », « inscris la dépense du cabinet », « je me suis versé », « virement au fidéicommis », « compense ces chèques ».
 - **Appels** : (1) lire la description de chaque outil avant son premier appel ; (2) n'inscrire qu'un mouvement survenu à la banque, confirmé par l'avocat, avec une clé.
 - **Arrêt** : rien ne se supprime ; une écriture du fidéicommis se corrige par contre-passation seulement, une écriture d'administration par modification tant qu'elle le permet, puis par contre-passation. Conciliation, virement entre dossiers, compte bancaire : l'application seule.
-- **À éviter** : consigner un mouvement de fonds dans une note ou une tâche : il s'inscrit au registre, ou nulle part.
+- **À éviter** : consigner un mouvement de fonds dans une note ou une tâche : il s'inscrit au registre, ou nulle part ; prendre la nature `prélèvement` (l'avocat se paie) pour le mode « prélèvement » (débit préautorisé), ou un paiement de la carte pour un virement interne.

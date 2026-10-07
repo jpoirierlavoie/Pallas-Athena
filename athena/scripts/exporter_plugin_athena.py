@@ -1,4 +1,4 @@
-"""Construit le greffon claude.ai « athena » (compétence 1.1.1)
+"""Construit le greffon claude.ai « athena » (compétence 1.2.0)
 depuis sa source manuscrite et le registre des outils du connecteur.
 
     python -m scripts.exporter_plugin_athena [--sortie CHEMIN.plugin]
@@ -19,7 +19,7 @@ la 1.3.0 recopiait des comptes d'outils, un préfixe et des vocabulaires, et
 les trois étaient faux au moment de la refonte. La source porte donc des
 lignes ``{{GEN:…}}``, seules sur leur ligne, que ce script remplit :
 
-* ``{{GEN:version}}`` — « Compétence 1.1.1 — registre ‹12 hex› », empreinte
+* ``{{GEN:version}}`` — « Compétence 1.2.0 — registre ‹12 hex› », empreinte
   des noms d'outils et de leurs schémas d'entrée : une compétence
   construite contre un autre registre le dit dès sa deuxième ligne ;
 * ``{{GEN:charger}}`` — sous le titre d'une recette, la ligne « Charger »
@@ -76,7 +76,7 @@ DIST = RACINE / "dist"
 sys.path.insert(0, str(ATHENA))
 
 NOM = "athena"
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 SKILL = "skills/athena/SKILL.md"
 INDEX = "skills/athena/references/index-outils.md"
