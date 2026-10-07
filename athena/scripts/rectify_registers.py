@@ -47,7 +47,18 @@ What it can change — anything else refuses the whole plan:
 * administration (``administration``): ``date`` and ``cleared_date`` under
   the same rule; ``created_at``, to an instant no later than the entry's own
   ``updated_at`` — to put back the creation instant a console edit replaced
-  (the change's ``motif`` names where the true value came from).
+  (the change's ``motif`` names where the true value came from);
+  ``reference``, the bank reference a transcription left out or mistyped —
+  never on a card payment, whose two legs carry it;
+  ``cleared_date`` may also move to ANOTHER day — a statement date
+  transcribed wrong (a year, the day before) — on a ``compensée`` entry, not
+  before the entry's own day, not after today, and only when no
+  reconciliation of its account, completed or draft, would see the entry
+  otherwise: one whose period end falls on or after the entry's day and in
+  ``[min(old, new), max(old, new))`` counted it cleared on one side of that
+  end and outstanding on the other (the as-of rule of
+  ``admin_ledger._list_cleared_after``). The reconciliations are read
+  strictly: a failed read stops the plan.
 
 The plan::
 
@@ -84,6 +95,7 @@ from typing import Any, Optional
 from models import admin_ledger, db, fee_payment, provenance, trust
 from models import settings as settings_model
 from security import sanitize
+from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr
 
 REGISTERS = {
@@ -92,7 +104,7 @@ REGISTERS = {
 }
 FIELDS = {
     "fideicommis": ("counterparty", "invoice_external_ref", "date", "cleared_date", "purpose"),
-    "administration": ("date", "cleared_date", "created_at"),
+    "administration": ("date", "cleared_date", "created_at", "reference"),
 }
 #: The one reclassification the tool performs (see the module docstring).
 RECLASSIFY_FROM = trust.FEE_PAYMENT_PURPOSE
@@ -229,6 +241,37 @@ def _check_reclassification(doc: dict, entry_id: str, apres, where: str) -> None
             f"l'argent est allé au cabinet : ce n'était pas un déboursé à un tiers")
 
 
+def _check_clearing_move(doc: dict, old: date, new: date, where: str) -> None:
+    """An administration entry's clearing date moved to another day, and
+    nothing a reconciliation saw changes with it (module docstring)."""
+    if doc.get("status") != "compensée":
+        raise PlanRefused(f"{where} : seule une écriture compensée change de jour de "
+                          f"compensation")
+    entry_day = _instant(doc.get("date"))
+    if entry_day is None:
+        raise PlanRefused(f"{where} : la date de l'écriture est illisible")
+    entry_day = entry_day.date()
+    if new < entry_day:
+        raise PlanRefused(f"{where} : une compensation ne précède pas l'écriture, "
+                          f"datée du {entry_day}")
+    if new > today_mtl():
+        raise PlanRefused(f"{where} : {new} est dans le futur")
+    account_id = doc.get("account_id")
+    if not isinstance(account_id, str) or not account_id:
+        raise PlanRefused(f"{where} : l'écriture ne nomme aucun compte")
+    low, high = min(old, new), max(old, new)
+    for rec in admin_ledger.list_reconciliations(account_id):
+        end = _instant(rec.get("period_end"))
+        if end is None:
+            raise PlanRefused(f"{where} : la conciliation {rec.get('id')} n'a pas de fin "
+                              f"de période lisible")
+        if entry_day <= end.date() and low <= end.date() < high:
+            raise PlanRefused(
+                f"{where} : la conciliation ({rec.get('status')}) au {end.date()} a vu "
+                f"l'écriture {'compensée' if old <= end.date() else 'en circulation'} — "
+                f"compensée le {new}, elle l'aurait vue autrement")
+
+
 def resolve(items: list[dict], plan_motif: str) -> tuple[list[Change], dict]:
     """Every change judged against the stored document, read strictly.
 
@@ -279,10 +322,12 @@ def resolve(items: list[dict], plan_motif: str) -> tuple[list[Change], dict]:
             if stored_instant is None:
                 raise PlanRefused(f"{where} : aucune date n'est inscrite à rectifier")
             if stored_instant.date() != after.date():
-                raise PlanRefused(
-                    f"{where} : {after.date()} n'est pas le jour inscrit "
-                    f"({stored_instant.date()}) — seule l'heure se rectifie ici, "
-                    f"jamais le jour")
+                if (register, field) != ("administration", "cleared_date"):
+                    raise PlanRefused(
+                        f"{where} : {after.date()} n'est pas le jour inscrit "
+                        f"({stored_instant.date()}) — seule l'heure se rectifie ici, "
+                        f"jamais le jour")
+                _check_clearing_move(doc, stored_instant.date(), after.date(), where)
         elif field == "created_at":
             after = _parse_instant(apres)
             if after is None:
@@ -312,6 +357,11 @@ def resolve(items: list[dict], plan_motif: str) -> tuple[list[Change], dict]:
             after = apres
             if stored != after:
                 _check_reclassification(doc, entry_id, apres, where)
+        elif field == "reference":
+            after = _check_text(apres, _REF_MAX, where)
+            if doc.get("kind") == "paiement_carte":
+                raise PlanRefused(f"{where} : un paiement de carte porte sa référence sur "
+                                  f"ses deux volets — elle ne se rectifie pas d'un seul côté")
         else:  # invoice_external_ref
             after = _check_text(apres, _REF_MAX, where)
             if doc.get("purpose") != trust.FEE_PAYMENT_PURPOSE or doc.get("invoice_id"):

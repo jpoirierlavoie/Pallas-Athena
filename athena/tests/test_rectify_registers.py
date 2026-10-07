@@ -423,3 +423,127 @@ def test_une_ecriture_modifiee_avant_le_lot_fait_tout_echouer(
     assert "Rien n'a été écrit" in out
     assert fake.peek(f"trust_transactions/{entry['id']}")["counterparty"] == "Jean Tremblay"
     assert fake.peek(f"trust_transactions/{other['id']}")["counterparty"] == "Jean Tremblay"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Administration : un jour de compensation mal transcrit, une référence
+# bancaire omise (année fictive 2031, montants inventés)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _cleared_expense(fake, monkeypatch, *, cleared_day: datetime,
+                     february: bool = False) -> dict:
+    """A dépense of 2 March 2031 born compensée on 4 March, inside a
+    reconciliation to 10 March completed by the real models; its clearing
+    date then reset to *cleared_day* as a transcription would have left it.
+    *february* completes, first, an empty reconciliation to 28 February."""
+    _today(monkeypatch, "2031-03-20T16:00:00+00:00")
+    if february:
+        rec, errs = admin_ledger.create_reconciliation("ops1", _d(2031, 2, 28), 0)
+        assert errs == [], errs
+        _, errs = admin_ledger.complete_reconciliation(rec["id"], [])
+        assert errs == [], errs
+    row, errs = admin_ledger.create_transaction({
+        "account_id": "ops1", "kind": "dépense", "category": "fournitures", "amount": 4321,
+        "method": "carte", "counterparty": "Papeterie fictive", "date": _d(2031, 3, 2),
+        "description": "", "reference": "", "supplier_invoice_ref": "",
+        "ventilation": "sans_taxe",
+    }, cleared_date=_d(2031, 3, 4))
+    assert errs == [], errs
+    rec, errs = admin_ledger.create_reconciliation("ops1", _d(2031, 3, 10), -4321)
+    assert errs == [], errs
+    _, errs = admin_ledger.complete_reconciliation(rec["id"], [])
+    assert errs == [], errs
+    path = f"admin_transactions/{row['id']}"
+    if cleared_day != _d(2031, 3, 4):
+        _set(fake, path, cleared_date=cleared_day)
+    return fake.peek(path)
+
+
+def test_un_jour_de_compensation_mal_transcrit_se_rectifie(
+    fake, monkeypatch, capsys, tmp_path
+):
+    """Une année mal tapée — compensée un an AVANT l'écriture — revient au
+    jour du relevé. La conciliation au 28 février tombe entre les deux jours,
+    mais avant l'écriture : elle ne l'a jamais vue. La trace garde l'ancien
+    jour, et une relance n'écrit plus rien."""
+    entry = _cleared_expense(fake, monkeypatch, cleared_day=_d(2030, 3, 4), february=True)
+    path = f"admin_transactions/{entry['id']}"
+    plan = _plan(tmp_path, _change("administration", entry["id"], "cleared_date",
+                                   _d(2030, 3, 4), "2031-03-04"))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 0, out
+    after = fake.peek(path)
+    assert after["cleared_date"] == _d(2031, 3, 4)
+    assert after["status"] == "compensée"
+    assert after["revisions"][-1]["changes"]["cleared_date"] == [_d(2030, 3, 4), _d(2031, 3, 4)]
+    assert after["updated_via"] == "script" and after["etag"] != entry["etag"]
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 0, out
+    assert "déjà fait" in out
+    assert fake.peek(path) == after
+
+
+@pytest.mark.parametrize("apres, said", [
+    # Across the 10 March end: the completed reconciliation saw it cleared.
+    ("2031-03-12", "l'aurait vue autrement"),
+    ("2031-03-01", "ne précède pas l'écriture"),
+    ("2031-03-25", "dans le futur"),
+])
+def test_un_jour_de_compensation_qu_une_conciliation_a_vu_ne_bouge_pas(
+    fake, monkeypatch, capsys, tmp_path, apres, said
+):
+    entry = _cleared_expense(fake, monkeypatch, cleared_day=_d(2031, 3, 4))
+    path = f"admin_transactions/{entry['id']}"
+    plan = _plan(tmp_path, _change("administration", entry["id"], "cleared_date",
+                                   _d(2031, 3, 4), apres))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 1, out
+    assert said in out
+    assert fake.peek(path) == entry
+
+
+def test_une_conciliation_en_brouillon_garde_aussi_le_jour_de_compensation(
+    fake, monkeypatch, capsys, tmp_path
+):
+    entry = _cleared_expense(fake, monkeypatch, cleared_day=_d(2031, 3, 4))
+    _, errs = admin_ledger.create_reconciliation("ops1", _d(2031, 3, 15), -4321)
+    assert errs == [], errs
+    plan = _plan(tmp_path, _change("administration", entry["id"], "cleared_date",
+                                   _d(2031, 3, 4), "2031-03-16"))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 1, out
+    assert "(brouillon) au 2031-03-15" in out
+    assert fake.peek(f"admin_transactions/{entry['id']}") == entry
+
+
+def test_une_reference_bancaire_omise_s_ajoute(fake, monkeypatch, capsys, tmp_path):
+    entry = _cleared_expense(fake, monkeypatch, cleared_day=_d(2031, 3, 4))
+    path = f"admin_transactions/{entry['id']}"
+    plan = _plan(tmp_path, _change("administration", entry["id"], "reference", "", "Q000000017"))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 0, out
+    after = fake.peek(path)
+    assert after["reference"] == "Q000000017"
+    assert after["revisions"][-1]["changes"]["reference"] == ["", "Q000000017"]
+    assert {k: v for k, v in after.items() if k not in ("reference", "revisions", "updated_at",
+                                                      "updated_via", "etag")} == {
+        k: v for k, v in entry.items() if k not in ("reference", "revisions", "updated_at",
+                                                    "updated_via", "etag")}
+
+
+def test_la_reference_d_un_paiement_de_carte_ne_se_rectifie_pas_d_un_seul_cote(
+    fake, capsys, tmp_path
+):
+    fake.seed("admin_transactions/pc1", {
+        "id": "pc1", "account_id": "ops1", "sequence": 3, "direction": "déboursé",
+        "kind": "paiement_carte", "amount": 2500, "reference": "",
+        "related_transaction_id": "pc2", "date": _d(2031, 3, 5),
+        "status": "compensée", "cleared_date": _d(2031, 3, 5),
+        "created_at": _d(2031, 3, 5), "updated_at": _d(2031, 3, 5), "etag": "p0",
+    })
+    plan = _plan(tmp_path, _change("administration", "pc1", "reference", "", "Q000000018"))
+    code, out = _run(capsys, plan, "--appliquer")
+    assert code == 1, out
+    assert "deux volets" in out
+    assert fake.peek("admin_transactions/pc1")["reference"] == ""
