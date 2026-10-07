@@ -8,9 +8,7 @@ keyed by ``key``, clipping is reserved to free-text columns, money is fr-CA,
 a carried-forward opening row and a totals row that reconciles
 « report + Σ recettes − Σ déboursés = solde de clôture » — plus what a firm
 register carries and the trust one does not: the TPS/TVQ ventilation columns
-(the CTI/RTI payoff) and a closing tax line that spells them out, then the
-period's « Avoir de l'avocat » (his apports and prélèvements, which no
-revenue, expense or tax total counts).
+(the CTI/RTI payoff) and a closing tax line that spells them out.
 
 No statutory article in the subtitle: this register is good practice and
 fiscal necessity, not art. 38 — the account line takes its place.
@@ -168,7 +166,6 @@ def build_admin_journal_pdf(
     opening_cents: Optional[int] = None, opening_label: str = "",
     tps_total: int = 0, tvq_total: int = 0,
     notices: Optional[list[str]] = None,
-    avoir: Optional[dict] = None,
 ) -> Response:
     """Render the firm cash register.
 
@@ -176,14 +173,9 @@ def build_admin_journal_pdf(
     ``net``/``tps``/``tvq`` present on expenses only; ``solde`` may be
     ``None`` when the route could not establish the running balance) —
     formatting happens here. *tps_total*/*tvq_total* feed the closing tax
-    line, the register's fiscal payoff. *avoir* — the period's « Avoir de
-    l'avocat » (``models/admin_ledger.owner_equity``: ``contributions``,
-    ``drawings``, ``net``, in cents) — adds one line after the tax line (a
-    period with no row prints neither); the route passes it only over a
-    register read whole, and ``None`` prints nothing (never a zero standing
-    for an unknown). The Recette/Déboursé totals stay inclusive of every
-    row. *notices* are printed under the table — a register states its own
-    limits rather than quietly leaving them out.
+    line, the register's fiscal payoff. *notices* are printed under the
+    table — a register states its own limits rather than quietly leaving
+    them out.
     """
     page_size = landscape(LEGAL)
     side = 10 * mm
@@ -275,18 +267,6 @@ def build_admin_journal_pdf(
                 f"TVQ : {format_cents_fr(int(tvq_total))}"
             ), tax_style),
         ]
-        if avoir is not None:
-            # The lawyer's own money: outside every revenue, expense and
-            # tax total, spelled out on its own line.
-            story += [
-                Spacer(1, 4),
-                Paragraph(escape(
-                    f"Avoir de l'avocat pour la période — "
-                    f"Apports : {format_cents_fr(int(avoir['contributions']))} · "
-                    f"Prélèvements : {format_cents_fr(int(avoir['drawings']))} · "
-                    f"Solde net : {format_cents_fr(int(avoir['net']))}"
-                ), tax_style),
-            ]
     for notice in (notices or []) + [UNCLEARED_LEGEND]:
         story += [Spacer(1, 6), Paragraph(escape(notice), notice_style)]
 

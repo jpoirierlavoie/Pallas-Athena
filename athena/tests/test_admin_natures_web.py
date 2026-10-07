@@ -799,11 +799,12 @@ def _seed_pdf() -> None:
             qst_amount=998, counterparty="Ligne D", date=_d(2031, 9, 5))
 
 
-def test_the_pdf_names_the_nature_and_prints_the_owner_equity(client, fake, pdf_calls):
+def test_the_pdf_names_the_nature_and_prints_no_owner_equity(client, fake, pdf_calls):
     """Regression — the sheet has no « Type » column (its columns are
     pinned): a prélèvement was a déboursé with no category there. Its empty
-    « Catégorie » cell now names its nature, and an avoir line follows the
-    tax line — which counts the dépense alone."""
+    « Catégorie » cell now names its nature. The lawyer's decision
+    (2026-10-07): the sheet carries no « Avoir de l'avocat » — neither its
+    figures nor their computation (it printed a line after the taxes)."""
     _seed_pdf()
     resp = client.get("/administration/export/pdf?account_id=ops1")
     assert resp.status_code == 200 and resp.data.startswith(b"%PDF")
@@ -813,55 +814,25 @@ def test_the_pdf_names_the_nature_and_prints_the_owner_equity(client, fake, pdf_
     assert by_line["Ligne P"]["categorie"] == "Prélèvement de l'avocat"
     assert by_line["Ligne V"]["categorie"] == "Virement interne (sortant)"
     assert by_line["Ligne D"]["categorie"] == "Loyer"
-    assert call["avoir"] == {"contributions": 100000, "drawings": 25000, "net": 75000}
+    assert "avoir" not in call
     assert (call["tps_total"], call["tvq_total"]) == (500, 998)
 
     text = _pdf_text(resp.data)
     for label in ("Apport de l'avocat", "Prélèvement de l'avocat",
                   "Virement interne (sortant)"):
         assert label in text, label
-    tax = text.index(f"TPS : {_money(500)} · TVQ : {_money(998)}")
-    avoir = text.index(
-        f"Avoir de l'avocat pour la période — Apports : {_money(100000)} · "
-        f"Prélèvements : {_money(25000)} · Solde net : {_money(75000)}")
-    assert tax < avoir
+    assert f"TPS : {_money(500)} · TVQ : {_money(998)}" in text
+    assert "Avoir de l'avocat" not in text
     # The Recette/Déboursé totals stay inclusive of every row.
     assert _money(100000) in text and _money(66498) in text   # 250 + 300 + 114,98
 
 
-@pytest.mark.parametrize("read", ["truncated", "failed"])
-def test_the_pdf_omits_the_owner_equity_of_an_incomplete_read(
-    client, fake, monkeypatch, pdf_calls, read,
-):
-    _seed_pdf()
-    (_truncating if read == "truncated" else _failing)(monkeypatch)
-    resp = client.get("/administration/export/pdf?account_id=ops1")
-    assert resp.status_code == 200 and resp.data.startswith(b"%PDF")
-    (call,) = pdf_calls
-    assert call["avoir"] is None                    # never a zero for an unknown
-    text = _pdf_text(resp.data)
-    assert "Avoir de l'avocat" not in text
-    notice = ("le registre a été tronqué" if read == "truncated"
-              else "n'ont pas pu être lues")
-    assert notice in text
+def test_the_sheet_takes_no_owner_equity():
+    """The builder's own contract: no « avoir » argument any more, its
+    pinned columns untouched."""
+    import inspect
 
-
-def test_the_sheet_prints_the_owner_equity_after_the_taxes_only_when_given():
-    """The builder's own contract — its pinned columns untouched."""
-    row = {"date": "2031-09-03", "counterparty": "Ligne P",
-           "categorie": "Prélèvement de l'avocat", "facture": "", "mode": "Virement",
-           "net": None, "tps": None, "tvq": None, "recette": None,
-           "debours": 25000, "solde": -25000, "en_circulation": False}
-    common = dict(account_line="Opérations", period="Période fictive",
-                  filename="t.pdf", tps_total=0, tvq_total=0)
-    with_avoir = _pdf_text(ajp.build_admin_journal_pdf(
-        [row], avoir={"contributions": 0, "drawings": 25000, "net": -25000},
-        **common).data)
-    assert with_avoir.index("Taxes payées sur les déboursés de la période") < \
-        with_avoir.index(f"Avoir de l'avocat pour la période — Apports : {_money(0)} · "
-                         f"Prélèvements : {_money(25000)} · Solde net : {_money(-25000)}")
-    without = _pdf_text(ajp.build_admin_journal_pdf([row], **common).data)
-    assert "Avoir de l'avocat" not in without
+    assert "avoir" not in inspect.signature(ajp.build_admin_journal_pdf).parameters
     assert [c.key for c in ajp.COLUMNS] == [
         "date", "counterparty", "categorie", "facture", "mode",
         "net", "tps", "tvq", "recette", "debours", "solde"]

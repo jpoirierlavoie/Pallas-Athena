@@ -4032,8 +4032,8 @@ Notes:
   clear and reconcile like any entry, carry no category, no invoice and no
   tax split, and no revenue, expense or TPS/TVQ total counts them
   (`admin_ledger.results_statement`, the one authority; `owner_equity` for
-  the « Avoir de l'avocat » block of the account page and the line of the
-  PDF journal — the journal header shows none, by the lawyer's decision).
+  the « Avoir de l'avocat » block of the account page — neither the
+  journal header nor the PDF journal shows it, by the lawyer's decision).
   The web form shows ONE « Virement interne » with a « Sens »; the four
   read as plain text, like every kind; the CSV export gains a « Nature »
   column. The connector's

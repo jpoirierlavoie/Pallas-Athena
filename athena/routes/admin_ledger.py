@@ -19,9 +19,9 @@ The four natures outside the firm's results (2026-10-07,
 ``models/admin_ledger.NON_RESULT_KINDS``) ride the same form: the lawyer's
 « Prélèvement » and « Apport », and one « Virement interne » whose « Sens »
 names the stored kind. They show as plain text, like every kind. The
-account page (for the calendar year) and the PDF show his « Avoir de
-l'avocat » (``owner_equity``) — only over a register read whole; the
-journal header does not (the lawyer's decision, 2026-10-07).
+account page (for the calendar year) shows his « Avoir de l'avocat »
+(``owner_equity``) — only over a register read whole; neither the journal
+header nor the PDF journal does (the lawyer's decision, 2026-10-07).
 
 All @login_required, French UI, standard POST+redirect with inline error
 boxes + HTTP 400. The receipt API endpoints exchange small JSON control
@@ -1374,12 +1374,11 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     from utils.admin_journal_pdf import build_admin_journal_pdf
 
     notices: list[str] = []
-    read = True
     try:
         txs, truncated = al.list_register(account_id, date_from=date_from, date_to=date_to)
     except Exception:
         log_unexpected("admin register read failed")
-        txs, truncated, read = [], False, False
+        txs, truncated = [], False
         notices.append(
             "AVERTISSEMENT : les inscriptions n'ont pas pu être lues. Ce "
             "document ne contient AUCUNE inscription — cela ne signifie "
@@ -1448,11 +1447,6 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     # tax credits on a purchase that was reversed.
     tps_total = sum(r["tps"] or 0 for r in rows)
     tvq_total = sum(r["tvq"] or 0 for r in rows)
-    # The « Avoir de l'avocat » line — printed only over a register read
-    # whole: a failed read prints no inscriptions, and a truncated one would
-    # understate the figure. The Recette/Déboursé totals above stay
-    # inclusive (report + recettes − déboursés = solde).
-    avoir = al.owner_equity(txs) if read and not truncated else None
 
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     log_admin_ledger_event("admin_export", format="pdf", account_id=account_id,
@@ -1467,5 +1461,4 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
         tps_total=tps_total,
         tvq_total=tvq_total,
         notices=notices,
-        avoir=avoir,
     )
