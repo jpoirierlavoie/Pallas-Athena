@@ -4063,6 +4063,36 @@ Notes:
      of the four kinds recorded since this release: its reversal would copy
      the split and stamp no `reverses_kind`. Delete it while it is unlocked,
      or wait for the roll-forward; check 11 names such a reversal after it.
+- **Reclassifying the administration journal (2026-10-07).** The one-shot
+  `scripts/reclassify_admin_ledger.py` writes, OUTSIDE the models like
+  `rectify_registers`, what the lawyer's audit of the operations account
+  decided, line by line from a CSV kept outside this repository with its
+  backup and its report: the kind of an entry (to one of the four kinds
+  above, never across signs), a category and a dossier, a counterparty,
+  and the date of a card payment's two legs or of an entry within the same
+  month. From `athena/`, with the environment of « Active gabarits » above
+  (ADC, the variables inline, never `ENV=production`) — even the dry run
+  reads production:
+
+  ```bash
+  python -m scripts.reclassify_admin_ledger CSV --rapport RAPPORT.md       # dry run: plan, controls, fingerprint
+  python -m scripts.reclassify_admin_ledger CSV --rapport RAPPORT.md --sauvegarde DOSSIER --appliquer EMPREINTE
+  python -m scripts.reclassify_admin_ledger --restaurer SAUVEGARDE.json --rapport RAPPORT.md   # dry run of the undo
+  ```
+
+  A line whose stored values no longer match the CSV is refused and
+  reported, never forced; so is an entry in a reversal pair, linked to an
+  invoice or to trust, carrying a tax on a kind change, or whose trail is
+  nearly full. `--appliquer` takes the fingerprint the APPROVED dry run
+  printed and refuses everything when anything moved since; the typed JSON
+  backup is written first; every document gets the stamps and a
+  `revisions` entry (`via: script`, the motif naming its CSV line), all in
+  one batch guarded by the time each was read. An absent trust counterpart
+  is reported, an unreadable trust register blocks the write. A report or
+  backup path inside this repository is refused. Run both integrity scripts
+  before and after, and compare their findings by TEXT: a reviewed finding
+  that names a migrated entry returns under a new key (its document
+  changed) and needs a new review.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
