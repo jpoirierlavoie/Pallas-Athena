@@ -4032,14 +4032,16 @@ Notes:
   clear and reconcile like any entry, carry no category, no invoice and no
   tax split, and no revenue, expense or TPS/TVQ total counts them
   (`admin_ledger.results_statement`, the one authority; `owner_equity` for
-  the « Avoir de l'avocat » block of the journal header, the account page
-  and the PDF journal). The web form shows ONE « Virement interne » with a
-  « Sens »; the CSV export gains a « Nature » column. The connector's
+  the « Avoir de l'avocat » block of the account page and the line of the
+  PDF journal — the journal header shows none, by the lawyer's decision).
+  The web form shows ONE « Virement interne » with a « Sens »; the four
+  read as plain text, like every kind; the CSV export gains a « Nature »
+  column. The connector's
   `record_admin_entry`, `update_admin_entry` and `get_admin_ledger` know the
   four kinds (an edit moves only within one sign, plus the older
   dépense ↔ autre recette switch) — still 88 tools, no new output key. No
-  index, no dependency, no Tailwind recompile (the badges reuse compiled
-  classes), no DAV account re-add. `verify_admin_integrity` gains check 11
+  index, no dependency, no Tailwind recompile (the new blocks reuse
+  compiled classes), no DAV account re-add. `verify_admin_integrity` gains check 11
   (an unknown kind, or one of the four carrying a category, a tax, an
   invoice, a trust link, or a dossier on a prélèvement or an apport) and
   check 4 compares the two card legs' UTC days. In order:

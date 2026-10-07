@@ -610,34 +610,25 @@ def test_the_form_turns_a_depense_into_an_outgoing_transfer(client, fake):
 _SPAN = re.compile(r'<span class="([^"]*rounded-full[^"]*)">([^<]*)</span>')
 
 
-def _badges(page: str) -> dict:
-    """{label: classes} of the rounded chips of a page."""
-    return {html.unescape(text): classes for classes, text in _SPAN.findall(page)}
-
-
-def test_each_nature_wears_its_badge(client, fake):
-    """Regression — the journal and the fiche wrote the kind in grey text:
-    nothing told the lawyer's own money from an expense."""
+def test_each_nature_shows_as_plain_text(client, fake):
+    """The lawyer's decision (2026-10-07): the four natures read as plain
+    text in the journal and on the fiche, like every other kind — no pill.
+    Regression: they wore a purple or teal chip."""
     ids = {}
     for i, kind in enumerate(NATURES):
         ids[kind] = _create(kind, counterparty=f"Ligne {i}")["id"]
     _create("dépense", counterparty="Ligne dépense")
-    page = client.get("/administration/?account_id=ops1").get_data(as_text=True)
-    chips = _badges(page)
-    expected = {
-        "prélèvement": "bg-purple-100 text-purple-700",
-        "apport": "bg-purple-100 text-purple-700",
-        "virement_interne_sortant": "bg-teal-100 text-teal-700",
-        "virement_interne_entrant": "bg-teal-100 text-teal-700",
-    }
-    assert ra._KIND_BADGES == expected
+    page = html.unescape(client.get("/administration/?account_id=ops1").get_data(as_text=True))
+    assert "kind_badges" not in ra._labels()
+    for kind in (*NATURES, "dépense"):
+        cell = f'<td class="px-3 py-2 text-gray-500">{al.KIND_LABELS[kind]}</td>'
+        assert cell in page, kind
+    assert not [t for _c, t in _SPAN.findall(page) if t in al.KIND_LABELS.values()]
     for kind in NATURES:
-        assert chips[al.KIND_LABELS[kind]].endswith(expected[kind]), kind
-    assert al.KIND_LABELS["dépense"] not in chips
-
-    for kind in NATURES:
-        detail = client.get(f"/administration/{ids[kind]}").get_data(as_text=True)
-        assert _badges(detail)[al.KIND_LABELS[kind]].endswith(expected[kind]), kind
+        detail = html.unescape(
+            client.get(f"/administration/{ids[kind]}").get_data(as_text=True))
+        assert f'<p class="text-gray-900">{al.KIND_LABELS[kind]}</p>' in detail, kind
+        assert not [t for _c, t in _SPAN.findall(detail) if t in al.KIND_LABELS.values()], kind
 
 
 def _avoir(page: str):
@@ -669,37 +660,21 @@ def _get(client, path: str, **headers) -> str:
     return html.unescape(resp.get_data(as_text=True))
 
 
-def test_the_journal_header_shows_the_periods_owner_equity(client, fake):
-    """Regression — no page said what the lawyer put into the firm or drew
-    from it. Taken BEFORE the content filters: a filter changes what the
-    table shows, never the avoir."""
+def test_the_journal_shows_no_owner_equity_card(client, fake):
+    """The lawyer's decision (2026-10-07): the journal header carries no
+    « Avoir de l'avocat » card — the account page (the calendar year) and
+    the PDF journal keep it. Regression: the header showed it for the
+    period (« Depuis l'ouverture du compte » with no dates), also in the
+    out-of-band header a filter re-emits."""
     _seed_avoir()
-    whole = {"period": "Depuis l'ouverture du compte", "Apports": _fmt(140000),
-             "Prélèvements": _fmt(25000), "Solde net": _fmt(115000)}
-    assert _avoir(_get(client, "/administration/?account_id=ops1")) == whole
-    assert _avoir(_get(client, "/administration/?account_id=ops1&kind=dépense")) == whole
-    assert _avoir(_get(client, "/administration/?account_id=ops1&status=compensée")) == whole
-
-    september = "/administration/?account_id=ops1&date_from=2031-09-01&date_to=2031-09-30"
-    assert _avoir(_get(client, september)) == {
-        "period": "Période du 2031-09-01 au 2031-09-30", "Apports": _fmt(100000),
-        "Prélèvements": _fmt(25000), "Solde net": _fmt(75000)}
-
-
-def test_the_htmx_fragment_re_emits_the_owner_equity_out_of_band(client, fake):
-    """The header lives outside #admin-rows, the region a filter swaps: the
-    rows partial re-emits it out of band — with the avoir of the NEW
-    period, or the previous one would stay above the register."""
-    _seed_avoir()
-    fragment = _get(client, "/administration/?account_id=ops1&date_from=2031-09-01"
-                            "&date_to=2031-09-30", **{"HX-Request": "true"})
-    marker = '<div id="admin-header" hx-swap-oob="true">'
-    assert fragment.count(marker) == 1
-    rows, oob = fragment.split(marker)
-    assert _avoir(rows) is None                     # the header alone carries it
-    assert _avoir(oob) == {
-        "period": "Période du 2031-09-01 au 2031-09-30", "Apports": _fmt(100000),
-        "Prélèvements": _fmt(25000), "Solde net": _fmt(75000)}
+    for path in ("/administration/?account_id=ops1",
+                 "/administration/?account_id=ops1&date_from=2031-09-01&date_to=2031-09-30"):
+        assert "Avoir de l'avocat" not in _get(client, path), path
+        fragment = _get(client, path, **{"HX-Request": "true"})
+        assert '<div id="admin-header" hx-swap-oob="true">' in fragment
+        assert "Avoir de l'avocat" not in fragment, path
+    # The account page still shows the year's figures.
+    assert _avoir(_get(client, "/administration/comptes/ops1")) is not None
 
 
 def _truncating(monkeypatch) -> None:
@@ -718,20 +693,6 @@ def _failing(monkeypatch) -> None:
         raise RuntimeError("registre illisible")
 
     monkeypatch.setattr(ra.al, "list_register", _read)
-
-
-def test_a_truncated_register_shows_no_owner_equity(client, fake, monkeypatch):
-    """A truncated register would understate the figure: shown nowhere,
-    rather than a partial figure passing for a whole one."""
-    _seed_avoir()
-    assert _avoir(_get(client, "/administration/?account_id=ops1")) is not None
-    _truncating(monkeypatch)
-    page = _get(client, "/administration/?account_id=ops1")
-    assert "Le registre a été tronqué" in page
-    assert "Avoir de l'avocat" not in page
-    fragment = _get(client, "/administration/?account_id=ops1", **{"HX-Request": "true"})
-    assert 'id="admin-header" hx-swap-oob="true"' in fragment
-    assert "Avoir de l'avocat" not in fragment
 
 
 def test_the_account_page_shows_the_calendar_years_owner_equity(client, fake, monkeypatch):
@@ -968,12 +929,9 @@ def test_the_new_markup_uses_only_compiled_classes(client, fake, monkeypatch):
     form = _get(client, "/administration/nouvelle")
     detail = _get(client, f"/administration/{ids['prélèvement']}")
     snippets = [
-        _block(journal, "Avoir de l'avocat", "Solde net"),
         _block(account, "Avoir de l'avocat", "Solde net"),
         _block(form, 'name="sens_virement"', "« Paiement de carte »"),
         form[form.index("<fieldset"):form.index(">", form.index("<fieldset")) + 1],
-        *[f'<span class="{classes}">' for classes, _t in _SPAN.findall(journal)],
-        *[f'<span class="{classes}">' for classes, _t in _SPAN.findall(detail)],
     ]
     _failing(monkeypatch)
     unavailable = _get(client, "/administration/comptes/ops1")
@@ -982,9 +940,6 @@ def test_the_new_markup_uses_only_compiled_classes(client, fake, monkeypatch):
     classes = {c for s in snippets
                for block in re.findall(r'class="([^"]+)"', s)
                for c in block.split()}
-    for value in ra._KIND_BADGES.values():
-        classes |= set(value.split())
-    assert {"bg-purple-100", "text-purple-700", "bg-teal-100", "text-teal-700",
-            "grid-cols-2", "sm:grid-cols-3", "text-lg", "min-w-0",
+    assert {"grid-cols-2", "sm:grid-cols-3", "text-lg", "min-w-0",
             "hover:underline"} <= classes
     assert not _absent_classes(classes), _absent_classes(classes)

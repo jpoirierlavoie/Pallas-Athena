@@ -40,10 +40,7 @@
         <td class="px-3 py-2 whitespace-nowrap"><a href="{{ url_for('admin_ledger.entry_detail', tx_id=r.id) }}" class="text-indigo-600 hover:underline">{{ r.date.strftime('%Y-%m-%d') if r.date else '' }}</a></td>
         <td class="px-3 py-2 text-gray-900">{{ r.counterparty }}</td>
         <td class="px-3 py-2 text-gray-700">{{ category_labels.get(r.category, '') if r.category else '' }}</td>
-        {# Les quatre natures hors résultats (prélèvement, apport, virements
-           internes) portent une pastille — classes de kind_badges
-           (routes/admin_ledger._KIND_BADGES), déjà compilées. #}
-        <td class="px-3 py-2 text-gray-500">{% if kind_badges.get(r.kind) %}<span class="text-xs px-2 py-0.5 rounded-full whitespace-nowrap {{ kind_badges[r.kind] }}">{{ kind_labels.get(r.kind, r.kind) }}</span>{% else %}{{ kind_labels.get(r.kind, r.kind) }}{% endif %}</td>
+        <td class="px-3 py-2 text-gray-500">{{ kind_labels.get(r.kind, r.kind) }}</td>
         <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{% if r.direction == 'recette' %}{{ r.amount | cents_fr }}{% endif %}</td>
         <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{% if r.direction == 'déboursé' %}{{ r.amount | cents_fr }}{% endif %}</td>
         {% if show_solde %}<td class="px-3 py-2 text-right whitespace-nowrap font-medium text-gray-900">{{ r._solde | cents_fr }}</td>{% endif %}

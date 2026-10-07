@@ -18,9 +18,10 @@ compensée, never create-then-clear.
 The four natures outside the firm's results (2026-10-07,
 ``models/admin_ledger.NON_RESULT_KINDS``) ride the same form: the lawyer's
 « Prélèvement » and « Apport », and one « Virement interne » whose « Sens »
-names the stored kind. The journal header (for its period), the account
-page (for the calendar year) and the PDF show his « Avoir de l'avocat »
-(``owner_equity``) — only over a register read whole.
+names the stored kind. They show as plain text, like every kind. The
+account page (for the calendar year) and the PDF show his « Avoir de
+l'avocat » (``owner_equity``) — only over a register read whole; the
+journal header does not (the lawyer's decision, 2026-10-07).
 
 All @login_required, French UI, standard POST+redirect with inline error
 boxes + HTTP 400. The receipt API endpoints exchange small JSON control
@@ -100,16 +101,6 @@ admin_bp = Blueprint("admin_ledger", __name__, url_prefix="/administration")
 # derives like any other (``_entry_form_data``).
 _SENS_REQUIS = "Indiquez le sens du virement interne : sortant ou entrant."
 
-# The badge the four natures outside the results wear in the journal and on
-# the fiche. Literal class strings, every one already in the compiled
-# stylesheet (CLAUDE.md item 6 — routes/ is in its scan set), pinned by
-# tests/test_admin_natures_web.py.
-_KIND_BADGES = {
-    **{kind: "bg-purple-100 text-purple-700" for kind in al.OWNER_KINDS},
-    **{kind: "bg-teal-100 text-teal-700" for kind in al.INTERNAL_TRANSFER_KINDS},
-}
-
-
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
@@ -128,7 +119,6 @@ _parse_cents = parse_cents_or_none
 def _labels() -> dict:
     return {
         "kind_labels": KIND_LABELS,
-        "kind_badges": _KIND_BADGES,
         "method_labels": METHOD_LABELS,
         "direction_labels": DIRECTION_LABELS,
         "category_labels": ADMIN_CATEGORY_LABELS,
@@ -250,12 +240,6 @@ def journal():
         category = None
 
     rows, truncated = al.list_register(account_id, date_from, date_to)
-    # The « Avoir de l'avocat » of the PERIOD (models/admin_ledger
-    # .owner_equity), taken BEFORE the content filters — a Type, Statut or
-    # Catégorie filter changes what the table shows, never what the lawyer
-    # put in or drew — and only from a COMPLETE read: over a truncated
-    # register it would be a partial figure passing for a whole one.
-    avoir = None if truncated else al.owner_equity(rows)
     if status:
         rows = [r for r in rows if r.get("status") == status]
     if kind:
@@ -284,12 +268,7 @@ def journal():
             show_solde = False
             opening = None
 
-    # The header carries the avoir: the rows partial re-emits it out of band
-    # (#admin-header), so a filter or account change never leaves the
-    # previous period's or account's figures above the register.
     header = _account_header(account)
-    header["avoir"] = avoir
-    header["avoir_period"] = _journal_period_label(date_from, date_to)
     ctx = dict(
         accounts=accounts, account=account, rows=rows, header=header,
         opening=opening, truncated=truncated, show_solde=show_solde,
